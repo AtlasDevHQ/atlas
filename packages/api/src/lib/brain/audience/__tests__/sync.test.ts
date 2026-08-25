@@ -38,9 +38,9 @@ const PRIVATE_CHANNEL = "C0PRIV";
 const PUBLIC_CHANNEL = "C0PUB";
 
 const DIRECTORY: readonly SlackDirectoryUser[] = [
-  { id: "U_ADA", email: "ada@corp.test", deleted: false, isBot: false },
-  { id: "U_GONE", email: "gone@corp.test", deleted: true, isBot: false },
-  { id: "U_BOT", email: null, deleted: false, isBot: true },
+  { id: "U_ADA", email: "ada@corp.test", displayName: null, realName: null, deleted: false, isBot: false },
+  { id: "U_GONE", email: "gone@corp.test", displayName: null, realName: null, deleted: true, isBot: false },
+  { id: "U_BOT", email: null, displayName: null, realName: null, deleted: false, isBot: true },
 ];
 
 const ok = <T>(value: T) => Promise.resolve({ ok: true as const, ...value });
@@ -58,6 +58,7 @@ interface Recorded {
  */
 function harness(overrides: Partial<AudienceSyncDeps["api"]> = {}, channels = [PRIVATE_CHANNEL]) {
   const reconciled: Recorded[] = [];
+  const captured: Parameters<NonNullable<AudienceSyncDeps["captureIdentities"]>>[0][] = [];
   const deps: AudienceSyncDeps = {
     api: {
       getConversationInfo: (_t, channelId) =>
@@ -98,8 +99,24 @@ function harness(overrides: Partial<AudienceSyncDeps["api"]> = {}, channels = [P
       reconciled.push(input);
       return Promise.resolve({ added: input.userIds.length, revoked: 0 });
     },
+    // The actor-identity capture pass (#5440). Stubbed for the reason its dep
+    // declaration gives: it is the one seam that reaches the internal database
+    // directly rather than through `deps.query`, so an unstubbed default opens
+    // a real pool and waits out a connection timeout on every case here.
+    // Recorded rather than silently no-op'd, so the two assertions below can
+    // check WHAT it was handed.
+    captureIdentities: (options) => {
+      captured.push(options);
+      return Promise.resolve({
+        authors: 0,
+        atlas: 0,
+        directory: 0,
+        opaque: 0,
+        erasureHeld: 0,
+      });
+    },
   };
-  return { deps, reconciled };
+  return { deps, reconciled, captured };
 }
 
 /** `hasInternalDB()` reads DATABASE_URL; set inside tests, never at top level. */
@@ -111,6 +128,48 @@ function withDatabaseUrl<T>(fn: () => Promise<T>): Promise<T> {
     else process.env.DATABASE_URL = prior;
   });
 }
+
+describe("actor-identity capture rides the cycle (#5440)", () => {
+  it("hands the capture pass the WHOLE directory, not the membership half", async () => {
+    // ⚠️ The membership half filters `liveHumans` — no bots, no deactivated
+    // accounts — because neither should hold a grant. Naming inverts both, and
+    // that inversion is a decision rather than an oversight: a deactivated
+    // author is precisely the case a dated snapshot exists for (nobody will
+    // ever be able to name them again), and a bot's name is not personal data.
+    // Passing `humans` here instead would still make every test above pass.
+    const { deps, captured } = harness();
+    await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+    expect(captured).toHaveLength(1);
+    expect([...captured[0]!.directory.keys()].toSorted()).toEqual(["U_ADA", "U_BOT", "U_GONE"]);
+    expect(captured[0]!.source).toBe("slack");
+    expect(captured[0]!.workspaceId).toBe(WORKSPACE);
+  });
+
+  it("hands it the workspace-wide resolution, so `atlas` can beat `directory`", async () => {
+    // The precedence the capture pass applies needs the resolved map: a live
+    // join stays current, a snapshot goes stale with no re-derivation path.
+    const { deps, captured } = harness();
+    await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+    expect(captured[0]!.resolved.get("U_ADA")).toBe("user-U_ADA");
+  });
+
+  it("does NOT abort the cycle when capture fails", async () => {
+    // The two halves fail in opposite directions. An unnamed claim renders
+    // `opaque`, which is honest; an audience that ages past the staleness bound
+    // denies everyone. So the naming half must never take the membership half
+    // down with it.
+    const { deps, reconciled } = harness();
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        captureIdentities: () => Promise.reject(new Error("capture exploded")),
+      }),
+    );
+    expect(result.status).toBe("success");
+    expect(result.audiencesReconciled).toBe(1);
+    expect(reconciled).toHaveLength(1);
+  });
+});
 
 describe("runAudienceSyncCycle", () => {
   it("syncs the audience the GRANT names, not a re-derived one", async () => {
@@ -347,7 +406,7 @@ describe("runAudienceSyncCycle", () => {
         return params.cursor === undefined
           ? ok({ users: [DIRECTORY[0]!], nextCursor: "dir-p2", dropped: 0 })
           : ok({
-              users: [{ id: "U_TWO", email: "two@corp.test", deleted: false, isBot: false }],
+              users: [{ id: "U_TWO", email: "two@corp.test", displayName: null, realName: null, deleted: false, isBot: false }],
               nextCursor: null,
               dropped: 0,
             });
@@ -432,8 +491,8 @@ describe("runAudienceSyncCycle", () => {
       fetchUsersListPage: () =>
         ok({
           users: [
-            { id: "U_BOT", email: null, deleted: false, isBot: true },
-            { id: "U_GONE", email: "gone@corp.test", deleted: true, isBot: false },
+            { id: "U_BOT", email: null, displayName: null, realName: null, deleted: false, isBot: true },
+            { id: "U_GONE", email: "gone@corp.test", displayName: null, realName: null, deleted: true, isBot: false },
           ],
           nextCursor: null,
           dropped: 0,
@@ -468,8 +527,8 @@ describe("runAudienceSyncCycle", () => {
       fetchUsersListPage: () =>
         ok({
           users: [
-            { id: "U_ADA", email: null, deleted: false, isBot: false },
-            { id: "U_APP", email: "app@corp.test", deleted: false, isBot: true },
+            { id: "U_ADA", email: null, displayName: null, realName: null, deleted: false, isBot: false },
+            { id: "U_APP", email: "app@corp.test", displayName: null, realName: null, deleted: false, isBot: true },
           ],
           nextCursor: null,
           dropped: 0,

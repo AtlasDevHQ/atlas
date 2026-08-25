@@ -4452,6 +4452,100 @@ export const brainEntity = pgTable(
   ],
 );
 
+// brain_actor_identity (0208) — a human NAME on every authoritative claim
+// (#5440, ADR-0036 §T5 `Amendment (2026-08-25, #5440)`).
+//
+// ⚠️ **The one place the audience resolver's inward-only posture is reversed.**
+// The resolver used to promise Atlas "never writes an email, never persists the
+// vendor roster"; it now persists a DATED DIRECTORY SNAPSHOT for source
+// principals who **authored an ingested episode**. Not for the roster —
+// authorship is the bound, and the bound IS the reversal. Read the amendment
+// and migration 0208's header before changing this; neither is re-derivable
+// from the columns.
+//
+// Three states, because a nullable resolved-user-id collapses two different
+// facts into one NULL (0187's slot-key argument, applied to a person):
+//
+//   `atlas`     — resolved to a Better-Auth user id; the NAME comes from a LIVE
+//                 join to `"user"` and is never snapshotted here, because a
+//                 snapshot goes stale with no re-derivation path.
+//   `directory` — the vendor names them, no Atlas account. A dated snapshot,
+//                 because there is no live join to make — and for someone who
+//                 has left both the vendor and the company it is the only
+//                 record that will ever name them.
+//   `opaque`    — the handle and nothing else. A stored row, not an absent one,
+//                 because operator ERASURE must survive the next sync cycle.
+//
+// No index on `email`/`display_name`/`real_name`, deliberately: nothing may
+// query these rows to FIND a person. The PK serves the only supported access
+// path — a specific claim's `actor`, under that claim's own attribution gate.
+export const brainActorIdentity = pgTable(
+  "brain_actor_identity",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    // `brain_facts.provenance ->> 'actor'`, VERBATIM — `slack:U0AQW6KF2EM`.
+    // The identity lives BESIDE the handle rather than replacing it: ADR-0037
+    // §5's retain-the-surface rule, and re-deriving identity from a rewritten
+    // value is irreversible.
+    actor: text("actor").notNull(),
+    // The two halves of `actor`, split so no reader re-parses the composite.
+    source: text("source").notNull(),
+    vendorUserId: text("vendor_user_id").notNull(),
+    // `atlas` | `directory` | `opaque`. NOT NULL, closed by CHECK.
+    state: text("state").notNull(),
+    // `atlas` only. A display POINTER, never an ACL input — a row here confers
+    // no membership, no grant and no entitlement. No FK: the Better-Auth spine
+    // is global by ADR-0024 and absent from this schema, so the reader treats a
+    // join that answers nothing as `opaque` rather than rendering a blank.
+    userId: text("user_id"),
+    // `directory` only — the dated snapshot.
+    displayName: text("display_name"),
+    realName: text("real_name"),
+    email: text("email"),
+    snapshotAt: timestamp("snapshot_at", { withTimezone: true }),
+    // Operator erasure — the `retract` shape: the record keeps the statement
+    // and loses the person. A tombstone rather than a DELETE, because a DELETE
+    // would be re-captured by the next 30-minute audience cycle.
+    erasedAt: timestamp("erased_at", { withTimezone: true }),
+    erasedBy: text("erased_by"),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.actor] }),
+    // 0187's `DEFAULT ''` hazard: an empty actor joins every other degenerate
+    // row rather than joining nothing.
+    check(
+      "ck_brain_actor_identity_key_present",
+      sql`actor <> '' AND source <> '' AND vendor_user_id <> ''`,
+    ),
+    check("ck_brain_actor_identity_state", sql`state IN ('atlas', 'directory', 'opaque')`),
+    // Each arm is exhaustive in BOTH directions — what must be present AND what
+    // must be absent — so a half-written row cannot present as another state.
+    check(
+      "ck_brain_actor_identity_atlas_shape",
+      sql`state <> 'atlas' OR (user_id IS NOT NULL AND user_id <> '' AND display_name IS NULL AND real_name IS NULL AND email IS NULL AND snapshot_at IS NULL)`,
+    ),
+    // COALESCE and not a bare `<> ''`: a CHECK PASSES on NULL, so the bare form
+    // admits exactly the nameless `directory` row this arm exists to forbid.
+    check(
+      "ck_brain_actor_identity_directory_shape",
+      sql`state <> 'directory' OR (user_id IS NULL AND snapshot_at IS NOT NULL AND (COALESCE(display_name, '') <> '' OR COALESCE(real_name, '') <> '' OR COALESCE(email, '') <> ''))`,
+    ),
+    check(
+      "ck_brain_actor_identity_opaque_shape",
+      sql`state <> 'opaque' OR (user_id IS NULL AND display_name IS NULL AND real_name IS NULL AND email IS NULL AND snapshot_at IS NULL)`,
+    ),
+    // Erasure implies the tombstone state; the reverse is NOT implied. An
+    // `opaque` row with no `erased_at` is "we looked and the directory did not
+    // name them", which is a different fact from "a person removed this name".
+    check(
+      "ck_brain_actor_identity_erasure_shape",
+      sql`erased_at IS NULL OR (state = 'opaque' AND erased_by IS NOT NULL AND erased_by <> '')`,
+    ),
+  ],
+);
+
 // brain_coverage_snapshot (0202) — the Coverage Surface's dated survey-unit
 // roster (#5213, ADR-0041). One row per (workspace, class, survey unit), written
 // by a scheduled enumeration cycle and read by the page stamped "as of <date>".

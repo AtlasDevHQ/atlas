@@ -258,6 +258,7 @@ describe("migration types", () => {
       // Distinct numbers from every neighbour, so a mis-wired section cannot be
       // satisfied by another's counters.
       brainEntities: { imported: 7, skipped: 3 },
+      brainActorIdentities: { imported: 9, skipped: 4 },
     };
 
     expect(result.conversations.imported + result.conversations.skipped).toBe(7);

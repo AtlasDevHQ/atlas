@@ -288,9 +288,9 @@ let channelRoster: Record<string, readonly string[]> = { ...CHANNEL_ROSTER };
 
 /** Slack's directory. `U_ALAN`'s address matches no Atlas user — logged, never guessed. */
 const SLACK_DIRECTORY: readonly SlackDirectoryUser[] = [
-  { id: "U_ADMIN", email: "admin@temporal.test", deleted: false, isBot: false },
-  { id: "U_ADA", email: "ada@temporal.test", deleted: false, isBot: false },
-  { id: "U_ALAN", email: "nobody@temporal.test", deleted: false, isBot: false },
+  { id: "U_ADMIN", email: "admin@temporal.test", displayName: null, realName: null, deleted: false, isBot: false },
+  { id: "U_ADA", email: "ada@temporal.test", displayName: null, realName: null, deleted: false, isBot: false },
+  { id: "U_ALAN", email: "nobody@temporal.test", displayName: null, realName: null, deleted: false, isBot: false },
 ];
 
 type Candidate = {

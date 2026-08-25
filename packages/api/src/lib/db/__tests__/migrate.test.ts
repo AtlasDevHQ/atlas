@@ -413,7 +413,15 @@ describe("runMigrations", () => {
     //   split needs that the synchronous path never did is a durable answer to
     //   "which episodes are already out?" — which cannot be `extracted_at`,
     //   because work-then-stamp requires those episodes to stay unstamped) = 208.
-    expect(count).toBe(208);
+    //   Plus 0208 (brain_actor_identity — #5440, ADR-0036 §T5: the human NAME
+    //   behind each claim's vendor handle. `provenance.actor` holds
+    //   `slack:U0AQW6KF2EM` and nothing in the record mapped it to a person, so
+    //   finish condition 2's own test failed for every claim whose author has
+    //   no Atlas account — in any real workspace, most of them. Three states
+    //   rather than a nullable resolved-user-id, which would attribute the
+    //   minority and collapse "not yet resolved" with "resolved, no Atlas
+    //   account") = 209.
+    expect(count).toBe(209);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -732,6 +740,7 @@ describe("runMigrations", () => {
         "0205_brain_enrollment_connection_group.sql",
         "0206_brain_warehouse_entity_success.sql",
         "0207_brain_extraction_batch.sql",
+        "0208_brain_actor_identity.sql",
       ],
     });
 

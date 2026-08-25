@@ -364,6 +364,26 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       ],
     );
 
+    // ── The human NAME behind each claim's actor handle (#5440, ADR-0036 §T5) ──
+    // One row PER STATE, because the three carry different payloads and the
+    // bundle has to preserve each: an `atlas` pointer with no name (the target
+    // joins `"user"` live), a DATED `directory` snapshot, and an `opaque`
+    // TOMBSTONE an operator erased — which is the one that would be silently
+    // undone by the destination's first audience cycle if it failed to cross.
+    await pool.query(
+      `INSERT INTO brain_actor_identity
+         (workspace_id, actor, source, vendor_user_id, state, user_id,
+          display_name, real_name, email, snapshot_at, erased_at, erased_by)
+       VALUES ($1, 'slack:U-ATLAS', 'slack', 'U-ATLAS', 'atlas', 'user-atlas',
+               NULL, NULL, NULL, NULL, NULL, NULL),
+              ($1, 'slack:U-GUEST', 'slack', 'U-GUEST', 'directory', NULL,
+               'dana', 'Dana Okafor', 'dana@contractor.test',
+               '2026-04-05T00:00:00Z', NULL, NULL),
+              ($1, 'slack:U-ERASED', 'slack', 'U-ERASED', 'opaque', NULL,
+               NULL, NULL, NULL, NULL, '2026-05-06T00:00:00Z', 'admin-1')`,
+      [SOURCE_ORG],
+    );
+
     // ── The curated identity vocabulary (#5022, ADR-0037 §6/§8) ──
     // A COMPRESSED chain, which is the only shape that can tell "the closure
     // was recomputed" from "the closure was copied": the bundle carries no
@@ -463,6 +483,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         brainEnrollments: 3,
         // Both entries (#5043). No predicate narrows this section either.
         brainEntities: 2,
+        // All three states (#5440) — including the erased tombstone. No
+        // predicate narrows this section: an erasure that failed to cross would
+        // be undone by the destination's first audience cycle.
+        brainActorIdentities: 3,
       });
 
       // ── Simulate the cross-region hop on one DB: preserved UUIDs would
@@ -484,6 +508,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       await pool.query(`DELETE FROM brain_slack_ingest_scope WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM brain_enrollment WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM brain_entity WHERE workspace_id = $1`, [SOURCE_ORG]);
+      await pool.query(`DELETE FROM brain_actor_identity WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM semantic_entities WHERE org_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM learned_patterns WHERE org_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM settings WHERE org_id = $1`, [SOURCE_ORG]);
@@ -1129,6 +1154,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         brainEnrollments: { imported: 0, skipped: 3, namingDropped: 1, namingApplied: 0 },
         // Both entries already here from the first import (#5043).
         brainEntities: { imported: 0, skipped: 2 },
+        brainActorIdentities: { imported: 0, skipped: 3 },
       });
 
       // ── Catch-up import: an episode the target already has, carrying a

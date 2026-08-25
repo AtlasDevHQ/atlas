@@ -1069,16 +1069,25 @@ const STRIP_ALLOWLIST = new Set(["packages/api/src/lib/brain/candidates.ts"]);
  * first and it is strictly weaker: a future `brainFact.supersede` emitted from a
  * route is exactly the second metadata shape this guard exists to catch.
  *
- * The exempt member is `tensionSweep` (#5029), whose row legitimately belongs to
- * its route rather than to `correction.ts`: `sweepTensionEdges` is a store
- * primitive with ONE entry point and no request context to attribute from, so
- * the two-entry-points argument that put `correct`/`retract` inside `correctFact`
- * does not apply to it. Checked per OCCURRENCE, so a file emitting both still
- * offends on the second — and a BARE `ADMIN_ACTIONS.brainFact` with no member (a
- * spread, an `Object.values`, a destructure) reaches the correction verbs too and
- * is never exempt.
+ * Two members are exempt, each on the same argument.
+ *
+ * `tensionSweep` (#5029), whose row legitimately belongs to its route rather
+ * than to `correction.ts`: `sweepTensionEdges` is a store primitive with ONE
+ * entry point and no request context to attribute from, so the two-entry-points
+ * argument that put `correct`/`retract` inside `correctFact` does not apply.
+ *
+ * `eraseActorIdentity` (#5440, ADR-0036 §T5) for the same reason and one more:
+ * it is not a correction at all. It clears the directory SNAPSHOT that names a
+ * claim's author and touches no `brain_facts` row — the claim keeps its
+ * statement and loses the person. There is nothing for `correctFact`'s
+ * metadata shape to unify it with.
+ *
+ * Checked per OCCURRENCE, so a file emitting both still offends on the second —
+ * and a BARE `ADMIN_ACTIONS.brainFact` with no member (a spread, an
+ * `Object.values`, a destructure) reaches the correction verbs too and is never
+ * exempt.
  */
-const NON_CORRECTION_AUDIT_MEMBERS = new Set(["tensionSweep"]);
+const NON_CORRECTION_AUDIT_MEMBERS = new Set(["tensionSweep", "eraseActorIdentity"]);
 function brainFactAuditOffends(source: string): boolean {
   const hits = [...source.matchAll(/\bADMIN_ACTIONS\.brainFact\b(?:\.(\w+))?/g)];
   return hits.some((h) => !NON_CORRECTION_AUDIT_MEMBERS.has(h[1] ?? ""));
@@ -1161,14 +1170,14 @@ describe("source guard: the machinery is the ONLY audit-writing layer for correc
     // emitted from a route is exactly the second metadata shape this guard
     // exists to catch, and naming `correct|retract` would let it through.
     //
-    // The one member that is NOT a correction is `tensionSweep` (#5029), whose
-    // row legitimately belongs to its route rather than to this machinery:
-    // `sweepTensionEdges` is a store primitive with ONE entry point and no
-    // request context to attribute from, so the two-entry-points argument that
-    // put `correct`/`retract` inside `correctFact` simply does not apply to it.
-    // A file may therefore name `ADMIN_ACTIONS.brainFact.tensionSweep` and
-    // nothing else in the domain — which is checked per OCCURRENCE, so a file
-    // that emitted both would still offend on the second.
+    // The members that are NOT corrections are `tensionSweep` (#5029) and
+    // `eraseActorIdentity` (#5440), whose rows legitimately belong to their
+    // route rather than to this machinery: each is a store primitive with ONE
+    // entry point and no request context to attribute from, so the
+    // two-entry-points argument that put `correct`/`retract` inside
+    // `correctFact` simply does not apply. A file may therefore name one of
+    // them and nothing else in the domain — which is checked per OCCURRENCE, so
+    // a file that emitted a correction verb beside one would still offend.
     const offenders = files
       .filter((file) => file !== MACHINERY)
       .filter((file) => brainFactAuditOffends(readFileSync(file, "utf8")))
@@ -1225,8 +1234,19 @@ describe("source guard: the machinery is the ONLY audit-writing layer for correc
         "a(ADMIN_ACTIONS.brainFact.tensionSweep);\nb(ADMIN_ACTIONS.brainFact.correct);",
       ),
     ).toBe(true);
-    // …and the exempt member is a real one, not a string this test invented.
+    expect(
+      brainFactAuditOffends(
+        "logAdminAction({ actionType: ADMIN_ACTIONS.brainFact.eraseActorIdentity })",
+      ),
+    ).toBe(false);
+    expect(
+      brainFactAuditOffends(
+        "a(ADMIN_ACTIONS.brainFact.eraseActorIdentity);\nb(ADMIN_ACTIONS.brainFact.retract);",
+      ),
+    ).toBe(true);
+    // …and the exempt members are real ones, not strings this test invented.
     expect(REAL_ADMIN_ACTIONS.brainFact).toHaveProperty("tensionSweep");
+    expect(REAL_ADMIN_ACTIONS.brainFact).toHaveProperty("eraseActorIdentity");
   });
 
   test("the machinery reaches for the AWAITED audit helper, never the fire-and-forget one", () => {

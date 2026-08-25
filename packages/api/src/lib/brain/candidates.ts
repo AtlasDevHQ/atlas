@@ -71,6 +71,12 @@ import {
 } from "@atlas/api/lib/brain/acl";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import {
+  actorsIn,
+  identityFor,
+  loadActorIdentities,
+  type BrainActorIdentityLookup,
+} from "@atlas/api/lib/brain/actor-identity";
+import {
   attributionDecision,
   type BrainAttributionDecision,
 } from "@atlas/api/lib/brain/attribution";
@@ -259,11 +265,32 @@ function isParsableTimestamp(value: unknown): boolean {
  * Withholding never touches `payloadComplete`, which is computed over the
  * stored payload and reports data integrity, not entitlement. Both appear on
  * the wire and they mean different things.
+ *
+ * ## `identities` — the human NAME behind the handle (#5440)
+ *
+ * `actor` is a vendor handle (`slack:U0AQW6KF2EM`) and finish condition 2 asks
+ * for a person. `identities` is the page's already-loaded actor → identity map
+ * (`lib/brain/actor-identity.ts`); an actor absent from it renders the NAMED
+ * `opaque` state — *we cannot name this person* — never a blank and never a
+ * silent fallback to the handle.
+ *
+ * REQUIRED and undefaulted, for the same reason `attribution` is. The failure
+ * here is under-disclosure rather than over-disclosure, so it is not an ACL
+ * hazard — but a defaulted parameter would let a new read surface render every
+ * claim `opaque` with no compile error and no log line, which is exactly the
+ * silent degradation this module argues against everywhere else. Pass
+ * `NO_ACTOR_IDENTITIES` to mean it deliberately.
+ *
+ * The identity lands INSIDE the `visible: true` arm, so the withheld arm
+ * structurally cannot carry it — a name is a strictly more identifying
+ * rendering of `actor` and rides #4836's gate rather than gaining one of its
+ * own (ADR-0036 §T5's `Amendment (2026-08-25, #5440)`).
  */
 export function projectProvenance(
   value: unknown,
   expectedEpisodeId: string | null | undefined,
   attribution: BrainAttributionDecision,
+  identities: BrainActorIdentityLookup,
 ): BrainFactProvenanceView {
   // The attribution the unparseable-payload arm below returns, and the value
   // the ordinary arm falls back to. Computed once, from a decision that does
@@ -278,7 +305,11 @@ export function projectProvenance(
   // instead of silently disclosing to it.
   const fallbackAttribution: BrainFactAttributionView =
     attribution === "disclose"
-      ? { visible: true, sourceId: null, actor: null, occurredAt: null }
+      ? // `actorIdentity: null` and not `opaque`, because the two say different
+        // things: there is no actor here at all (the payload would not parse),
+        // so there is no identity question to answer. `opaque` asserts that
+        // somebody spoke and Atlas cannot name them.
+        { visible: true, sourceId: null, actor: null, occurredAt: null, actorIdentity: null }
       : { visible: false };
 
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -328,6 +359,13 @@ export function projectProvenance(
   // — it never hides a row the reviewer asked to see.
   const provisional = ("provisional" in p && p.provisional !== false) || unresolved.length > 0;
 
+  // ⚠️ `actor` stays a STRING on the wire, verbatim, and the identity is a
+  // SIBLING field rather than a nested object replacing it. Two reasons, and
+  // both are load-bearing: ADR-0037 §5's retain-the-surface rule means the
+  // stored handle is never rewritten or re-shaped, and every existing consumer
+  // of `attribution.actor` (the review surface, the agent path) keeps reading
+  // the same string it always did.
+  const actor = asString(p.actor);
   return {
     source: asString(p.source),
     episodeId: asString(p.episodeId),
@@ -337,8 +375,9 @@ export function projectProvenance(
         ? {
             visible: true,
             sourceId: asString(p.sourceId),
-            actor: asString(p.actor),
+            actor,
             occurredAt: asString(p.occurredAt),
+            actorIdentity: identityFor(identities, actor),
           }
         : fallbackAttribution,
     extractedAt: asString(p.extractedAt),
@@ -790,9 +829,17 @@ export async function loadFactCandidates(
     });
   }
 
-  const [episodes, tensions] = await Promise.all([
+  const [episodes, tensions, identities] = await Promise.all([
     loadEpisodes(db, rows, ctx, requestId),
     loadTensions(db, rows, ctx, requestId),
+    // ONE query for the page's actors, not one per row — the property that
+    // lets the name ride the same request budget as the evidence (#5440).
+    loadActorIdentities(
+      db,
+      ctx.workspaceId,
+      actorsIn(rows.map((r) => r.provenance)),
+      requestId,
+    ),
   ]);
 
   const candidates = rows.map((row): BrainFactCandidate => {
@@ -825,7 +872,12 @@ export async function loadFactCandidates(
       malformedGrantIndices: grant?.malformed ?? [],
       grantReadable: grant?.readable ?? false,
       corroborationCount: count(row.corroboration_count),
-      provenance: projectProvenance(row.provenance, row.source_episode_id, attribution),
+      provenance: projectProvenance(
+        row.provenance,
+        row.source_episode_id,
+        attribution,
+        identities,
+      ),
       // Read-time and advisory — the signal exists on the wire and nowhere
       // else. Same attribution decision as the provenance above, because for a
       // singly-corroborated fact the observation IS the withheld `occurredAt`.
@@ -966,6 +1018,16 @@ async function loadTensions(
     { ctx, cap: TENSION_FANOUT_CAP, surface: REVIEW_SURFACE, log, requestId },
   );
 
+  // A counterpart is a fact in its own right, so its actor is resolved off its
+  // OWN provenance rather than inherited from the owner's page load — the same
+  // reasoning that has `attributionDecision` re-run per counterpart below.
+  const counterpartIdentities = await loadActorIdentities(
+    db,
+    ctx.workspaceId,
+    actorsIn([...clusters.values()].flatMap((c) => c.counterparts.map(({ row }) => row.provenance))),
+    requestId,
+  );
+
   const out = new Map<string, BrainFactTensionView[]>();
   for (const [owner, cluster] of clusters) {
     const views: BrainFactTensionView[] = cluster.counterparts.map(({ row, direction }) => ({
@@ -989,6 +1051,7 @@ async function loadTensions(
         row.provenance,
         row.source_episode_id,
         attributionDecision(row, ctx, requestId),
+        counterpartIdentities,
       ),
     }));
     for (const w of cluster.withheld) {

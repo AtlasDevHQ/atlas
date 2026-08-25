@@ -934,6 +934,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
       sourceId: "m-rival-a",
       actor: "U-rival-a",
       occurredAt: "2026-05-30T00:00:00.000Z",
+      actorIdentity: { state: "opaque", erased: false },
     });
   });
 
@@ -1492,6 +1493,7 @@ describe("provenance attribution — the widened-fact disclosure (#4836)", () =>
       sourceId: "C-FOUNDERS:1799999999.001",
       actor: "U-FOUNDER",
       occurredAt: "2026-05-30T00:00:00.000Z",
+      actorIdentity: { state: "opaque", erased: false },
     });
   });
 
@@ -1521,6 +1523,7 @@ describe("provenance attribution — the widened-fact disclosure (#4836)", () =>
       sourceId: "C-ENG:1799999999.002",
       actor: "U-ENG",
       occurredAt: "2026-05-30T00:00:00.000Z",
+      actorIdentity: { state: "opaque", erased: false },
     });
   });
 

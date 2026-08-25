@@ -4601,6 +4601,23 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // either direction — the ids reach `brain_facts` as comparison VALUES, never
     // as a join arm — so no ordering constraint against the fact phases.
     const brainEntity = await del(`DELETE FROM brain_entity WHERE workspace_id = $1`);
+    // The human NAME behind each claim's actor handle (#5440, ADR-0036 §T5).
+    // The most sensitive per-row personal data in this database: names and work
+    // emails of the customer's own people, INCLUDING people who are not Atlas
+    // users and never agreed to anything. `fact_audience_member` is purged for
+    // holding resolved identities; this holds the identities, the names and the
+    // addresses, so the call is easier rather than harder. No FK in either
+    // direction — the join to `brain_facts` is `provenance ->> 'actor'` to
+    // `actor`, a VALUE join with no constraint — so no ordering constraint
+    // against the fact phases above.
+    //
+    // ⚠️ This deletes the erasure TOMBSTONES along with the names, which is safe
+    // only because the same purge deletes the CLAIMS: nothing survives for a
+    // re-captured name to attach to. If a purge is ever narrowed to spare
+    // `brain_facts`, revisit this line first.
+    const brainActorIdentity = await del(
+      `DELETE FROM brain_actor_identity WHERE workspace_id = $1`,
+    );
     // The Coverage Surface's dated roster and its cycle record (#5213,
     // ADR-0041). `unit_label` holds channel names verbatim and the warehouse
     // rows hold the workspace's own entity and column names, so this is
@@ -5017,6 +5034,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         brainSlackIngestScope,
         brainEnrollment,
         brainEntity,
+        brainActorIdentity,
         brainCoverageSnapshot,
         brainCoverageCycle,
         brainWarehouseEntitySuccess,

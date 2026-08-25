@@ -811,6 +811,20 @@ export async function fetchConversationMembersPage(
 export interface SlackDirectoryUser {
   readonly id: string;
   readonly email: string | null;
+  /**
+   * `profile.display_name` — what the person chose to be called. Frequently
+   * EMPTY at Slack, which is why {@link realName} is carried beside it rather
+   * than as a redundant second spelling.
+   *
+   * Read for the actor-identity snapshot (#5440, ADR-0036 §T5's
+   * `Amendment (2026-08-25, #5440)`) — the human NAME finish condition 2 asks
+   * for on every authoritative claim. It reaches `brain_actor_identity` ONLY
+   * for principals who authored an ingested episode; the audience sync does not
+   * persist the roster.
+   */
+  readonly displayName: string | null;
+  /** `profile.real_name` — what the workspace administrator sees. */
+  readonly realName: string | null;
   /** Deactivated at Slack. Excluded from audiences — deactivation is revocation. */
   readonly deleted: boolean;
   readonly isBot: boolean;
@@ -879,9 +893,17 @@ export async function fetchUsersListPage(
     }
     const profile = (u.profile ?? null) as Record<string, unknown> | null;
     const rawEmail = profile?.email;
+    // `''` → `null` on all three, uniformly. Slack returns an empty string for
+    // an unset profile field, and an empty name stored as a name would render
+    // as a blank — the one thing finish condition 2 refuses. A missing name has
+    // to be ABSENT so the snapshot writer can see there is nothing to store.
+    const str = (value: unknown): string | null =>
+      typeof value === "string" && value.trim() !== "" ? value.trim() : null;
     users.push({
       id: u.id,
       email: typeof rawEmail === "string" && rawEmail !== "" ? rawEmail : null,
+      displayName: str(profile?.display_name),
+      realName: str(profile?.real_name),
       deleted: u.deleted === true,
       isBot: u.is_bot === true,
     });

@@ -628,6 +628,9 @@ describe("migrateAuthTables", () => {
             { name: "0205_brain_enrollment_connection_group.sql" },
             { name: "0206_brain_warehouse_entity_success.sql" },
             { name: "0207_brain_extraction_batch.sql" },
+            // 0208 creates `brain_actor_identity` (#5440) — an Atlas-owned brain
+            // table Better Auth has no stake in, so the same grounds as 0196–0207.
+            { name: "0208_brain_actor_identity.sql" },
           ],
         };
       }

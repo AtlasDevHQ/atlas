@@ -99,6 +99,7 @@ import { resolveSlackHistoryToken } from "@atlas/api/lib/brain/ingest/slack/conn
 import { reconcileAudienceMembership } from "./membership";
 import { listAudienceReverifierSources, runRegisteredAudienceReverifiers } from "./reverify";
 import { resolvePrincipals } from "./resolver";
+import { captureAuthoringIdentities } from "./identity-capture";
 
 const log = createLogger("brain.audience.sync");
 
@@ -519,6 +520,16 @@ export interface AudienceSyncDeps {
   readonly resolveToken?: (workspaceId: string) => Promise<string>;
   readonly reconcile?: typeof reconcileAudienceMembership;
   readonly resolve?: typeof resolvePrincipals;
+  /**
+   * The actor-identity capture pass (#5440).
+   *
+   * Injectable for the reason `reconcile` is, and for one more that is
+   * specific to it: unlike every other seam here it reaches the INTERNAL
+   * database directly rather than through `deps.query`, so a cycle test that
+   * did not stub it would open a real pool and wait out a connection timeout
+   * on every case. That is not a hypothetical — it is what the first cut did.
+   */
+  readonly captureIdentities?: typeof captureAuthoringIdentities;
   /** Test-only backoff sleep, so the #4809 retry tests do not actually wait. */
   readonly sleep?: Sleep;
 }
@@ -793,7 +804,9 @@ const ZERO_WORKSPACE: WorkspaceOutcome = {
  */
 async function syncInstall(
   row: WorkspaceRow,
-  deps: Required<Pick<AudienceSyncDeps, "api" | "resolveToken" | "reconcile" | "resolve">> & {
+  deps: Required<
+    Pick<AudienceSyncDeps, "api" | "resolveToken" | "reconcile" | "resolve" | "captureIdentities">
+  > & {
     readonly sleep?: Sleep;
   },
   tally: ThrottleTally,
@@ -833,6 +846,36 @@ async function syncInstall(
   if (resolution.resolved.size === 0) {
     throw new Error(
       "no Slack workspace member resolved to an Atlas user — check the workspace's verified SSO domain against member email domains, or invite these people to Atlas",
+    );
+  }
+
+  // The NAME half (#5440, ADR-0036 §T5's `Amendment (2026-08-25, #5440)`).
+  //
+  // Runs HERE — after the directory read, before the per-channel loop —
+  // because it needs exactly the two things the membership half has already
+  // paid for: the whole directory and the whole resolution. It writes only for
+  // principals who AUTHORED an ingested episode, never the roster.
+  //
+  // ⚠️ It is handed `directory`, NOT `humans`. The membership half filters out
+  // deactivated users and bots because neither should hold a grant; naming
+  // inverts that on purpose — a deactivated author is precisely the case a
+  // dated snapshot exists for, since nobody else will ever be able to name
+  // them. `identity-capture.ts`'s header carries the argument.
+  //
+  // Isolated: a failure here must not abort a cycle whose OTHER half keeps
+  // `audience:` grants from aging past the staleness bound. An unnamed claim
+  // renders `opaque`, which is honest; a stale audience denies everyone.
+  try {
+    await deps.captureIdentities({
+      workspaceId,
+      source: SLACK_HISTORY_SOURCE,
+      directory,
+      resolved: resolution.resolved,
+    });
+  } catch (err) {
+    log.warn(
+      { workspaceId, error: err instanceof Error ? err.message : String(err) },
+      "brain audience: actor-identity capture failed — claims by unnamed authors stay opaque; membership sync continues",
     );
   }
 
@@ -965,6 +1008,7 @@ export async function runAudienceSyncCycle(
         resolveSlackHistoryToken({ getInstallationByOrg, getBotToken }, workspaceId)),
     reconcile: deps.reconcile ?? reconcileAudienceMembership,
     resolve: deps.resolve ?? resolvePrincipals,
+    captureIdentities: deps.captureIdentities ?? captureAuthoringIdentities,
     ...(deps.sleep !== undefined ? { sleep: deps.sleep } : {}),
   };
   // One tally for the whole cycle — see {@link ThrottleTally} for why it is not

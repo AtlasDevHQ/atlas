@@ -125,8 +125,18 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     // this entry's original error: the importer NULLS an entity-valued `_cmp`
     // deliberately. The entries are a BRIDGE, resolving surfaces by name until
     // the destination can run its own producer again.
+    //
+    // And again by #5440 (ADR-0036 §T5's `Amendment (2026-08-25, #5440)`) with
+    // the actor-identity table — the human NAME behind each claim's vendor
+    // handle. The failure direction if it stayed is the completely invisible
+    // one: `admin-migrate.ts` enumerates brain tables explicitly, so a table
+    // left out simply does not travel, the bundle imports clean, and every
+    // migrated claim comes out `opaque`. And it carries an OPERATOR'S ERASURE
+    // as a tombstone, which — dropped — the destination's first audience cycle
+    // would silently undo.
     expect([...EXPORTED_TABLES].toSorted()).toEqual([
       "agent_session_memory",
+      "brain_actor_identity",
       "brain_edges",
       "brain_enrollment",
       "brain_entity",

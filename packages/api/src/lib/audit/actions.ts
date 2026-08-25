@@ -1056,6 +1056,25 @@ export const ADMIN_ACTIONS = {
      * workspace and picks its own pairs, which is precisely why it needs a row.
      */
     tensionSweep: "brain_fact.tension_sweep",
+    /**
+     * An operator cleared one actor's DIRECTORY SNAPSHOT (#5440, ADR-0036 §T5).
+     *
+     * The `retract` shape applied to a person: the record keeps the statement
+     * and loses the person, so every claim by that handle returns to `opaque`
+     * and nothing about the claims themselves changes.
+     *
+     * Audited because it is the erasure path for personal data about someone
+     * who is NOT an Atlas user and cannot themselves ask Atlas for anything —
+     * so the trail is the only place the request is answerable from later. And
+     * because it is DURABLE: the capture writer skips an erased row forever, so
+     * this row is also the record of why a name that used to render stopped.
+     *
+     * ⚠️ `targetId` is the ACTOR HANDLE (`slack:U0AQW6KF2EM`), not a fact — the
+     * second entry in this domain whose target is not a fact id, and for a
+     * different reason from `tensionSweep`'s: an erasure is scoped to a person
+     * across every claim they made, not to any one claim.
+     */
+    eraseActorIdentity: "brain_fact.erase_actor_identity",
   },
 } as const;
 

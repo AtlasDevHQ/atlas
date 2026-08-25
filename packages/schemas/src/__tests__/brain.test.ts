@@ -45,6 +45,7 @@ const visibleCounterpart = {
       sourceId: "C1:1799999999.001",
       actor: "U1",
       occurredAt: "2026-05-30T00:00:00.000Z",
+      actorIdentity: { state: "opaque" as const, erased: false },
     },
     extractedAt: "2026-05-30T00:05:00.000Z",
     reconciledAt: "2026-05-30T00:06:00.000Z",

@@ -22,34 +22,52 @@
  *    half is the load-bearing one: a gate that only ever passes is
  *    indistinguishable from no gate.
  *
- * §2 CORRECTION — `correctFact`'s `supersede`, the one verb that MINTS a claim.
- *    Prod exercises `retract` only (four rows, 2026-08-03 and 2026-08-24), and
- *    a retract writes no fact — so the arm where a correction becomes a claim
- *    is unexercised in prod and a test is the only instrument for it.
+ * §2 CORRECTION — two of the four verbs, chosen because they are the two that
+ *    put a name somewhere. `supersede` (§2) MINTS a claim and attributes it;
+ *    `re-authority` (§2b) is the only verb that writes a person onto an
+ *    EXISTING claim's own provenance. Prod exercises `retract` only (four rows,
+ *    2026-08-03 and 2026-08-24), and a retract writes nothing to the payload —
+ *    so both arms here are unexercised in prod and a test is the only
+ *    instrument for either.
+ *
+ *    ⚠️ Coverage bound: `pin` is tested by NEITHER instrument. It shares
+ *    `applyVouch` with `re-authority` — same statement, same marker shape, only
+ *    the key differs (`pinned` vs `reAuthority`) — so §2b covers the mechanism
+ *    and not that verb's own wiring. `retract` is covered by the prod read and
+ *    by `correction-audit-pg.test.ts`, not here.
  *
  * §3 MIGRATION — `admin-migrate.ts`'s region import. No region migration has
  *    ever run in us prod (`admin_action_log` holds no migration action type and
  *    no fact carries an imported producer), so a test is likewise the only
- *    instrument. Two cases: a bundle that carries attribution keeps it
- *    verbatim, and — the finding — a bundle that carries NONE is accepted.
+ *    instrument. Four cases: attribution on a well-formed bundle survives
+ *    verbatim (§3a), and the three arms of the fix this issue produced —
+ *    an unattributed `published` fact lands DRAFT (§3b), an unattributed draft
+ *    is untouched (§3c), and a whitespace actor counts as no name (§3d).
  *
- * ## The lane §3b names
+ * ## The lane §3b names, and how it was closed
  *
  * `lib/brain/sources.ts` argues a deliberate fail-open for `brain_episodes.source`:
  * the import restores an out-of-vocabulary value verbatim rather than refusing
  * the bundle, because refusing one episode strands the whole workspace at
  * cutover, and it LOGS the value so the lane is visible. #5424 asked whether
- * the ATTRIBUTION fields have an analogous lane. They do, and it is wider: the
- * bundle validator's only test on `provenance` is `Object.keys(...).length > 0`
- * (`admin-migrate.ts`), the payload is then bound verbatim, and no log fires.
- * `{"note":"x"}` is a legal bundle provenance.
+ * the ATTRIBUTION fields have an analogous lane. They did, and it was wider —
+ * the bundle validator's only test on `provenance` is
+ * `Object.keys(...).length > 0`, the payload was then bound verbatim, and no
+ * log fired, so `{"note":"x"}` imported as a `published` claim naming nobody.
+ *
+ * The fix keeps the fail-open and removes the AUTHORITY. `bundleFactNamesAPerson`
+ * demotes such a fact to `draft` and logs it; the bundle is still accepted,
+ * because refusing it is what `sources.ts` rejected and the reasoning transfers
+ * unchanged. §3b asserts BOTH halves — that validation still passes, and that
+ * the row is not published — so a later tightening that moved the check into
+ * `validateBundle` fails here rather than in a live cutover.
  *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import { withRequestContext } from "@atlas/api/lib/logger";
@@ -60,11 +78,20 @@ import {
   reconcileFacts,
   type ReconcileTransactionRunner,
 } from "@atlas/api/lib/brain/reconcile";
+// A file under `src/lib/**` importing from `api/routes/**`, which CLAUDE.md
+// forbids. The carve-out is for TESTS: the ban exists so the data/helper layer
+// does not drag auth/logger/middleware into every `lib/` consumer and break
+// partial `mock.module()` mocks, and a test is not a `lib/` consumer.
+// `lib/residency/__tests__/migrate-roundtrip-pg.test.ts` sets the precedent.
+// The alternative — re-exporting the route's importer through a `lib/` shim
+// used by nothing else — would move production code to satisfy a rule about
+// production code, which is worse.
 import {
   importBundle as importBundleWithCorrelationId,
   validateBundle,
 } from "@atlas/api/api/routes/admin-migrate";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
+import type { ExportBundle } from "@useatlas/types";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -135,38 +162,63 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
   }, PG_TEST_TIMEOUT_MS);
 
   /**
-   * One transaction on the test pool. Same shape as production's
-   * `withBrainTransaction`, down to the `.catch` on ROLLBACK and the
-   * `client.release(rollbackErr)` — see `correction-audit-pg.test.ts`, which
-   * states why a naive rollback would swap the assertion's cause.
+   * ONE transaction on the test pool, and the only one in this file.
+   *
+   * Both callers go through it — `poolTx` (which adapts it to the shape
+   * `reconcileFacts` and `correctFact` take) and `runImport`. An earlier draft
+   * hand-rolled `BEGIN`/`COMMIT`/`ROLLBACK` twice with DIFFERENT rollback
+   * handling in each, which is the duplication worth removing: not because two
+   * copies are ugly, but because the second copy had the bug.
+   *
+   * `client.release(rollbackErr)` is the load-bearing line, and it is the
+   * ARGUMENT that matters rather than the call. `release()` returns the client
+   * to the pool; `release(err)` DESTROYS it. Handing back a client still inside
+   * an aborted transaction is what makes the NEXT query on it fail with
+   * "current transaction is aborted" — a failure attributed to whichever test
+   * the pool hands it to, not to the one that broke it.
+   * `correction-audit-pg.test.ts:133` states the same reasoning where it was
+   * learned.
+   *
+   * And the `.catch` rather than a bare `await`: a rollback-time failure must
+   * not REPLACE the original error, or a test asserting on a named refusal sees
+   * a pg error instead and fails naming the wrong thing.
    */
-  const poolTx: ReconcileTransactionRunner = async <T,>(
-    fn: (tx: {
-      query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }>;
-    }) => Promise<T>,
-  ): Promise<T> => {
+  async function withTx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await pool.connect();
     let rollbackErr: Error | undefined;
     try {
       await client.query("BEGIN");
-      const result = await fn({
-        query: async (sql: string, params?: unknown[]) => {
-          const res = await client.query(sql, params);
-          return { rows: res.rows as readonly unknown[] };
-        },
-      });
+      const result = await fn(client);
       await client.query("COMMIT");
       return result;
     } catch (err) {
       await client.query("ROLLBACK").catch((rbErr: unknown) => {
         rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+        // Logged, never swallowed: without this a failed ROLLBACK is invisible
+        // and the fixture's real problem is a destroyed connection with no
+        // stated reason.
         console.warn(`condition-2-pg: ROLLBACK failed — ${rollbackErr.message}`);
       });
       throw err;
     } finally {
       client.release(rollbackErr);
     }
-  };
+  }
+
+  /** {@link withTx}, in the shape `reconcileFacts` and `correctFact` accept. */
+  const poolTx: ReconcileTransactionRunner = <T,>(
+    fn: (tx: {
+      query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }>;
+    }) => Promise<T>,
+  ): Promise<T> =>
+    withTx(async (client) =>
+      fn({
+        query: async (sql: string, params?: unknown[]) => {
+          const res = await client.query(sql, params);
+          return { rows: res.rows as readonly unknown[] };
+        },
+      }),
+    );
 
   /**
    * The one read every section makes — the condition's own question, asked of
@@ -434,6 +486,84 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
     PG_TEST_TIMEOUT_MS,
   );
 
+  it(
+    "§2b correction: a re-authority stamps the vouching person ONTO the claim",
+    async () => {
+      const episodeId = await seedEpisode({
+        workspaceId: WS,
+        source: "slack",
+        sourceId: "C-cond2/vouch-target",
+        sourceActor: "U-alice",
+      });
+      const originalProvenance = {
+        source: "slack",
+        sourceId: "C-cond2/vouch-target",
+        episodeId,
+        actor: "slack:U-alice",
+        producer: "extraction:v1",
+        occurredAt: "2026-08-03T14:48:30.625Z",
+      };
+      const { rows: seeded } = await pool.query<{ id: string }>(
+        `INSERT INTO brain_facts
+           (workspace_id, subject, predicate, object, source_episode_id, provenance,
+            status, visible_to, subject_key, predicate_key, object_key)
+         VALUES ($1, 'Deploys', 'happen on', 'Thursdays', $2, $3::jsonb, 'published', ARRAY['org'],
+                 'deploys', 'happen on', 'thursdays')
+         RETURNING id::text AS id`,
+        [WS, episodeId, JSON.stringify(originalProvenance)],
+      );
+      const factId = seeded[0]?.id;
+      if (factId === undefined) throw new Error("§2b: seed fact insert returned no id");
+
+      const outcome = await asRequest("req-cond2-vouch", () =>
+        correctFact(
+          {
+            vocabulary: identityVocabulary,
+            ctx: reviewer(),
+            factId,
+            verb: "re-authority",
+            reason: "confirmed with the release owner",
+          },
+          { withTransaction: poolTx },
+        ),
+      );
+      if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
+
+      const { rows } = await pool.query<{ provenance: Record<string, unknown> }>(
+        `SELECT provenance FROM brain_facts WHERE workspace_id = $1 AND id = $2::uuid`,
+        [WS, factId],
+      );
+      const provenance = rows[0]?.provenance;
+      if (provenance === undefined) throw new Error("§2b: no fact row after the vouch");
+
+      // The ONLY verb in the product that writes a person's name onto an
+      // EXISTING claim's own `provenance`. `supersede` mints a new row and
+      // attributes that; `retract` writes nothing to the payload at all
+      // (`RETRACT_FACT_SQL` sets `invalidated_at` and `updated_at`, nothing
+      // else), which is why prod's four retractions are attributable only
+      // through the correction episode and the audit row.
+      const marker = provenance.reAuthority as Record<string, unknown> | undefined;
+      if (marker === undefined) throw new Error("§2b: no reAuthority marker on the provenance");
+      // The BARE Atlas user id, not the `user:<id>` principal `supersede`
+      // writes — `applyVouch` takes `ctx.userId` directly while the replacement
+      // claim takes the grammar-valid principal. Two spellings of one person,
+      // and a reader of the record has to know that.
+      expect(marker.actor).toBe(ACTOR_ID);
+      expect(marker.correctionEpisodeId).toBe(outcome.result.correctionEpisodeId);
+      expect(typeof marker.at).toBe("string");
+      expect(new Date(marker.at as string).toString()).not.toBe("Invalid Date");
+
+      // The merge is `provenance || $3::jsonb`, so it can only ADD. Asserted
+      // rather than assumed: a marker write that clobbered the original
+      // attribution would replace one person's name with another's and still
+      // look like a claim with a name on it.
+      for (const [key, value] of Object.entries(originalProvenance)) {
+        expect(provenance[key]).toBe(value);
+      }
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
   // ── §3 MIGRATION — the region-import lane ───────────────────────────────
 
   /**
@@ -446,7 +576,9 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
     factId: string;
     sourceActor: string | null;
     provenance: unknown;
-  }): unknown {
+    /** The bundle's own review status. Defaults to the interesting one. */
+    status?: "draft" | "published" | "archived";
+  }): ExportBundle {
     return {
       manifest: {
         version: 3 as const,
@@ -507,7 +639,7 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
               invalidatedAt: null,
               extractedAt: "2026-08-01T00:05:00Z",
               provenance: opts.provenance,
-              status: "published" as const,
+              status: opts.status ?? "published",
               visibleTo: ["org"],
               preWideningVisibleTo: null,
               createdAt: "2026-08-01T00:05:00Z",
@@ -522,27 +654,14 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
     };
   }
 
-  async function runImport(bundle: unknown, orgId: string): Promise<void> {
+  async function runImport(bundle: ExportBundle, orgId: string): Promise<void> {
+    // Through the REAL validator, never bypassed — `validateBundle` is where a
+    // refusal would live, so a fixture that skipped it would prove nothing
+    // about what the route accepts. §3b asserts its verdict separately for
+    // exactly that reason.
     const validation = validateBundle(bundle);
     if (!validation.ok) throw new Error(`bundle rejected: ${validation.error}`);
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      await importBundle(
-        client as unknown as ImportBundleArgs[0],
-        validation.bundle,
-        orgId,
-      );
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK").catch(() => {
-        // intentionally ignored: the original error is the one to surface, and
-        // the client is destroyed on release below.
-      });
-      throw err;
-    } finally {
-      client.release();
-    }
+    await withTx((client) => importBundle(client, validation.bundle, orgId));
   }
 
   it(
@@ -581,50 +700,107 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
   );
 
   it(
-    "§3b migration: a bundle carrying NO attribution is accepted — the named exception",
+    "§3b migration: a bundle carrying NO attribution lands as a DRAFT, not published",
     async () => {
       const episodeId = "c2000000-0000-4000-8000-00000000a002";
       const factId = "c2000000-0000-4000-8000-00000000f002";
 
       // Non-empty, so it clears `chk_brain_facts_provenance_nonempty` and the
       // validator's `Object.keys(...).length > 0`. Attribution-free, so it
-      // clears nothing else — because nothing else is checked.
-      const opaque = { note: "restored from an archive; original actor unknown" };
-
+      // names nobody — which is the whole test.
       const bundle = bundleWith({
         episodeId,
         factId,
         sourceActor: null,
-        provenance: opaque,
+        provenance: { note: "restored from an archive; original actor unknown" },
+        status: "published",
       });
 
-      // The validator's own verdict, asserted separately from the import: this
-      // is where a refusal WOULD live, and it is the line #5424 asked about.
+      // ⚠️ THE BUNDLE IS STILL ACCEPTED, and this assertion is half the fix.
+      // Refusing was the obvious alternative and `lib/brain/sources.ts` rejects
+      // it for `source` on reasoning that transfers unchanged: validation is
+      // all-or-nothing, so one unattributed fact from a corpus predating the
+      // reconcile gate would strand the entire workspace in its source region,
+      // discovered at cutover. A future tightening that moved the check into
+      // `validateBundle` fails HERE rather than in a live migration.
       const validation = validateBundle(bundle);
       expect(validation.ok).toBe(true);
 
       await runImport(bundle, IMPORT_WS);
 
       const attribution = await attributionOf(IMPORT_WS, factId);
-      // ⚠️ This is the finding, asserted rather than fixed. The claim is
-      // `status = 'published'` — AUTHORITATIVE, by the condition's own word —
-      // and every field the condition names is null. There is no person, no
-      // source kind in the payload, and no date.
-      expect(attribution.status).toBe("published");
+      // The fix (#5424). The bundle said `published`; it lands `draft`, because
+      // an authoritative claim must have a human name on it and this one has
+      // none. `status` is the ONLY column the region import does not restore
+      // verbatim.
+      expect(attribution.status).toBe("draft");
+      // Still unattributed — the import does not INVENT a name, which would be
+      // the worse fix. It declines to confer authority, and that is all.
       expect(attribution.actor).toBeNull();
-      expect(attribution.prov_source).toBeNull();
-      expect(attribution.prov_source_id).toBeNull();
-      expect(attribution.occurred_at).toBeNull();
-      // Nor does the episode rescue it: `sourceActor` imports as `?? null`, so
-      // the fallback `reconcile.ts` would have used at ingest is empty too.
       expect(attribution.episode_source_actor).toBeNull();
 
-      // Stated so the boundary of the finding is not overstated: the import
-      // does NOT lose the pointer to the evidence. `source_episode_id` is NOT
-      // NULL and its FK is composite-with-workspace, so an unattributed
-      // imported claim still names the episode it came from — you can point at
-      // the EVIDENCE. What you cannot point at is the PERSON or the DATE.
+      // Nothing else moved. A demotion that also dropped the claim, its
+      // surfaces or its evidence pointer would be a data-loss bug wearing a
+      // fix's clothes.
       expect(attribution.episode_source).toBe("slack");
+      const { rows } = await pool.query<{ subject: string; object: string }>(
+        `SELECT subject, object FROM brain_facts WHERE workspace_id = $1 AND id = $2::uuid`,
+        [IMPORT_WS, factId],
+      );
+      expect(rows[0]?.subject).toBe("Imported claim");
+      expect(rows[0]?.object).toBe("yes");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "§3c migration: an unattributed DRAFT is left alone — the fix touches authority only",
+    async () => {
+      const episodeId = "c2000000-0000-4000-8000-00000000a003";
+      const factId = "c2000000-0000-4000-8000-00000000f003";
+      await runImport(
+        bundleWith({
+          episodeId,
+          factId,
+          sourceActor: null,
+          provenance: { note: "no actor, and the bundle already said draft" },
+          status: "draft",
+        }),
+        IMPORT_WS,
+      );
+
+      // The demotion is conditioned on the bundle's own `status`. Without this
+      // case, a fix that demoted EVERY unattributed row would look identical to
+      // one that only declines to publish — and the first would be a silent
+      // rewrite of review decisions the source region legitimately made.
+      const attribution = await attributionOf(IMPORT_WS, factId);
+      expect(attribution.status).toBe("draft");
+      expect(attribution.actor).toBeNull();
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "§3d migration: a blank-string actor is treated as no name at all",
+    async () => {
+      const episodeId = "c2000000-0000-4000-8000-00000000a004";
+      const factId = "c2000000-0000-4000-8000-00000000f004";
+      await runImport(
+        bundleWith({
+          episodeId,
+          factId,
+          sourceActor: null,
+          // Whitespace, not absence. It passes every bare truthiness check and
+          // names nobody — the same trap `brainEnrollments[].enrolledBy` trims
+          // for, one section over in the same validator.
+          provenance: { source: "slack", actor: "   " },
+          status: "published",
+        }),
+        IMPORT_WS,
+      );
+
+      const attribution = await attributionOf(IMPORT_WS, factId);
+      expect(attribution.status).toBe("draft");
     },
     PG_TEST_TIMEOUT_MS,
   );

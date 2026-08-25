@@ -20,6 +20,27 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
+**Shipped 2026-08-25 — finish condition 2 demonstrated, and the snapshot named the wrong two edges** ([#5424](https://github.com/AtlasDevHQ/atlas/issues/5424), [#5439](https://github.com/AtlasDevHQ/atlas/pull/5439)) — *"Every authoritative claim has a human name on it… no exceptions, including for claims that arrived by import, correction, or migration."*
+
+**The gate holds.** A census of every claim in us prod — 34 facts, 31 episodes, not a sample — found **zero** missing `actor`, `source`, `sourceId`, `episodeId` or `occurredAt`. Plus a seeded random draw (`setseed(0.5424)`), because the condition says *pick any claim at random* and an exhaustive count does not answer that question in its own words. `classifyEpisodeForReconcile`'s `SOURCE_PRINCIPAL_UNRESOLVED` is why: an episode naming nobody produces no row at all.
+
+**The PRD snapshot rated this "Close — import and correction paths are the open edges." Both halves were wrong**, and the two real edges were ones it did not name:
+
+- **Correction is the BEST-attributed path in the product**, not an open edge — the correction episode's `source_actor` plus an attributed `admin_action_log` row carrying the actor's email. `re-authority` goes further and stamps the person onto the claim's own `provenance`.
+- **Import holds** on both shipped lanes (connector, warehouse producer).
+- **MIGRATION was open.** The region import validated `provenance` with `Object.keys(...).length > 0` and nothing else, then bound it verbatim — so `{"note":"x"}` imported as a **`published`** claim naming nobody, with no log. The analogue of `sources.ts`'s documented `source` fail-open, and wider: that one is argued in a header, logged at the site, and closed at two downstream gates; this had none of the three. The same validator refuses a blank `brainEnrollments[].enrolledBy` ~1,900 lines up, with the reasoning *"authority nobody can be shown to have granted"* — the condition-2 argument, applied to the act that authorizes claims and not to the claims.
+- **PUBLISH was open, and is not an arrival path at all** — which is why no wording of the snapshot could have caught it. Publish is the verb that CONFERS the authority the condition is about. Nothing recorded which facts it promoted: `mode.publish` carried `promotedBrainFacts: <count>` while carrying **ids** for `widenedGrants` and `refusedDrafts`. The publisher of a given claim was recoverable only by joining `brain_facts.updated_at` to the audit timestamp, and `updated_at` is last-write-wins. **Two published prod facts had already lost it** — `47d83d30`, `a6d9ede7`, published 2026-08-18, retracted 2026-08-24, `updated_at` overwritten.
+
+**Both fixed, not filed.** The import demotes an unattributed `published` fact to `draft` and logs it — it does not refuse the bundle, because refusing is what `sources.ts` rejected and the reasoning transfers unchanged (all-or-nothing validation strands the whole workspace at cutover). `PromotionReport.promotedIds` now carries the ids into the audit row.
+
+### Recorded as NOT established
+
+- **The stored actor is an opaque vendor id.** 12 of 34 prod claims attribute to `slack:U0AQW6KF2EM`; the record holds no mapping to a person and the audience resolver *"never persists the vendor roster"* by design. Resolution needs a live Slack call on a valid token. Whether a stable vendor handle satisfies *"a human name"* is a question for the PRD, not a defect — it is written up as a named qualification rather than fixed.
+- **Only `us` was read.** Nothing here speaks to eu or apac.
+- **34 facts, one workspace, two producers.** An exhaustive census at 34 says nothing about 34,000.
+- **Presence, not truth.** Nobody verified that `slack:U0AQW6KF2EM` said what the claim says.
+- **`pin` is covered by neither instrument** — it shares `applyVouch` with `re-authority`, so the mechanism is tested and that verb's own wiring is not.
+
 **Shipped 2026-08-24 — the pg-suite 60s timeout is EXPLAINED: 47 of 87 suites put `public` on their search_path, migration 0020 then takes `AccessExclusiveLock` on the ONE shared `public.organization`, and the convoy is the missing 55s** ([#5430](https://github.com/AtlasDevHQ/atlas/issues/5430)) — the open half of #5410, closed with evidence rather than inference. All five acceptance criteria met.
 
 ⚠️ **THE INSTRUMENT HAD TO BE SHAPED AROUND THE FAILURE, NOT AROUND THE CODE.** #5430's whole warning is that this failure decays before instrumentation lands (55 → 15 → 0 → 0 → 0 on an unchanged tree), so anything switched on after it is seen will never see it. Two consequences drove the design in `packages/api/src/lib/db/migration-breadcrumb.ts`:

@@ -1732,6 +1732,37 @@ function tombstonePlaceholder(
   };
 }
 
+/**
+ * Whether a bundle fact's provenance NAMES A PERSON (#5424).
+ *
+ * ## Why this is the whole test, and why it is not stricter
+ *
+ * Finish condition 2 asks for three things — a person, a source, and a date.
+ * Only the person needs checking here, because the other two cannot go missing:
+ * `source_episode_id` is NOT NULL with a composite FK, so the evidence row is
+ * always reachable, and that row's `ingested_at` is NOT NULL, so a date always
+ * exists. `provenance.occurredAt` is legitimately null — `reconcile.ts` writes
+ * null when the source exposed no event time — so requiring it would refuse
+ * rows the product itself produces.
+ *
+ * `actor` is different: `classifyEpisodeForReconcile` REFUSES an episode whose
+ * principal cannot be resolved (`SOURCE_PRINCIPAL_UNRESOLVED`), so no fact this
+ * product wrote can carry a blank one. A bundle fact that does is either
+ * hand-built or from a corpus that predates the gate.
+ *
+ * TRIMMED before the emptiness test, for `brainEnrollments[].enrolledBy`'s
+ * reason one section over: `"   "` is a name nobody can be shown to have, and
+ * it passes every bare truthiness check.
+ */
+function bundleFactNamesAPerson(fact: ExportedBrainFact): boolean {
+  const provenance = fact.provenance;
+  if (typeof provenance !== "object" || provenance === null || Array.isArray(provenance)) {
+    return false;
+  }
+  const actor = (provenance as Record<string, unknown>).actor;
+  return typeof actor === "string" && actor.trim() !== "";
+}
+
 function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): ImportedIdentity {
   if (!source.carried) {
     // A pre-#5035 bundle has no `_cmp` on the wire at all, so there is nothing
@@ -2708,6 +2739,16 @@ export async function importBundle(
     // untold at once.
     tombstonedFacts: 0,
   };
+  /**
+   * Facts whose bundle `status` said `published` and whose provenance named no
+   * person, so this import landed them `draft` instead (#5424).
+   *
+   * Counted OUTSIDE `identityLoss` on purpose. Every member of that object is
+   * about a key that could not be supplied; this is about a claim that could not
+   * be attributed, and folding it in would put two unrelated failure classes
+   * behind one number an operator reads as "identity problems".
+   */
+  let unattributedDemoted = 0;
 
   // bundle episode id → the id it actually resolved to in the target. Only
   // populated on the adoption path (same source record, different uuid);
@@ -2846,6 +2887,45 @@ export async function importBundle(
         continue;
       }
 
+      // #5424 — the region import must not CONFER authority on a claim that
+      // names nobody.
+      //
+      // The bundle's `status` is otherwise restored verbatim, and that is right:
+      // restoring a review decision is not making one, which is the same
+      // restore-is-not-arbitration line `sources.ts` draws for `source` and
+      // `RETRACT_FACT_SQL`'s sole-writer scan draws for `invalidated_at`. It
+      // stops being right when the restored decision is `published` on a row
+      // whose provenance names no person — finish condition 2 admits no
+      // exception "including for claims that arrived by import, correction, or
+      // migration", and a published claim is served by `searchBrain` to every
+      // reader its grant admits.
+      //
+      // DEMOTED, not refused, and the choice is the argument. Refusing the
+      // bundle is what `sources.ts` rejected for `source` and the reasoning
+      // transfers unchanged: validation is all-or-nothing, so one unattributed
+      // fact from a corpus that predates the reconcile gate would strand the
+      // whole workspace in its old region, discovered at cutover. Demotion
+      // costs a human one review click and is reversible in the direction that
+      // matters — a draft can be published once somebody attributes it, while
+      // an unattributable published claim cannot be un-served retroactively.
+      //
+      // ⚠️ It does NOT hide the row. The claim, its surfaces and its evidence
+      // all import verbatim; only `status` moves. The fact stays visible in the
+      // review queue, which is the surface a human can act on.
+      const namesAPerson = bundleFactNamesAPerson(fact);
+      const demoteUnattributed = !namesAPerson && fact.status === "published";
+      if (demoteUnattributed) {
+        unattributedDemoted++;
+        // Logged per row, not just counted — this is the lane #5424 found, and
+        // the `source` fail-open it is modelled on logs its value too. A count
+        // alone would say "some claims arrived unattributed" with no way back
+        // to which.
+        log.warn(
+          { orgId, factId: fact.id, sourceId: episode.sourceId, source: episode.source },
+          "Imported a brain fact whose provenance names no person — landed as a DRAFT rather than restoring the bundle's 'published' status (#5424, finish condition 2). The claim, its surfaces and its evidence are imported verbatim; only the review status moved. Publish it once its provenance carries an actor",
+        );
+      }
+
       const identity = importedIdentity(fact, identitySource);
       for (const reason of identity.carryReasons) {
         switch (reason) {
@@ -2953,7 +3033,10 @@ export async function importBundle(
           episodeId,
           identity.comparableDropped,
           JSON.stringify(fact.provenance),
-          fact.status,
+          // #5424 — `draft` when the payload names no person, the bundle's own
+          // value otherwise. The ONLY column this route overrides on a
+          // trust-tier judgement rather than restoring verbatim.
+          demoteUnattributed ? "draft" : fact.status,
           fact.visibleTo,
           // `?? null` is the BUNDLE-VERSION fallback, not a permissive one: a
           // pre-#4836 bundle carries no RECORDED pre-widening grants, because
@@ -2995,6 +3078,22 @@ export async function importBundle(
         comparablePositions: result.brainFacts.imported * 2,
       },
       "Region import WILL land identity losses when this transaction commits (#5035, ADR-0037 §8). `storeLocalPositions` is the RULE — a store-local entity id means nothing in this region, so those positions abstain until recomputed, and the rows carry `provenance.provisional` (find them with PROVISIONAL_PREDICATE). `unreadablePositions` is DRIFT and is the count to act on: the source region wrote a tag or payload this deployment cannot read, so that evidence is lost rather than deferred — check whether the two regions are on compatible releases. ⚠️ `tombstonedFacts` IS THE COUNT TO ACT ON FIRST (#5047): those facts had no identity at some position and the slot keys are NOT NULL, so they landed with a per-row placeholder key AND `invalidated_at` set — they are invisible to searchBrain and to the review queue, and no verb in the product restores them; only clearing `invalidated_at` by hand does. Their surfaces are retained verbatim, so the claim text is recoverable. Every one of them is a claim whose surface normalizes away (`-`, `___`), which is what migration 0194 did to the same population — a fact whose key merely FAILED TO ARRIVE while its surface keys fine refuses the whole import instead of landing (RegionImportUnkeyableError), because tombstoning a healthy belief and re-deriving its key under this region's vocabulary are both irreversible. `unkeyableFacts` counts those keyed HERE off a legacy bundle; `nullKeyFacts` counts those that arrived null on a v3 one. Units: the first two count POSITIONS, up to two per fact; the last three count FACTS",
+    );
+  }
+
+  // Its own line rather than a key on the identity warning above, because it is
+  // a different KIND of loss and the two are acted on differently: an identity
+  // loss is repaired by recomputing keys, and this is repaired by a human
+  // deciding whether the claim is worth publishing without a name on it.
+  if (unattributedDemoted > 0) {
+    log.warn(
+      {
+        orgId,
+        bundleVersion: bundle.manifest.version,
+        unattributedDemoted,
+        brainFactsImported: result.brainFacts.imported,
+      },
+      "Region import landed brain facts as DRAFT that the bundle marked published, because their provenance names no person (#5424, finish condition 2: every authoritative claim has a human name on it, with no exception for claims that arrived by migration). The claims, their surfaces and their evidence imported verbatim — only the review status moved, and it is the one column this route does not restore verbatim. They are in the review queue: attribute them and publish, or leave them as drafts. The bundle was NOT refused, deliberately — validation is all-or-nothing, so refusing would strand the whole workspace in its source region at cutover",
     );
   }
 

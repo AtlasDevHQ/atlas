@@ -84,29 +84,6 @@ const ERASED_IDENTITY: BrainActorIdentityOpaque = Object.freeze({
   erased: true,
 });
 
-/**
- * `<source>:<vendor user id>` → its two halves.
- *
- * The handle is minted by `reconcile.ts`'s `resolvedPrincipal` as
- * `` `${episode.source}:${actor}` ``, so the FIRST colon is the separator and
- * every later one belongs to the vendor id. Splitting on the last colon — or on
- * every colon — would mangle a vendor whose ids contain one, and Slack Connect
- * ids already look close enough to that to be worth not guessing about.
- *
- * Returns `null` for anything that is not that shape, including the explicit
- * principals the human-correction and warehouse paths pass (`user:<id>` is a
- * grant token, not a vendor handle; a bare id has no source). A `null` here is
- * not an error — it is "this handle names no vendor directory to look in", and
- * the caller renders `opaque`.
- */
-export function parseActorHandle(
-  actor: string,
-): { readonly source: string; readonly vendorUserId: string } | null {
-  const at = actor.indexOf(":");
-  if (at <= 0 || at === actor.length - 1) return null;
-  return { source: actor.slice(0, at), vendorUserId: actor.slice(at + 1) };
-}
-
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
@@ -401,16 +378,26 @@ export function identityFor(
  * handle does not match a captured row renders `opaque` silently, which is the
  * failure mode that would be hardest to notice.
  *
+ * ⚠️ `btrim`, in the projection AND the predicate, because agreeing about the
+ * separator is not enough — the two also have to agree about WHITESPACE.
+ * `resolvedPrincipal` trims (`episode.sourceActor?.trim()`), so an episode
+ * stored with `source_actor = ' U123'` produces the claim handle `slack:U123`.
+ * Without the trim here this query would key a row `slack: U123`, and the two
+ * would never join: the claim renders `opaque` permanently while a junk
+ * identity row sits beside it naming nobody. The predicate needs it too —
+ * `<> ''` admits `' '`, which `ck_brain_actor_identity_key_present` also
+ * admits, so an all-whitespace actor would otherwise be captured as a real one.
+ *
  * Exported so the real-Postgres test runs this exact string.
  */
-export const AUTHORING_PRINCIPALS_SQL = `SELECT DISTINCT e.source || ':' || e.source_actor AS actor,
+export const AUTHORING_PRINCIPALS_SQL = `SELECT DISTINCT e.source || ':' || btrim(e.source_actor) AS actor,
               e.source,
-              e.source_actor AS vendor_user_id
+              btrim(e.source_actor) AS vendor_user_id
          FROM brain_episodes e
         WHERE e.workspace_id = $1
           AND e.source = $2
           AND e.source_actor IS NOT NULL
-          AND e.source_actor <> ''`;
+          AND btrim(e.source_actor) <> ''`;
 
 /** One captured identity, ready to write. */
 export interface ActorIdentityCapture {
@@ -448,14 +435,51 @@ export interface ActorIdentityCapture {
  * ⚠️ Comparison against `IS DISTINCT FROM` and not `<>`, because every snapshot
  * column is nullable and `NULL <> NULL` is NULL — a name arriving where there
  * was none would compare as "unchanged" and keep the older date.
+ *
+ * ## A capture pass may UPGRADE an identity; it may never DESTROY one
+ *
+ * The second predicate on the `DO UPDATE` refuses `directory → opaque`, and it
+ * closes a defect that would have quietly undone the whole feature. An author
+ * who is in `users.list` today gets a dated snapshot; if they later drop OUT of
+ * the directory entirely — a Slack Connect guest whose connection ends, a Grid
+ * member moved to another workspace — {@link ActorIdentityCapture} for them
+ * decides `opaque`, and an unguarded upsert would overwrite the snapshot with
+ * a nameless row on the next 30-minute cycle. That is EXACTLY the person this
+ * module's header says the snapshot exists for ("for someone who has left both
+ * the chat vendor and the company, a name captured at ingest is the only record
+ * that will ever name them"), and the loss is irreversible.
+ *
+ * So the vendor going quiet about someone is not evidence that Atlas should
+ * forget them. The ONE path that removes a snapshot is an operator's erasure,
+ * which is a deliberate act with its own audit row.
+ *
+ * Every other transition is still allowed, because each is a strict
+ * improvement: `opaque → directory` (the directory started naming them),
+ * `opaque → atlas` and `directory → atlas` (they signed up — a live join beats
+ * a snapshot), `atlas → directory` (the account went away but the vendor still
+ * names them), and `directory → directory` (a fresh vendor reading, which the
+ * complete-or-abort directory read guarantees is not a truncated one).
+ *
+ * `atlas → opaque` is also allowed and is not the same case: that row held a
+ * POINTER and no name, so nothing is destroyed — and the reader already
+ * degrades a dangling pointer to `opaque` anyway.
  */
-export const CAPTURE_ACTOR_IDENTITY_SQL = `INSERT INTO brain_actor_identity
+export function captureActorIdentitySql(rowCount: number): string {
+  // One `$n` group per row. `workspace_id` is `$1` and shared; every row then
+  // takes eight of its own, so row `i` starts at `2 + i * 8`.
+  const tuples: string[] = [];
+  for (let i = 0; i < rowCount; i++) {
+    const b = 2 + i * 8;
+    tuples.push(
+      `($1, $${b}, $${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, $${b + 7}, ` +
+        `CASE WHEN $${b + 3} = 'directory' THEN now() ELSE NULL END, now(), now())`,
+    );
+  }
+  return `INSERT INTO brain_actor_identity
          (workspace_id, actor, source, vendor_user_id, state,
           user_id, display_name, real_name, email, snapshot_at,
           captured_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-               CASE WHEN $5 = 'directory' THEN now() ELSE NULL END,
-               now(), now())
+       VALUES ${tuples.join(",\n              ")}
        ON CONFLICT (workspace_id, actor) DO UPDATE
           SET state = EXCLUDED.state,
               user_id = EXCLUDED.user_id,
@@ -473,34 +497,97 @@ export const CAPTURE_ACTOR_IDENTITY_SQL = `INSERT INTO brain_actor_identity
               END,
               updated_at = now()
         WHERE brain_actor_identity.erased_at IS NULL
+          AND NOT (brain_actor_identity.state = 'directory' AND EXCLUDED.state = 'opaque')
     RETURNING actor`;
+}
+
+/**
+ * The one-row form, kept so the clause assertions in
+ * `__tests__/actor-identity.test.ts` read against a stable string rather than a
+ * generated one.
+ */
+export const CAPTURE_ACTOR_IDENTITY_SQL = captureActorIdentitySql(1);
+
+/**
+ * Rows per statement.
+ *
+ * The bound that matters is Postgres's 65,535-parameter cap, which at eight
+ * parameters a row is ~8,000 — so 200 is nowhere near it and is chosen for the
+ * other reason: it keeps one statement's row lock set small enough that a slow
+ * cycle does not sit across a whole workspace's identities at once.
+ */
+const CAPTURE_BATCH_SIZE = 200;
+
+/**
+ * Write a set of captures, batched.
+ *
+ * ⚠️ BATCHED rather than one round trip per author, and the difference grows
+ * with the corpus rather than with the change. This runs every 30 minutes per
+ * workspace over every principal who has ever authored an ingested episode —
+ * a population that only ever grows — so a per-row loop is O(authors)
+ * round-trips forever, against a table that changes almost never.
+ *
+ * Returns the actors actually WRITTEN. Everything requested and not returned
+ * was refused by the `WHERE`: an operator's erasure holding, or the
+ * `directory → opaque` downgrade being declined. Both are normal outcomes and
+ * neither is an error; the caller counts them rather than logging each one.
+ *
+ * The caller must hand over DISTINCT actors. Two rows with the same key in one
+ * statement is a Postgres error (`ON CONFLICT DO UPDATE command cannot affect
+ * row a second time`), not a silent last-writer-wins — which is the safe
+ * direction, and {@link AUTHORING_PRINCIPALS_SQL}'s `SELECT DISTINCT`
+ * guarantees it upstream.
+ */
+export async function captureActorIdentities(
+  db: ActorIdentityReader,
+  workspaceId: string,
+  captures: readonly ActorIdentityCapture[],
+): Promise<ReadonlySet<string>> {
+  const written = new Set<string>();
+  for (let offset = 0; offset < captures.length; offset += CAPTURE_BATCH_SIZE) {
+    const batch = captures.slice(offset, offset + CAPTURE_BATCH_SIZE);
+    const params: unknown[] = [workspaceId];
+    for (const c of batch) {
+      params.push(
+        c.actor,
+        c.source,
+        c.vendorUserId,
+        c.state,
+        c.userId ?? null,
+        c.displayName ?? null,
+        c.realName ?? null,
+        c.email ?? null,
+      );
+    }
+    const result = await db.query(captureActorIdentitySql(batch.length), params);
+    // `RETURNING` and the row set, not `rowCount`: the two internal-DB handles
+    // disagree about `rowCount` (the `@effect/sql` client answers rows only),
+    // and a silently-zero count here would report every write as refused.
+    for (const raw of result.rows) {
+      const actor = str((raw as Record<string, unknown>).actor);
+      if (actor !== null) written.add(actor);
+    }
+  }
+  return written;
+}
 
 /**
  * Write one capture.
  *
- * Returns whether the row was written — `false` means an operator's erasure
- * held, which is a normal outcome and not an error.
+ * A thin wrapper over {@link captureActorIdentities} rather than a second
+ * statement, so there is ONE spelling of the upsert — the `WHERE` clauses on it
+ * are the erasure guarantee and the no-destroy guarantee, and a second copy is
+ * a second place for either to be dropped.
+ *
+ * Returns whether the row was written; `false` means the `WHERE` refused it.
  */
 export async function captureActorIdentity(
   db: ActorIdentityReader,
   workspaceId: string,
   capture: ActorIdentityCapture,
 ): Promise<boolean> {
-  const result = await db.query(CAPTURE_ACTOR_IDENTITY_SQL, [
-    workspaceId,
-    capture.actor,
-    capture.source,
-    capture.vendorUserId,
-    capture.state,
-    capture.userId ?? null,
-    capture.displayName ?? null,
-    capture.realName ?? null,
-    capture.email ?? null,
-  ]);
-  // `RETURNING` and `rows.length`, not `rowCount`: the two internal-DB handles
-  // disagree about `rowCount` (the `@effect/sql` client answers rows only), and
-  // a silently-zero write count here would report every erasure as holding.
-  return result.rows.length > 0;
+  const written = await captureActorIdentities(db, workspaceId, [capture]);
+  return written.has(capture.actor);
 }
 
 // ---------------------------------------------------------------------------

@@ -102,10 +102,22 @@ Don't use this when no metric id matches; fall back to \`executeSQL\` with a que
 // not a copy and not a strict superset (it carries the as-of-NOW clarifier and
 // the withheld-arm rule, which do not fit here; it does not carry
 // `KNOWLEDGE_TRUST_FRAMING`, which the prompt gets from the collection ToC).
+//
+// #5440's actor-identity guidance is split the same way, and the SHORT half is
+// deliberately here rather than only in the twin. An MCP client gets this
+// string and no system prompt at all, so a description that still pointed only
+// at `attribution.actor` would keep instructing external agents to answer
+// "who said this?" with `slack:U0AQW6KF2EM` — the exact rendering finish
+// condition 2 rules insufficient, on the surface furthest from any other
+// correction. Six words is what the rubric's ceiling leaves, and they buy the
+// load-bearing half: READ THE OTHER FIELD. The three states are self-describing
+// once a model looks at them (`state`, `snapshotAt`), and the full rule — date
+// a `directory` name, say `opaque` outright, never substitute the handle —
+// is in the twin.
 // Parity is on the labels only, and is pinned in
 // `__tests__/search-brain-tool.test.ts` — the never-arms are assertions, not
 // decoration, so trim anything here and re-run that suite.
-export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the Company Atlas. Trust-labeled results: \`tier: "fact"\` ATTESTED (human-reviewed), \`"raw-episode"\` ON-THE-RECORD, its source (maybe \`extraction: "pending"\`), \`"document"\` hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. \`provenance.attribution\` \`{ "visible": false }\`: use the claim, say attribution restricted; never anonymous, undated, unsourced, nor infer the author. Age (\`validFrom\`, \`corroborationCount\`, \`decay\`): present a stale fact's age, never assert as current or drop. \`tensions\` lists rival claims+provenance (\`withheldCount\` = unseen), unranked: never pick a winner. Report those as settled once retired: \`invalidatedAt\` non-null = RETRACTED, \`validTo\` ALREADY IN THE PAST = SUPERSEDED; \`validTo\` still in the future = LIVE. \`unavailable\` = search failed, not "nothing known". \`asOf\` (past ISO-8601) reads facts valid then, framed "as of <time>": superseded included, retracted only in \`tensions\`. Example: \`{ "query": "billing owner", "asOf": "2026-07-01" }\`.
+export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the Company Atlas. Trust-labeled results: \`tier: "fact"\` ATTESTED (human-reviewed), \`"raw-episode"\` ON-THE-RECORD, its source (maybe \`extraction: "pending"\`), \`"document"\` hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. \`provenance.attribution\` \`{ "visible": false }\`: use the claim, say attribution restricted; never anonymous, undated, unsourced, nor infer the author. Authors: \`actorIdentity\`, never \`actor\`. Age (\`validFrom\`, \`corroborationCount\`, \`decay\`): present a stale fact's age, never assert as current or drop. \`tensions\` lists rival claims+provenance (\`withheldCount\` = unseen), unranked: never pick a winner. Report those as settled once retired: \`invalidatedAt\` non-null = RETRACTED, \`validTo\` ALREADY IN THE PAST = SUPERSEDED; \`validTo\` still in the future = LIVE. \`unavailable\` = search failed, not "nothing known". \`asOf\` (past ISO-8601) reads facts valid then, framed "as of <time>": superseded included, retracted only in \`tensions\`. Example: \`{ "query": "billing owner", "asOf": "2026-07-01" }\`.
 
 Use this when asked about decisions, rationale, ownership, or policy.
 

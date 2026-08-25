@@ -41,14 +41,22 @@ function user(partial: Partial<SlackDirectoryUser> & { id: string }): SlackDirec
 /**
  * A reader that answers the authoring-principals query from a fixed list and
  * records every capture write.
+ *
+ * The write is BATCHED — `workspace_id` is `$1` and every row then takes eight
+ * of its own — so the double echoes back the actor from EVERY row rather than
+ * only the first. Echoing one would under-report the write set and make the
+ * counters read as refusals, which is the shape a per-row double silently had.
  */
 function harness(authors: readonly { actor: string; source: string; vendor_user_id: string }[]) {
   const writes: unknown[][] = [];
   const db: ActorIdentityReader = {
     query: async (sql, params) => {
       if (sql === AUTHORING_PRINCIPALS_SQL) return { rows: authors };
-      writes.push(params ?? []);
-      return { rows: [{ actor: (params ?? [])[1] }] };
+      const p = params ?? [];
+      writes.push(p);
+      const rows: { actor: unknown }[] = [];
+      for (let i = 1; i < p.length; i += 8) rows.push({ actor: p[i] });
+      return { rows };
     },
   };
   return { db, writes };
@@ -155,7 +163,7 @@ describe("captureAuthoringIdentities — the bound is authorship", () => {
       db,
     });
 
-    expect(out).toEqual({ authors: 1, atlas: 0, directory: 1, opaque: 0, erasureHeld: 0 });
+    expect(out).toEqual({ authors: 1, atlas: 0, directory: 1, opaque: 0, refused: 0 });
     expect(writes).toHaveLength(1);
     expect(writes[0]![1]).toBe("slack:U1");
     // Named explicitly, because "we wrote one row" would also hold if the
@@ -189,10 +197,11 @@ describe("captureAuthoringIdentities — the bound is authorship", () => {
     expect(JSON.stringify(writes)).toContain("Zapier");
   });
 
-  it("counts an erasure that held, and does not report it as a failure", async () => {
-    // The capture SQL's `WHERE erased_at IS NULL` returns no row. That is a
-    // normal outcome — the operator's decision standing — not an error, and
-    // reporting it as one would train an operator to ignore the counter.
+  it("counts a write the upsert REFUSED, and does not report it as a failure", async () => {
+    // The capture SQL's `WHERE` returns no row on two arms — an operator's
+    // erasure standing, and a `directory → opaque` downgrade declined. Both are
+    // normal outcomes, not errors, and reporting either as a failure would
+    // train an operator to ignore the counter.
     const db: ActorIdentityReader = {
       query: async (sql) =>
         sql === AUTHORING_PRINCIPALS_SQL
@@ -206,15 +215,19 @@ describe("captureAuthoringIdentities — the bound is authorship", () => {
       resolved: new Map(),
       db,
     });
-    expect(out).toEqual({ authors: 1, atlas: 0, directory: 0, opaque: 0, erasureHeld: 1 });
+    expect(out).toEqual({ authors: 1, atlas: 0, directory: 0, opaque: 0, refused: 1 });
   });
 
-  it("isolates a per-author write failure instead of aborting the pass", async () => {
-    // One unwritable row must not cost the whole cycle — the OTHER half of
-    // which keeps `audience:` grants from aging past the staleness bound.
-    let seen = 0;
+  it("reports a failed WRITE without throwing, and without claiming it wrote", async () => {
+    // The write is BATCHED, so a failure costs the whole pass rather than one
+    // author — the accepted cost of not issuing a round trip per author
+    // forever. It is affordable only because the pass is idempotent and
+    // re-runs every cycle, so the outcome is "these names arrive 30 minutes
+    // later", not "these names are lost". What must NOT happen is the cycle
+    // aborting (its other half keeps `audience:` grants from aging past the
+    // staleness bound) or the counters claiming work that did not land.
     const db: ActorIdentityReader = {
-      query: async (sql, params) => {
+      query: async (sql) => {
         if (sql === AUTHORING_PRINCIPALS_SQL) {
           return {
             rows: [
@@ -223,9 +236,7 @@ describe("captureAuthoringIdentities — the bound is authorship", () => {
             ],
           };
         }
-        seen++;
-        if (seen === 1) throw new Error("deadlock detected");
-        return { rows: [{ actor: (params ?? [])[1] }] };
+        throw new Error("deadlock detected");
       },
     };
     const out = await captureAuthoringIdentities({
@@ -239,7 +250,42 @@ describe("captureAuthoringIdentities — the bound is authorship", () => {
       db,
     });
     expect(out.authors).toBe(2);
-    expect(out.directory).toBe(1);
+    expect(out.directory).toBe(0);
+    expect(out.refused).toBe(0);
+  });
+
+  it("issues ONE statement for the page of authors, not one per author", async () => {
+    // The property the batching exists for. This runs every 30 minutes per
+    // workspace over every principal who has EVER authored an ingested episode
+    // — a population that only grows — so a per-row loop is O(authors) round
+    // trips forever against a table that changes almost never.
+    const writes: string[] = [];
+    const authors = Array.from({ length: 25 }, (_, i) => ({
+      actor: `slack:U${i}`,
+      source: "slack",
+      vendor_user_id: `U${i}`,
+    }));
+    const db: ActorIdentityReader = {
+      query: async (sql, params) => {
+        if (sql === AUTHORING_PRINCIPALS_SQL) return { rows: authors };
+        writes.push(sql);
+        // Echo back every actor parameter, which is every 8th from $2.
+        const p = params ?? [];
+        const rows: { actor: unknown }[] = [];
+        for (let i = 1; i < p.length; i += 8) rows.push({ actor: p[i] });
+        return { rows };
+      },
+    };
+    const out = await captureAuthoringIdentities({
+      workspaceId: WS,
+      source: "slack",
+      directory: new Map(authors.map((a) => [a.vendor_user_id, user({ id: a.vendor_user_id, displayName: a.vendor_user_id })])),
+      resolved: new Map(),
+      db,
+    });
+    expect(writes).toHaveLength(1);
+    expect(out.directory).toBe(25);
+    expect(out.refused).toBe(0);
   });
 
   it("does nothing at all for a workspace with no ingested authors", async () => {
@@ -260,7 +306,15 @@ describe("captureAuthoringIdentities — the bound is authorship", () => {
     // `opaque` SILENTLY, which is the hardest failure here to notice. So the
     // separator lives in one place — this SQL — rather than being re-spelled in
     // TypeScript beside it.
-    expect(AUTHORING_PRINCIPALS_SQL).toContain("e.source || ':' || e.source_actor AS actor");
+    expect(AUTHORING_PRINCIPALS_SQL).toContain("e.source || ':' || btrim(e.source_actor) AS actor");
     expect(AUTHORING_PRINCIPALS_SQL).toContain("FROM brain_episodes e");
+    // ⚠️ `btrim`, because agreeing about the separator is not enough — the two
+    // also have to agree about WHITESPACE. `resolvedPrincipal` trims, so an
+    // episode stored with `source_actor = ' U123'` yields the claim handle
+    // `slack:U123`; without the trim this query keys `slack: U123` and the two
+    // never join. The predicate needs it too: `<> ''` admits `' '`, and so does
+    // `ck_brain_actor_identity_key_present`.
+    expect(AUTHORING_PRINCIPALS_SQL).toContain("btrim(e.source_actor) AS vendor_user_id");
+    expect(AUTHORING_PRINCIPALS_SQL).toContain("AND btrim(e.source_actor) <> ''");
   });
 });

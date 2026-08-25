@@ -112,7 +112,7 @@ function harness(overrides: Partial<AudienceSyncDeps["api"]> = {}, channels = [P
         atlas: 0,
         directory: 0,
         opaque: 0,
-        erasureHeld: 0,
+        refused: 0,
       });
     },
   };
@@ -151,6 +151,34 @@ describe("actor-identity capture rides the cycle (#5440)", () => {
     const { deps, captured } = harness();
     await withDatabaseUrl(() => runAudienceSyncCycle(deps));
     expect(captured[0]!.resolved.get("U_ADA")).toBe("user-U_ADA");
+  });
+
+  it("still names authors when NOBODY in the directory resolves to an Atlas account", async () => {
+    // ⚠️ The ordering property, and the reason the capture sits ABOVE the
+    // resolution-collapse throw. That throw abandons the install when no
+    // directory member resolves — and a workspace in that state is exactly the
+    // population the `directory` snapshot was introduced for: an SSO-domain
+    // mismatch, or an org whose Slack members mostly have no Atlas account.
+    //
+    // Below the throw, naming would be skipped precisely where it is needed
+    // most, silently, while the cycle reported a membership fault that has
+    // nothing to do with names. Nothing in the capture depends on the
+    // resolution succeeding: an empty `resolved` map simply means every author
+    // the vendor names takes the `directory` arm, which is the right answer.
+    const { deps, captured } = harness();
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        resolve: (_ws, principals) =>
+          Promise.resolve({ resolved: new Map(), unresolvedCount: principals.length }),
+      }),
+    );
+    // The membership half still reports the fault…
+    expect(result.workspacesFailed).toBe(1);
+    // …and the naming half still ran, with the whole directory in hand.
+    expect(captured).toHaveLength(1);
+    expect([...captured[0]!.directory.keys()].toSorted()).toEqual(["U_ADA", "U_BOT", "U_GONE"]);
+    expect(captured[0]!.resolved.size).toBe(0);
   });
 
   it("does NOT abort the cycle when capture fails", async () => {

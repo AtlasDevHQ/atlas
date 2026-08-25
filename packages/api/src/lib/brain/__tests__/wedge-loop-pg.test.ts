@@ -365,6 +365,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS "user" (
         id TEXT PRIMARY KEY,
+        name TEXT,
         email TEXT NOT NULL
       )
     `);

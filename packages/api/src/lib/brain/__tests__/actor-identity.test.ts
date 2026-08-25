@@ -30,7 +30,6 @@ import {
   actorsIn,
   identityFor,
   loadActorIdentities,
-  parseActorHandle,
   provenanceActor,
   type ActorIdentityReader,
 } from "@atlas/api/lib/brain/actor-identity";
@@ -50,29 +49,6 @@ function readerFor(rows: readonly Record<string, unknown>[]): ActorIdentityReade
     },
   };
 }
-
-describe("parseActorHandle", () => {
-  it("splits on the FIRST colon, because that is what mints the handle", () => {
-    // `resolvedPrincipal` builds `${episode.source}:${actor}`, so every later
-    // colon belongs to the vendor id. Splitting on the last one would mangle a
-    // vendor whose ids contain one.
-    expect(parseActorHandle("slack:U0AQW6KF2EM")).toEqual({
-      source: "slack",
-      vendorUserId: "U0AQW6KF2EM",
-    });
-    expect(parseActorHandle("slack:T1:U2")).toEqual({ source: "slack", vendorUserId: "T1:U2" });
-  });
-
-  it("returns null for anything that is not a source-qualified handle", () => {
-    // Not an error — "this handle names no vendor directory to look in". The
-    // caller renders `opaque`, which is the honest answer for a human
-    // correction's explicit principal.
-    expect(parseActorHandle("U0AQW6KF2EM")).toBeNull();
-    expect(parseActorHandle(":U1")).toBeNull();
-    expect(parseActorHandle("slack:")).toBeNull();
-    expect(parseActorHandle("")).toBeNull();
-  });
-});
 
 describe("provenanceActor / actorsIn", () => {
   it("reads the same key and applies the same emptiness test as the projection", () => {
@@ -318,6 +294,20 @@ describe("the write path's two load-bearing clauses", () => {
     // none would compare as unchanged and keep the older date.
     expect(CAPTURE_ACTOR_IDENTITY_SQL).toContain("IS DISTINCT FROM EXCLUDED.display_name");
     expect(CAPTURE_ACTOR_IDENTITY_SQL).toContain("ELSE brain_actor_identity.snapshot_at");
+  });
+
+  it("never lets a capture pass DESTROY a snapshot", () => {
+    // ⚠️ The guard that keeps the feature from quietly undoing itself. An
+    // author in `users.list` today gets a dated snapshot; if they later drop
+    // OUT of the directory — a Slack Connect guest whose connection ends — the
+    // capture decides `opaque`, and an unguarded upsert would overwrite the
+    // snapshot with a nameless row on the next 30-minute cycle. That is exactly
+    // the person the snapshot exists for, and the loss is irreversible. The
+    // vendor going quiet about someone is not evidence Atlas should forget
+    // them; the ONE path that removes a snapshot is an operator's erasure.
+    expect(CAPTURE_ACTOR_IDENTITY_SQL).toContain(
+      "NOT (brain_actor_identity.state = 'directory' AND EXCLUDED.state = 'opaque')",
+    );
   });
 
   it("erases only a `directory` snapshot", () => {

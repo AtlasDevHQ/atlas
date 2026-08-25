@@ -1059,14 +1059,31 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
             "degrades to `opaque` while the table reports it as resolved.",
         };
       }
-      // The three-state shape, guarding the migration's three CHECKs. The
-      // ABSENCE half matters as much as the presence half and is the reason
-      // this is spelled out rather than left to the database: a `directory` row
+      // The three-state shape, guarding the migration's four CHECKs.
+      //
+      // ⚠️ The ABSENCE half is checked as hard as the presence half, and that is
+      // the reason this is spelled out rather than left to the database. Two
+      // reasons, and the second is why it is worth the lines: a `directory` row
       // carrying a `userId` would render live-or-snapshot depending on which
-      // field a reader reached for first, and the whole point of the
-      // discriminated union is that it cannot.
+      // field a reader reached for first, which is the collapse the
+      // discriminated union exists to make impossible — and a row that fails
+      // `ck_brain_actor_identity_*_shape` at INSERT aborts the WHOLE import
+      // transaction with a 23514, a constraint name and no section, which is
+      // exactly what the `state` whitelist above was added to prevent.
       const str = (v: unknown): string | null =>
         typeof v === "string" && v !== "" ? v : null;
+      /** Fields that must be ABSENT for this state — the `NULL`-or-missing half. */
+      const mustBeAbsent = (fields: readonly string[], why: string) => {
+        for (const field of fields) {
+          const value = x[field];
+          if (value === null || value === undefined) continue;
+          return {
+            ok: false as const,
+            error: `brainActorIdentities[${i}].${field}: a \`${String(x.state)}\` identity must not carry it — ${why}`,
+          };
+        }
+        return null;
+      };
       if (x.state === "atlas") {
         if (str(x.userId) === null) {
           return {
@@ -1074,6 +1091,11 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
             error: `brainActorIdentities[${i}].userId: an \`atlas\` identity must carry the Better Auth user id it resolves through — the name is joined live from it, so a row without one names nobody.`,
           };
         }
+        const absent = mustBeAbsent(
+          ["displayName", "realName", "email", "snapshotAt"],
+          "its name is read LIVE from the account, and a snapshot beside a live join is one that goes stale with no re-derivation path.",
+        );
+        if (absent) return absent;
       } else if (x.state === "directory") {
         if (str(x.snapshotAt) === null) {
           return {
@@ -1091,15 +1113,37 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
             error: `brainActorIdentities[${i}]: a \`directory\` identity must name somebody (displayName, realName or email). A nameless one is an \`opaque\` row with extra steps, and it would render as a blank.`,
           };
         }
+        const absent = mustBeAbsent(
+          ["userId"],
+          "a `directory` identity is one with no Atlas account, so a user id on it is a claim the state itself denies.",
+        );
+        if (absent) return absent;
+      } else {
+        const absent = mustBeAbsent(
+          ["userId", "displayName", "realName", "email", "snapshotAt"],
+          "`opaque` means Atlas cannot name this person, so any field that names one contradicts it.",
+        );
+        if (absent) return absent;
       }
-      // An erasure MUST arrive as `opaque`. A bundle that carried `erasedAt`
-      // beside a live snapshot would restore, at the destination, exactly the
-      // name an operator removed at the source.
-      if (str(x.erasedAt) !== null && x.state !== "opaque") {
-        return {
-          ok: false,
-          error: `brainActorIdentities[${i}]: carries \`erasedAt\` but is not \`opaque\`. An erasure that arrives as a live identity would restore the name it removed.`,
-        };
+      // An erasure MUST arrive as `opaque`, and MUST name who performed it.
+      // A bundle carrying `erasedAt` beside a live snapshot would restore, at
+      // the destination, exactly the name an operator removed at the source;
+      // one carrying `erasedAt` without `erasedBy` trips
+      // `ck_brain_actor_identity_erasure_shape` at INSERT and takes the whole
+      // cutover with it.
+      if (str(x.erasedAt) !== null) {
+        if (x.state !== "opaque") {
+          return {
+            ok: false,
+            error: `brainActorIdentities[${i}]: carries \`erasedAt\` but is not \`opaque\`. An erasure that arrives as a live identity would restore the name it removed.`,
+          };
+        }
+        if (str(x.erasedBy) === null) {
+          return {
+            ok: false,
+            error: `brainActorIdentities[${i}].erasedBy: an erasure must name who performed it — attribution on the erasure is what makes it answerable later.`,
+          };
+        }
       }
       // Both timestamps are NULLABLE here, so `missingTimestamps` (which
       // requires presence) is the wrong tool: what has to hold is that a

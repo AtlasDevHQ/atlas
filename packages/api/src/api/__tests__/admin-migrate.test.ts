@@ -1724,6 +1724,194 @@ describe("validateBundle — the entity store (#5043)", () => {
   });
 });
 
+/**
+ * The actor-identity section (#5440, ADR-0036 §T5).
+ *
+ * Every case here is a row that would otherwise reach `INSERT` and trip one of
+ * `brain_actor_identity`'s CHECKs — a 23514 **mid-transaction**, aborting an
+ * entire live region cutover with a constraint name and no section. The
+ * validator exists to turn each of those into a named refusal.
+ *
+ * The ABSENCE arms are the ones worth the lines and the ones a first cut
+ * omits: a `directory` row carrying a `userId`, or an `atlas` row carrying a
+ * snapshot, is a row a reader would render live-or-stale depending on which
+ * field it reached for first — the collapse the discriminated union exists to
+ * make impossible.
+ */
+describe("validateBundle — actor identities (#5440)", () => {
+  const identityBundle = (rows: unknown[]): unknown => ({
+    ...validV2Bundle(),
+    brainActorIdentities: rows,
+  });
+
+  const atlasRow = () => ({
+    actor: "slack:U-ADA",
+    source: "slack",
+    vendorUserId: "U-ADA",
+    state: "atlas",
+    userId: "user-ada",
+  });
+
+  const directoryRow = () => ({
+    actor: "slack:U-DANA",
+    source: "slack",
+    vendorUserId: "U-DANA",
+    state: "directory",
+    displayName: "dana",
+    realName: "Dana Okafor",
+    email: "dana@contractor.test",
+    snapshotAt: "2026-08-14T00:00:00Z",
+  });
+
+  const erasedRow = () => ({
+    actor: "slack:U-GONE",
+    source: "slack",
+    vendorUserId: "U-GONE",
+    state: "opaque",
+    erasedAt: "2026-08-14T00:00:00Z",
+    erasedBy: "admin-1",
+  });
+
+  it("accepts all three states, and the section survives (the control)", () => {
+    const result = validateBundle(identityBundle([atlasRow(), directoryRow(), erasedRow()]));
+    expect(result.ok).toBe(true);
+    // `ok: true` alone passes a validator that accepted the bundle while
+    // DROPPING the section — which lands a destination where every migrated
+    // claim reads `opaque`, indistinguishable from a workspace nobody has
+    // captured yet.
+    if (result.ok) expect(result.bundle.brainActorIdentities).toHaveLength(3);
+  });
+
+  it("refuses a non-array section and a non-object element", () => {
+    for (const bad of ["nope", 42, {}]) {
+      expect(validateBundle(identityBundle(bad as never)).ok).toBe(false);
+    }
+    for (const bad of [null, 42, "row", []]) {
+      const result = validateBundle(identityBundle([bad]));
+      expect(result.ok, `element ${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainActorIdentities[0]");
+    }
+  });
+
+  it("refuses an empty or non-string key field, naming the field AND the row", () => {
+    for (const field of ["actor", "source", "vendorUserId", "state"] as const) {
+      for (const bad of ["", 42, null, undefined]) {
+        // Row INDEX 1, so an `i`-vs-`0` slip goes red.
+        const result = validateBundle(
+          identityBundle([atlasRow(), { ...atlasRow(), [field]: bad }]),
+        );
+        expect(result.ok, `${field}=${JSON.stringify(bad)} was accepted`).toBe(false);
+        if (!result.ok) expect(result.error).toContain(`brainActorIdentities[1].${field}`);
+      }
+    }
+  });
+
+  it("refuses a state outside the vocabulary", () => {
+    // A bundle from a region running a newer vocabulary. Landing it would store
+    // a row every reader degrades to `opaque` while the table reports it as
+    // resolved.
+    const result = validateBundle(identityBundle([{ ...atlasRow(), state: "resolved" }]));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("brainActorIdentities[0].state");
+  });
+
+  it("refuses an `atlas` row with no user id — it names nobody", () => {
+    for (const bad of [undefined, null, ""]) {
+      expect(
+        validateBundle(identityBundle([{ ...atlasRow(), userId: bad }])).ok,
+        `userId=${JSON.stringify(bad)} was accepted`,
+      ).toBe(false);
+    }
+  });
+
+  it("refuses an `atlas` row carrying a SNAPSHOT — the absence half", () => {
+    // Guards `ck_brain_actor_identity_atlas_shape`. A snapshot beside a live
+    // join is one that goes stale with no re-derivation path, and a reader
+    // would render whichever field it reached for first.
+    for (const field of ["displayName", "realName", "email", "snapshotAt"] as const) {
+      const result = validateBundle(
+        identityBundle([{ ...atlasRow(), [field]: "2026-08-14T00:00:00Z" }]),
+      );
+      expect(result.ok, `${field} on an atlas row was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain(`brainActorIdentities[0].${field}`);
+    }
+  });
+
+  it("refuses a `directory` row that is undated or names nobody", () => {
+    for (const bad of [undefined, null, ""]) {
+      expect(
+        validateBundle(identityBundle([{ ...directoryRow(), snapshotAt: bad }])).ok,
+        `snapshotAt=${JSON.stringify(bad)} was accepted`,
+      ).toBe(false);
+    }
+    expect(
+      validateBundle(
+        identityBundle([
+          { ...directoryRow(), displayName: null, realName: null, email: null },
+        ]),
+      ).ok,
+    ).toBe(false);
+  });
+
+  it("refuses a `directory` row carrying a user id — the absence half", () => {
+    // Guards `ck_brain_actor_identity_directory_shape`. `directory` MEANS "no
+    // Atlas account", so a user id on one is a claim the state itself denies.
+    const result = validateBundle(identityBundle([{ ...directoryRow(), userId: "user-ada" }]));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("brainActorIdentities[0].userId");
+  });
+
+  it("refuses an `opaque` row carrying anything that names a person", () => {
+    // Guards `ck_brain_actor_identity_opaque_shape`. `opaque` MEANS Atlas
+    // cannot name this person, so any field that names one contradicts it.
+    for (const field of ["userId", "displayName", "realName", "email", "snapshotAt"] as const) {
+      const result = validateBundle(
+        identityBundle([{ ...erasedRow(), [field]: "2026-08-14T00:00:00Z" }]),
+      );
+      expect(result.ok, `${field} on an opaque row was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain(`brainActorIdentities[0].${field}`);
+    }
+  });
+
+  it("refuses an erasure that is not a tombstone, or that names nobody", () => {
+    // An erasure arriving as a LIVE identity would restore, at the destination,
+    // exactly the name an operator removed at the source — the one outcome an
+    // erasure has to survive. And one with no `erasedBy` trips
+    // `ck_brain_actor_identity_erasure_shape` at INSERT, taking the cutover
+    // with it.
+    expect(
+      validateBundle(
+        identityBundle([{ ...directoryRow(), erasedAt: "2026-08-14T00:00:00Z", erasedBy: "a" }]),
+      ).ok,
+    ).toBe(false);
+    for (const bad of [undefined, null, ""]) {
+      const result = validateBundle(identityBundle([{ ...erasedRow(), erasedBy: bad }]));
+      expect(result.ok, `erasedBy=${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainActorIdentities[0].erasedBy");
+    }
+  });
+
+  it("refuses an unparseable timestamp, but accepts an ABSENT one", () => {
+    // Both timestamps are nullable here, so presence is not the rule — what has
+    // to hold is that a PRESENT one parses. An unparseable value would abort
+    // the import at INSERT with a Postgres message naming no section.
+    for (const bad of ["not-a-date", 42, "2026-13-45"]) {
+      expect(
+        validateBundle(identityBundle([{ ...directoryRow(), snapshotAt: bad }])).ok,
+        `snapshotAt=${JSON.stringify(bad)} was accepted`,
+      ).toBe(false);
+    }
+    // The negative: an `opaque` row legitimately carries neither.
+    expect(
+      validateBundle(
+        identityBundle([
+          { actor: "slack:U-Q", source: "slack", vendorUserId: "U-Q", state: "opaque" },
+        ]),
+      ).ok,
+    ).toBe(true);
+  });
+});
+
 describe("validateBundle — the enrolled reach (#5196)", () => {
   const enrollmentBundle = (rows: unknown[]): unknown => ({
     ...validV2Bundle(),

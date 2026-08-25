@@ -255,10 +255,110 @@ describeIfPg("actor identity — the human name on a claim (#5440)", () => {
       resolved: new Map(),
       db,
     });
-    expect(second.erasureHeld).toBe(1);
+    expect(second.refused).toBe(1);
     expect((await loadActorIdentities(db, WORKSPACE, ["slack:U-DANA"])).get("slack:U-DANA")).toEqual({
       state: "opaque",
       erased: true,
+    });
+  });
+
+  it("keeps a snapshot when the author DROPS OUT of the vendor directory", async () => {
+    // ⚠️ The defect this guard closes, end to end. An author in `users.list`
+    // today gets a dated snapshot; a Slack Connect guest whose connection ends
+    // — or a Grid member moved to another workspace — is simply GONE from the
+    // next `users.list`, so the capture decides `opaque`. An unguarded upsert
+    // would overwrite the snapshot with a nameless row on the very next
+    // 30-minute cycle.
+    //
+    // That is precisely the person the `directory` state exists for: someone
+    // who has left both the vendor and the company, whose captured name is the
+    // only record that will ever name them. The vendor going quiet about
+    // someone is not evidence Atlas should forget them, and the loss would be
+    // irreversible.
+    await seedEpisode("U-DANA");
+    const present = new Map<string, SlackDirectoryUser>([
+      ["U-DANA", user({ id: "U-DANA", displayName: "dana", realName: "Dana Okafor" })],
+    ]);
+    await captureAuthoringIdentities({
+      workspaceId: WORKSPACE,
+      source: "slack",
+      directory: present,
+      resolved: new Map(),
+      db,
+    });
+    const dated = await snapshotAt("slack:U-DANA");
+    expect(dated).not.toBeNull();
+
+    // The next cycle: the same author, and an EMPTY directory.
+    const second = await captureAuthoringIdentities({
+      workspaceId: WORKSPACE,
+      source: "slack",
+      directory: new Map(),
+      resolved: new Map(),
+      db,
+    });
+    expect(second.refused).toBe(1);
+    expect(second.opaque).toBe(0);
+
+    // The name — and its original date — survive untouched.
+    expect((await loadActorIdentities(db, WORKSPACE, ["slack:U-DANA"])).get("slack:U-DANA")).toMatchObject({
+      state: "directory",
+      displayName: "dana",
+      realName: "Dana Okafor",
+    });
+    expect(await snapshotAt("slack:U-DANA")).toEqual(dated);
+  });
+
+  it("still UPGRADES a snapshot to a live Atlas join", async () => {
+    // The negative that keeps the guard above from being "never change a
+    // directory row". `directory → atlas` is a strict improvement — the person
+    // signed up, and a live join beats a snapshot — so it must still happen.
+    await seedEpisode("U-ADA");
+    await captureAuthoringIdentities({
+      workspaceId: WORKSPACE,
+      source: "slack",
+      directory: new Map([["U-ADA", user({ id: "U-ADA", displayName: "ada" })]]),
+      resolved: new Map(),
+      db,
+    });
+    expect((await loadActorIdentities(db, WORKSPACE, ["slack:U-ADA"])).get("slack:U-ADA")).toMatchObject({
+      state: "directory",
+    });
+
+    await captureAuthoringIdentities({
+      workspaceId: WORKSPACE,
+      source: "slack",
+      directory: new Map([["U-ADA", user({ id: "U-ADA", displayName: "ada" })]]),
+      resolved: new Map([["U-ADA", "user-ada"]]),
+      db,
+    });
+    expect((await loadActorIdentities(db, WORKSPACE, ["slack:U-ADA"])).get("slack:U-ADA")).toEqual({
+      state: "atlas",
+      userId: "user-ada",
+      name: "Ada Lovelace",
+      email: "ada@corp.test",
+    });
+    // …and the snapshot columns are cleared, so nothing stale can be read back.
+    expect(await snapshotAt("slack:U-ADA")).toBeNull();
+  });
+
+  it("matches a claim whose stored actor had surrounding whitespace", async () => {
+    // `resolvedPrincipal` trims before composing the claim's handle, so an
+    // episode stored with `source_actor = ' U-PAD '` produces `slack:U-PAD`.
+    // Without `btrim` in the capture query this would key `slack: U-PAD ` and
+    // the two would never join: the claim renders `opaque` forever while a junk
+    // identity row sits beside it naming nobody.
+    await seedEpisode(" U-PAD ");
+    await captureAuthoringIdentities({
+      workspaceId: WORKSPACE,
+      source: "slack",
+      directory: new Map([["U-PAD", user({ id: "U-PAD", displayName: "pad" })]]),
+      resolved: new Map(),
+      db,
+    });
+    expect((await loadActorIdentities(db, WORKSPACE, ["slack:U-PAD"])).get("slack:U-PAD")).toMatchObject({
+      state: "directory",
+      displayName: "pad",
     });
   });
 

@@ -843,24 +843,28 @@ async function syncInstall(
     workspaceId,
     humans.map((u) => ({ id: u.id, email: u.email })),
   );
-  if (resolution.resolved.size === 0) {
-    throw new Error(
-      "no Slack workspace member resolved to an Atlas user — check the workspace's verified SSO domain against member email domains, or invite these people to Atlas",
-    );
-  }
 
   // The NAME half (#5440, ADR-0036 §T5's `Amendment (2026-08-25, #5440)`).
   //
-  // Runs HERE — after the directory read, before the per-channel loop —
-  // because it needs exactly the two things the membership half has already
-  // paid for: the whole directory and the whole resolution. It writes only for
-  // principals who AUTHORED an ingested episode, never the roster.
+  // ⚠️ ABOVE the resolution-collapse throw below, deliberately, and this
+  // ordering is the whole point rather than a detail. That throw abandons the
+  // install when NOBODY in the directory resolves to an Atlas account — and a
+  // workspace in that state is exactly the population the `directory` snapshot
+  // was introduced for. Placed after it, naming would be skipped precisely
+  // where it is needed most: every claim in an SSO-domain-mismatched or
+  // mostly-non-Atlas workspace would stay `opaque` forever, silently, while the
+  // cycle reported a membership fault that has nothing to do with names.
   //
-  // ⚠️ It is handed `directory`, NOT `humans`. The membership half filters out
-  // deactivated users and bots because neither should hold a grant; naming
+  // Nothing here depends on the resolution succeeding. An empty `resolved` map
+  // simply means no author takes the `atlas` arm, and every author the vendor
+  // names takes `directory` — which is the correct answer for such a workspace,
+  // not a degraded one.
+  //
+  // It runs after the DIRECTORY read because it genuinely needs that, and it is
+  // handed `directory`, NOT `humans`: the membership half filters out
+  // deactivated users and bots because neither should hold a grant, and naming
   // inverts that on purpose — a deactivated author is precisely the case a
-  // dated snapshot exists for, since nobody else will ever be able to name
-  // them. `identity-capture.ts`'s header carries the argument.
+  // dated snapshot exists for. `identity-capture.ts`'s header carries it.
   //
   // Isolated: a failure here must not abort a cycle whose OTHER half keeps
   // `audience:` grants from aging past the staleness bound. An unnamed claim
@@ -876,6 +880,12 @@ async function syncInstall(
     log.warn(
       { workspaceId, error: err instanceof Error ? err.message : String(err) },
       "brain audience: actor-identity capture failed — claims by unnamed authors stay opaque; membership sync continues",
+    );
+  }
+
+  if (resolution.resolved.size === 0) {
+    throw new Error(
+      "no Slack workspace member resolved to an Atlas user — check the workspace's verified SSO domain against member email domains, or invite these people to Atlas",
     );
   }
 

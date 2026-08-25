@@ -46,7 +46,7 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { SlackDirectoryUser } from "@atlas/api/lib/slack/api";
 import {
   AUTHORING_PRINCIPALS_SQL,
-  captureActorIdentity,
+  captureActorIdentities,
   type ActorIdentityCapture,
   type ActorIdentityReader,
 } from "@atlas/api/lib/brain/actor-identity";
@@ -75,8 +75,16 @@ export interface IdentityCaptureOutcome {
   readonly directory: number;
   /** The directory could not name them, so the record says so. */
   readonly opaque: number;
-  /** Writes an operator's erasure held off. NOT a failure. */
-  readonly erasureHeld: number;
+  /**
+   * Writes the upsert's `WHERE` refused — an operator's erasure standing, or a
+   * `directory → opaque` downgrade declined because a vendor going quiet about
+   * someone is not evidence Atlas should forget them.
+   *
+   * NOT a failure, and counted rather than logged per row: both arms are
+   * normal, and on a workspace with many departed guests the second would be a
+   * log line per cycle per person forever.
+   */
+  readonly refused: number;
 }
 
 const ZERO: IdentityCaptureOutcome = {
@@ -84,7 +92,7 @@ const ZERO: IdentityCaptureOutcome = {
   atlas: 0,
   directory: 0,
   opaque: 0,
-  erasureHeld: 0,
+  refused: 0,
 };
 
 interface AuthorRow {
@@ -150,9 +158,9 @@ export interface CaptureIdentitiesOptions {
 /**
  * Capture identities for every principal who authored an ingested episode.
  *
- * Never throws on a per-author fault: one unwritable row must not abort a
- * cycle that also keeps audience membership fresh, and the failure is
- * recoverable on the next pass. It is logged, not swallowed.
+ * Never throws: an unwritable batch must not abort a cycle that also keeps
+ * audience membership fresh, and the failure is recoverable on the next pass.
+ * It is logged, not swallowed.
  */
 export async function captureAuthoringIdentities(
   options: CaptureIdentitiesOptions,
@@ -164,7 +172,7 @@ export async function captureAuthoringIdentities(
   const rows = result.rows as readonly AuthorRow[];
   if (rows.length === 0) return ZERO;
 
-  let out = { ...ZERO, authors: rows.length };
+  const captures: ActorIdentityCapture[] = [];
   for (const row of rows) {
     const actor = row.actor;
     const rowSource = row.source;
@@ -186,31 +194,42 @@ export async function captureAuthoringIdentities(
       );
       continue;
     }
-
-    const capture = decideIdentity(
-      actor,
-      rowSource,
-      vendorUserId,
-      resolved.get(vendorUserId),
-      directory.get(vendorUserId),
+    captures.push(
+      decideIdentity(
+        actor,
+        rowSource,
+        vendorUserId,
+        resolved.get(vendorUserId),
+        directory.get(vendorUserId),
+      ),
     );
+  }
 
-    try {
-      const written = await captureActorIdentity(db, workspaceId, capture);
-      if (!written) {
-        out = { ...out, erasureHeld: out.erasureHeld + 1 };
-        continue;
-      }
-    } catch (err) {
-      log.warn(
-        {
-          workspaceId,
-          actor,
-          state: capture.state,
-          error: err instanceof Error ? err.message : String(err),
-        },
-        "brain actor identity: could not write an identity — that author's claims stay as they were; the next cycle retries",
-      );
+  let written: ReadonlySet<string>;
+  try {
+    written = await captureActorIdentities(db, workspaceId, captures);
+  } catch (err) {
+    // ⚠️ A batch failure loses the WHOLE pass, where the per-row loop this
+    // replaced lost one author. That is the accepted cost of not issuing one
+    // round trip per author forever, and it is affordable because the pass is
+    // idempotent and re-runs every cycle: the outcome is "these names arrive 30
+    // minutes later", not "these names are lost".
+    log.warn(
+      {
+        workspaceId,
+        source,
+        authors: captures.length,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      "brain actor identity: the capture write failed — every author's claims stay as they were; the next cycle retries",
+    );
+    return { ...ZERO, authors: rows.length };
+  }
+
+  let out = { ...ZERO, authors: rows.length };
+  for (const capture of captures) {
+    if (!written.has(capture.actor)) {
+      out = { ...out, refused: out.refused + 1 };
       continue;
     }
     out =

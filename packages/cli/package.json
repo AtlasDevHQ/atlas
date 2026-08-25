@@ -19,7 +19,7 @@
     "@duckdb/node-api": "^1.5.5-r.2",
     "ai": "^6.0.235",
     "hono": "^4.12.34",
-    "js-yaml": "^5.2.2",
+    "js-yaml": "^5.3.0",
     "node-sql-parser": "^5.4.0",
     "jsforce": "^3.10.19",
     "mysql2": "^3.23.2",

@@ -18,9 +18,10 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the anchor check is removed entirely | 4 |
 | `applyMutation` snapshots lazily instead of before any write | 2 |
 | `restoreAll` forgets to clear the backup map | 2 |
-| `parseBunSummary` reports `0 fail` for a suite that never ran | 2 |
+| `parseBunSummary` reports `0 fail` for a suite that never ran | 3 |
 | `parseBunSummary` stops anchoring the count to a line start | 1 |
 | `parseBunSummary` stops anchoring the PASS count to a line start | 1 |
+| `parseBunSummary` stops stripping ANSI before matching | 3 |
 | `isWholeSuite` only fires on an exact total (`>=` ratio → `>= total`) | 2 |
 | ⚠️ `isWholeSuite` rounds the threshold DOWN (`Math.ceil` → `Math.floor`) | 1 |
 | `validateSpec` stops rejecting a no-op edit | 2 |
@@ -44,7 +45,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `render` drops the DO-NOT-EDIT header | 1 |
 | `render` drops the suite-size line | 1 |
 
-Suite sizes: **mutate-core.test.ts** 83 tests (`src/__tests__/mutate-core.test.ts`).
+Suite sizes: **mutate-core.test.ts** 86 tests (`src/__tests__/mutate-core.test.ts`).
 
 ## Notes
 
@@ -54,6 +55,7 @@ Suite sizes: **mutate-core.test.ts** 83 tests (`src/__tests__/mutate-core.test.t
 - **`restoreAll` forgets to clear the backup map** — A stale backup resurrects itself over real work on the next restore — the `git checkout --` failure this tool exists to avoid, reintroduced from the other end.
 - **`parseBunSummary` reports `0 fail` for a suite that never ran** — The single most misleading cell the table can contain: a compile error rendered as *the suite does not catch this mutation*.
 - **`parseBunSummary` stops anchoring the PASS count to a line start** — The pass count is the table's denominator and the input to `isWholeSuite`, so corrupting it silently rescales every flag decision.
+- **`parseBunSummary` stops stripping ANSI before matching** — This is #5429 exactly: bun colorizes its summary on a PIPE, an ESC is not `\s`, and every measurement then reports *no pass/fail summary* — the mutation gate's own positive control could not pass for as long as it went unmeasured.
 - **`isWholeSuite` only fires on an exact total (`>=` ratio → `>= total`)** — A setup break that spares one trivially-green test is the same defect, and this spelling lets it through unflagged.
 - **⚠️ `isWholeSuite` rounds the threshold DOWN (`Math.ceil` → `Math.floor`)** — Kills only 1: at 51 tests both roundings agree, at 58 both agree, and every `countCell` case uses a total of 10 where `10 * 0.9` is exactly 9 in IEEE-754. It is load-bearing anyway — `check-mutation-tables.test.sh`'s `GOOD_TARGET` is deliberately 2-of-3 so the cell renders `2` and not `2 ⚠️`, and under `floor` that suite aborts in its own setup for a reason no message explains.
 - **`countOccurrences` loops forever on an empty needle (guard removed)** — Left in the list deliberately: if this row ever reports a count rather than a timeout, the guard is genuinely gone and the empty-needle case hangs the runner.

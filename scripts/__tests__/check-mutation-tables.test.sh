@@ -115,7 +115,19 @@ SPEC
 
   ( cd "$tmp" && git init --quiet -b main && git config user.email t@t.t && git config user.name t \
       && git add -A >/dev/null && git commit --quiet -m base )
-  if [ -n "$extra" ]; then ( cd "$tmp/packages/api" && eval "$extra" ); fi
+  # ⚠️ `>&2` ON THE SETUP, because make_tree's STDOUT is the return value (#5429).
+  #
+  # Every caller is `T=$(make_tree …)`, so anything `$extra` prints on stdout is
+  # concatenated in front of the path. The setups DO print: a `git commit` that
+  # finds nothing staged says "nothing to commit, working tree clean", and the
+  # tombstone setup's own premise check echoes "FIXTURE PREMISE BROKEN: …". The
+  # result was `check()`'s `cd "$tmp"` receiving a multi-line string and failing
+  # as `cd: $'FIXTURE PREMISE BROKEN…\n/tmp/tmp.XXXX': No such file or directory`
+  # — a broken premise reported as a confusing cd error, at a line number that
+  # points at the assertion helper rather than at the fixture that broke.
+  #
+  # Diagnostics still reach the operator, on the stream that is not the value.
+  if [ -n "$extra" ]; then ( cd "$tmp/packages/api" && eval "$extra" ) >&2; fi
   echo "$tmp"
 }
 
@@ -416,7 +428,7 @@ export default spec;
 SPEC
   ( cd "$tmp/packages/api" && bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1 )
   grep -q '| 2 |' "$tmp/packages/api/scripts/mutations/f.md" \
-    || { echo "FIXTURE PREMISE BROKEN: the corpus tree's table did not record 2 kills"; exit 9; }
+    || { echo "FIXTURE PREMISE BROKEN: the corpus tree's table did not record 2 kills" >&2; exit 9; }
   ( cd "$tmp" && git init --quiet -b main && git config user.email t@t.t && git config user.name t \
       && git add -A >/dev/null && git commit --quiet -m base && git branch base-ref HEAD )
   # The ONLY change: one more corpus row. Nothing the pre-fix selector could see.

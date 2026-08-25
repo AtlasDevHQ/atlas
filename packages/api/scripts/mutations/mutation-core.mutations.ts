@@ -90,8 +90,8 @@ it, and that header is exactly what stops a reviewer looking closer.
       edits: [
         {
           file: SOURCE,
-          oldString: '  const fails = /^\\s*(\\d+)\\s+fail\\b/m.exec(output);',
-          newString: '  const fails = /(\\d+)\\s+fail\\b/.exec(output);',
+          oldString: '  const fails = /^\\s*(\\d+)\\s+fail\\b/m.exec(plain);',
+          newString: '  const fails = /(\\d+)\\s+fail\\b/.exec(plain);',
         },
       ],
     },
@@ -100,11 +100,22 @@ it, and that header is exactly what stops a reviewer looking closer.
       edits: [
         {
           file: SOURCE,
-          oldString: "  const pass = /^\\s*(\\d+)\\s+pass\\b/m.exec(output);",
-          newString: "  const pass = /(\\d+)\\s+pass\\b/.exec(output);",
+          oldString: "  const pass = /^\\s*(\\d+)\\s+pass\\b/m.exec(plain);",
+          newString: "  const pass = /(\\d+)\\s+pass\\b/.exec(plain);",
         },
       ],
       note: "The pass count is the table's denominator and the input to `isWholeSuite`, so corrupting it silently rescales every flag decision.",
+    },
+    {
+      label: "`parseBunSummary` stops stripping ANSI before matching",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: '  const plain = output.replace(ANSI_ESCAPE, "");',
+          newString: "  const plain = output;",
+        },
+      ],
+      note: "This is #5429 exactly: bun colorizes its summary on a PIPE, an ESC is not `\\s`, and every measurement then reports *no pass/fail summary* — the mutation gate's own positive control could not pass for as long as it went unmeasured.",
     },
     {
       label: "`isWholeSuite` only fires on an exact total (`>=` ratio → `>= total`)",

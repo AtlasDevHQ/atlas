@@ -17,6 +17,11 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  DISARMED_BREADCRUMB,
+  armBreadcrumb,
+  breadcrumbArmed,
+} from "@atlas/api/lib/db/migration-breadcrumb";
 
 const log = createLogger("db-migrate");
 
@@ -83,6 +88,16 @@ export interface RunMigrationsOptions {
    * dependency is in place. See #1472.
    */
   skip?: string[];
+  /**
+   * A name for this run, used only by the `#5430` phase breadcrumb.
+   *
+   * 87 `-pg` suites migrate concurrently into private scratch schemas, so an
+   * unlabelled watchdog line cannot be attributed to a suite — and the scratch
+   * schema is also the advisory lock's key, so it is the field a
+   * lock-contention reading needs. Optional: an unlabelled run still reports,
+   * it just reports `schema=?`.
+   */
+  label?: string;
 }
 
 /**
@@ -113,11 +128,45 @@ const ADVISORY_UNLOCK_SQL = `SELECT pg_advisory_unlock(${ADVISORY_LOCK_KEY_SQL})
  * Returns the number of migrations applied (0 if already up-to-date).
  */
 export async function runMigrations(pool: MigrationPool, options: RunMigrationsOptions = {}): Promise<number> {
+  // ⚠️ ARMED BEFORE THE FIRST AWAIT (#5430). This function has three separately
+  // blocking phases — taking a connection, taking the advisory lock, and
+  // applying 190 files — and the `beforeAll` timeouts this instrument exists for
+  // never reach the end of any of them. A watchdog names whichever phase is open
+  // WHILE it is open; see `migration-breadcrumb.ts` for why a completion-time
+  // log is the one shape that cannot work here.
+  //
+  // `options.label` when the caller has a name worth reading (the scratch schema
+  // is what tells 87 concurrent lines apart AND is the advisory lock's key);
+  // otherwise the search_path is not known until a query runs, so `?` is honest.
+  const breadcrumb = breadcrumbArmed(process.env)
+    ? armBreadcrumb(options.label ?? "schema=?")
+    : DISARMED_BREADCRUMB;
+  let applied: number | null = null;
+
   // Use a dedicated connection so the advisory lock, all transactions,
   // and the unlock all happen on the same session. Without this, pg pool
   // could dispatch queries to different connections, breaking lock and
   // transaction semantics.
-  const client = await pool.connect();
+  breadcrumb.enter("pool.connect");
+  // ⚠️ THE ONE AWAIT OUTSIDE THE `finally` BELOW, so it needs its own (#5430).
+  //
+  // Everything after this point is covered by the try/finally that calls
+  // `breadcrumb.finish()`. `pool.connect()` is not — and a rejecting
+  // `pool.connect()` is precisely the exhausted-pool case this instrument was
+  // built to watch. Without this catch the watchdog interval is never cleared,
+  // so it goes on printing `STILL IN pool.connect` every 10s for the rest of the
+  // test process, once per failed call: an instrument that becomes a log flood
+  // exactly when it finally has something to report.
+  //
+  // `unref` keeps that from holding the process open, which is what makes the
+  // leak quiet rather than fatal — and quiet is why it needs a fixture.
+  let client: MigrationClient;
+  try {
+    client = await pool.connect();
+  } catch (err) {
+    breadcrumb.finish(null, err);
+    throw err;
+  }
 
   // ⚠️ WITHOUT THIS, EVERY `RAISE NOTICE` IN EVERY MIGRATION IS DISCARDED (#5047).
   //
@@ -183,10 +232,39 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
     // key stays bit-identical and a rolling deploy can't end up with old and
     // new instances holding *different* keys — which would let them migrate
     // concurrently, the exact race this lock exists to prevent.
+    breadcrumb.enter("advisory-lock");
     await client.query(ADVISORY_LOCK_SQL);
 
+    // ⚠️ AFTER THE LOCK, NEVER BEFORE IT (#5430). The scratch schema is what
+    // tells 87 concurrent breadcrumb lines apart and is also the advisory
+    // lock's own key, so it is the field a contention reading needs — but
+    // asking for it is still a statement on this session, and
+    // `migrate.test.ts` pins `queries[0]` as the lock because "the advisory
+    // lock is acquired before anything else" is a real invariant of this
+    // function. The first cut of this instrument asked before the lock and
+    // broke exactly that assertion, on two CI shards: an instrument that
+    // changes the shape of what it measures is not an instrument. Asking here
+    // costs the same round trip, reports the schema the lock was ACTUALLY
+    // taken under, and leaves the invariant intact. It is also well before the
+    // first tick at 10s, so no tick is ever unlabelled in practice.
+    //
+    // Armed runs only, and best-effort: this must never be why a migration
+    // fails.
+    if (breadcrumb !== DISARMED_BREADCRUMB) {
+      await client
+        .query("SELECT coalesce(current_schema(), '(null search_path)') AS s")
+        .then((r) => breadcrumb.relabel(`schema=${String(r.rows[0]?.s ?? "?")}`))
+        .catch((err: unknown) => {
+          log.debug(
+            { err: err instanceof Error ? err.message : String(err) },
+            "migration breadcrumb could not read current_schema — continuing unlabelled",
+          );
+        });
+    }
+
     try {
-      return await _runMigrationsLocked(
+      breadcrumb.enter("apply");
+      applied = await _runMigrationsLocked(
         client,
         options.skip ?? [],
         (err) => {
@@ -194,7 +272,9 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
         },
         noticeFrom,
       );
+      return applied;
     } finally {
+      breadcrumb.enter("advisory-unlock");
       await client.query(ADVISORY_UNLOCK_SQL).catch((err: unknown) => {
         // Unlock may legitimately fail if the connection is broken (in
         // which case the client is about to be destroyed anyway). Debug
@@ -219,6 +299,10 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
     // reader does not assume coverage.
     client.off("notice", onNotice);
     client.release(rollbackErr ?? undefined);
+    // In `finally`, so a THROWN run reports too — a migration that fails after
+    // 50s and one that hangs are different stories and the ticks alone cannot
+    // tell them apart.
+    breadcrumb.finish(applied, rollbackErr ?? undefined);
   }
 }
 

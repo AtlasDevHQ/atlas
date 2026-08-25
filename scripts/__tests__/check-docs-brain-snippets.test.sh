@@ -121,6 +121,21 @@ fi
 PASS=0
 FAIL=0
 
+# ⚠️ EVERY captured run is DE-COLOURED before a marker is matched against it
+# (#5429). bun 1.4.0 writes ANSI even when stdout and stderr are PIPES, and it
+# colours the PUNCTUATION separately from the words either side: an uncaught
+# `TypeError: zz-boundary-probe` reaches this file as
+# `\033[31mTypeError\033[0m\033[2m:\033[0m \033[1mzz-boundary-probe`, so
+# `grep -qF 'TypeError: zz-boundary-probe'` finds nothing. That is what made
+# `check_boundary` red on an unchanged tree while the guard under test was
+# behaving exactly as the fixture describes.
+#
+# The guard's OWN banners survived colouring by luck — their marker text happens
+# to be contiguous inside one escape run — so this is applied at every capture
+# rather than only at the site that broke, and the payload printed on a failure
+# is de-coloured too, which is what a CI log wants anyway.
+strip_ansi() { LC_ALL=C sed 's/\x1b\[[0-9;?]*[ -\/]*[@-~]//g'; }
+
 # Repo-relative paths the seeded tree mirrors. The docs one is the real contract
 # page's path and the source one is the real declaration's, so a reader can map a
 # fixture onto the tree it models — but nothing here reads or writes either.
@@ -506,16 +521,39 @@ trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
 # report <ok> <name> <expected> <status> <marker> <tmp> <out> <argv...>
+# ⚠️ WHY the case failed, when the exit code is not the thing that failed (#5429).
+#
+# `report`'s headline used to be `expected $expected, got status=$status`
+# unconditionally, and `ok` is cleared by SEVERAL conditions — the status, each
+# marker, and each must-NOT-appear banner. So a case that got exactly the status
+# it asked for and missed only a marker printed `expected exit 2, got status=2`:
+# a FAIL line whose own text argues the case passed. That is not cosmetic. It
+# sent the first reader of #5429 looking for a verdict bug in the guard, when the
+# guard was correct and the fixture's own grep was the stale side.
+#
+# A caller records one sentence per failed condition here; `report` prints them
+# and resets. A caller that records nothing gets the old headline, which is still
+# the right one when the status IS the mismatch.
+REPORT_WHY=()
+
 report() {
   local ok="$1" name="$2" expected="$3" status="$4" marker="$5" tmp="$6" out="$7"
   shift 7
   if [ "$ok" -eq 1 ]; then
     echo "  ok   $name (expected $expected)"
     PASS=$((PASS + 1))
+    REPORT_WHY=()
     [ -z "$tmp" ] || rm -rf "$tmp"
     return
   fi
-  echo "  FAIL $name — expected $expected, got status=$status" >&2
+  if [ "${#REPORT_WHY[@]}" -gt 0 ]; then
+    echo "  FAIL $name — status=$status (expected $expected); ${#REPORT_WHY[@]} condition(s) failed" >&2
+    local why
+    for why in "${REPORT_WHY[@]}"; do echo "       why: $why" >&2; done
+  else
+    echo "  FAIL $name — expected $expected, got status=$status" >&2
+  fi
+  REPORT_WHY=()
   if [ -n "$marker" ]; then echo "       marker sought: $marker" >&2; fi
   # The argv and the tree are the INPUT that produced this output, and the
   # previous shape deleted the tree three lines before deciding the fixture had
@@ -576,6 +614,7 @@ check() {
   "$setup_fn" "$tmp" || { echo "::error::fixture setup failed: $name" >&2; exit 2; }
 
   out="$(cd "$ROOT" && bun "$GUARD" --root "$tmp" "$@" 2>&1)" || status=$?
+  out="$(printf '%s\n' "$out" | strip_ansi)"
 
   local ok=1
   if [ "$expected" = "pass" ]; then
@@ -614,6 +653,7 @@ check_refuse() {
   fi
   local out status=0
   out="$(cd "$ROOT" && bun "$GUARD" "$@" 2>&1)" || status=$?
+  out="$(printf '%s\n' "$out" | strip_ansi)"
   local ok=1
   [ "$status" -eq 2 ] || ok=0
   printf '%s' "$out" | grep -qF -- "$marker" || ok=0
@@ -645,6 +685,7 @@ check_die() {
   }
   "$setup_fn" "$tmp" || { echo "::error::fixture setup failed: $name" >&2; exit 2; }
   out="$(cd "$ROOT" && bun "$GUARD" --root "$tmp" 2>&1)" || status=$?
+  out="$(printf '%s\n' "$out" | strip_ansi)"
   local ok=1
   [ "$status" -eq 2 ] || ok=0
   printf '%s' "$out" | grep -qF -- "$marker" || ok=0
@@ -1033,12 +1074,16 @@ check_boundary() {
   }
 
   out="$(cd "$ROOT" && bun "$guard_dir/probe.ts" --root "$tmp" 2>&1)" || status=$?
-  [ "$status" -eq 2 ] || ok=0
-  printf '%s' "$out" | grep -qF 'INTERNAL ERROR (uncaught exception)' || ok=0
-  printf '%s' "$out" | grep -qF 'zz-boundary-probe' || ok=0
+  out="$(printf '%s\n' "$out" | strip_ansi)"
+  [ "$status" -eq 2 ] || { ok=0; REPORT_WHY+=("boundary-PRESENT run exited $status, wanted 2"); }
+  printf '%s' "$out" | grep -qF 'INTERNAL ERROR (uncaught exception)' \
+    || { ok=0; REPORT_WHY+=("boundary-PRESENT run printed no INTERNAL ERROR (uncaught exception) banner"); }
+  printf '%s' "$out" | grep -qF 'zz-boundary-probe' \
+    || { ok=0; REPORT_WHY+=("boundary-PRESENT run never names the injected probe zz-boundary-probe"); }
   # An internal error must NOT print the drift banner — that split is the whole
   # taxonomy, and it is what a CI operator reads.
-  printf '%s' "$out" | grep -qF '[docs-brain-snippets] FAIL' && ok=0
+  printf '%s' "$out" | grep -qF '[docs-brain-snippets] FAIL' \
+    && { ok=0; REPORT_WHY+=("boundary-PRESENT run printed the DRIFT banner for an internal error"); }
 
   # …and without the boundary the SAME throw exits 1.
   #
@@ -1051,7 +1096,8 @@ check_boundary() {
   # the case's whole argument rests on, so it gets the same discipline every
   # other failure fixture here gets.
   out_off="$(cd "$ROOT" && bun "$guard_dir/probe-no-boundary.ts" --root "$tmp" 2>&1)" || status_off=$?
-  [ "$status_off" -eq 1 ] || ok=0
+  out_off="$(printf '%s\n' "$out_off" | strip_ansi)"
+  [ "$status_off" -eq 1 ] || { ok=0; REPORT_WHY+=("boundary-ABSENT run exited $status_off, wanted 1"); }
   # The SAME throw got out…
   #
   # ⚠️ `TypeError: zz-boundary-probe`, not the bare probe string. Bun echoes the
@@ -1059,9 +1105,11 @@ check_boundary() {
   # the injected `throw` would print that string and satisfy a looser marker
   # while reproducing nothing. Requiring the THROWN form means only an actual
   # uncaught throw can match.
-  printf '%s' "$out_off" | grep -qF 'TypeError: zz-boundary-probe' || ok=0
+  printf '%s' "$out_off" | grep -qF 'TypeError: zz-boundary-probe' \
+    || { ok=0; REPORT_WHY+=("boundary-ABSENT run never shows the THROWN form TypeError: zz-boundary-probe"); }
   # …and nothing caught it.
-  printf '%s' "$out_off" | grep -qF 'INTERNAL ERROR' && ok=0
+  printf '%s' "$out_off" | grep -qF 'INTERNAL ERROR' \
+    && { ok=0; REPORT_WHY+=("boundary-ABSENT run printed an INTERNAL ERROR banner — something caught the throw"); }
 
   report "$ok" \
     "an unexpected THROW is exit 2 with an INTERNAL ERROR banner (exit 1 without the boundary; got $status_off)" \

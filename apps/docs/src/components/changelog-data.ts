@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.18",
+    title: "Half-Enforced Is Not Enforced",
+    date: "2026-08-25",
+    summary:
+      "v0.2.15 stopped serving warehouse readings as beliefs, and the publish gate has refused them ever since. But a rule enforced at the gate and not at the screen is only half a rule: the pages an operator plans from still counted those readings, so prod showed twelve observations awaiting review above a button that refused all twelve. This release carries that one rule to every surface that discloses it. Alongside it, two refusals that were wrong in the other direction \u2014 an organization invite that no role could perform, and an entity edit that returned 409 after writing the row it claimed to reject.",
+    highlights: [
+      "The observation exclusion now reaches every surface that shows it, not just the gate that enforces it: the publish preview, the draft-count badge on `/api/v1/mode`, that badge\u2019s \u201clast edited\u201d timestamp, and the oversight panel\u2019s awaiting-review, provisional and in-tension counters. The count and the list move together on purpose \u2014 narrowing one alone would have re-rendered the excluded rows as \u201cand 12 more you cannot see\u201d",
+      "Inviting a user to an organization works again \u2014 for every role, `owner` included. Atlas\u2019s custom access-control statement replaced Better Auth\u2019s defaults rather than extending them, so the `invitation` resource was absent entirely, and an absent resource is a denial rather than an omission. Reproduced on prod as an admin",
+      "An entity edit that is refused no longer writes. A `PUT` without a connection group landed the draft in the null group, which made the name span two groups, which made the post-write re-read raise the ambiguity the request had just created \u2014 so the caller read 409 and reasonably believed nothing happened, while the next \u201cpublish all drafts\u201d promoted the stranded row into a group nobody chose. Entity rollback had the same shape and is fixed with it",
+      "That 409 now says where to put the fix. It accepts `connectionGroupId` in the query string as well as the body \u2014 matching `DELETE` on the same path \u2014 and carries the parameter and its location in a field rather than only in prose. Both routes now declare the status in the OpenAPI spec, which documented it on neither",
+      "Email threads stop being re-read on every reply. Ingest stored the whole message including its quoted history, so message 12 of a thread carried the text of messages 1\u201311 and the same claim was extracted a dozen times \u2014 roughly 12\u00d7 the model spend and a dozen provenance edges for one statement, growing quadratically with thread depth. The stored episode is unchanged; what the model reads is now a view of it",
+      "Internal: the local release gate stops being a step everyone overrides. A gate that cannot pass on a clean tree is not a gate \u2014 remote CI on the tagged commit is the release gate now, and a skipped Postgres suite reports as declined rather than as a pass",
+    ],
+  },
+  {
     version: "v0.2.17",
     title: "The Last Mile",
     date: "2026-08-24",

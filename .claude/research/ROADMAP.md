@@ -20,6 +20,49 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
+**Measured 2026-08-25 — condition 4's clock starts, #5000's close is NARROWED not removed, and the prod pair's model gate was open the whole time** ([#5425](https://github.com/AtlasDevHQ/atlas/issues/5425), [#5000](https://github.com/AtlasDevHQ/atlas/issues/5000), [#5438](https://github.com/AtlasDevHQ/atlas/issues/5438)) — condition 4 is the only wall-clock item on the [Finish Conditions board](https://github.com/orgs/AtlasDevHQ/projects/3): *"a week later it has still picked neither, and nobody had to intervene to keep it that way."* Today is criteria 1–3 and the start of the clock; the verdict is due ~2026-09-01.
+
+### Criterion 1 — the qualifier was NARROWED, twice, and never removed
+
+The [PRD snapshot](../../docs/prd/company-atlas.md) rated condition 4 *"**Yes**, for claims that are recognized as contradicting. Recognition itself is the arc's open bug"*, and #5425 asks whether #5000 closing removes that. **It does not, and the reason is on #5000's own close comment.**
+
+#5000 set itself a prod-verification close condition — *"the live `Business tier` 499/599 pair acquires an `in-tension-with` edge"* — and closed 2026-08-12 without meeting it, by explicit decision, on the demonstrated *mechanism* instead. `d947a3cd` (`Business tier` / `priced at` / `499 a month`) carries `invalidated_at = 2026-08-03 15:25:27+00`: it was retracted ~35 minutes after ingest, on the day the bug was filed, so there was no live pair left to edge and `authorAliasEdge` refused with `empty-population` — correctly, since ADR-0037's rule is that a vocabulary decision with no population rots silently. Verified still true in prod today: `d947a3cd` invalidated, `219f5a09` (the `599` claim) live, no edge between them.
+
+⭐ **An issue that closes on a mechanism rather than on its own stated evidence condition does not retire the qualifier the evidence condition was written to test.** The stand-in was a staging rehearsal, and #5000's closing comment already records that it *"was **not** faithful on the axis that decided prod"* — staging's `499` row was published where prod's was a retracted draft. So what closing bought was: the machinery exists and the authoring surface exists. What it did not buy was any evidence about prod, and the qualifier simply moved — from *recognition is exact-string and broken* to *recognition works once a human authors an alias and a cardinality entry*.
+
+**#5438 then falsified that narrowing too**, three weeks later, on a pair **no vocabulary entry can reach**: the extractor segmented the two sentences differently, so an alias at the predicate leaves the subjects apart and one spanning both positions is what ADR-0037 §6 forbids. That needed machinery, not authoring. And after #5438 recognition is still partial by construction — the anchor arm is a whole-token prefix test, so `Series B` against `the round` remains silence. **Narrowed twice, removed never.**
+
+### Criteria 2–3 — the pair is live in prod, from two people, and was NOT recognized
+
+The #5438 fixture pair, posted through the real Slack ingest path and still live in `VgazIn9V…`:
+
+| id | subject / predicate / object | subject_key | episode | actor | ingested |
+|---|---|---|---|---|---|
+| `eb2f9afb` | `Series B` / `target raise` / `$25M` | `series b` | `dd0087e3` | `slack:U0AQW6KF2EM` | 14:09:29Z |
+| `547c7e55` | `Series B fundraise` / `has goal of` / `$30M` | `series b fundraise` | `0fe47d2d` | `slack:U0BT8MMFANL` | 14:09:31Z |
+
+Both `draft`, both live (`invalidated_at` and `valid_to` null on each), different episodes, different authors, messages 31 seconds apart. **Neither picked** — and, until today, **neither surfaced**: no `in-tension-with` edge existed. Prod's only such edge was still `8934f202`, the Series A pair from 2026-08-03 whose rival arm was retracted the same day.
+
+⭐ **The largest named blocker was not the blocker here, and the record proves it: `cardinalityHint: "single"` is stored in `provenance` on BOTH facts.** The PRD calls the extractor's cardinality guess *"the largest remaining blocker"* for condition 4 — the rival scan runs only for a claim labelled `single`, against a prompt that says *"when unsure answer 'multi'"*. For this pair the extractor answered `single` on `has goal of`, so the gate was **open**, and the two claims still never met because both key arms diverged before any matching rule ran. The blocker was segmentation alone. That does not make the model gate safe in general — it makes this pair a case where it happened not to bite, and the distinction was only visible because the hint is persisted.
+
+⚠️ **And the fix was not running where the evidence lives.** PR [#5442](https://github.com/AtlasDevHQ/atlas/pull/5442) merged 2026-08-25T17:46Z; the pair was ingested at 14:09Z; `origin/prod` and all four Railway prod services were still serving `3e16d54a2` (v0.2.18) until `v0.2.19` was cut today. Reconcile only ever wires a tension edge for a claim it is *creating*, so the ingest lane could not have reached these rows even after the deploy. **"The fix shipped" and "the fix is running where the pair is" are different statements**, and #5438's own ROADMAP entry did not distinguish them.
+
+### The reach, measured against prod read-only before any write
+
+The post-#5438 candidate scan, run by hand as a `SELECT` against us prod with the cardinality gate lifted, so both the target pair and the warned spike could be counted without minting anything:
+
+| newer | older | arm |
+|---|---|---|
+| `547c7e55` `series b fundraise` / `has goal of` / `$30M` | `eb2f9afb` `series b` / `target raise` / `$25M` | anchor |
+| `219f5a09` `business tier` / `is priced at` / `599 a month` | `5d1090e4` `business tier` / `discounted for launch` / `no` | anchor |
+| `b568b707` `series a` / `has target raise of` / `8M` | `124734f9` `series a` / `has post money valuation of` / `30M` | anchor |
+
+**Three pairs over the whole corpus, every one of them anchor-only, and two of the three spurious** — exactly the shape `segmentation.ts` predicts by name (*"a subject carrying several `single`-cardinality predicates will see its claims flagged against each other across episodes"*). One-in-three precision on a 34-fact corpus is not a rate that generalizes; it is a demonstration that the predicted cost is real and lands where predicted.
+
+⭐ **The warned one-off review-queue spike is bounded by CURATION, not by history — which is the opposite of how it reads.** The PRD warns that the first sweep after #5438 *"mints anchor-only advisory edges across ALL of history at once"*. True in principle, but `TENSION_SWEEP_SQL` gates every candidate on `cardinalitySingleSql("a")`, which requires an entry that is `single` **and** `status = 'approved'`. Prod holds **4 cardinality rows, all `pending`, zero approved**, all four proposed by `warehouse:v1` and never reviewed — and neither `target raise` nor `has goal of` has a row at all. So the sweep's blast radius is not the corpus, it is *the set of predicates a human has approved*, and on a workspace that has never curated it is empty. The spike is real for a workspace that has curated broadly, and is one edge here.
+
+⚠️ **The gate is on the NEWER side only.** `cardinalitySingleSql("a")` reads `a`, and `(b.ingested_at, b.id) < (a.ingested_at, a.id)` makes `b` the older row — so it is `has goal of` (the `$30M` claim, ingested 1.2s later) that must be curated. Curating `target raise` instead sweeps nothing, silently, and a `{minted: 0}` is documented as not identifying a cause.
+
 **Measured 2026-08-25 — condition 5's RECORD half does not hold, and the one claim in prod that could test it was retired by the verb designed to hide it** ([#5426](https://github.com/AtlasDevHQ/atlas/issues/5426)) — the PRD snapshot rates condition 5 *"**Yes** at the record level; not yet on any surface a non-admin sees"*, and #5426's first criterion gates the surface work on that being true: *"Establish first whether the record can actually answer 'what did this say three months ago, and who changed it' for a real claim in prod. If the record half is thinner than the snapshot claims, that is the finding and the surface work is premature."* **It is thinner.**
 
 The census, us prod — 34 facts, oldest `2026-08-03`, so the corpus is **22 days old** and *"three months ago"* is not askable at all yet, independently of any of the below:

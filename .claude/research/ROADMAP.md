@@ -63,6 +63,49 @@ The post-#5438 candidate scan, run by hand as a `SELECT` against us prod with th
 
 ⚠️ **The gate is on the NEWER side only.** `cardinalitySingleSql("a")` reads `a`, and `(b.ingested_at, b.id) < (a.ingested_at, a.id)` makes `b` the older row — so it is `has goal of` (the `$30M` claim, ingested 1.2s later) that must be curated. Curating `target raise` instead sweeps nothing, silently, and a `{minted: 0}` is documented as not identifying a cause.
 
+### The clock started 2026-08-25T19:36:30Z
+
+`v0.2.19` was cut and rolled out first (prod `api` SUCCESS at `af18a2209`, the v0.2.18 deployment `REMOVED`). Then two authenticated admin acts, both as `admin@useatlas.dev`:
+
+| | value |
+|---|---|
+| cardinality entry | `has goal of` = `single`, **`approved`**, `source_class = human`, `proposed_by` = `reviewed_by` = `5GbsmPM72gWL2Npad17Vf7uPD4S5sJOs`, at 19:36:15.182953Z |
+| sweep | `{minted: 1, truncated: false}` |
+| **the edge** | **`fa9935b7-028e-42eb-b079-ea3dc984adee`**, `in-tension-with`, `547c7e55` → `eb2f9afb`, **19:36:30.598834Z** |
+| audit | `brain_fact.tension_sweep`, `actor_email = admin@useatlas.dev`, `{"minted": 1, "workspaceId": "VgazIn9V…"}` |
+
+**Exactly one edge minted, and it is the predicted pair** — the read-only forecast said one, named which, and the sweep agreed. Both facts re-read after the sweep are still `draft` with `valid_to` and `invalidated_at` null: **the write was additive and no fact row was touched**, as the route documents.
+
+⚠️ **The cardinality write emits NO `admin_action_log` row** — only the sweep audits. Its attribution lives on the `brain_predicate_cardinality` row's own `proposed_by`/`reviewed_by`. Not wrong, but it means "who curated this predicate" and "who swept" are answered from two different places, and only one of them is the audit log.
+
+⭐ **Neither operation has a UI, and both are what #5000's close leaned on.** The web app calls 7 of the 8 `brain-vocabulary` endpoints — `author`, `decide`, `in-force`, `pending`, `preview`, `remove`, `surfaces` — and **not `/cardinality`**; it never calls `/tension-sweep` at all. So the two acts that actually close the recognition loop for this pair were reachable only by hand-written `fetch` against the API origin. #5000 closed on *"#5025's surface exists"*; the surface exists for aliases and for the pending queue, and the declaring-cardinality half and the look-again half are API-only.
+
+### Criterion 3 proved on the SURFACE, not inferred from the tables
+
+`GET /api/v1/admin/brain-facts?tension=true` after the sweep returned `"total": 2`, `"tensionsTruncated": false`. Both facts appear in their own right and each carries the other inside `tensions[]` with opposite `edgeDirection` — `loadTensionClusters`' both-directions walk doing what its docstring promises, since *"a `from`-only walk would hide from the reader exactly the older claim whose trust is now in question."* Each `tensions[]` entry carries the counterpart's own `provenance.attribution` (`visible: true`, actor, sourceId, occurredAt), re-decided per counterpart row rather than inherited, plus the episode body — so a reviewer reads the two sentences that disagree. `status: "draft"`, `validTo: null`, `invalidatedAt: null`, `promotionBlock: null` and `corroborationCount: 1` on both: **no rank, no score, no order favouring either.**
+
+⭐ **`updatedAt` on both rows is still `2026-08-25T14:09Z`** — the ingest time, unmoved by a sweep at 19:36. Independent confirmation that the edge write touched no fact row, from a field nobody set out to use as evidence. The same field #5424 found is last-write-wins and useless for recovering a publisher; here its *not* moving is the whole point.
+
+### What makes the week meaningful, checked in the shipped code rather than hoped
+
+Two structural facts, because *"nobody had to intervene"* is worth nothing if something automatic was going to act anyway:
+
+- **Nothing re-runs the sweep.** `tension-sweep.test.ts` mechanically asserts the admin route is its ONLY caller and fails if it is reachable from `scheduler/`, `registerPeriodicFiber` or `boot` — ADR-0037 §7 refused an unattended autonomous writer of `brain_edges`.
+- **The observation reaper cannot touch this pair.** `observationSql` matches `provenance->>'source' = ANY(warehouse sources)`; both facts carry `source: "slack"`, `producer: "extraction:v1"`, so they fail that arm and the warehouse-episode arm. The first production DELETE against `brain_facts` is fenced away from them three ways.
+
+**Re-read on ~2026-09-01**, needing no rediscovery: facts `eb2f9afb-2dfa-40fb-be83-7a2bcc740b20` and `547c7e55-489d-41d1-a722-92221cfcc2c6`, edge `fa9935b7-028e-42eb-b079-ea3dc984adee`, workspace `VgazIn9VLcR1wkqouZxZ759cBEuvg0Nq`, region `us`. The condition holds if the edge still exists, both facts are still live with `valid_to` and `invalidated_at` null, and no `admin_action_log` row between 2026-08-25T19:36Z and the re-read touched either.
+
+### Recorded as NOT established
+
+- ⚠️ **The week has not elapsed.** Everything above is a point-in-time check, which #5425 says explicitly does not satisfy this condition. The verdict, the PRD's condition-4 line and the board row's final state all wait for the re-read. Condition 4 is **not** demonstrated yet.
+- ⚠️ **"Attributed" here means a resolvable handle, not a human name.** Both actors are `slack:U0AQW6KF2EM` and `slack:U0BT8MMFANL`, and `fact_audience_member` holds one row — for a different channel, mapping an audience to an Atlas user, not a vendor id to a person. So condition 4's *"surfaces both, **attributed**"* inherits condition 2's open defect wholesale ([#5440](https://github.com/AtlasDevHQ/atlas/issues/5440)). **Condition 4 cannot be fully met while condition 2 is not**, and nothing on either issue said so before now.
+- **The pair is flagged and will never be adjudicated, by design.** `object_cmp` is NULL on both — `$25M` refuses to parse because currency symbols are ambiguous — so it sits in the abstain band until a human settles it. That is correct behaviour and it also means **this demonstration exercises recognition and surfacing, not adjudication.**
+- **The recognition was RETROACTIVE, not at ingest.** The sweep reached rows that already existed; the ingest lane has still never minted an anchor-arm edge in prod, and cannot for this pair. A demonstration that the ingest path recognizes a segmented-apart contradiction as it arrives is still owed.
+- **A human authored the cardinality entry.** Criterion 2 forbids an *alias* for the specific pair and none was written — but *something* still had to say the predicate is `single`, and here it was a person, not the model. The extractor's own `single` hint is on the row and the sweep deliberately ignores it (#5027).
+- **Only `us` was read.** Nothing here speaks to eu or apac, and `api-eu` was still building at the time of the sweep.
+- **Two spurious pairs are now one approval away.** `business tier` and `series a` each sit on an anchor-only candidate pair; curating either predicate `single` mints an edge a reviewer must dismiss. The precision cost is not hypothetical, it is queued.
+- **34 facts, one workspace, two producers.** One-in-three anchor precision at this size says nothing about a real corpus.
+
 **Measured 2026-08-25 — condition 5's RECORD half does not hold, and the one claim in prod that could test it was retired by the verb designed to hide it** ([#5426](https://github.com/AtlasDevHQ/atlas/issues/5426)) — the PRD snapshot rates condition 5 *"**Yes** at the record level; not yet on any surface a non-admin sees"*, and #5426's first criterion gates the surface work on that being true: *"Establish first whether the record can actually answer 'what did this say three months ago, and who changed it' for a real claim in prod. If the record half is thinner than the snapshot claims, that is the finding and the surface work is premature."* **It is thinner.**
 
 The census, us prod — 34 facts, oldest `2026-08-03`, so the corpus is **22 days old** and *"three months ago"* is not askable at all yet, independently of any of the below:

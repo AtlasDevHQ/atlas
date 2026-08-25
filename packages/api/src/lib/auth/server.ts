@@ -2543,6 +2543,15 @@ export function buildPlugins() {
           assertInvitationRoleAllowed(invitation.role);
           await enforceInvitationSeatLimit(org.id);
         },
+        // ⚠️ `inviter` here is the User itself (`inviter: session.user` in
+        // `routes/crud-invites.mjs`), NOT the `{ ...member, user }` envelope
+        // that `sendInvitationEmail` below is handed. The two shapes differ
+        // in the same file and reading `inviter.user.id` threw
+        // `TypeError: undefined is not an object` AFTER the invitation row
+        // was committed and the email had gone out — so the recipient got a
+        // working invite while the admin saw a 500 and no audit row was
+        // written. TypeScript can't catch it: the hook types the argument as
+        // `User & Record<string, any>`, so `.user` resolves to `any`.
         afterCreateInvitation: async ({ invitation, inviter, organization: org }) => {
           await recordInvitationCreated({
             invitationId: invitation.id,
@@ -2550,7 +2559,7 @@ export function buildPlugins() {
             role: Array.isArray(invitation.role)
               ? invitation.role.join(",")
               : String(invitation.role ?? ""),
-            inviter: { id: inviter.user.id, email: inviter.user.email },
+            inviter: { id: inviter.id, email: inviter.email },
             orgId: org.id,
           });
         },
@@ -2565,7 +2574,9 @@ export function buildPlugins() {
             // before this hook fires.
             previousStatus: "pending",
             orgId: org.id,
-            cancelledBy: { id: cancelledBy.user.id, email: cancelledBy.user.email },
+            // Same flat-User shape as `afterCreateInvitation` above
+            // (`cancelledBy: session.user`) — not a `{ user }` envelope.
+            cancelledBy: { id: cancelledBy.id, email: cancelledBy.email },
           });
         },
         // #3164 — BLOCK Better Auth's native member-mutation endpoints

@@ -6,6 +6,7 @@ import { useQueryStates } from "nuqs";
 import { z } from "zod";
 import { usersSearchParams } from "./search-params";
 import { ROLES, isDemotion, removeEndpointForRole, type Role } from "./roles";
+import { inviteErrorMessage } from "./invite-error";
 import { useOrgRoles } from "./use-org-roles";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
@@ -529,7 +530,7 @@ export function UsersPage({ scope }: UsersPageProps) {
         role: values.role,
       });
       if (result.error || !result.data) {
-        setInviteError(result.error?.message ?? "Failed to send invitation.");
+        setInviteError(inviteErrorMessage(result.error));
         return;
       }
       // Compute the link client-side so we can offer "Copy link" as a
@@ -539,7 +540,7 @@ export function UsersPage({ scope }: UsersPageProps) {
       setInviteResult({ inviteUrl, email: values.email });
       setInvitationsVersion((v) => v + 1);
     } catch (err) {
-      setInviteError(err instanceof Error ? err.message : "Failed to send invitation.");
+      setInviteError(inviteErrorMessage({ message: err instanceof Error ? err.message : null }));
     } finally {
       setInviteSaving(false);
     }
@@ -569,7 +570,13 @@ export function UsersPage({ scope }: UsersPageProps) {
         | { id?: string; email?: string; message?: string }
         | null;
       if (!res.ok || !data?.id) {
-        setInviteError(data?.message ?? `Failed to send invitation (HTTP ${res.status}).`);
+        setInviteError(
+          inviteErrorMessage({
+            message: data?.message,
+            status: res.status,
+            statusText: res.statusText,
+          }),
+        );
         return;
       }
       const inviteUrl = `${window.location.origin}/accept-invitation/${data.id}`;
@@ -580,7 +587,7 @@ export function UsersPage({ scope }: UsersPageProps) {
       // case the admin happened to invite into their own active org.
       setInvitationsVersion((v) => v + 1);
     } catch (err) {
-      setInviteError(err instanceof Error ? err.message : "Failed to send invitation.");
+      setInviteError(inviteErrorMessage({ message: err instanceof Error ? err.message : null }));
     } finally {
       setInviteSaving(false);
     }

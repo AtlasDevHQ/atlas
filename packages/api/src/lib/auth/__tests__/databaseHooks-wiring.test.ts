@@ -316,6 +316,87 @@ describe("organizationHooks.afterCreateOrganization wiring", () => {
   });
 });
 
+// ── organizationHooks.after{Create,Cancel}Invitation ────────────────
+
+/**
+ * #5436 — these two hooks read the WRONG shape off Better Auth's payload
+ * and threw `TypeError: undefined is not an object` in prod, on every
+ * invite, AFTER the invitation row was committed and the email had gone
+ * out. The admin saw "Failed to send invitation."; the recipient got a
+ * working invite; no `user.invite` audit row was ever written.
+ *
+ * `routes/crud-invites.mjs` hands `inviter`/`cancelledBy` the User itself
+ * (`inviter: session.user`), while `sendInvitationEmail` in the SAME file
+ * is handed a `{ ...member, user: session.user }` envelope. The hook code
+ * had copied the envelope form. TypeScript cannot catch the difference:
+ * the hook types the field as `User & Record<string, any>`, so `.user`
+ * resolves to `any` and `.user.id` type-checks fine.
+ *
+ * So the payloads below are deliberately the FLAT user shape Better Auth
+ * actually passes — no `.user` envelope. If a future Better Auth switches
+ * to the envelope form, this test fails rather than prod.
+ */
+describe("organizationHooks.after{Create,Cancel}Invitation wiring", () => {
+  function getInvitationHook(name: "afterCreateInvitation" | "afterCancelInvitation") {
+    const plugins = buildPlugins();
+    const org = plugins.find((p: { id?: string }) => p.id === "organization");
+    expect(org, "organization plugin must be present in buildPlugins() output").toBeDefined();
+    type OrgOptions = { organizationHooks?: Record<string, unknown> };
+    const opts =
+      (org as { options?: OrgOptions }).options
+      ?? (org as { _config?: OrgOptions })._config;
+    const hook = opts?.organizationHooks?.[name];
+    expect(
+      typeof hook,
+      `${name} must be wired into the organization plugin's organizationHooks`,
+    ).toBe("function");
+    return hook as (args: Record<string, unknown>) => Promise<void>;
+  }
+
+  function auditRow(actionType: string) {
+    return queries.find(
+      (q) =>
+        /INSERT\s+INTO\s+admin_action_log/i.test(q.sql)
+        && q.params?.includes(actionType),
+    );
+  }
+
+  it("records the audit row from Better Auth's flat `inviter` user (#5436)", async () => {
+    const afterCreateInvitation = getInvitationHook("afterCreateInvitation");
+
+    // Exactly what `crud-invites.mjs` passes: inviter IS the session user.
+    await afterCreateInvitation({
+      invitation: { id: "inv_1", email: "invitee@example.com", role: "member" },
+      inviter: { id: "user_inviter", email: "owner@example.com" },
+      organization: { id: "org_invite" },
+    });
+
+    const row = auditRow("user.invite");
+    expect(
+      row?.params,
+      "afterCreateInvitation must write a user.invite audit row attributed to the inviter",
+    ).toContain("user_inviter");
+    expect(row?.params, "the audit row targets the invitation id").toContain("inv_1");
+  });
+
+  it("records the audit row from Better Auth's flat `cancelledBy` user (#5436)", async () => {
+    const afterCancelInvitation = getInvitationHook("afterCancelInvitation");
+
+    await afterCancelInvitation({
+      invitation: { id: "inv_2", email: "invitee@example.com", role: "admin" },
+      cancelledBy: { id: "user_canceller", email: "admin@example.com" },
+      organization: { id: "org_invite" },
+    });
+
+    const row = auditRow("user.revoke_invitation");
+    expect(
+      row?.params,
+      "afterCancelInvitation must write a user.revoke_invitation audit row attributed to the canceller",
+    ).toContain("user_canceller");
+    expect(row?.params, "the audit row targets the invitation id").toContain("inv_2");
+  });
+});
+
 // ── databaseHooks.user.create.after ─────────────────────────────────
 
 describe("databaseHooks.user.create.after wiring", () => {

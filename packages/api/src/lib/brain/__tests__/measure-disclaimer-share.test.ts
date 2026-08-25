@@ -17,7 +17,9 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  groupOf,
   measure,
+  parseRfc822,
   readWorkspaceSamples,
 } from "../../../../scripts/measure-disclaimer-share";
 import { MAX_BODY_CHARS } from "@atlas/api/lib/brain/extract-contract";
@@ -40,6 +42,66 @@ function makeClient(rows: Record<string, unknown>[], captured: Captured[]) {
     },
   };
 }
+
+describe("groupOf — the grouping key", () => {
+  it("takes the domain out of every address shape a mail header uses", () => {
+    expect(groupOf("Sam Reyes <sam@acme.com>")).toBe("acme.com");
+    expect(groupOf("sam@acme.com")).toBe("acme.com");
+    expect(groupOf("  <SAM@ACME.COM>  ")).toBe("acme.com");
+  });
+
+  it("falls back rather than inventing a domain", () => {
+    // A malformed sender must not silently join some other sender's group,
+    // where its text would count toward that group's repeated tails.
+    expect(groupOf(null)).toBe("(unknown)");
+    expect(groupOf("not-an-address")).toBe("not-an-address");
+    expect(groupOf("trailing@")).toBe("trailing@");
+  });
+});
+
+describe("parseRfc822 — the corpus lane's reader", () => {
+  const raw = `Message-ID: <1@acme.com>
+X-Folder: \\Sent
+Subject: Re: Launch
+From: Sam Reyes <sam@acme.com>
+To: Dana
+ Kim <dana@beta.com>
+Date: Mon, 24 Aug 2026 09:20:00 -0000
+
+The migration finished Tuesday.`;
+
+  it("keeps only the headers composeEmailBody stores, in its order", () => {
+    // Fidelity to production is the point: a corpus file carries dozens of
+    // headers the extractor never sees, and measuring those would inflate the
+    // denominator with text that costs nothing.
+    const parsed = parseRfc822(raw);
+    const headerBlock = parsed?.body.split("\n\n")[0] ?? "";
+
+    expect(headerBlock.split("\n").map((l) => l.split(":")[0])).toEqual([
+      "Subject",
+      "From",
+      "To",
+      "Date",
+    ]);
+    expect(headerBlock).not.toContain("Message-ID");
+    expect(headerBlock).not.toContain("X-Folder");
+  });
+
+  it("unfolds a continuation line rather than dropping it", () => {
+    expect(parseRfc822(raw)?.body).toContain("To: Dana Kim <dana@beta.com>");
+  });
+
+  it("reports the sender so the caller can group by it", () => {
+    expect(parseRfc822(raw)?.sender).toBe("Sam Reyes <sam@acme.com>");
+  });
+
+  it("declines a file with no header/body split or no body", () => {
+    // Counted as `unreadable` by the caller. Returning an empty sample instead
+    // would put a zero-length message into the denominator.
+    expect(parseRfc822("no blank line here")).toBeNull();
+    expect(parseRfc822("Subject: x\n\n   \n  ")).toBeNull();
+  });
+});
 
 describe("readWorkspaceSamples — what it asks the database for", () => {
   it("scopes to the workspace and to EMAIL-CLASS sources, derived not hard-coded", async () => {
@@ -143,9 +205,10 @@ On Mon, Aug 24, 2026 at 9:14 AM Dana <dana@x.com> wrote:
   });
 });
 
-describe("measure — cap pressure, #5420's second claim", () => {
+describe("measure — how the cap and the tail actually interact", () => {
   const FOOTER = ["", "Confidential and intended solely for the addressee.", "Acme Corp."];
   const footerText = FOOTER.join("\n");
+  const footerCost = FOOTER.reduce((sum, line) => sum + line.length + 1, 0);
 
   const sample = (novel: string): TailSample => ({
     group: "acme.com",
@@ -159,42 +222,74 @@ describe("measure — cap pressure, #5420's second claim", () => {
    * The distinct suffix per message is load-bearing, not decoration: identical
    * bodies trip the whole-message guard, which attributes zero and reports them
    * as duplicates. An earlier draft of this fixture repeated one body three
-   * times and measured a rescue count of 0 — the guard was right and the
-   * fixture was wrong.
+   * times and measured zero — the guard was right and the fixture was wrong.
    */
   const trio = (novelLength: number): TailSample[] =>
     [0, 1, 2].map((i) => sample(`${"x".repeat(novelLength - 1)}${i}`));
 
-  it("counts a capped message the tail would rescue", () => {
-    // Just over the cap, and over it BY LESS than the footer costs — so
-    // removing the footer would let the whole message through. This is the case
-    // where the tail costs a claim rather than tokens: the cap cuts from the
-    // end, and so does the footer.
-    const result = measure("corpus", trio(MAX_BODY_CHARS - footerText.length + 20), 3);
+  it("charges the model for a tail that fits under the cap", () => {
+    const result = measure("corpus", trio(200), 3);
 
-    expect(result.capPressure.cap).toBe(MAX_BODY_CHARS);
-    expect(result.capPressure.overCap).toBe(3);
-    expect(result.capPressure.overCapRescuedByTail).toBe(3);
-    expect(result.capPressure.overCapTailChars).toBeGreaterThan(0);
+    expect(result.capInteraction.cap).toBe(MAX_BODY_CHARS);
+    expect(result.capInteraction.overCap).toBe(0);
+    // Nothing was truncated, so the whole footer reached the model and none of
+    // it lies beyond the cap.
+    expect(result.capInteraction.tailCharsSent).toBe(3 * footerCost);
+    expect(result.capInteraction.tailCharsBeyondCap).toBe(0);
+    // With nothing truncated the two shares agree; below they must not.
+    expect(result.capInteraction.sentShare).toBeCloseTo(result.report.share, 12);
   });
 
-  it("does not claim a rescue for a message that is long on its own", () => {
-    // Genuinely long content. The footer comes off and it is still over the cap,
-    // so the truncation was about the message, not about boilerplate — and
-    // reporting it as rescued would argue for a stripper on false evidence.
+  it("does NOT charge for a tail that sits entirely beyond the cap", () => {
+    // Real content alone overruns the cap, so the footer begins past position
+    // 8000 and is never sent. It is already free: no stripper can recover it.
     const result = measure("corpus", trio(MAX_BODY_CHARS * 2), 3);
 
-    expect(result.capPressure.overCap).toBe(3);
-    expect(result.capPressure.overCapRescuedByTail).toBe(0);
-    // The footer is still detected — this test isolates the RESCUE claim, and
-    // would pass vacuously if no tail had been found at all.
-    expect(result.capPressure.overCapTailChars).toBeGreaterThan(0);
+    expect(result.capInteraction.overCap).toBe(3);
+    expect(result.capInteraction.tailCharsSent).toBe(0);
+    expect(result.capInteraction.tailCharsBeyondCap).toBe(3 * footerCost);
+    expect(result.capInteraction.sentShare).toBe(0);
+    // …while the stored-text share still counts it. That gap IS the finding:
+    // an unqualified `report.share` overstates the cost on capped messages.
+    expect(result.report.tailChars).toBe(3 * footerCost);
+    expect(result.report.share).toBeGreaterThan(0);
+  });
+
+  it("charges only the part of a straddling tail that falls inside the cap", () => {
+    // The cut at MAX_BODY_CHARS lands INSIDE the footer: part of it is sent and
+    // the rest is not.
+    const novelLength = MAX_BODY_CHARS - 20;
+    // The tail begins after the novel line AND the newline that terminates it —
+    // `lineChars` counts that newline, so the boundary is novelLength + 1, not
+    // novelLength. Derived rather than written as a literal because getting it
+    // wrong by exactly one newline is how this measurement goes quietly wrong.
+    const tailStart = novelLength + 1;
+    const expectedSent = MAX_BODY_CHARS - tailStart;
+
+    const result = measure("corpus", trio(novelLength), 3);
+
+    expect(result.capInteraction.overCap).toBe(3);
+    expect(expectedSent).toBeGreaterThan(0);
+    expect(expectedSent).toBeLessThan(footerCost);
+    expect(result.capInteraction.tailCharsSent).toBe(3 * expectedSent);
+    expect(result.capInteraction.tailCharsBeyondCap).toBe(3 * (footerCost - expectedSent));
+  });
+
+  it("reports zero recoverable claims, because a trailing tail cannot cost one", () => {
+    // The correction to #5420's second claim. The cap is a FRONT slice and the
+    // tail is at the BACK, so real content delivered is min(cap, L - T) both
+    // before and after a strip. This is asserted on the straddling fixture —
+    // the only shape where "the strip would un-truncate it" is even tempting.
+    const straddling = measure("corpus", trio(MAX_BODY_CHARS - 20), 3);
+    const longOnItsOwn = measure("corpus", trio(MAX_BODY_CHARS * 2), 3);
+
+    expect(straddling.capInteraction.claimsRecoverableByStripping).toBe(0);
+    expect(longOnItsOwn.capInteraction.claimsRecoverableByStripping).toBe(0);
   });
 
   it("counts nothing as capped when everything fits", () => {
     const result = measure("corpus", [sample("short"), sample("also short"), sample("brief")], 3);
-    expect(result.capPressure.overCap).toBe(0);
-    expect(result.capPressure.overCapRescuedByTail).toBe(0);
+    expect(result.capInteraction.overCap).toBe(0);
     expect(result.report.messagesWithTail).toBe(3);
   });
 });

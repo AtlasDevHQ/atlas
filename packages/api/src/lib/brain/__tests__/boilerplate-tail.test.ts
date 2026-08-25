@@ -204,6 +204,25 @@ describe("measureBoilerplateTails — degenerate input", () => {
     expect(measureBoilerplateTails([], { minRepeats: 7 }).minRepeats).toBe(7);
     expect(measureBoilerplateTails([]).minRepeats).toBe(3);
   });
+
+  it("falls back to the default on a non-finite threshold instead of zeroing out", () => {
+    // `Math.max(2, NaN)` is NaN, which makes the depth test false everywhere:
+    // every walk runs to the message's full length, every message is called a
+    // whole-message duplicate, and the report reads `share: 0` with `minRepeats`
+    // serialising as `null`. A zero meaning "your argument was garbage" is
+    // indistinguishable from one meaning "there is no boilerplate here", and
+    // that is the exact distinction #5420 turns on.
+    const withFooter = ["one", "two", "three", "four"].map((n) =>
+      sample("acme.com", withDisclaimer(`Novel ${n}.`)),
+    );
+
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const report = measureBoilerplateTails(withFooter, { minRepeats: bad });
+      expect(report.minRepeats).toBe(3);
+      expect(report.wholeMessageRepeats).toBe(0);
+      expect(report.tailChars).toBe(4 * cost(DISCLAIMER));
+    }
+  });
 });
 
 describe("the instrument sees the gap `quoted-reply.ts` pins as unclosed", () => {

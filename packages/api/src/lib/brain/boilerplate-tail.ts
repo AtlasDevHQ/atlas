@@ -82,8 +82,22 @@ export interface TailSample {
   /**
    * The text to measure — the post-strip, PRE-truncation extractor view (what
    * `strippedForExtraction` returns, before `extractionExcerpt` applies the
-   * cap). Measuring the truncated form would hide the tails on exactly the
-   * messages #5420 says are worst affected: the ones already at the cap.
+   * cap).
+   *
+   * ⚠️ The resulting share is therefore a share of STORED text, and on a
+   * capped message it OVER-COUNTS: `extractionExcerpt` keeps a front slice, so
+   * any tail lying beyond `MAX_BODY_CHARS` is never sent to the model and costs
+   * nothing. Pre-truncation is still the right input — it keeps this module
+   * free of the cap, and the per-message lengths in {@link SampleTail} let a
+   * caller derive the cap-aware figure exactly — but a caller reporting a
+   * single headline number should report the cap-aware one. See
+   * `scripts/measure-disclaimer-share.ts`'s `CapInteraction`, which does, and
+   * which carries the derivation.
+   *
+   * (An earlier version of this comment justified pre-truncation on the grounds
+   * that measuring the truncated form "would hide the tails on exactly the
+   * messages worst affected: the ones already at the cap". That was backwards —
+   * on those messages the trailing tail is the part that is already free.)
    */
   readonly text: string;
 }
@@ -171,6 +185,33 @@ function normalisedLines(text: string): string[] {
 /** A line's cost in the body, including the newline that follows it. */
 function lineChars(line: string): number {
   return line.length + 1;
+}
+
+/**
+ * The threshold, resolved once so the two entry points cannot disagree.
+ *
+ * Two is the floor the method itself imposes — a "tail" shared by one message
+ * is that message. Clamping rather than throwing keeps a misconfigured operator
+ * flag from ending a long read-only scan at the last step.
+ *
+ * `Number.isFinite` is not belt-and-braces. `Math.max(2, NaN)` is NaN, which
+ * makes `next.count < minRepeats` false at EVERY depth, so every walk runs to
+ * the message's full length and every message is classified as a whole-message
+ * duplicate — `share: 0`, silently, with the echoed threshold serialising as
+ * `null`. A recorded zero meaning "the argument was garbage" is
+ * indistinguishable from one meaning "there is no boilerplate", and this issue
+ * turns on precisely that distinction.
+ *
+ * Shared rather than inlined twice: {@link boilerplateTailOf} computes the tails
+ * and {@link measureBoilerplateTails} echoes the threshold into the report, so
+ * two copies would eventually report a number taken at a different threshold
+ * than the one printed beside it.
+ */
+function resolveMinRepeats(options: BoilerplateTailOptions): number {
+  const requested = options.minRepeats;
+  return typeof requested === "number" && Number.isFinite(requested)
+    ? Math.max(2, requested)
+    : 3;
 }
 
 interface TrieNode {
@@ -263,10 +304,7 @@ export function boilerplateTailOf(
   samples: readonly TailSample[],
   options: BoilerplateTailOptions = {},
 ): readonly SampleTail[] {
-  // Two is the floor the method itself imposes — a "tail" shared by one message
-  // is that message. Clamping rather than throwing keeps a misconfigured
-  // operator flag from ending a long read-only scan at the last step.
-  const minRepeats = Math.max(2, options.minRepeats ?? 3);
+  const minRepeats = resolveMinRepeats(options);
 
   // Group, remembering each sample's original index so the result can be
   // returned in input order — the script joins it back against episode ids.
@@ -320,7 +358,7 @@ export function measureBoilerplateTails(
   samples: readonly TailSample[],
   options: BoilerplateTailOptions = {},
 ): BoilerplateTailReport {
-  const minRepeats = Math.max(2, options.minRepeats ?? 3);
+  const minRepeats = resolveMinRepeats(options);
   const tails = boilerplateTailOf(samples, options);
 
   let totalChars = 0;

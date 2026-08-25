@@ -23,6 +23,29 @@
  * disclaimer stripper could recover: mail-client footers repeat the same way
  * and are counted the same way.
  *
+ * ## Which number to read — and a correction to the issue
+ *
+ * TWO shares are printed and they answer different questions:
+ *
+ *   `report.share`             boilerplate as a fraction of STORED text.
+ *   `capInteraction.sentShare` boilerplate as a fraction of what the model
+ *                              actually READS. **This is the one #5420 asks
+ *                              for.**
+ *
+ * They differ because `extractionExcerpt` caps at a FRONT slice: tail lying
+ * beyond `MAX_BODY_CHARS` was never sent and is therefore already free, so
+ * `report.share` over-counts on capped messages.
+ *
+ * ⚠️ The same fact corrects the issue's second claim. #5420 says the disclaimer
+ * *"eats into `MAX_BODY_CHARS` on exactly the messages already closest to the
+ * cap"*, which reads as though a footer pushes real content off the end. It
+ * cannot: the cap cuts from the FRONT and the tail is at the BACK, so real
+ * content delivered is `min(cap, L - T)` both before and after a strip —
+ * identical. **A trailing tail costs tokens only, never a claim.** See
+ * {@link CapInteraction} for the derivation. That removes the strongest
+ * argument in the issue for doing this work, which is exactly why it is stated
+ * up front rather than left in a field nobody reads.
+ *
  * ## Two input lanes, because the obvious one is empty
  *
  *   --corpus <dir>      RFC822 files on this machine. ADR-0044 settles what may
@@ -56,13 +79,21 @@
  *   --min-repeats N   messages that must share a tail before it counts (default 3)
  *   --limit N         stop after N messages (default 20000)
  *
- * ⚠️ `--limit` truncates in DIRECTORY-WALK ORDER, not at random. On a corpus
- * laid out per-sender (Enron's maildir is), a small limit can land entirely
- * inside one or two senders and report a share that says more about which
- * folder sorted first than about the corpus. It is a way to bound a first run,
- * not a sampling strategy — a number quoted into #5420 should come from a run
- * whose `messages` count is the whole corpus, or from one whose `groups` count
- * is large enough to be credible.
+ * ⚠️ `--limit` IS NOT A SAMPLING STRATEGY, in either lane, and both lanes are
+ * biased in a way that inflates the share:
+ *
+ *   corpus     truncates in DIRECTORY-WALK ORDER. On a per-sender maildir
+ *              (Enron's is) a small limit can land entirely inside one or two
+ *              senders — and a single sender's mail shares a footer far more
+ *              often than a workspace's does.
+ *   workspace  `ORDER BY ingested_at DESC` takes the most RECENT episodes,
+ *              which can land inside one burst or one high-volume automated
+ *              sender. This is the lane #5420 actually wants a number from, so
+ *              the caveat matters more here, not less.
+ *
+ * A number quoted into #5420 should come from a run whose `messages` count is
+ * the whole corpus or mailbox, or whose `groups` count is large enough to be
+ * credible on its face.
  *
  * Exit codes:
  *   0 — measured. A single line of JSON on stdout.
@@ -74,7 +105,13 @@
  *   1 — the script failed (bad flags, unreadable directory, DB error).
  */
 
+// ⚠️ MUST STAY FIRST. Pins the app logger to fd 2 so this script's stdout is a
+// clean machine channel; see that module's header for why there is no runtime
+// substitute. Anything imported above it can construct the logger first.
+import "./measure-log-destination";
+
 import { readdir, readFile, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import { join } from "node:path";
 import { Pool } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -90,6 +127,7 @@ import {
   boilerplateTailOf,
   measureBoilerplateTails,
   type BoilerplateTailReport,
+  type SampleTail,
   type TailSample,
 } from "@atlas/api/lib/brain/boilerplate-tail";
 
@@ -182,7 +220,7 @@ function parseArgs(argv: readonly string[]): Options {
  * Lowercased, because a domain is case-insensitive and two casings of one
  * sender would split a group and under-report.
  */
-function groupOf(sender: string | null): string {
+export function groupOf(sender: string | null): string {
   if (sender === null) return "(unknown)";
   const angled = /<([^>]*)>/.exec(sender);
   const address = (angled?.[1] ?? sender).trim().toLowerCase();
@@ -212,7 +250,7 @@ const COMPOSED_HEADERS = ["Subject", "From", "To", "Cc", "Date"] as const;
  * carries `unreadable` — a corpus where that count is large is the wrong corpus
  * for this measurement, and the number should not be quoted from it.
  */
-function parseRfc822(raw: string): { sender: string | null; body: string } | null {
+export function parseRfc822(raw: string): { sender: string | null; body: string } | null {
   const text = raw.replace(/\r\n/g, "\n");
   const split = text.indexOf("\n\n");
   if (split === -1) return null;
@@ -251,24 +289,76 @@ interface CorpusRead {
   readonly samples: readonly TailSample[];
   readonly filesSeen: number;
   readonly unreadable: number;
+  readonly unreadableDirs: number;
+  readonly symlinksSkipped: number;
 }
 
 async function readCorpus(dir: string, limit: number): Promise<CorpusRead> {
   const samples: TailSample[] = [];
   let filesSeen = 0;
   let unreadable = 0;
+  let unreadableDirs = 0;
+  let symlinksSkipped = 0;
 
   const walk = async (current: string): Promise<void> => {
     if (samples.length >= limit) return;
-    const entries = await readdir(current, { withFileTypes: true });
+
+    let entries: Dirent[];
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch (err) {
+      // One permission hole must not discard the whole scan. An earlier version
+      // let this throw all the way to `main`: a single unreadable sub-directory
+      // ended the run at exit 1 with every message already read thrown away —
+      // and the handler printed the path, which in a maildir is
+      // `maildir/<lastname-f>/…`, i.e. a person's name. Counted, never named.
+      log.debug(
+        { err: err instanceof Error ? err.message : String(err) },
+        "corpus directory unreadable — skipping its subtree",
+      );
+      unreadableDirs += 1;
+      return;
+    }
+
     for (const entry of entries) {
       if (samples.length >= limit) return;
       const path = join(current, entry.name);
-      if (entry.isDirectory()) {
+
+      // `withFileTypes` reports the LINK, not its target, so a symlink is
+      // neither `isFile()` nor `isDirectory()`. Left unhandled, symlinked mail
+      // files and whole symlinked subtrees vanish from the scan while being
+      // counted in NEITHER `filesSeen` NOR `unreadable` — a clean-looking report
+      // that silently dropped most of the corpus. Since the header tells the
+      // reader to judge corpus fitness by these counts, a silent omission
+      // defeats the only signal on offer. Resolved with `stat`, which follows.
+      let isDir = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (entry.isSymbolicLink()) {
+        try {
+          const target = await stat(path);
+          isDir = target.isDirectory();
+          isFile = target.isFile();
+        } catch (err) {
+          // A dangling symlink is normal in an unpacked archive.
+          log.debug(
+            { err: err instanceof Error ? err.message : String(err) },
+            "corpus symlink does not resolve — skipping",
+          );
+          symlinksSkipped += 1;
+          continue;
+        }
+      }
+
+      if (isDir) {
         await walk(path);
         continue;
       }
-      if (!entry.isFile()) continue;
+      if (!isFile) {
+        // A socket, fifo or device node. Not mail, and not a failure to read
+        // mail, so it is counted apart from both.
+        symlinksSkipped += 1;
+        continue;
+      }
       filesSeen += 1;
 
       let raw: string;
@@ -304,7 +394,7 @@ async function readCorpus(dir: string, limit: number): Promise<CorpusRead> {
   };
 
   await walk(dir);
-  return { samples, filesSeen, unreadable };
+  return { samples, filesSeen, unreadable, unreadableDirs, symlinksSkipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -359,45 +449,98 @@ export async function readWorkspaceSamples(
 // ---------------------------------------------------------------------------
 
 /**
- * #5420: "It also eats into `MAX_BODY_CHARS` on exactly the messages already
- * closest to the cap."
+ * How the cap and the tail actually interact — and the correction to #5420's
+ * second claim.
  *
- * That claim is not answerable from an average, so it is computed per message:
- * of the messages the extractor truncates today, how many would fit whole if
- * their repeated tail came off? A truncated message is the one case where the
- * tail costs a CLAIM rather than only tokens — the tail sits at the end, the
- * cap cuts from the end, so the text pushed over the edge is real content.
+ * ⚠️ THE ISSUE'S PREMISE IS WRONG, AND SO WAS THIS FUNCTION'S FIRST VERSION.
+ * #5420 says the disclaimer *"eats into `MAX_BODY_CHARS` on exactly the messages
+ * already closest to the cap"*, which reads as though a trailing footer pushes
+ * real content off the end. It cannot. `extractionExcerpt` takes a FRONT slice
+ * — `text.slice(0, MAX_BODY_CHARS)` — and the tail is at the BACK. Write `L` for
+ * the message length and `T` for its tail:
  *
- * `sample.text.length` is the raw stripped length (what `extractionExcerpt`
- * actually compares against the cap), while `tail.chars` is measured on
- * normalised lines. Normalisation only ever shrinks, so `rescued` is a LOWER
- * bound — the honest direction for a number that argues for doing work.
+ *     real content delivered  =  min(cap, L - T)      … before stripping
+ *     real content delivered  =  min(cap, L - T)      … after stripping
+ *
+ * The two are identical, for every `L` and every `T`. Removing a trailing tail
+ * can never recover a single character of real content from a front slice, so
+ * **the tail costs TOKENS ONLY — never a claim.** The first version of this
+ * function counted `L - T <= cap` as messages "rescued by" stripping; that
+ * predicate is true precisely when the cut at `cap` lands *inside* the tail,
+ * i.e. when nothing but boilerplate was discarded. It reported its own
+ * best-case as a saving. It is gone rather than fixed, because the quantity it
+ * named does not exist.
+ *
+ * What IS true, and is what this reports: a tail lying beyond the cap is
+ * already free. It was never sent, so a stripper cannot save it. Only the part
+ * of the tail inside the first `cap` characters is a real cost:
+ *
+ *     tail actually sent  =  max(0, min(cap, L) - (L - T))
+ *
+ * That makes {@link CapInteraction.sentShare} the number #5420 actually asked
+ * for — the share of what the model READS that is boilerplate — while the
+ * report's headline `share` is the share of stored text, which over-counts on
+ * capped messages. Both are printed, and the difference between them IS the
+ * finding for anyone deciding this.
+ *
+ * Lengths are the NORMALISED ones from `boilerplateTailOf` (trailing whitespace
+ * and blank lines removed) so the tail and the total are measured the same way;
+ * `extractionExcerpt` compares the raw length against the cap, and the gap
+ * between the two is trailing whitespace only.
  */
-interface CapPressure {
+interface CapInteraction {
   readonly cap: number;
+  /** Messages the extractor truncates today. */
   readonly overCap: number;
-  readonly overCapRescuedByTail: number;
-  readonly overCapTailChars: number;
+  /** Characters actually sent to the model, summed. The honest denominator. */
+  readonly charsSent: number;
+  /** Of those, characters that are repeated tail. The honest numerator. */
+  readonly tailCharsSent: number;
+  /** Tail beyond the cap — never sent, already free, unrecoverable by a strip. */
+  readonly tailCharsBeyondCap: number;
+  /** `tailCharsSent / charsSent` — boilerplate share of what the model reads. */
+  readonly sentShare: number;
+  /**
+   * Always 0, and stated rather than omitted.
+   *
+   * A reader who knows #5420's text will look for the "messages a strip would
+   * un-truncate" number. It is identically zero for the reason derived above,
+   * and a silently absent field would read as an oversight rather than as a
+   * result.
+   */
+  readonly claimsRecoverableByStripping: 0;
 }
 
-function capPressure(
-  samples: readonly TailSample[],
-  tails: readonly { chars: number }[],
-): CapPressure {
+function capInteraction(tails: readonly SampleTail[], cap: number): CapInteraction {
   let overCap = 0;
-  let overCapRescuedByTail = 0;
-  let overCapTailChars = 0;
+  let charsSent = 0;
+  let tailCharsSent = 0;
+  let tailCharsBeyondCap = 0;
 
-  for (let i = 0; i < samples.length; i += 1) {
-    const length = (samples[i] as TailSample).text.length;
-    if (length <= MAX_BODY_CHARS) continue;
-    overCap += 1;
-    const chars = (tails[i]?.chars ?? 0) as number;
-    overCapTailChars += chars;
-    if (length - chars <= MAX_BODY_CHARS) overCapRescuedByTail += 1;
+  for (const tail of tails) {
+    const length = tail.totalChars;
+    if (length > cap) overCap += 1;
+
+    const sent = Math.min(cap, length);
+    charsSent += sent;
+
+    // Where the tail begins. `tail.chars` is 0 for a message with no counted
+    // tail, which makes this the message's own length and the arm below zero.
+    const tailStart = length - tail.chars;
+    const sentTail = Math.max(0, sent - tailStart);
+    tailCharsSent += sentTail;
+    tailCharsBeyondCap += tail.chars - sentTail;
   }
 
-  return { cap: MAX_BODY_CHARS, overCap, overCapRescuedByTail, overCapTailChars };
+  return {
+    cap,
+    overCap,
+    charsSent,
+    tailCharsSent,
+    tailCharsBeyondCap,
+    sentShare: charsSent === 0 ? 0 : tailCharsSent / charsSent,
+    claimsRecoverableByStripping: 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -407,8 +550,13 @@ function capPressure(
 interface Measurement {
   readonly lane: "corpus" | "workspace";
   readonly report: BoilerplateTailReport;
-  readonly capPressure: CapPressure;
-  readonly corpus?: { readonly filesSeen: number; readonly unreadable: number };
+  readonly capInteraction: CapInteraction;
+  readonly corpus?: {
+    readonly filesSeen: number;
+    readonly unreadable: number;
+    readonly unreadableDirs: number;
+    readonly symlinksSkipped: number;
+  };
 }
 
 export function measure(
@@ -420,7 +568,7 @@ export function measure(
   return {
     lane,
     report: measureBoilerplateTails(samples, { minRepeats }),
-    capPressure: capPressure(samples, tails),
+    capInteraction: capInteraction(tails, MAX_BODY_CHARS),
   };
 }
 
@@ -445,7 +593,12 @@ async function main(): Promise<void> {
       const read = await readCorpus(dir, options.limit);
       measurement = {
         ...measure("corpus", read.samples, options.minRepeats),
-        corpus: { filesSeen: read.filesSeen, unreadable: read.unreadable },
+        corpus: {
+          filesSeen: read.filesSeen,
+          unreadable: read.unreadable,
+          unreadableDirs: read.unreadableDirs,
+          symlinksSkipped: read.symlinksSkipped,
+        },
       };
     } else {
       const databaseUrl = process.env.DATABASE_URL;

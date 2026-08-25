@@ -243,7 +243,7 @@
         "hono": "^4.12.34",
         "htmlparser2": "^12.0.0",
         "jose": "6.2.3",
-        "js-yaml": "^5.2.2",
+        "js-yaml": "^5.3.0",
         "jsforce": "^3.10.19",
         "just-bash": "3.1.0",
         "mysql2": "^3.23.2",
@@ -291,7 +291,7 @@
         "@useatlas/types": "workspace:*",
         "ai": "^6.0.235",
         "hono": "^4.12.34",
-        "js-yaml": "^5.2.2",
+        "js-yaml": "^5.3.0",
         "jsforce": "^3.10.19",
         "mysql2": "^3.23.2",
         "node-sql-parser": "^5.4.0",
@@ -331,7 +331,7 @@
         "better-auth": "^1.6.25",
         "effect": "^3.22.0",
         "hono": "^4.12.34",
-        "js-yaml": "^5.2.2",
+        "js-yaml": "^5.3.0",
         "pino": "^10.3.1",
       },
       "devDependencies": {
@@ -350,7 +350,7 @@
         "fflate": "^0.8.2",
       },
       "devDependencies": {
-        "js-yaml": "^5.2.2",
+        "js-yaml": "^5.3.0",
       },
     },
     "packages/plugin-sdk": {
@@ -931,7 +931,7 @@
       "name": "@useatlas/yaml-context",
       "version": "0.0.5",
       "dependencies": {
-        "js-yaml": "^5.2.2",
+        "js-yaml": "^5.3.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {

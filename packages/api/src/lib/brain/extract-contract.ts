@@ -102,12 +102,42 @@ export interface EpisodeRow {
  * What the model is asked for. Kept deliberately close to `brain_facts`'s own
  * columns: a schema with its own vocabulary would need a translation step, and
  * a translation step is where a claim quietly changes meaning.
+ *
+ * ## The SEGMENTATION rule on `subject`, and what it is and is not worth (#5438)
+ *
+ * The subject description and the system prompt both now say that the entity
+ * goes in the subject and the whole relationship goes in the predicate. That is
+ * a repair at the SOURCE of the defect #5438 measured in prod: the extractor
+ * absorbed *"fundraise"* into one message's subject, so two sentences expressing
+ * one relation were segmented differently and their identity keys diverged at
+ * both slot arms before any matching rule could run.
+ *
+ * ⚠️ **It is a rate reduction, not a gate, and nothing may be built on top of
+ * it.** This is an instruction to a model, so it holds statistically and on the
+ * provider's current behaviour — `paraphrase-identity.test.ts` records the same
+ * extractor emitting two different predicates for one claim at 12:25 UTC and one
+ * predicate at 13:40, same model id, `temperature: 0`, no local change. A rule
+ * that has to be TRUE belongs in the identity layer or in SQL, where it can be
+ * falsified.
+ *
+ * What actually recognizes the drifted pair is `segmentation.ts`'s anchor arm on
+ * the tension scan, which is deterministic and holds however the extractor
+ * segments. This instruction reduces how often that arm is the only thing
+ * standing between two contradicting colleagues and silence; it does not make
+ * the arm redundant, and removing the arm on the strength of this paragraph
+ * would restore the bug.
  */
 export const ExtractionSchema = z.object({
   facts: z
     .array(
       z.object({
-        subject: z.string().describe("The entity the claim is about, as named in the text."),
+        subject: z
+          .string()
+          .describe(
+            "The entity the claim is about, as named in the text — the entity ALONE. " +
+              "Do not absorb any part of the relationship into it: for 'the Series B " +
+              "fundraise goal is $30M' the subject is 'Series B', not 'Series B fundraise'.",
+          ),
         predicate: z
           .string()
           .describe("The relationship, as a short lowercase verb phrase, e.g. 'reports to'."),
@@ -150,6 +180,9 @@ export const EXTRACTION_SYSTEM_PROMPT = [
   "- Use the names exactly as the message writes them. Do not invent identifiers or expand abbreviations.",
   "- Do not infer anything the message does not state.",
   "- Keep each field short; the predicate is a verb phrase, not a sentence.",
+  "- Put the entity in the subject and the WHOLE relationship in the predicate. Never move a",
+  "  relationship word into the subject: 'the Series B fundraise goal is $30M' is",
+  "  subject 'Series B', predicate 'has goal of' — not subject 'Series B fundraise'.",
   "- Answer 'single' for cardinality only when the subject can have just one such object at a time.",
 ].join("\n");
 

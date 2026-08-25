@@ -25,10 +25,19 @@
  *
  * Every arm of {@link TENSION_SWEEP_SQL}'s rival scan is
  * {@link TENSION_CANDIDATES_SQL}'s arm, in the same order, built from the same
- * two shared builders (`objectNotSameSql`, `subjectNotDifferentSql`). That is
+ * three shared builders (`tensionReachSql`, `objectNotSameSql`,
+ * `subjectNotDifferentSql`). That is
  * the property to preserve when either statement is edited: two spellings of
  * "what is in tension" is how the sweep and the ingest path drift into flagging
  * different pairs, and a reviewer has no way to tell which one is right.
+ *
+ * ⚠️ The slot arm became a REACH in #5438 — the exact slot, OR the same subject
+ * ANCHOR from a different episode with no predicate test — and it moved into
+ * `segmentation.ts` precisely so this statement and the ingest scan could not
+ * acquire two versions of it. The whole argument for dropping the predicate at
+ * an ADVISORY consumer, and the three mechanisms falsified before it, live in
+ * that module's header. This module gets the widening for free and does not
+ * restate it.
  *
  * TWO structural differences in the rival SCAN, both about ORDER rather than
  * about which pairs qualify. (The CARDINALITY gate differs too, and that one DOES
@@ -43,7 +52,9 @@
  *     say so: `(ingested_at, id) <` is the total order that makes this statement
  *     generate the same edge set the ingest path would have, one edge per
  *     unordered pair, with the per-fact fan-out cap biting on the same side.
- *   - **The id TIEBREAK in the `ORDER BY`.** `TENSION_CANDIDATES_SQL` orders
+ *   - **The id TIEBREAK in the `ORDER BY`.** After the shared head term both
+ *     statements now carry (`exactSlotFirstSql`, #5438),
+ *     `TENSION_CANDIDATES_SQL` orders
  *     `ingested_at DESC` alone; this orders `ingested_at DESC, id DESC`. Under
  *     tied timestamps — a batch insert, a region import carrying one window —
  *     the two can therefore select DIFFERENT rivals inside the per-fact cap, so
@@ -139,6 +150,10 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { objectNotSameSql } from "@atlas/api/lib/brain/object-cmp";
 import { subjectNotDifferentSql } from "@atlas/api/lib/brain/subject-cmp";
+// The SAME reach the ingest path uses, imported rather than respelled — this
+// module's header names two spellings of "what is in tension" as the drift that
+// leaves a reviewer unable to tell which statement is right (#5438).
+import { exactSlotFirstSql, tensionReachSql } from "@atlas/api/lib/brain/segmentation";
 import { cardinalitySingleSql } from "@atlas/api/lib/brain/cardinality";
 import { isLockTimeout } from "@atlas/api/lib/brain/identity";
 import {
@@ -323,14 +338,27 @@ export const TENSION_SWEEP_SQL = `
         SELECT b.id
           FROM brain_facts b
          WHERE b.workspace_id = a.workspace_id
-           AND b.subject_key = a.subject_key
-           AND b.predicate_key = a.predicate_key
+           AND ${tensionReachSql(
+             {
+               subjectKeyExpr: "b.subject_key",
+               predicateKeyExpr: "b.predicate_key",
+               episodeIdExpr: "b.source_episode_id",
+             },
+             {
+               subjectKeyExpr: "a.subject_key",
+               predicateKeyExpr: "a.predicate_key",
+               episodeIdExpr: "a.source_episode_id",
+             },
+           )}
            AND ${objectNotSameSql("b.object_key", "a.object_key", "b.object_cmp", "a.object_cmp")}
            AND ${subjectNotDifferentSql("b.subject_cmp", "a.subject_cmp")}
            AND b.invalidated_at IS NULL
            AND b.valid_to IS NULL
            AND (b.ingested_at, b.id) < (a.ingested_at, a.id)
-         ORDER BY b.ingested_at DESC, b.id DESC
+         ORDER BY ${exactSlotFirstSql(
+           { subjectKeyExpr: "b.subject_key", predicateKeyExpr: "b.predicate_key" },
+           { subjectKeyExpr: "a.subject_key", predicateKeyExpr: "a.predicate_key" },
+         )}, b.ingested_at DESC, b.id DESC
          LIMIT $2
       ) rival
      WHERE a.workspace_id = $1

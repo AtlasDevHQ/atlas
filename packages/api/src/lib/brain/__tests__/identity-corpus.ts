@@ -165,6 +165,8 @@ export const RELATIONS = [
   "unproven-rival",
   "proven-rival",
   "tier-guarded-rival",
+  "drifted-rival",
+  "anchor-flagged",
   "proven-homonym",
   "different-claim",
 ] as const;
@@ -189,6 +191,29 @@ export const RELATIONS = [
  *     ADR-0037 §4). The identity layer is unchanged — same slot, same
  *     three-valued agreement, same tension edge — and only the CONSEQUENCE is
  *     withheld. *Identity is source-agnostic; consequence is tier-ordered.*
+ *   - `drifted-rival` — a real contradiction the EXACT SLOT cannot see, because
+ *     the extractor segmented the two sentences differently (#5438). The
+ *     subject keys diverge by a residue the extractor absorbed (`series b`
+ *     against `series b fundraise`) and the predicate keys share nothing at all,
+ *     so no arm of the slot relation can match — and the pair is a genuine
+ *     disagreement about one number, by two authors, in one workspace. The
+ *     verdict row is byte-identical to `unproven-rival`'s and the two are NOT
+ *     interchangeable: that relation is a pair the slot FINDS and cannot
+ *     adjudicate, this is a pair the slot never finds at all. It is admitted by
+ *     `tensionReachSql`'s anchor arm, at the advisory consumer only.
+ *   - `anchor-flagged` — the COST of the arm above, in the corpus rather than in
+ *     a comment (#5438). Two claims that are both true and are not a
+ *     contradiction, flagged as rivals anyway because they share a subject
+ *     anchor and the anchor arm carries no predicate test. What a tier costs
+ *     and what it costs to RENEW are different questions; a reviewer dismisses
+ *     the edge. Its other two cells stay `false`, which is the whole argument
+ *     for accepting it: the pair is never merged and never stamped, so the
+ *     price of the recall is a glance, paid at a surface built for glances.
+ *
+ *     ⚠️ Read this row beside `different-claim`'s. They differ in exactly one
+ *     cell, and a future edit that "simplified" them back together would be
+ *     choosing one of two things silently — either deleting the recall #5438
+ *     bought, or extending an advisory edge to pairs that share no anchor.
  *   - `proven-homonym` — one surface, two ENTITIES (#5032, ADR-0037 §5). Every
  *     slot key matches, so on the keys alone this is `same-claim` and the two
  *     rows MERGE — but a warehouse-backed store has resolved the two subjects
@@ -744,16 +769,95 @@ export const IDENTITY_CORPUS = [
   },
   {
     id: "predicate-differs",
-    relation: "different-claim",
+    relation: "anchor-flagged",
     why:
       "What a tier costs and what it costs to renew are different questions, and both " +
-      "answers are true at once. The PREDICATE arm's falsifier, by the same argument as " +
-      "the entry above — and the one the repo most needed: the whole supersession section " +
-      "of `promotion-pg.test.ts` runs on a single predicate, so deleting " +
-      "`p.predicate_key = d.predicate_key` from the collision join broke no test anywhere. " +
-      "Objects are money for the reason recorded on `subject-differs`.",
+      "answers are true at once. The PREDICATE arm's falsifier for consumers 1 and 3, by " +
+      "the same argument as the entry above — and the one the repo most needed: the whole " +
+      "supersession section of `promotion-pg.test.ts` runs on a single predicate, so " +
+      "deleting `p.predicate_key = d.predicate_key` from the collision join broke no test " +
+      "anywhere. Objects are money for the reason recorded on `subject-differs`.\n" +
+      "  ⚠️ MOVED off `different-claim` by #5438, and the move is that change's cost made " +
+      "visible rather than an admission the entry was miscategorised. The two claims are " +
+      "still two claims: corroboration still refuses them and the publish gate still " +
+      "stamps nothing, so the predicate falsifier this entry exists for is intact in both " +
+      "of those columns. What changed is consumer 2 alone — the subjects are identical, so " +
+      "`tensionReachSql`'s anchor arm admits the pair with no predicate test and a " +
+      "reviewer now sees an advisory edge here. `paraphrase-identity.test.ts` pins this " +
+      "same pair (`price-vs-renewal`) beside `price-copula` to show that nothing in the " +
+      "surfaces tells them apart; its conclusion is that a rule closing the first closes " +
+      "this one too *and at `single` cardinality stamps `valid_to`*. The STAMP is what " +
+      "that argument forbids, and it is exactly the cell still `false` below.",
     a: { subject: "business tier", predicate: "priced at", object: "499 USD" },
     b: { subject: "business tier", predicate: "renews at", object: "449 USD" },
+  },
+  {
+    id: "series-b-segmentation-drift",
+    relation: "drifted-rival",
+    why:
+      "⭐ #5438, VERBATIM — the two messages posted to a public ingested channel in prod on " +
+      "2026-08-25, by two authors, with the design and the prediction registered BEFORE " +
+      "they were sent. `Our Series B target raise is $25M.` against `The Series B " +
+      "fundraise goal is $30M.` Both were extracted, both were stored, and no " +
+      "`in-tension-with` edge was written: two people contradicted each other in writing " +
+      "and Atlas did not notice.\n" +
+      "  The fixture varied only the PREDICATE wording. The extractor moved the word — it " +
+      "absorbed `fundraise` into B's SUBJECT — so `TENSION_CANDIDATES_SQL`'s " +
+      "`subject_key = $2 AND predicate_key = $3` diverged at BOTH arms before any matching " +
+      "rule ran. That is what makes this distinct from #5000, which was closed on the " +
+      "alias-authoring surface: recognition works when the extractor segments two claims " +
+      "identically and fails when it does not, and segmentation is not stable across two " +
+      "sentences expressing one relation.\n" +
+      "  ⚠️ NO vocabulary entry closes this pair, which is why it is a corpus entry rather " +
+      "than a queue item. An alias `has goal of → target raise` leaves `series b` and " +
+      "`series b fundraise` as different SUBJECTS, so the pair still never meets; a " +
+      "vocabulary spanning both positions is what ADR-0037 §6 forbids by name, since a " +
+      "predicate approval would then re-key subjects workspace-wide.\n" +
+      "  ⚠️ The objects abstain, deliberately and unavoidably: `object-cmp.ts` refuses " +
+      "currency SYMBOLS (`$` is ambiguous across currencies) and `25M` is not a decimal, " +
+      "so `object_cmp` is NULL on both sides. This is the ABSTAIN BAND, so the pair earns " +
+      "the advisory edge and NOTHING else — which is also the honest answer, since nothing " +
+      "on either row proves $25M and $30M are the same kind of quantity. It is why " +
+      "`supersedes` is `false` here, and why a dimension-matching rule was designed " +
+      "against this pair and falsified: there is no dimension evidence to gate on for " +
+      "exactly the surfaces people write in chat. `segmentation.ts` records that " +
+      "measurement and the two other mechanisms tried before it.",
+    a: { subject: "Series B", predicate: "target raise", object: "$25M" },
+    b: { subject: "Series B fundraise", predicate: "has goal of", object: "$30M" },
+  },
+  {
+    id: "series-anchor-unrelated",
+    relation: "different-claim",
+    why:
+      "The ANCHOR arm's falsifier (#5438), and the entry that keeps `drifted-rival` above " +
+      "from being satisfied by a rule that simply flags everything. `series b` and " +
+      "`series c fundraise` share a token and are two different rounds; neither is a " +
+      "whole-token prefix of the other, so `subjectAnchorSql` refuses the pair and no edge " +
+      "is written. Held byte-for-byte against `series-b-segmentation-drift` except in the " +
+      "one character that decides it.\n" +
+      "  ⚠️ This entry does NOT falsify the token boundary — `starts_with` without the " +
+      "`|| ' '` still refuses `series c fundraise` — which is what " +
+      "`series-anchor-token-boundary` below is for. Two entries, because one prohibition " +
+      "green for the wrong reason is the trap this corpus is built to close.",
+    a: { subject: "Series B", predicate: "target raise", object: "$25M" },
+    b: { subject: "Series C fundraise", predicate: "has goal of", object: "$30M" },
+  },
+  {
+    id: "series-anchor-token-boundary",
+    relation: "different-claim",
+    why:
+      "The `|| ' '` in `subjectAnchorSql`, as a fixture (#5438). `series b` IS a character " +
+      "prefix of `series bridge` and is NOT a whole-token one, so the boundary is the only " +
+      "thing holding these two rounds apart — drop it and a bridge round becomes a rival " +
+      "of the Series B, on every claim either of them carries. The entry above cannot see " +
+      "that edit (`series c fundraise` is refused with or without the space), so the " +
+      "boundary would otherwise be pinned by a docstring alone.\n" +
+      "  The prefix relation runs the OTHER way from `series-b-segmentation-drift`'s too, " +
+      "which is deliberate: `subjectAnchorSql` tests both directions, and a fixture set " +
+      "that only ever put the shorter subject on side `a` would leave the second " +
+      "`starts_with` unexercised.",
+    a: { subject: "Series Bridge", predicate: "target raise", object: "$25M" },
+    b: { subject: "Series B", predicate: "has goal of", object: "$30M" },
   },
   {
     id: "inverse-relations",
@@ -853,6 +957,18 @@ export const VERDICTS = {
   // that relation is refused by a KEY arm, this one by a residual filter over a
   // pair every key arm admits. Deleting either leaves the other's mechanism
   // falsified by nothing.
+  // A real contradiction the exact slot never finds (#5438). Same cells as
+  // `unproven-rival` and reached by a DIFFERENT ARM — `tensionReachSql`'s
+  // anchor arm rather than the slot — which is why it is its own relation:
+  // deleting that arm must redden something, and every `unproven-rival` entry
+  // would stay green.
+  "drifted-rival": { corroborates: false, tension: true, supersedes: false },
+  // The declared COST of that arm (#5438). NOT a contradiction, flagged anyway.
+  // The first and third cells are what make it acceptable: no merge, no stamp,
+  // and therefore nothing irreversible bought with the recall. Flipping the
+  // middle cell to `false` is not a tightening — it is the removal of the arm,
+  // and `drifted-rival` above is what would then fail.
+  "anchor-flagged": { corroborates: false, tension: true, supersedes: false },
   "proven-homonym": { corroborates: false, tension: false, supersedes: false },
   // Two slots: every consumer must leave the pair entirely alone.
   "different-claim": { corroborates: false, tension: false, supersedes: false },

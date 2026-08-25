@@ -719,6 +719,16 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
       // lookup would start merging or forking on tier, which is per-class
       // matching — the thing ADR-0037 §4 rules out.
       "tier-guarded-rival": "does not absorb one across a tier boundary either",
+      // #5438's two relations reach consumer 2 and NOTHING else. Both cells are
+      // `false` here and that is the load-bearing half of the change: the
+      // anchor arm is spliced into the tension statements only, so a pair it
+      // newly admits must still fail to corroborate. A leak into
+      // `CORROBORATION_LOOKUP_SQL` would attach one claim's episode as evidence
+      // to a different claim and publish would then union in its grant — the
+      // ACL-widening disclosure `subject-cmp.ts` names, arriving through the
+      // one consumer with no grant arm and no cardinality arm.
+      "drifted-rival": "does not absorb a claim the tension scan merely REACHED",
+      "anchor-flagged": "does not absorb two true claims that share a subject anchor",
       // ⭐ THE consumer for #5032, and the reason `subject_cmp` exists. Every
       // key arm merges this pair; only the residual subject filter keeps them
       // apart. A merge here attaches the second episode as EVIDENCE to the
@@ -774,6 +784,18 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
       // queue entirely — silently, and precisely where the authoritative side
       // is the one at stake.
       "tier-guarded-rival": "⭐ still flags the contradiction the publish gate will NOT act on",
+      // ⭐ #5438, and the only cell in this whole table that the anchor arm
+      // turns from `false` to `true`. Two authors, one workspace, one number,
+      // two answers — and before this arm existed the exact slot could not see
+      // the pair at all, because the extractor had absorbed a word into one
+      // side's subject. Deleting `tensionReachSql`'s second arm reddens this
+      // and nothing else in the corpus.
+      "drifted-rival": "⭐ flags a contradiction the SLOT cannot see — segmentation drift",
+      // The cost, asserted rather than described. These two claims are both
+      // true and a reviewer will dismiss the edge; the assertion is here so
+      // that the recall above is never mistaken for free, and so that removing
+      // the arm shows up as two changed cells rather than one.
+      "anchor-flagged": "flags two true claims that share an anchor — the accepted cost",
       // ⚠️ `false`, and this is where the polarity is easiest to get wrong.
       // `object_cmp` sends proven difference TO tension; `subject_cmp` sends it
       // nowhere. Two claims about provably different entities are not rivals,
@@ -835,6 +857,15 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
         "stamps nothing when it cannot PROVE the contradiction — tension only (#5030)",
       "tier-guarded-rival":
         "stamps nothing across a TIER boundary, however provable the contradiction (#5033)",
+      // The OTHER load-bearing half of #5438, beside consumer 1's two cells.
+      // The anchor arm reaches pairs whose predicate keys share nothing, and
+      // `supersessionCollisionJoin` must go on refusing every one of them: a
+      // leak here would stamp `valid_to` across a subject's whole predicate
+      // fan on the strength of a prefix match. `drifted-rival` also stamps
+      // nothing for a second, independent reason — `$25M` and `$30M` both
+      // abstain, so there is no proven difference to act on even in the slot.
+      "drifted-rival": "stamps nothing on a pair the tension scan only REACHED",
+      "anchor-flagged": "stamps nothing between two true claims that share an anchor",
       // The LEAST important of this column's three cells, and worth saying so:
       // supersession already needs `single` cardinality and a provably
       // different object, so a homonym rarely reaches it. Corroboration is

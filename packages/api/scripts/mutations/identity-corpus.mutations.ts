@@ -203,19 +203,33 @@ else, so a row non-zero there is one a default local run still catches.
     {
       label: "`TENSION_CANDIDATES_SQL` repointed at the surface columns",
       edits: [
+        // ⚠️ TWO SMALL ANCHORS, not one block spanning the whole `WHERE` (#5438).
+        // This mutation's previous anchor was the four literal lines
+        // `AND subject_key = $2 / AND predicate_key = $3 / AND ${objectNotSameSql(…)}`,
+        // and #5438 replaced the first two with a `tensionReachSql(…)` call — so
+        // the anchor stopped matching and the gate reported the mutation as
+        // measuring NOTHING. That is the failure the `--check` lane exists to
+        // catch, and it is worth noting it caught a REAL coverage hole rather
+        // than a formatting nit: for as long as the anchor was dead, nothing
+        // verified that the rival scan matches on keys instead of surfaces.
+        // Anchoring on the smallest unique text keeps the next reflow from
+        // killing it again.
         {
           file: RECONCILE,
-          oldString: `    WHERE workspace_id = $1
-      AND subject_key = $2
-      AND predicate_key = $3
-      AND \${objectNotSameSql("object_key", "$4", "object_cmp", "$5")}`,
-          newString: `    WHERE workspace_id = $1
-      AND subject = $2
-      AND predicate = $3
-      AND \${objectNotSameSql("object", "$4", "object_cmp", "$5")}`,
+          oldString: `          subjectKeyExpr: "subject_key",
+          predicateKeyExpr: "predicate_key",
+          episodeIdExpr: "source_episode_id",`,
+          newString: `          subjectKeyExpr: "subject",
+          predicateKeyExpr: "predicate",
+          episodeIdExpr: "source_episode_id",`,
+        },
+        {
+          file: RECONCILE,
+          oldString: `      AND \${objectNotSameSql("object_key", "$4", "object_cmp", "$5")}`,
+          newString: `      AND \${objectNotSameSql("object", "$4", "object_cmp", "$5")}`,
         },
       ],
-      note: "The rival scan's half of the #5020 pivot. On the surfaces a `Ships On` / `ships_on` disagreement matched nothing and the reviewer saw two uncontested facts where there was a contradiction.",
+      note: "The rival scan's half of the #5020 pivot. On the surfaces a `Ships On` / `ships_on` disagreement matched nothing and the reviewer saw two uncontested facts where there was a contradiction. Since #5438 the two slot arms reach the statement through `tensionReachSql`, so the mutation repoints the builder's ARGUMENTS; the anchor deliberately does not span the ORDER BY, whose `exactSlotFirstSql` term is a ranking rather than a matching arm.",
     },
     {
       label: "the tension call site binds raw surfaces",

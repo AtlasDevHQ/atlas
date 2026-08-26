@@ -10,7 +10,7 @@ It holds the **path** — lanes, their order, and the argument for that order. I
 
 - **Status lives in `.claude/research/ROADMAP.md`, in GitHub, and — since 2026-08-24 — on the [Finish Conditions board](https://github.com/orgs/AtlasDevHQ/projects/3), which is keyed by *condition* where the ROADMAP is keyed by *date*.** Every row below points at an issue number or is marked **UNFILED**. When a lane's issues close, the lane closes; nothing here needs editing to stay true. This document is keyed by neither: it is keyed by **lane**, which is why it needs a reconciliation pass when the other three move and it does not.
 - This exists because neither existing doc holds the path. The PRD states the destination and hands the cut back to [ADR-0036](../adr/0036-atlas-as-company-brain.md) §T10 — and **§T10's cut is now stale**: retrieval depth left it, M6 and M7 were never scheduled, and two milestones were added that carry no M-number.
-- A row marked **UNFILED** is the only claim here that decays badly. Those are the ones to file first. *(Both UNFILED residue rows were filed on 2026-08-24 — [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375) and [#5422](https://github.com/AtlasDevHQ/atlas/issues/5422). The rule worked; Lane D is what is left.)*
+- A row marked **UNFILED** is the only claim here that decays badly. Those are the ones to file first. *(Both UNFILED residue rows were filed on 2026-08-24 — [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375) and [#5422](https://github.com/AtlasDevHQ/atlas/issues/5422). Lane D and Lane E's grill followed on 2026-08-26 — [#5469](https://github.com/AtlasDevHQ/atlas/issues/5469) and [#5468](https://github.com/AtlasDevHQ/atlas/issues/5468). **No UNFILED rows remain.** The rule worked four times out of four.)*
 - **There are no dates in this document, and that is deliberate.** Nothing here is scheduled against a calendar. The order below is driven by dependency and by risk already live in production — never by a deadline. Where a constraint appears (Lane D), it is a **sequencing** constraint: this must happen before that, whenever that happens.
 
 ## Where the arc actually is
@@ -125,7 +125,7 @@ Cost and volume control ahead of M3 source breadth widening. [#5334](https://git
 
 ## Lane D — The Layer 2 rename
 
-**UNFILED — and constrained by sequence rather than by schedule.**
+**[#5469](https://github.com/AtlasDevHQ/atlas/issues/5469) — filed 2026-08-26. Constrained by sequence rather than by schedule.**
 
 [ADR-0038](../adr/0038-the-atlas-is-the-product-the-brain-is-the-category.md) Layer 2 renames the `searchBrain` tool name and the wire enum values. Layer 1 shipped; Layer 3 (schema) is explicitly never renamed.
 
@@ -144,11 +144,13 @@ The ADR fixes the timing and the reasoning is forced, not preferred:
 
 ## Lane E — M6 Write-back (T9)
 
-**Milestone [#101](https://github.com/AtlasDevHQ/atlas/milestone/101) — Brain M6: Write-back · created 2026-08-24. No issues, no date.**
+**Milestone [#101](https://github.com/AtlasDevHQ/atlas/milestone/101) — Brain M6: Write-back · created 2026-08-24. No issues, no date. Its kickoff grill is [#5468](https://github.com/AtlasDevHQ/atlas/issues/5468), filed 2026-08-26.**
 
 `proposeFact` · lazy session-episode materialization · corroboration reuse · opt-in off-by-default autonomous draft-only suggester. ADR-0036 calls it *"the compounding self-improvement loop"* — the thing that makes the Atlas improve from use rather than only from ingestion.
 
-Needs its own kickoff grill before scoping, on the precedent of #4755, #5004 and #5343.
+Needs its own kickoff grill before scoping, on the precedent of #4755, #5004 and #5343 — now [#5468](https://github.com/AtlasDevHQ/atlas/issues/5468).
+
+⚠️ **The grill's first job turned out to be an inventory, not a design.** `proposeFact` does not exist anywhere in `packages/` — and an agent write onto the fact graph shipped anyway under a different verb: `tools/correct-fact.ts` is a registered agent tool and `brain/correction.ts` enters through `reconcileFacts`, the exact seam T9 says write-back reuses. That is the third writer T9 describes, arriving as part of condition 5 rather than as part of M6, and under a name the ADR does not use. The #5332 signal below is the same shape one lock over.
 
 ⚠️ **An empty milestone reads as a scoped one.** #101 is a name and a claim on the arc, not a cut. Nothing should be filed into it ahead of that grill — otherwise the grill ratifies whatever happened to be filed first, which is the exact failure the precedent exists to prevent.
 
@@ -177,7 +179,7 @@ ADR-0036's governing test: **no brain capability may ever migrate to `/ee`.** On
 | [#4999](https://github.com/AtlasDevHQ/atlas/issues/4999) | Atlas-published Zoom + Microsoft apps, so Cloud customers need not register their own |
 | [#5113](https://github.com/AtlasDevHQ/atlas/issues/5113) | Reclassify two brain tables to `exported` for residency |
 
-## Residue — UNFILED
+## Residue — UNFILED (empty as of 2026-08-26; both rows carried, struck through as the record)
 
 | Gap | Why it is not nothing |
 |---|---|

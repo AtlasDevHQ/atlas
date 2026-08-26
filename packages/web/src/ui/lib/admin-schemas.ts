@@ -56,6 +56,8 @@ export {
   BrainCoverageClientSchema,
   BrainFactOversightClientSchema,
   BrainFactRetractResponseSchema,
+  BrainFactCorrectionResponseSchema,
+  type BrainFactCorrectRequest,
   BrainVocabularyAuthorResponseSchema,
   BrainVocabularyDecideResponseSchema,
   BrainVocabularyInForceResponseSchema,

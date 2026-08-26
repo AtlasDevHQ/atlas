@@ -90,6 +90,11 @@ export function AgentTurn({
     <>
       <TurnReceipt
         activity={receiptActivity}
+        // #5451 — the promoted artifact's tier, which `activity` does not carry
+        // on a finished turn. Passing it while streaming (when `receiptActivity`
+        // already folded it back in) is harmless: `answerTrustTiers` collects
+        // into a Set, so the tier is counted once either way.
+        answerBearingArtifact={answerBearingArtifact}
         pythonProgress={pythonProgress}
         // Start expanded when collapsing would hide the turn's substance:
         // (a) no answer and no artifact — the activity IS the turn (e.g. an

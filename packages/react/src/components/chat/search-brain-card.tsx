@@ -4,6 +4,7 @@ import { getToolArgs, getToolResult, isToolComplete } from "../../lib/helpers";
 import { LoadingCard } from "./loading-card";
 import { ResultCardBase, ResultCardErrorBoundary } from "./result-card-base";
 import { TierBadge } from "./tier-badge";
+import { formatDate, str, stripHeadlineMarkup, toRows, type BrainRow } from "../../lib/brain-rows";
 
 /**
  * The `searchBrain` result card for the embeddable widget (#5451).
@@ -38,112 +39,6 @@ export function SearchBrainCard({ part }: { part: unknown }) {
       <SearchBrainCardInner part={part} />
     </ResultCardErrorBoundary>
   );
-}
-
-/** One rendered line: the tier chip plus what the row says. */
-interface BrainRow {
-  /**
-   * The raw wire value, NOT narrowed. Passing `string` straight to the badge is
-   * what makes an unrecognized tier visible instead of absent.
-   */
-  readonly tier: string;
-  readonly primary: string;
-  readonly secondary: string | null;
-  /** True for a 1-hop link-graph expansion result rather than a direct match. */
-  readonly linked: boolean;
-}
-
-function str(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-/** Collapse `ts_headline` markup to plain text — the snippet arrives with `<b>` tags. */
-function plain(value: unknown): string | null {
-  const s = str(value);
-  return s ? s.replace(/<\/?b>/g, "") : null;
-}
-
-function formatDate(value: unknown): string | null {
-  const s = str(value);
-  if (!s) return null;
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString();
-}
-
-/**
- * Project one fused row onto a line, by tier.
- *
- * Reads defensively rather than casting to `BrainSearchResult`: this is a tool
- * output crossing an HTTP + streaming boundary, and a card that throws on a
- * shape surprise takes the tier chip down with it.
- */
-function toRow(raw: unknown, linked: boolean): BrainRow {
-  const row = raw != null && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const tier = typeof row.tier === "string" ? row.tier : "";
-
-  switch (tier) {
-    case "fact": {
-      const claim = [str(row.subject), str(row.predicate), str(row.object)]
-        .filter(Boolean)
-        .join(" ");
-      const age = formatDate(row.validFrom);
-      const decayLevel = str((row.decay as Record<string, unknown> | undefined)?.level);
-      // `unknown` is a real decay level meaning "no age signal", not a missing
-      // value — showing it as a chip caption would read as a defect.
-      const decay = decayLevel && decayLevel !== "unknown" ? decayLevel : null;
-      const corroboration =
-        typeof row.corroborationCount === "number" && row.corroborationCount > 1
-          ? `${row.corroborationCount} sources`
-          : null;
-      return {
-        tier,
-        primary: claim || plain(row.snippet) || "(claim unavailable)",
-        secondary:
-          [age && `since ${age}`, decay, corroboration].filter(Boolean).join(" · ") || null,
-        linked,
-      };
-    }
-    case "raw-episode": {
-      const said = plain(row.snippet) ?? str(row.body) ?? str(row.locator);
-      const who = str(row.sourceActor);
-      const when = formatDate(row.occurredAt);
-      const extraction = row.extraction === "pending" ? "not yet distilled" : null;
-      return {
-        tier,
-        primary: said ?? "(source material unavailable)",
-        secondary:
-          [str(row.source), who, when, extraction].filter(Boolean).join(" · ") || null,
-        linked,
-      };
-    }
-    case "document": {
-      return {
-        tier,
-        primary: str(row.title) ?? str(row.path) ?? "(untitled document)",
-        secondary:
-          [str(row.collection), plain(row.snippet)].filter(Boolean).join(" · ") || null,
-        linked,
-      };
-    }
-    default:
-      // Deliberately still a row. See the module header.
-      return {
-        tier,
-        primary: plain(row.snippet) ?? str(row.title) ?? "(result could not be read)",
-        secondary: null,
-        linked,
-      };
-  }
-}
-
-function toRows(result: Record<string, unknown> | null): BrainRow[] {
-  if (!result) return [];
-  const results = Array.isArray(result.results) ? result.results : [];
-  const neighbors = Array.isArray(result.neighbors) ? result.neighbors : [];
-  return [
-    ...results.map((r) => toRow(r, false)),
-    ...neighbors.map((n) => toRow(n, true)),
-  ];
 }
 
 function SearchBrainCardInner({ part }: { part: unknown }) {

@@ -26,7 +26,6 @@ export function TierBadge({
   const presentation = answerTrustTierPresentation(tier);
 
   if (!presentation) {
-    console.warn(`Unrecognized trust tier reached the chat surface: ${JSON.stringify(tier)}`);
     return (
       <span
         data-testid="tier-badge"
@@ -39,7 +38,11 @@ export function TierBadge({
           className,
         )}
       >
-        unknown tier: {tier}
+        {/* ⚠️ Never a bare "unknown tier:" with nothing after it. A tier absent
+            or blank on the wire is exactly the shape #5451 is about, and a
+            trailing colon pointing at nothing reads as a rendering bug rather
+            than as the warning it is. */}
+        {tier ? `unknown tier: ${tier}` : "tier missing"}
       </span>
     );
   }
@@ -63,7 +66,7 @@ export function TierBadge({
 }
 
 /** Chip colours, keyed by tier so a new tier fails to compile here too. */
-const TIER_CHIP_CLASS: Record<AnswerTrustTier, string> = {
+export const TIER_CHIP_CLASS: Record<AnswerTrustTier, string> = {
   warehouse: "bg-emerald-100 text-emerald-700 dark:bg-emerald-600/20 dark:text-emerald-400",
   fact: "bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-400",
   "raw-episode": "bg-amber-100 text-amber-800 dark:bg-amber-600/20 dark:text-amber-400",

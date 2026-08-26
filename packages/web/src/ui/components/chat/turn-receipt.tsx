@@ -29,10 +29,17 @@ import type { PythonProgressData } from "./python-result-card";
  */
 export function TurnReceipt({
   activity,
+  answerBearingArtifact = null,
   pythonProgress,
   defaultOpen = false,
 }: {
   activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[];
+  /**
+   * The query result `partitionTurn` promoted out of `activity` to sit beside
+   * the answer. Passed in ONLY so its tier reaches the chips (#5451): it is
+   * rendered next to the answer, never inside this receipt.
+   */
+  answerBearingArtifact?: IndexedTurnPart<ToolTurnPart> | null;
   pythonProgress?: Map<string, PythonProgressData[]>;
   defaultOpen?: boolean;
 }) {
@@ -43,7 +50,10 @@ export function TurnReceipt({
   // tier lives in the expanded body, so chips shown only there would leave a
   // finished answer reading exactly as it did when no surface rendered the
   // tier at all: prose, and a summary line the reader has no reason to click.
-  const tiers = answerTrustTiers(activity);
+  // ⚠️ The promoted artifact too. A turn that ran one query has it lifted OUT
+  // of `activity`, so activity alone renders no `warehouse` chip on the
+  // commonest SURVEYED turn there is.
+  const tiers = answerTrustTiers(activity, answerBearingArtifact);
 
   return (
     <div className="max-w-[95%]" data-testid="turn-receipt">

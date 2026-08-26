@@ -32,6 +32,8 @@ import {
   type ToolUIPart,
   type DynamicToolUIPart,
 } from "ai";
+import { ANSWER_TRUST_TIERS } from "@useatlas/schemas";
+import { toRows } from "../../lib/brain-rows";
 import { isActionToolResult } from "../../lib/action-types";
 import { isRestWriteConfirmResult } from "../../lib/rest-operation-types";
 
@@ -223,12 +225,25 @@ export function isFailedToolPart(part: ToolTurnPart): boolean {
  * Failed queries contribute nothing: a query that errored grounded no part of
  * the answer, and claiming warehouse authority for it would be the inverse of
  * the bug this fixes.
+ *
+ * ⚠️ The PROMOTED artifact is a second argument, and forgetting it was a real
+ * bug in this file's first cut. {@link partitionTurn} lifts the last successful
+ * `executeSQL` OUT of `activity` to sit beside the answer — so reading activity
+ * alone means a turn that ran exactly one query, the commonest SURVEYED turn
+ * there is, showed NO `warehouse` chip on its receipt row. That is #5451's own
+ * failure re-created inside #5451's fix, on tier 1, the tier the wedge most
+ * depends on. It survived because the tests fed `activity` directly and never
+ * composed `partitionTurn` with this function.
  */
 export function answerTrustTiers(
   activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[],
+  answerBearingArtifact?: IndexedTurnPart<ToolTurnPart> | null,
 ): string[] {
   const tiers = new Set<string>();
-  for (const { part } of activity) {
+  const contributors = answerBearingArtifact
+    ? [...activity, answerBearingArtifact]
+    : activity;
+  for (const { part } of contributors) {
     if (!isToolUIPart(part) || part.state !== "output-available") continue;
     const name = getToolName(part);
     if (name === "executeSQL") {
@@ -236,15 +251,24 @@ export function answerTrustTiers(
       continue;
     }
     if (name !== "searchBrain") continue;
-    for (const row of brainResultRows(part.output)) {
-      tiers.add(typeof row.tier === "string" ? row.tier : "");
+    // ⚠️ `toRows`, the SAME projection the card renders — not a second walk of
+    // `results` + `neighbors`. Two copies is two answers to "is a 1-hop
+    // neighbor a labelled row?", and ADR-0036 is explicit that it is.
+    for (const row of toRows(part.output as Record<string, unknown> | null)) {
+      tiers.add(row.tier);
     }
   }
   return [...tiers].toSorted(byTrustOrder);
 }
 
-/** Trust order for the chips; anything this build doesn't know sorts last. */
-const TRUST_ORDER: readonly string[] = ["warehouse", "fact", "raw-episode", "document"];
+/**
+ * Trust order for the chips; anything this build doesn't know sorts last.
+ *
+ * The CANONICAL tuple, not a third hand-written copy of it. An earlier cut
+ * re-typed the four values here — in a file that can import them — where
+ * nothing pinned the copy and the cross-package drift test could not see it.
+ */
+const TRUST_ORDER: readonly string[] = ANSWER_TRUST_TIERS;
 
 function byTrustOrder(a: string, b: string): number {
   const ai = TRUST_ORDER.indexOf(a);
@@ -255,22 +279,6 @@ function byTrustOrder(a: string, b: string): number {
   return ai - bi;
 }
 
-/**
- * Every labeled row a `searchBrain` output carries — matches AND 1-hop
- * neighbors, because ADR-0036 is explicit that an expansion result is not a
- * lesser class of row that may skip the label.
- */
-function brainResultRows(output: unknown): Record<string, unknown>[] {
-  if (output == null || typeof output !== "object") return [];
-  const envelope = output as Record<string, unknown>;
-  const rows = [
-    ...(Array.isArray(envelope.results) ? envelope.results : []),
-    ...(Array.isArray(envelope.neighbors) ? envelope.neighbors : []),
-  ];
-  return rows.map((row) =>
-    row != null && typeof row === "object" ? (row as Record<string, unknown>) : {},
-  );
-}
 
 /**
  * The receipt's one-line summary of what stayed in it, e.g.

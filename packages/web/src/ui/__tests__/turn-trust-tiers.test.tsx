@@ -17,7 +17,7 @@ void mock.module("next/dynamic", () => ({
 }));
 
 const { TurnReceipt } = await import("../components/chat/turn-receipt");
-const { answerTrustTiers, summarizeActivity } = await import(
+const { answerTrustTiers, summarizeActivity, partitionTurn } = await import(
   "../components/chat/turn-partitioner"
 );
 
@@ -37,6 +37,55 @@ const BRAIN = toolPart("searchBrain", {
     { tier: "fact", subject: "Billing", predicate: "is owned by", object: "Payments" },
   ],
   neighbors: [{ tier: "document", path: "runbooks/billing.md", title: "Billing runbook" }],
+});
+
+/**
+ * ⚠️ The composition, not the pieces.
+ *
+ * Every other test in this file hands `answerTrustTiers` an `activity` array it
+ * built by hand. That is exactly how the real bug got through review: on a
+ * FINISHED turn `partitionTurn` lifts the last successful `executeSQL` out of
+ * `activity` and into `answerBearingArtifact`, so a turn that ran one query —
+ * the commonest SURVEYED turn there is — produced an empty tier list and no
+ * `warehouse` chip. #5451's own failure, re-created inside #5451's fix, on the
+ * tier the wedge most depends on.
+ *
+ * These drive the real seam end to end.
+ */
+describe("composed with partitionTurn — the shape a finished turn actually has", () => {
+  const ANSWER = { type: "text", text: "Revenue was $4.2M." };
+
+  test("a ONE-QUERY turn still reports warehouse, though the query was promoted out of activity", () => {
+    const { activity: act, answerBearingArtifact } = partitionTurn([SQL_OK, ANSWER] as never);
+    // The precondition that makes this test meaningful: it really was promoted.
+    expect(answerBearingArtifact, "the query is promoted out of activity").not.toBeNull();
+    expect(act.some(({ part }) => part === SQL_OK), "…and is not in activity").toBe(false);
+
+    expect(answerTrustTiers(act, answerBearingArtifact)).toEqual(["warehouse"]);
+    // Reading activity alone is the bug — pinned so a refactor cannot restore it
+    // quietly.
+    expect(answerTrustTiers(act)).toEqual([]);
+  });
+
+  test("a query + brain turn reports both, with the promoted query's tier included", () => {
+    const { activity: act, answerBearingArtifact } = partitionTurn([
+      BRAIN,
+      SQL_OK,
+      ANSWER,
+    ] as never);
+    expect(answerTrustTiers(act, answerBearingArtifact)).toEqual([
+      "warehouse",
+      "fact",
+      "raw-episode",
+      "document",
+    ]);
+  });
+
+  test("a FAILED promoted query is not promoted at all, and still contributes nothing", () => {
+    const { activity: act, answerBearingArtifact } = partitionTurn([SQL_FAILED, ANSWER] as never);
+    expect(answerBearingArtifact, "a failed query is never the answer-bearing artifact").toBeNull();
+    expect(answerTrustTiers(act, answerBearingArtifact)).toEqual([]);
+  });
 });
 
 describe("answerTrustTiers", () => {

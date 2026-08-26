@@ -20,6 +20,24 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
+**Measured 2026-08-26 — the arc runs `supersede` for the first time, and condition 5's RECORD half now holds** ([#5426](https://github.com/AtlasDevHQ/atlas/issues/5426), [#5454](https://github.com/AtlasDevHQ/atlas/issues/5454)) — a human corrected a published claim through the new surface on `us` prod at 16:25:09Z. `brain_fact.correct` **0 → 1**, `supersedes` edges **0 → 1**, `valid_to` set **0 → 1**, `valid_from` set **22 → 23**.
+
+```
+6M   draft      invalidated_at 2026-08-03      <- retracted: unreadable, by design
+8M   published  valid_to 2026-08-26 16:25:09   <- SUPERSEDED: still readable
+10M  published  valid_from 2026-08-01 00:00Z   <- today's answer
+```
+
+⭐ **The clause that failed on 2026-08-25 now passes.** That census found the one claim in prod whose answer had ever changed was retired with `retract` — a tombstone every fact-serving read filters, `asOf` included — so *"can see the previous answer"* failed on the only claim capable of testing it. The `8M` row now carries `valid_to` and **no** `invalidated_at`, so an `asOf` read returns it. The finding was never that the machinery was wrong; it was that **the arc had never once run the verb that makes the past legible.** It has now.
+
+⭐ **`valid_from` is `2026-08-01 00:00:00+00`, from a typed `2026-08-01`** — the date-only → UTC-midnight widening verified in prod rather than only in unit tests, and the first exercise of the valid-time axis on this pair, which the previous census recorded as NULL on both rows.
+
+⚠️ **A prediction made hours earlier was FALSIFIED, and is kept rather than deleted because it set a priority.** [#5454](https://github.com/AtlasDevHQ/atlas/issues/5454) says actor-identity capture never reaches the correction lane, and this entry's own earlier note argued the new surface moved that from latent to exposed — predicting the replacement would render *"cannot name this person"*. It does not: the `10M` row carries `provenance.actor = user:3AaGbea…` with `source: human`, and the audit row independently names the correcting admin. **The correction lane attributes the fact it MINTS.** What has no answer is the **superseded** row — `8M` names its original Slack author and nothing on the claim records who retired it. So the durable form is the one #5426 recorded: **"who made this claim" and "who changed this claim" are different questions, and only the first is stored on the claim** — the replacement gets an author because it is a new claim, while the retirement leaves no mark on the claim it retired.
+
+⚠️ **The condition is still NOT met, and the gap is the whole original scope.** Everything above is admin-side and read from the database. Condition 5 says *"**Someone** asks a question"* — not an admin — and #5426's body forbids satisfying it with a history tab in `/admin/brain`, which would meet the machinery half that already held. The blocker the issue was re-scoped onto is cleared; the demonstration it was originally filed for is now unblocked and unstarted.
+
+⚠️ **Two claims were retracted rather than superseded in the same sitting, and Atlas now has no published Business tier price at all** — `499 a month` (2026-08-03) and `599 a month` (2026-08-26), the second through the new dialog's withdrawal arm. ⭐ Generalizable, and it is the affordance question this surface exists to answer: **the dialog offers both answers, and a human still has to know which one happened.** Neither the record nor the UI can tell a claim that was never true from one that changed; only the person can, and the cost of choosing withdrawal is that the previous answer stops being readable. The two price claims also never collided — predicates `priced at` vs `is priced at`, different keys — which is [#5438](https://github.com/AtlasDevHQ/atlas/issues/5438)'s segmentation shape surviving in prod for 23 days.
+
 **Measured 2026-08-26 — condition 5's clock starts: the surface is live in prod and the record still holds zero of what it needs** ([#5426](https://github.com/AtlasDevHQ/atlas/issues/5426); tag `v0.2.21`) — the correction surface deployed to all four prod services, verified per service by its **active deployment's commit hash** rather than by a health check. Census against `us` prod immediately after: **30 live facts** (22 draft, 8 published), **0** `supersedes` edges, **0** `brain_fact.supersede` rows in `admin_action_log`, `brain_fact.retract` unchanged at 4.
 
 ⭐ **Eight published claims now render a `Correct` button, and before this release it existed on no surface at all.** They are the rows where `canSupersede` is true — published, open window, not an observation. That makes criterion 3 *reachable* for the first time, and it makes this row a real baseline rather than a restatement: **any non-zero `supersedes` count from here came through the surface, because nothing else writes one.**

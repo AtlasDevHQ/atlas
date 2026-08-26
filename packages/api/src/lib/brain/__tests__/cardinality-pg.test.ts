@@ -1058,7 +1058,7 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         predicateAlias: (norm) => (norm === "is priced at" ? "priced at" : norm),
         requestId: "req-decide",
       });
-      expect(decided).toBe("decided");
+      expect(decided).toEqual({ kind: "decided", cardinality: "single" });
       expect(await readPredicateCardinality(pool, ws, "priced at")).toMatchObject({
         cardinality: "single",
         status: "approved",
@@ -1099,7 +1099,7 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         predicateAlias: identityAlias,
         requestId: "req-reject",
       });
-      expect(decided).toBe("decided");
+      expect(decided).toEqual({ kind: "decided", cardinality: "single" });
       const record = await readPredicateCardinality(pool, ws, "reports to");
       expect(record).toMatchObject({ status: "rejected" });
       // ⚠️ And the GATE is not armed. `cardinalitySingleSql` requires
@@ -1137,7 +1137,7 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         reviewedBy: "user-owner",
         predicateAlias: identityAlias,
       });
-      expect(decided).toBe("not-pending");
+      expect(decided).toEqual({ kind: "not-pending" });
       expect(await readPredicateCardinality(pool, ws, "priced at")).toMatchObject({
         status: "pending",
       });
@@ -1159,7 +1159,7 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         reviewedBy: "user-owner",
         predicateAlias: identityAlias,
       });
-      expect(unaddressable).toBe("unaddressable");
+      expect(unaddressable).toEqual({ kind: "unaddressable" });
 
       // ...and a REAL row decided twice is `not-pending` the second time, which
       // is the race the first sentence must not be confused with.
@@ -1175,8 +1175,8 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         reviewedBy: "user-owner",
         predicateAlias: identityAlias,
       };
-      expect(await decidePredicateCardinalityForSurface(pool, ws, input)).toBe("decided");
-      expect(await decidePredicateCardinalityForSurface(pool, ws, input)).toBe("not-pending");
+      expect(await decidePredicateCardinalityForSurface(pool, ws, input)).toEqual({ kind: "decided", cardinality: "single" });
+      expect(await decidePredicateCardinalityForSurface(pool, ws, input)).toEqual({ kind: "not-pending" });
     },
     PG_TEST_TIMEOUT_MS,
   );

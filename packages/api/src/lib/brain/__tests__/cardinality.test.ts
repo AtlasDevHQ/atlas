@@ -496,19 +496,36 @@ describe("declarePredicateCardinality — the human door", () => {
 });
 
 describe("decidePredicateCardinality", () => {
-  it("only moves a PENDING row, and says whether it moved", async () => {
+  it("only moves a PENDING row, and returns WHAT became in force", async () => {
     // `WHERE status = 'pending'` makes the statement correct on its own terms:
     // two reviewers racing one proposal produce one decision and one no-op,
     // without a lock, because the second UPDATE re-evaluates against the
     // committed row version and matches zero rows.
-    const { exec, sql } = executor([{ match: "UPDATE", rows: [{ decided: 1 }] }]);
-    expect(await decidePredicateCardinality(exec, WS, KEY, "approved", "curator-1")).toBe(true);
+    //
+    // ⚠️ The return is the CARDINALITY, not a boolean (#5448). Approving a
+    // pending `single` arms retroactive supersession, and the audit row on the
+    // decide door has to be able to name what it armed — a boolean discarded
+    // that at the seam, so no amount of care in the route could recover it.
+    const { exec, sql } = executor([{ match: "UPDATE", rows: [{ cardinality: "single" }] }]);
+    expect(await decidePredicateCardinality(exec, WS, KEY, "approved", "curator-1")).toBe("single");
     expect(sql[0]).toContain("status = 'pending'");
+    expect(sql[0], "the statement returns the value, not a constant").toContain(
+      "RETURNING cardinality",
+    );
   });
 
-  it("reports `false` when the row was already decided", async () => {
+  it("reports `null` when the row was already decided", async () => {
     const { exec } = executor();
-    expect(await decidePredicateCardinality(exec, WS, KEY, "rejected", "curator-1")).toBe(false);
+    expect(await decidePredicateCardinality(exec, WS, KEY, "rejected", "curator-1")).toBeNull();
+  });
+
+  it("an out-of-vocabulary stored value reads as `multi`, never as itself", async () => {
+    // `narrowCardinality`, not a cast. The value is bound for an operator-facing
+    // audit row, and `multi` is the reading that never supersedes — so a drifted
+    // column cannot make the row claim an arming that the publish gate would not
+    // honour.
+    const { exec } = executor([{ match: "UPDATE", rows: [{ cardinality: "sometimes" }] }]);
+    expect(await decidePredicateCardinality(exec, WS, KEY, "approved", "curator-1")).toBe("multi");
   });
 
   it("REJECTING is an update, never a delete — the row is the memory", async () => {

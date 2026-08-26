@@ -69,6 +69,11 @@ void mock.module("@atlas/api/lib/audit", () => ({
     auditRows.push(entry);
   },
   ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
+  // The barrel's other two exports. This docblock cites the mock-all-exports
+  // rule two paragraphs up and then supplied 3 of 5 -- the same latent link
+  // failure it warns about, in the file that warns about it.
+  errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  causeToError: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
 }));
 
 // Mock-ALL-exports. This file cites the rule for its other three factories and
@@ -233,9 +238,9 @@ let cardinalityResult: unknown = { ok: true, cardinality: "single", previous: { 
 const cardinalityCalls: unknown[] = [];
 const cardinalityDecideCalls: { workspaceId: string; input: unknown }[] = [];
 /**
- * ⚠️ Typed to the union, so the four LEGITIMATE values stay pinned to the seam.
+ * ⚠️ Typed to the union, so the three LEGITIMATE arms stay pinned to the seam.
  *
- * The route branches positively on `"decided"` and throws on a `never` default,
+ * The route branches positively on `kind === "decided"` and throws on a `never` default,
  * and that default is the whole point of the three-way result: the earlier shape
  * fell through to SUCCESS, so a new member would have been reported to the
  * approver as *"Curated: … now holds one value at a time"* for a write that may
@@ -249,7 +254,7 @@ const cardinalityDecideCalls: { workspaceId: string; input: unknown }[] = [];
  * Without it the `never` default is unreachable from any test — collapsing it
  * back to the fall-through left every other test in this file green.
  */
-let cardinalityDecided: CardinalityDecisionResult = "decided";
+let cardinalityDecided: CardinalityDecisionResult = { kind: "decided", cardinality: "single" };
 void mock.module("@atlas/api/lib/brain/cardinality", () => ({
   declarePredicateCardinalityForSurface: async (
     _db: unknown,
@@ -261,7 +266,7 @@ void mock.module("@atlas/api/lib/brain/cardinality", () => ({
   },
   declarePredicateCardinality: async () => ({ ok: true, cardinality: "single" }),
   proposePredicateCardinality: async () => ({ ok: true, cardinality: "single" }),
-  decidePredicateCardinality: async () => true,
+  decidePredicateCardinality: async () => "single",
   decidePredicateCardinalityForSurface: async (_db: unknown, workspaceId: string, input: unknown) => {
     cardinalityDecideCalls.push({ workspaceId, input });
     return cardinalityDecided;
@@ -423,7 +428,7 @@ beforeEach(() => {
   cardinalityResult = { ok: true, cardinality: "single", previous: { kind: "none" } };
   cardinalityCalls.length = 0;
   cardinalityDecideCalls.length = 0;
-  cardinalityDecided = "decided";
+  cardinalityDecided = { kind: "decided", cardinality: "single" };
   lastDefect = null;
   decideCalls.length = 0;
   decideOutcome = { kind: "approved", id: "proposal-1" };
@@ -1277,7 +1282,33 @@ describe("every write leaves an audit row (#5448)", () => {
           kind: "cardinality",
           predicateSurface: "has goal of",
           decision: "approved",
+          // ⚠️ WHAT was armed, not only that a decision happened. Approving a
+          // pending `single` makes every published pair in that slot
+          // supersedable at the next publish — identically to `POST
+          // /cardinality`, whose row carries the value. A row saying only
+          // `approved` sends an operator back to the mutable column, which is
+          // the split #5448 exists to close.
+          cardinality: "single",
         },
+      });
+    });
+
+    it("the decide row carries the cardinality that became IN FORCE, not the one asked for", async () => {
+      // The seam is the only thing that knows. The request body names a VERDICT
+      // (`approved`), never a cardinality — so if `CardinalityDecisionResult`
+      // did not carry the value back, this field could not exist at any level of
+      // care in the route. Driving a `multi` row through an `approved` verdict
+      // is what proves the value is read rather than assumed from the verb.
+      cardinalityDecided = { kind: "decided", cardinality: "multi" };
+      const res = await post("/decide", {
+        kind: "cardinality",
+        predicateSurface: "has goal of",
+        decision: "approved",
+      });
+      expect(res.status).toBe(200);
+      expect(auditRows[0]).toMatchObject({
+        actionType: REAL_ADMIN_ACTIONS.brainVocabulary.decide,
+        metadata: { kind: "cardinality", decision: "approved", cardinality: "multi" },
       });
     });
 
@@ -1286,7 +1317,7 @@ describe("every write leaves an audit row (#5448)", () => {
       await post("/decide", { kind: "alias", proposalId: "proposal-9", decision: "approved" });
       expect(auditRows).toHaveLength(0);
 
-      cardinalityDecided = "not-pending";
+      cardinalityDecided = { kind: "not-pending" };
       await post("/decide", {
         kind: "cardinality",
         predicateSurface: "has goal of",
@@ -1595,7 +1626,7 @@ describe("POST /decide", () => {
     });
 
     it("addresses the row by SURFACE and answers `nothing_to_decide` on a lost race", async () => {
-      cardinalityDecided = "not-pending";
+      cardinalityDecided = { kind: "not-pending" };
       const res = await post("/decide", {
         kind: "cardinality",
         predicateSurface: "reports to",
@@ -1635,7 +1666,7 @@ describe("POST /decide", () => {
       // addresses no row, and folding it into the race arm made the client say
       // "someone else got there first" — a confident, specific, wrong
       // explanation for a request that never reached a row at all.
-      cardinalityDecided = "unaddressable";
+      cardinalityDecided = { kind: "unaddressable" };
       const res = await post("/decide", {
         kind: "cardinality",
         predicateSurface: "---",
@@ -1653,7 +1684,7 @@ describe("POST /decide", () => {
       // reachable from here, so the old title described coverage the test did
       // not have. What it does measure is the split: `checkedWrite` on the arm
       // that WROTE, `checked` on the one that did not.
-      cardinalityDecided = "decided";
+      cardinalityDecided = { kind: "decided", cardinality: "single" };
       const res = await post("/decide", {
         kind: "cardinality",
         predicateSurface: "reports to",
@@ -1701,10 +1732,10 @@ describe("POST /decide", () => {
       // result the route has not been taught — and the honest answer to it is a
       // 500 with a requestId, not the strongest success string in the file.
       //
-      // Reachable only because the mock's field is typed `string`; with the
-      // union's own type nothing can inject this, which is exactly why the
-      // branch was unfalsified.
-      cardinalityDecided = "quantum-superposed" as CardinalityDecisionResult;
+      // Reachable only through the cast on this line. The declaration is typed
+      // to the union — which is what keeps the three real arms pinned — so a
+      // fourth `kind` cannot be injected without saying so out loud here.
+      cardinalityDecided = { kind: "quantum-superposed" } as unknown as CardinalityDecisionResult;
       const res = await post("/decide", {
         kind: "cardinality",
         predicateSurface: "reports to",

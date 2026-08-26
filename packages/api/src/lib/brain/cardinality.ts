@@ -618,7 +618,7 @@ export async function proposePredicateCardinalityForSurface(
  */
 function unattributed(predicateKey: string): {
   readonly ok: false;
-  readonly refusal: "unattributed";
+  readonly refusal: Extract<CardinalityRefusal, "unattributed">;
   readonly message: string;
 } {
   return {
@@ -743,7 +743,8 @@ export async function declarePredicateCardinality(
       predicateKey,
       cardinality: input.cardinality,
       authoredBy: input.authoredBy,
-      previous: previous.kind === "replaced" ? previous.cardinality : previous.kind,
+      // The same projection the audit row uses, not a second spelling of it.
+      previous: priorAuditFields(previous).previous,
     },
     "brain cardinality: a human declared a canonical predicate's cardinality — `single` makes every existing published pair in that slot supersedable at the next publish",
   );
@@ -776,6 +777,65 @@ export type PriorCardinalityEntry =
     }
   /** A row was there and its stored values are outside the CHECK's vocabulary. */
   | { readonly kind: "unreadable" };
+
+/**
+ * {@link PriorCardinalityEntry} projected to the fields an audit row records.
+ *
+ * ⚠️ Lives HERE, beside the type, rather than in the route that consumes it —
+ * it touches nothing but this union's own arms, and the same projection is
+ * needed by `declarePredicateCardinality`'s own log line one screen up. Two
+ * copies of a three-state→string mapping is two things that can disagree about
+ * what `unreadable` is called, and the disagreement would show up only in a
+ * forensic query that silently matched nothing.
+ *
+ * `previous` is always present and always a STRING — `"none"` and `"unreadable"`
+ * are facts about the write, not absences, so a forensic query can filter on
+ * them. On the `replaced` arm the erased decision comes with it, which is the
+ * whole reason the entry is captured at all.
+ */
+export function priorAuditFields(previous: PriorCardinalityEntry): Record<string, unknown> {
+  // ⚠️ Runtime-guarded even though the parameter is non-nullable, and this is
+  // NOT dead defensive code: the `default` arm below exists for "a double that
+  // did not supply one", and a double supplies `undefined`, not a fourth `kind`.
+  // A review read the old `previous?.kind` as unreachable and removing it turned
+  // `admin-brain-vocabulary.test.ts`'s committed-curation case into a
+  // TypeError inside the audit call — a crash on the success path of the write
+  // that arms retroactive supersession.
+  if (typeof previous !== "object" || previous === null) {
+    log.warn(
+      { previous },
+      "brain cardinality: no prior-entry state was supplied — recording it as unreadable rather than as a first curation",
+    );
+    return { previous: "unreadable" };
+  }
+  switch (previous.kind) {
+    case "replaced":
+      return {
+        previous: previous.cardinality,
+        previousStatus: previous.status,
+        // The person whose decision this write just overwrote. Without it the
+        // erasure is total: the upsert overwrites `reviewed_by` on the row and
+        // nothing else records who it was.
+        previousReviewedBy: previous.reviewedBy,
+      };
+    case "none":
+      return { previous: "none" };
+    case "unreadable":
+      return { previous: "unreadable" };
+    default: {
+      // A seam that grew an arm, or a double that did not supply one. Recorded
+      // as unreadable — which is exactly what it is — rather than omitted, so
+      // the row still says a curation happened and says its prior state is not
+      // known.
+      const unexpected: never = previous;
+      log.warn(
+        { previous: unexpected },
+        "brain cardinality: a prior-entry state this module does not recognise — recording it as unreadable",
+      );
+      return { previous: "unreadable" };
+    }
+  }
+}
 
 /**
  * Narrow the prior row, or say the reading failed.
@@ -975,12 +1035,20 @@ export async function decidePredicateCardinality(
   reviewedBy: string | null,
   /** Correlates the success line with the request that armed it. */
   requestId?: string,
-): Promise<boolean> {
+  //
+  // ⚠️ Returns the CARDINALITY that became in force, not a boolean (#5448).
+  // Approving a pending `single` arms supersession exactly as
+  // `declarePredicateCardinality` does, so the audit row for this door has to be
+  // able to say WHAT was armed. A boolean discards that at the seam, and the
+  // route then cannot record it however carefully it is written — the row ends
+  // up answering "who approved" without "what they approved", which is the same
+  // split #5448 closed on the other door.
+): Promise<PredicateCardinality | null> {
   const { rows } = await executor.query(
     `UPDATE brain_predicate_cardinality
         SET status = $3, reviewed_by = $4, reviewed_at = now()
       WHERE workspace_id = $1 AND predicate_key = $2 AND status = 'pending'
-      RETURNING 1 AS decided`,
+      RETURNING cardinality`,
     [workspaceId, predicateKey, verdict, reviewedBy],
   );
   const decided = rows.length > 0;
@@ -1011,7 +1079,15 @@ export async function decidePredicateCardinality(
         : "brain cardinality: a human rejected a proposed predicate cardinality — the row stays as permanent rejection memory, so the producer will not re-raise it",
     );
   }
-  return decided;
+  if (!decided) return null;
+  // `narrowCardinality`, not a cast: the value is going to an operator-facing
+  // audit row, and this reader's contract is that an out-of-vocabulary stored
+  // value reads as `multi` (never supersedes) rather than as whatever the column
+  // happened to hold.
+  return narrowCardinality((rows[0] as Record<string, unknown> | undefined)?.cardinality, {
+    workspaceId,
+    predicateKey,
+  });
 }
 
 /**
@@ -1041,10 +1117,18 @@ export async function decidePredicateCardinality(
  * which is whether to tell this approver their click landed.
  */
 export type CardinalityDecisionResult =
-  /** The row moved. */
-  | "decided"
+  /**
+   * The row moved.
+   *
+   * ⚠️ An OBJECT rather than the bare `"decided"` string it was through #5448,
+   * because it carries `cardinality` — the value that became in force. See
+   * {@link decidePredicateCardinality} for why the seam had to widen: an
+   * approval of a pending `single` arms supersession, and the audit row for this
+   * door could not name what it armed while the result was a bare string.
+   */
+  | { readonly kind: "decided"; readonly cardinality: PredicateCardinality }
   /** A row was addressed and was not `pending` — decided, or gone. */
-  | "not-pending"
+  | { readonly kind: "not-pending" }
   /**
    * The surface norms away to nothing, so it addresses NO row.
    *
@@ -1055,7 +1139,7 @@ export type CardinalityDecisionResult =
    * that never addressed a row at all. The only place the truth existed was the
    * log line below.
    */
-  | "unaddressable";
+  | { readonly kind: "unaddressable" };
 
 export async function decidePredicateCardinalityForSurface(
   executor: CardinalityExecutor,
@@ -1078,7 +1162,7 @@ export async function decidePredicateCardinalityForSurface(
       { workspaceId, predicateSurface: input.predicateSurface, requestId: input.requestId },
       "brain cardinality: a decide request named a predicate surface that norms away to nothing — it addresses no row, so nothing was decided",
     );
-    return "unaddressable";
+    return { kind: "unaddressable" };
   }
   const decided = await decidePredicateCardinality(
     executor,
@@ -1088,7 +1172,7 @@ export async function decidePredicateCardinalityForSurface(
     input.reviewedBy,
     input.requestId,
   );
-  return decided ? "decided" : "not-pending";
+  return decided === null ? { kind: "not-pending" } : { kind: "decided", cardinality: decided };
 }
 
 // ---------------------------------------------------------------------------

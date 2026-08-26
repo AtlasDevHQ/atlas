@@ -72,10 +72,57 @@ describe("sweepRefusal — three arms, three sentences", () => {
     expect(text).toContain("some-new-bound");
   });
 
-  test("a non-409 with no prose says the outcome is unknown rather than clean", () => {
+  test("the requestId is appended — on the server's prose AND on the fallback", () => {
+    // This copy's own advice is "check the API service logs", which is the one
+    // place a correlation id is the entire point. Both paths now run through
+    // `friendlyError`, so neither can lose it.
+    const authored = sweepRefusal(
+      err({ message: "It hit the reconcile lock.", code: "reconcile-lock", requestId: "req-7" }),
+    );
+    expect(authored).toContain("req-7");
+    const fallback = sweepRefusal(err({ code: "reconcile-lock", requestId: "req-8" }));
+    expect(fallback).toContain("req-8");
+    expect(fallback).toContain("reconcile lock");
+  });
+
+  test("⚠️ a STATUS-LESS failure keeps its client-authored message", () => {
+    // `serverMessage` early-returns on `status === undefined` by design, so the
+    // earlier hand-written tail replaced these with "the server explained
+    // nothing" — a claim about a server that was never reached. The hook's own
+    // non-JSON message is the motivating case.
+    // ⚠️ NOT the `schema_mismatch` code, though that is also status-less:
+    // `friendlyError` deliberately substitutes its own "server and app are out of
+    // sync" copy for that one, so a fixture carrying it would test that branch
+    // instead of this claim. A bare network failure is the case that motivates it.
+    const text = sweepRefusal({
+      message: "Server returned a non-JSON response. Check your proxy / deploy configuration.",
+    });
+    expect(text).toContain("proxy");
+    expect(text).not.toContain("the server explained nothing");
+  });
+
+  test("⚠️ a 5xx says the sweep's EFFECT is unknown — it is a writer", () => {
+    // A 5xx can land after edges have already committed, so "nothing changed" is
+    // not available. `friendlyError`'s shared copy is silent about the corpus,
+    // which is right for the reads it mostly serves and wrong here.
     const text = sweepRefusal({ message: "HTTP 500", status: 500 });
     expect(text).toContain("unknown");
     expect(text).not.toContain("Nothing was changed");
+    // A network failure is the same position — the response was lost, not
+    // necessarily the request.
+    expect(sweepRefusal({ message: "Could not reach the server." })).toContain("unknown");
+  });
+
+  test("POSITIVE CONTROL — a 4xx does NOT get the doubt clause", () => {
+    // 401/403/404/429 are refused before the sweep does any work, so manufacturing
+    // a doubt there would be its own dishonesty. This is what makes the assertion
+    // above about the 5xx branch rather than about an unconditional suffix.
+    const text = sweepRefusal({
+      message: "The tension sweep needs the owner or admin entitlement.",
+      status: 403,
+    });
+    expect(text).toContain("owner or admin entitlement");
+    expect(text).not.toContain("before failing is unknown");
   });
 
   test("isSweepContention rejects an undefined code and an unknown one", () => {

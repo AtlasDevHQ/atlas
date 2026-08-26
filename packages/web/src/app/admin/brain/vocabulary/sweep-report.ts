@@ -1,4 +1,4 @@
-import { serverMessage, type FetchError } from "@/ui/lib/fetch-error";
+import { friendlyError, serverMessage, type FetchError } from "@/ui/lib/fetch-error";
 
 /**
  * What the operator reads after a tension sweep — the copy decisions, held apart
@@ -59,29 +59,90 @@ export function isSweepContention(code: string | undefined): code is SweepConten
  * as itself; a shared status line fails it in exactly the state where an
  * operator most needs to know whether to retry.
  *
- * ⚠️ **The unrecognised arm does not say "nothing was changed".** All three
- * documented contentions guarantee it, and the temptation is to hoist that
- * clause out as the one thing true of every refusal. It is true of every
- * refusal *this page knows about*. A 409 carrying a fourth code is an API newer
- * than this bundle, and asserting the corpus is untouched on its behalf is a
- * claim about a code path that did not exist when this sentence was written —
- * the `structurallyEmptyCopy` default arm's rule, applied to a write.
+ * `serverMessage` — not a truthiness check on `error.message` — is what makes
+ * that true. It recognises BOTH of this codebase's synthesized placeholders
+ * (`HTTP 409`, `Request failed (409)`), so the fallback is *unreachable* whenever
+ * the server's sentence exists. Two spellings can only drift if both can render,
+ * and these cannot.
+ *
+ * ⚠️ **The residual coupling, named rather than left to be discovered.** The
+ * fallback asserts *"Nothing was changed"* on this page's own authority, for a
+ * code it merely recognised — which turns the three code STRINGS into a contract
+ * about corpus state. If the server ever repurposes `conflicting-lock` without
+ * renaming it, this page lies. That is the accepted price of three
+ * distinguishable retry instructions, and it is bounded by the rule below: the
+ * page pays it only for codes it knows, and never for one it does not
+ * ({@link unrecognisedContention}).
  */
 export function sweepRefusal(error: FetchError): string {
-  const authored = serverMessage(error);
-  if (authored !== undefined) return authored;
-  if (isSweepContention(error.code)) return CONTENTION_FALLBACK[error.code];
-  if (error.status === 409) {
+  // ⚠️ Every path ends in `friendlyError`, including the two that substitute this
+  // module's own sentence, and that is the whole shape of this function.
+  //
+  // It used to return bare strings, which re-implemented `friendlyError` badly
+  // and lost three things it provides:
+  //
+  //   - the `requestId` suffix — on copy whose own advice is "check the API
+  //     service logs", which is the one place a correlation id is the point;
+  //   - a STATUS-LESS error's client-authored message. `serverMessage`
+  //     early-returns on `status === undefined` by design, so an offline browser
+  //     — or the hook's own "non-JSON response … check your proxy" — was
+  //     answered with "the server explained nothing", a claim about a server
+  //     that was never reached;
+  //   - the canned 401/403/404 copy ("Not authenticated. Please sign in.") for an
+  //     empty body, replaced by an instruction to read server logs.
+  //
+  // Substituting into the error and delegating gets all three back with no second
+  // spelling of the suffix format. The substituted message is not a synthesized
+  // placeholder, so `serverMessage` accepts it and `friendlyError` renders it.
+  if (error.status === 409 && serverMessage(error) === undefined) {
+    // ⚠️ Gated on the 409 as well as on the absent prose. A status-less error can
+    // carry a `code`, and answering one with "Nothing was changed" would assert a
+    // fact about a workspace no request reached.
+    const substitute = isSweepContention(error.code)
+      ? CONTENTION_FALLBACK[error.code]
+      : unrecognisedContention(error.code);
+    return friendlyError({ ...error, message: substitute });
+  }
+  // ⚠️ The non-409 tail delegates, and then adds the one thing `friendlyError`
+  // cannot know: this endpoint is a WRITER.
+  //
+  // Its shared copy is right about the transport ("the server returned an error
+  // (500) … it may be restarting") and silent about the corpus, which is fine for
+  // the reads it mostly serves and not fine here. A 5xx can land after the sweep
+  // has already committed edges, and a status-less failure means the response was
+  // lost rather than that the request was — so in both the effect is unknown and
+  // an operator must not infer that nothing happened.
+  //
+  // 4xx gets no clause, and the asymmetry is the point rather than an oversight:
+  // 401/403/404/429 are all refused BEFORE the sweep does any work, so there
+  // "nothing changed" is true and adding a doubt clause would manufacture one.
+  const rendered = friendlyError(error);
+  if (error.status === undefined || error.status >= 500) {
     return (
-      "The sweep refused to run, for a reason this page does not recognise" +
-      (error.code === undefined ? "" : ` (“${error.code}”)`) +
-      ". Do not assume the corpus is unchanged — this page cannot tell you either way. " +
-      "The API is likely newer than this page; reload, and check the API service logs before retrying."
+      `${rendered} Whether the sweep changed anything before failing is unknown — read the fact ` +
+      `queue with its tension filter rather than assuming it did nothing.`
     );
   }
+  return rendered;
+}
+
+/**
+ * The 409 arm this bundle has not learned.
+ *
+ * ⚠️ It does NOT say "nothing was changed". All three documented contentions
+ * guarantee it, and the temptation is to hoist that clause out as the one thing
+ * true of every refusal. It is true of every refusal *this page knows about*. A
+ * fourth code is an API newer than this bundle, and asserting the corpus is
+ * untouched on its behalf is a claim about a code path that did not exist when
+ * this sentence was written — `structurallyEmptyCopy`'s default-arm rule,
+ * applied to a write.
+ */
+function unrecognisedContention(code: string | undefined): string {
   return (
-    "The sweep could not be run and the server explained nothing, so whether anything was " +
-    "changed is unknown. Reload before retrying, and check the API service logs if it persists."
+    "The sweep refused to run, for a reason this page does not recognise" +
+    (code === undefined ? "" : ` (“${code}”)`) +
+    ". Do not assume the corpus is unchanged — this page cannot tell you either way. " +
+    "The API is likely newer than this page; reload, and check the API service logs before retrying."
   );
 }
 

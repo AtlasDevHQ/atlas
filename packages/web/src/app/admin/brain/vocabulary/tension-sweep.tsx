@@ -73,18 +73,34 @@ export function TensionSweepPanel() {
       setError(sweepRefusal(result.error));
       return;
     }
-    const data = result.data;
-    if (data === undefined) {
-      // A 2xx with no parsed body. NOT rendered as a zero: the sweep may have
-      // minted anything, and `sweepOutcome({minted: 0})` would attribute a
-      // number to a run that never reported one.
+    // ⚠️ PARSED, not trusted. `useAdminMutation` does `res.json() as TResponse`
+    // with no validation — unlike `useAdminFetch`, it has no `schema` option — so
+    // the import above was supplying a TYPE and nothing else, and this call site
+    // was the one place that mattered: the numbers go straight into prose.
+    //
+    // A 2xx JSON body missing `minted` (a version-skewed API, a proxy answering
+    // `{}` or `{"ok":true}` with a JSON content-type) is not `undefined`, so it
+    // walked past the guard below: `minted === 0` was false, the non-zero branch
+    // ran, and the panel rendered **"The sweep minted undefined advisory tension
+    // edges."** under the neutral chrome — `unresolved` being `undefined` and
+    // therefore falsy — beside clauses asserting nothing was superseded and that
+    // re-running would not duplicate anything. A confident claim about a body
+    // nobody read, which is this module's own named worst outcome.
+    const parsed = BrainFactTensionSweepResponseSchema.safeParse(result.data);
+    if (!parsed.success) {
+      // One arm for "no body" and "a body that is not a report", because the
+      // operator's position is identical in both: the run may have minted
+      // anything, and `sweepOutcome({minted: 0})` would attribute a number to a
+      // run that never reported one.
       setError(
-        "The sweep returned no report, so what it did is unknown — reload the fact queue to see " +
-          "whether anything was flagged. Do not read this as a run that minted nothing.",
+        "The sweep returned no report this page can read, so what it did is unknown — read the " +
+          "fact queue with its tension filter to see whether anything was flagged. Do not read " +
+          "this as a run that minted nothing. If it persists, the API is likely newer than this " +
+          "page.",
       );
       return;
     }
-    setReport(sweepOutcome(data));
+    setReport(sweepOutcome(parsed.data));
   }
 
   return (

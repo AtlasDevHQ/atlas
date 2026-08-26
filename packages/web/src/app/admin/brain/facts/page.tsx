@@ -9,6 +9,8 @@ import { brainFactsSearchParams } from "./search-params";
 import { buildBrainFactsPath, hasBrainFactFilters } from "./list-query";
 import { getBrainFactColumns, type BrainFactCandidateRow } from "./columns";
 import { CandidateDetail } from "./candidate-detail";
+import { CorrectionDialog } from "./correction-dialog";
+import { canSupersede, correctionBody, type CorrectionIntent } from "./claim-correction";
 import { OversightPanel } from "./oversight-panel";
 import { ServerDataTable } from "@/ui/components/admin/server-data-table";
 import { useServerDataTable } from "@/ui/hooks/use-server-data-table";
@@ -16,20 +18,11 @@ import {
   BrainFactCandidateListResponseSchema,
   BrainFactCandidateSummarySchema,
   BrainFactRetractResponseSchema,
+  BrainFactCorrectionResponseSchema,
 } from "@/ui/lib/admin-schemas";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import {
   Sheet,
   SheetContent,
@@ -49,6 +42,7 @@ import {
   Brain,
   Check,
   Link2,
+  Pencil,
   Search,
   Split,
   Upload,
@@ -66,6 +60,51 @@ const STATUS_FILTERS = [
   { value: "archived", label: "Archived" },
   { value: "all", label: "All" },
 ] as const;
+
+/**
+ * The row action, whose LABEL follows the row rather than the feature (#5426).
+ *
+ * One definition behind both surfaces — the queue's action column and the
+ * detail sheet's footer — for `tension-state.ts`'s reason: they previously
+ * would have spelled the same predicate twice, and two spellings of "may this
+ * claim be corrected" is how the queue and the sheet come to disagree about
+ * what a reviewer may do to the same claim.
+ *
+ * A draft can only ever be rejected, so it keeps the reviewer's word and the
+ * destructive styling. A published claim with an open window is the one state
+ * where "what happened to this" is a real question.
+ */
+function CorrectAction({
+  candidate,
+  variant,
+  disabled,
+  onSelect,
+}: {
+  readonly candidate: BrainFactCandidate;
+  readonly variant: "ghost" | "outline";
+  readonly disabled: boolean;
+  readonly onSelect: (e?: { stopPropagation: () => void }) => void;
+}) {
+  const correctable = canSupersede(candidate);
+  return (
+    <Button
+      variant={variant}
+      size="sm"
+      className={
+        variant === "outline" && !correctable ? "text-destructive hover:text-destructive" : undefined
+      }
+      disabled={disabled}
+      onClick={(e) => onSelect(e)}
+    >
+      {correctable ? (
+        <Pencil className="mr-1.5 size-3.5" aria-hidden />
+      ) : (
+        <X className="mr-1.5 size-3.5" aria-hidden />
+      )}
+      {correctable ? "Correct" : "Reject"}
+    </Button>
+  );
+}
 
 /**
  * The fact review gate (#4772, ADR-0036) — the human end of the company-brain
@@ -88,9 +127,9 @@ const STATUS_FILTERS = [
 export default function BrainFactsPage() {
   const [params, setParams] = useQueryStates(brainFactsSearchParams);
   const [detail, setDetail] = useState<BrainFactCandidate | null>(null);
-  const [rejectTarget, setRejectTarget] = useState<BrainFactCandidate | null>(null);
+  const [correctionTarget, setCorrectionTarget] = useState<BrainFactCandidate | null>(null);
   // Pinned to the confirmation dialog, which is the only surface that rejects.
-  const [rejectError, setRejectError] = useState<string | null>(null);
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
   // Survives the dialog on purpose (#4939). Rejecting is the `retract`
   // correction verb, and it FLAGS every claim derived from the one withdrawn.
   // The dialog closes on success, so a notice rendered inside it would be
@@ -107,7 +146,7 @@ export default function BrainFactsPage() {
   const [searchDraft, setSearchDraft] = useState(params.q);
 
   const inProgress = useInProgressSet();
-  const retractMutation = useAdminMutation({ method: "POST" });
+  const correctionMutation = useAdminMutation({ method: "POST" });
 
   const { data: summary, error: summaryError } = useAdminFetch<
     z.infer<typeof BrainFactCandidateSummarySchema>
@@ -118,20 +157,22 @@ export default function BrainFactsPage() {
     const actionsCol: ColumnDef<BrainFactCandidateRow> = {
       id: "actions",
       header: () => null,
+      // The label follows the row, not the feature. A draft can only ever be
+      // rejected, so it keeps the reviewer's word and its one-click path; a
+      // published claim with an open window is the one state where "what
+      // happened to this" is a real question, so it opens the correction
+      // dialog instead (#5426).
       cell: ({ row }) => (
-        <Button
+        <CorrectAction
+          candidate={row.original}
           variant="ghost"
-          size="sm"
           disabled={inProgress.has(row.original.id)}
-          onClick={(e) => {
-            e.stopPropagation();
-            setRejectError(null);
-            setRejectTarget(row.original);
+          onSelect={(e) => {
+            e?.stopPropagation();
+            setCorrectionError(null);
+            setCorrectionTarget(row.original);
           }}
-        >
-          <X className="mr-1.5 size-3.5" aria-hidden />
-          Reject
-        </Button>
+        />
       ),
       enableSorting: false,
       enableHiding: false,
@@ -204,24 +245,49 @@ export default function BrainFactsPage() {
       ),
   });
 
-  async function rejectCandidate(candidate: BrainFactCandidate) {
-    setRejectError(null);
+  /**
+   * Apply one correction, whichever the human said happened (#5426).
+   *
+   * The verb never crosses back out of `claim-correction.ts` — this reads
+   * `request.body.verb` only to pick the ROUTE, because `/retract` is this
+   * surface's long-standing spelling of the withdrawal verb and `/correct`
+   * runs the identical code path in `lib/brain/correction.ts`. Keeping the
+   * withdrawal arm on its own route means the draft queue's common path is
+   * byte-for-byte what it was before this feature existed.
+   */
+  async function applyCorrection(candidate: BrainFactCandidate, intent: CorrectionIntent) {
+    setCorrectionError(null);
     // Cleared before, not after: the notice names the claim that caused it, so
-    // a stale one standing over a DIFFERENT rejection invites exactly the
+    // a stale one standing over a DIFFERENT correction invites exactly the
     // misattribution it exists to prevent. Nothing is lost — it is only ever
-    // rewritten by a rejection that has something of its own to report.
+    // rewritten by a correction that has something of its own to report.
     setFlaggedNotice(null);
+
+    // Refused locally, so the human is told what is wrong with their own text
+    // instead of reading a 400 back off the wire. No request is made.
+    const request = correctionBody(intent);
+    if (!request.ok) {
+      setCorrectionError(request.problem);
+      return;
+    }
+
+    const withdrawing = request.body.verb === "retract";
     inProgress.start(candidate.id);
 
-    const result = await retractMutation.mutate({
-      path: `/api/v1/admin/brain-facts/${candidate.id}/retract`,
-    });
+    const result = withdrawing
+      ? await correctionMutation.mutate({
+          path: `/api/v1/admin/brain-facts/${candidate.id}/retract`,
+        })
+      : await correctionMutation.mutate({
+          path: `/api/v1/admin/brain-facts/${candidate.id}/correct`,
+          body: request.body,
+        });
 
     if (result.ok) {
       // The list is server-owned — `useAdminMutation` invalidates the
       // admin-fetch namespace, so the queue and the stats bar refetch together.
       if (detail?.id === candidate.id) setDetail(null);
-      setRejectTarget(null);
+      setCorrectionTarget(null);
 
       // Parsed, not cast. `useAdminMutation` is untyped at the wire, and a
       // hand-cast reads `.length` off whatever arrived — a `flaggedForReReview`
@@ -232,15 +298,17 @@ export default function BrainFactsPage() {
       //
       // `.pick()`, so the notice depends only on the field it renders: an API
       // that skewed on `correctionEpisodeId` alone would otherwise suppress a
-      // disclosure whose own input arrived intact.
-      const parsed = BrainFactRetractResponseSchema.pick({ flaggedForReReview: true }).safeParse(
-        result.data,
-      );
+      // disclosure whose own input arrived intact. Both routes disclose the
+      // same field, so the pick is the same shape on either.
+      const schema = withdrawing
+        ? BrainFactRetractResponseSchema.pick({ flaggedForReReview: true })
+        : BrainFactCorrectionResponseSchema.pick({ flaggedForReReview: true });
+      const parsed = schema.safeParse(result.data);
       if (!parsed.success) {
         // Never silent (CLAUDE.md). `console.warn`, not `debug` — the default
         // log level filters `debug`, which would hide exactly this bug class.
         console.warn(
-          "brain-facts: the retract response did not carry a readable `flaggedForReReview` — the flagged-dependent disclosure was dropped for this rejection",
+          "brain-facts: the correction response did not carry a readable `flaggedForReReview` — the flagged-dependent disclosure was dropped for this correction",
           parsed.error.issues,
         );
       } else if (parsed.data.flaggedForReReview.length > 0) {
@@ -250,12 +318,16 @@ export default function BrainFactsPage() {
         });
       }
     } else {
-      // Keep the dialog open with the failure inside it: a rejection that
-      // silently didn't happen would leave a claim in the publish set while the
-      // reviewer believed they had pulled it.
+      // Keep the dialog open with the failure inside it: a correction that
+      // silently didn't happen would leave a claim in the publish set, or leave
+      // an outdated answer live, while the reviewer believed they had acted.
       // `friendlyError`, not `.message`: it appends the request id on every
       // branch, which is the whole point of the API emitting one.
-      setRejectError(friendlyError(result.error));
+      //
+      // This is also where a refusal the local predicate did not anticipate
+      // surfaces — `canSupersede` mirrors the machinery's rules but the
+      // machinery decides, and its refusals carry actionable prose.
+      setCorrectionError(friendlyError(result.error));
     }
     inProgress.stop(candidate.id);
   }
@@ -510,19 +582,15 @@ export default function BrainFactsPage() {
                 <CandidateDetail candidate={detail} />
 
                 <div className="flex gap-2 border-t px-4 py-4">
-                  <Button
+                  <CorrectAction
+                    candidate={detail}
                     variant="outline"
-                    size="sm"
-                    className="text-destructive hover:text-destructive"
                     disabled={inProgress.has(detail.id)}
-                    onClick={() => {
-                      setRejectError(null);
-                      setRejectTarget(detail);
+                    onSelect={() => {
+                      setCorrectionError(null);
+                      setCorrectionTarget(detail);
                     }}
-                  >
-                    <X className="mr-1.5 size-3.5" aria-hidden />
-                    Reject
-                  </Button>
+                  />
                   <Button
                     size="sm"
                     variant="secondary"
@@ -540,57 +608,20 @@ export default function BrainFactsPage() {
           </SheetContent>
         </Sheet>
 
-        <AlertDialog
-          open={!!rejectTarget}
+        <CorrectionDialog
+          target={correctionTarget}
+          busy={!!correctionTarget && inProgress.has(correctionTarget.id)}
+          error={correctionError}
           onOpenChange={(open) => {
             if (!open) {
-              setRejectTarget(null);
-              setRejectError(null);
+              setCorrectionTarget(null);
+              setCorrectionError(null);
             }
           }}
-        >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Reject this claim?</AlertDialogTitle>
-              <AlertDialogDescription>
-                {rejectTarget && (
-                  <>
-                    &ldquo;{rejectTarget.subject} {rejectTarget.predicate} {rejectTarget.object}
-                    &rdquo; will be withdrawn. It leaves this queue and is never published. Nothing
-                    is deleted — the claim stays on the record, so questions about what Atlas
-                    believed in the past still answer correctly.
-                  </>
-                )}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-
-            {rejectError && (
-              <Alert variant="destructive">
-                <AlertTriangle className="size-4" aria-hidden />
-                <AlertDescription>{rejectError}</AlertDescription>
-              </Alert>
-            )}
-
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={!!rejectTarget && inProgress.has(rejectTarget.id)}>
-                Cancel
-              </AlertDialogCancel>
-              <AlertDialogAction
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                disabled={!!rejectTarget && inProgress.has(rejectTarget.id)}
-                // preventDefault stops Radix auto-closing: a failed rejection
-                // must keep the dialog open to show why, and `rejectCandidate`
-                // closes it itself only on success.
-                onClick={(e) => {
-                  e.preventDefault();
-                  if (rejectTarget) void rejectCandidate(rejectTarget);
-                }}
-              >
-                Reject
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+          onSubmit={(intent) => {
+            if (correctionTarget) void applyCorrection(correctionTarget, intent);
+          }}
+        />
 
         <PublishModal open={publishOpen} onOpenChange={setPublishOpen} />
       </div>

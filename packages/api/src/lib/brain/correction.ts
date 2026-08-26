@@ -2112,7 +2112,9 @@ async function applySupersede(
           // enforces it rather than trusting this call site.
           inheritedSlot: target.slot,
           validFrom: inputs.replacement.validFrom ?? at,
-          // DERIVED from the verb, not inherited from the row (#5027).
+          // DERIVED from the verb, not inherited from the row (#5027, #5438,
+          // #5450, #5467 — and the last three are why #5027 alone is no longer
+          // the whole citation).
           //
           // This used to read `target.cardinality` — the extractor's LLM guess
           // on the original fact, laundered through a human verb into something
@@ -2133,6 +2135,46 @@ async function applySupersede(
           // APPROVED entry in `brain_predicate_cardinality`, which this verb can
           // only ever PROPOSE.
           predicateCardinality: "single",
+          // ⚠️ **THE SCOPE OF THAT ASSERTION, and it stopped being implicit in
+          // #5438** (measured #5450, decided #5467).
+          //
+          // The paragraph above is an argument about ONE SLOT: the human touched
+          // `subject × predicate` and by touching it said that slot holds one
+          // value. It was written when a correction's tension scan could reach
+          // no further — the statement required `subject_key = $2 AND
+          // predicate_key = $3`, so "the verb may decide it" and "the verb
+          // decides only about its own slot" were the same sentence.
+          //
+          // #5438's anchor arm split them. The scan now reaches every live claim
+          // sharing the subject's whole-token PREFIX, from a different episode,
+          // with no predicate test at all — so an unchanged hard-code started
+          // spending a one-slot assertion across a subject's entire predicate
+          // fan. That is not hypothetical: us prod, 2026-08-26, edge `e78de65d`
+          // flagged `series a / has target raise of / 10M` against `series a /
+          // has post money valuation of / 30M`. Both claims true, both live,
+          // `has target raise of` carrying no row in `brain_predicate_cardinality`
+          // at all — the exact false shape `segmentation.ts` names in advance.
+          //
+          // The trade was re-made at the arm's current width and came out the
+          // other way for the ANCHOR arm only. What survives is the advisory
+          // argument (a wrong flag still costs a reviewer a glance) and the
+          // slot-scoped assertion; what does not survive is the leap from one to
+          // the whole fan. #5027 already says who may make a predicate-wide
+          // single-valuedness claim — the curated entry — and this comment
+          // already said this verb "can only ever PROPOSE" one. Reaching past
+          // the slot is the part that needed the authority the verb lacks.
+          //
+          // So the slot arm keeps the verb's `single` above, and the anchor arm
+          // has to find an approved entry. Where a human HAS curated the
+          // predicate the correction gets the wide reach back — the workspace
+          // said so, and `TENSION_SWEEP_SQL` would mint the same edges anyway.
+          //
+          // ⚠️ Not a weakening of the anchor arm, which #5467 explicitly
+          // declines to ask for: the EXTRACT lane still arms it from the model's
+          // per-claim guess, because that trade WAS made with the arm in view
+          // and is carried as a named limit on `docs/prd/company-atlas.md`'s
+          // condition 4. This lane is the one whose licence predated the width.
+          anchorReach: "curated-only",
         },
       ],
       vocabulary: inputs.vocabulary,

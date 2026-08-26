@@ -272,7 +272,13 @@ import {
 // sweep and the ingest path drift into flagging different pairs. #5438's whole
 // argument for why the predicate may be dropped HERE and at no other consumer
 // lives in that module's header.
-import { exactSlotFirstSql, tensionReachSql } from "@atlas/api/lib/brain/segmentation";
+import { exactSlotFirstSql, exactSlotSql, tensionReachSql } from "@atlas/api/lib/brain/segmentation";
+// The APPROVED-entry gate, imported rather than respelled (#5467). The sweep
+// already reads this exact expression, and a second spelling of "the workspace
+// says this predicate holds one value" is how two lanes start flagging
+// different pairs. `cardinality.ts` imports only a TYPE back from this module,
+// so nothing here is a runtime cycle.
+import { cardinalitySingleSql } from "@atlas/api/lib/brain/cardinality";
 // The comparable value, on the same terms: `comparableValue` is the ONE place a
 // surface becomes a typed canonical form, and `comparableSameSql` the ONE place
 // *provably same* is spelled — the two statements below negate each other and
@@ -423,8 +429,44 @@ export interface FactCandidate {
    * ⚠️ Do NOT reintroduce a consumer that can stamp `valid_to` from this. That
    * is the defect #5027 removed, and it is invisible at rest — the column looked
    * unpopulated to everyone who read the schema.
+   *
+   * ⚠️ Since #5438 this hint no longer reaches only the claim's OWN slot — see
+   * {@link FactCandidate.anchorReach}, which is where a producer says how far it
+   * has standing to spend it.
    */
   readonly predicateCardinality?: PredicateCardinality;
+  /**
+   * How far {@link FactCandidate.predicateCardinality} carries — the bound
+   * #5438 removed and #5467 put back on the one lane that never re-made the
+   * trade.
+   *
+   * `TENSION_CANDIDATES_SQL` has two arms. The EXACT-SLOT arm asks about the
+   * claim's own slot; the ANCHOR arm reaches every live claim sharing the
+   * subject's whole-token prefix, from a different episode, with no predicate
+   * test at all (`lib/brain/segmentation.ts`). A per-claim `single` hint is a
+   * statement about ONE predicate, so spending it on the second arm is
+   * spending it on slots the producer never spoke about.
+   *
+   *   - `"producer-hint"` (the default, and today's shipped behaviour) — the
+   *     hint arms BOTH arms. What the extractor's guess has done since #5438,
+   *     recorded as a named limit on `docs/prd/company-atlas.md`'s condition 4
+   *     rather than as an accident.
+   *   - `"curated-only"` — the hint arms the exact slot; the anchor arm is
+   *     admitted only where the workspace holds an APPROVED `single` entry for
+   *     the predicate (`cardinalitySingleSql`, the bound `TENSION_SWEEP_SQL`
+   *     already has). `correction.ts` passes this.
+   *
+   * ⚠️ **Not a switch for "how noisy do we want this producer to be."** It says
+   * whose assertion licenses the reach, and there are only two answers: the
+   * producer's own hint about its own predicate, or the workspace's curated
+   * entry (#5027's answer to who may say a predicate is single-valued). A third
+   * value would be a third authority, and there isn't one.
+   *
+   * Omitting it preserves byte-identical behaviour for every producer that has
+   * not thought about the question, which is the direction a bound has to
+   * default in: a producer that acquires standing declares it.
+   */
+  readonly anchorReach?: "producer-hint" | "curated-only";
   /**
    * What the producer knows its own object IS (#5030) — on
    * {@link FactCandidate.predicateCardinality}'s precedent exactly: a
@@ -1159,10 +1201,40 @@ export const INSERT_PROVENANCE_EDGE_SQL = `INSERT INTO brain_edges
  * ⚠️ **`$9` is the new claim's episode, and it is bound LAST for the reason the
  * paragraph above gives.** Appended after the cap rather than inserted anywhere
  * nearer the spread, so it cannot push `$7`/`$8` along. A tenth bind goes after
- * it, on the same rule.
+ * it, on the same rule — and #5467 is that tenth bind.
+ *
+ * ## …and the anchor arm can be asked to EARN itself (#5467)
+ *
+ * The arm above reaches slots the producer never spoke about, and until #5467
+ * the only thing licensing it was the producer's per-claim `single` hint. On the
+ * correction lane that hint is a hard-code derived from a human's VERB, and a
+ * verb is an assertion about the slot the human corrected — not about the rest
+ * of the subject's predicate fan. One spurious prod edge exists because of it
+ * (`e78de65d`: a raise target flagged against a post-money valuation).
+ *
+ * So the trailing conjunct: the pair qualifies if it is in the EXACT SLOT (the
+ * hint's own territory, unchanged for every producer), **or** the producer said
+ * its hint carries that far (`$10`, true for everyone who has not thought about
+ * it), **or** the workspace holds an approved `single` entry for the predicate —
+ * {@link cardinalitySingleSql}, the identical bound `TENSION_SWEEP_SQL` reads.
+ *
+ * Written as a conjunct beside the reach rather than folded INTO
+ * `tensionReachSql`, and that is load-bearing twice over. The builder's output
+ * stays byte-identical at both call sites, so the sweep is untouched and
+ * `segmentation.test.ts`'s "the anchor arm carries NO predicate test" assertion
+ * still means what it says. And `(exact OR anchor) AND (exact OR $10 OR curated)`
+ * is `exact OR (anchor AND (…))` — the same rule, spelled where a reader can see
+ * that the SLOT arm is exempt.
+ *
+ * ⚠️ `$3` rather than the row's own `predicate_key`: the gate asks about the
+ * INCOMING claim's predicate, exactly as the sweep's `cardinalitySingleSql("a")`
+ * asks about its driving side. Reading the rival's predicate would ask whether
+ * some other slot is single-valued, which is a question nobody posed. The
+ * workspace comes off `f.workspace_id`, which `WHERE workspace_id = $1` has
+ * already equated to the bind.
  */
 export const TENSION_CANDIDATES_SQL = `SELECT id
-     FROM brain_facts
+     FROM brain_facts f
     WHERE workspace_id = $1
       AND ${tensionReachSql(
         {
@@ -1172,6 +1244,12 @@ export const TENSION_CANDIDATES_SQL = `SELECT id
         },
         { subjectKeyExpr: "$2", predicateKeyExpr: "$3", episodeIdExpr: "$9::uuid" },
       )}
+      AND (${exactSlotSql(
+        { subjectKeyExpr: "subject_key", predicateKeyExpr: "predicate_key" },
+        { subjectKeyExpr: "$2", predicateKeyExpr: "$3" },
+      )}
+        OR $10::boolean
+        OR ${cardinalitySingleSql("f", "$3")})
       AND ${objectNotSameSql("object_key", "$4", "object_cmp", "$5")}
       AND ${subjectNotDifferentSql("subject_cmp", "$6")}
       AND invalidated_at IS NULL
@@ -1914,7 +1992,9 @@ interface ResolvedSlotKeys {
  * pushes `factId` one placeholder along and hands the slot declared `::uuid` a
  * tagged comparable value instead. In `INSERT_FACT_SQL` the spread is last and
  * pg would at least raise an arity error; **in the rival scan** it would not.
- * #5032 renumbered it to `$7`/`$8`; a sixth member means `$8`/`$9`.
+ * #5032 renumbered it to `$7`/`$8`; a sixth member means `$8`/`$9` — and since
+ * #5438/#5467 the rival scan's tail is `$9` (the episode) and `$10` (the anchor
+ * arm's licence), so a sixth member moves FOUR placeholders there, not two.
  *
  * ⚠️ **Since #5332 the CORROBORATION lookup has a trailing placeholder too**,
  * so it is no longer the safe one of the three: its class arm binds `$7` after
@@ -2641,6 +2721,11 @@ async function writeCandidate(
   // recoverable in both directions (a missing one costs a reviewer a hint; a
   // spurious one costs a reviewer a glance). An LLM guess is worth exactly that
   // much, which is why it kept this consumer and lost the other.
+  //
+  // ⚠️ Since #5438 the hint decides more than whether the scan RUNS — it also
+  // decides how far the scan reaches, because the anchor arm leaves the claim's
+  // own slot. `anchorReach` is where a producer bounds that (#5467); this gate
+  // is unchanged and still asks only whether to scan at all.
   if ((item.candidate.predicateCardinality ?? "multi") === "single") {
     const rivals = await tx.query(TENSION_CANDIDATES_SQL, [
       episode.workspaceId,
@@ -2658,6 +2743,18 @@ async function writeCandidate(
       // routinely yields several claims about one subject and they are not
       // contradictions.
       episode.id,
+      // #5467, the tenth bind the docstring above reserved. TRUE says the
+      // producer's per-claim hint licenses the ANCHOR arm as well as the slot,
+      // which is what every producer got for free between #5438 and #5467 and
+      // what all but one still gets. `correction.ts` binds FALSE and the arm
+      // then has to find an approved entry in `brain_predicate_cardinality`.
+      //
+      // Spelled as `!== "curated-only"` rather than `=== "producer-hint"` so an
+      // absent field — every existing caller, and `FactCandidate` makes it
+      // optional — keeps the old behaviour rather than silently acquiring the
+      // bound. A widening default would subtract edges from producers that never
+      // asked, and a missing advisory edge is indistinguishable from agreement.
+      item.candidate.anchorReach !== "curated-only",
     ]);
     for (const row of rivals.rows) {
       const rivalId = rowId(row);

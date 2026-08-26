@@ -174,10 +174,46 @@
  * module: with a predicate arm, a correction's tension scan reached its own
  * slot; with the anchor arm, it reaches every live claim sharing its subject's
  * prefix. `has target raise of` has no row in `brain_predicate_cardinality` at
- * all, and the edge exists. So the reach of this arm is **not** bounded by
+ * all, and the edge exists. So the reach of this arm was **not** bounded by
  * approved-predicate coverage on the correction lane — only on the sweep lane.
- * Filed separately rather than fixed here; the trade may well still be right,
- * but it should be re-made knowingly.
+ *
+ * ## The bound the correction lane was missing (#5467) — decided, not deferred
+ *
+ * The paragraph above was filed as #5467 rather than fixed in place. It is
+ * fixed now, and the decision is stated here once because this is the module
+ * whose reach made it necessary. The reader who meets the hard-code first finds
+ * the same decision on `correction.ts`.
+ *
+ * **A correction may assert `single` about the slot it CORRECTED. It may not, on
+ * the strength of that assertion, reach slots it did not correct.**
+ *
+ * The verb's argument had two premises and the arm falsified one of them. That
+ * the consequence is ADVISORY survives — a wrong flag still costs a reviewer a
+ * glance. That *a human superseding a slot has asserted BY THEIR ACTION that it
+ * holds one value* does **not**: the action is about ONE slot, and this arm
+ * spends it on every live claim under the subject's prefix. #5027's answer to
+ * *who may say a predicate is single-valued* is the curated entry — a verb is a
+ * repeat-gated PROPOSER that writes `pending`, which the correction's own
+ * comment already said. Reaching past the slot is the part that needs the
+ * authority the verb does not have.
+ *
+ * So {@link exactSlotSql} stays licensed by the producer's per-claim hint, and
+ * the ANCHOR arm on that lane is licensed by `cardinalitySingleSql` — the same
+ * approved entry `TENSION_SWEEP_SQL` reads. `reconcile.ts` carries the gate as
+ * one extra conjunct on `TENSION_CANDIDATES_SQL` rather than as a second reach,
+ * so this builder's output is byte-identical at both call sites and the two
+ * statements still cannot drift about what "in tension" means.
+ *
+ * ⚠️ **The EXTRACT lane is deliberately untouched, and that is not an
+ * oversight.** The extractor's per-claim `single` guess still arms this arm with
+ * no curation anywhere. That trade was made WITH this arm in view — #5438 built
+ * the arm knowing the gate was a model's guess, and
+ * `docs/prd/company-atlas.md`'s condition 4 records it as a named limit ("a
+ * model at ingest, or a human at the sweep"). The correction lane's hard-code is
+ * the one that was never re-made at this width. Closing the extract lane too
+ * would be a weakening of the anchor arm in the general case, which #5467
+ * explicitly declines to ask for; if it should close, it closes on its own
+ * evidence and its own issue.
  *
  * ⚠️ **One-of-three, and then one-of-two, on a corpus of 35 facts in ONE
  * workspace with two producers, is NOT a precision rate and does not
@@ -204,9 +240,10 @@
  * structural reason given below — but the bound is the curation, and the zero
  * is a property of this workspace's shape rather than of the gate.)
  *
- * ⚠️ **That bound holds for the SWEEP lane only.** The correction lane has no
- * coverage bound at all — see the `⚠️` above — so "approved-predicate coverage"
- * corrects the PRD without being the whole story.
+ * ⚠️ **That bound now holds for the CORRECTION lane's anchor arm too, and for
+ * nothing else** (#5467, above). Its exact-slot arm and the whole EXTRACT lane
+ * still run on the producer's per-claim hint, so "approved-predicate coverage"
+ * corrects the PRD about the sweep without being the whole story anywhere else.
  *
  * ## Asking the question before paying the cost
  *
@@ -374,8 +411,14 @@ export function tensionReachSql(a: TensionReachSide, b: TensionReachSide): strin
  *
  * Named rather than inlined at both sites because {@link exactSlotFirstSql} has
  * to rank on the SAME test this arm admits on, and two spellings drift.
+ *
+ * EXPORTED since #5467 for a third consumer with the same requirement:
+ * `reconcile.ts` exempts this arm from the correction lane's cardinality gate,
+ * so the exemption has to be spelled by the arm itself. A hand-written copy
+ * there would be a fourth place that decides what "the same slot" means, and
+ * the one it would disagree with is the arm that admits the pair.
  */
-function exactSlotSql(a: SlotSide, b: SlotSide): string {
+export function exactSlotSql(a: SlotSide, b: SlotSide): string {
   return `(${a.subjectKeyExpr} = ${b.subjectKeyExpr} AND ${a.predicateKeyExpr} = ${b.predicateKeyExpr})`;
 }
 

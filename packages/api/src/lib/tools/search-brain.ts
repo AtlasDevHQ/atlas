@@ -158,7 +158,34 @@ function emptyResponse(unavailable: BrainSearchUnavailable | null = null): Brain
   };
 }
 
-/** Workflow-guidance block injected into the agent system prompt via `describe()`. */
+/**
+ * Workflow-guidance block injected into the agent system prompt via `describe()`.
+ *
+ * ## The tier clause stays, now that a UI renders the tier too (#5451)
+ *
+ * Until 2026-08-26 this prompt was the ONLY thing carrying ADR-0036's
+ * "every UI surface must carry the tier label" invariant to a person —
+ * `searchBrain` fell through the chat surface's `default:` arm to a gray
+ * "Tool: searchBrain" box, and `raw-episode` appeared zero times in
+ * `packages/web/src`. That is the failure shape `lib/brain/segmentation.ts`
+ * names: a property that must be TRUE carried by a model instruction holds
+ * statistically, and nothing reports the turn where the model omits it.
+ *
+ * Both non-admin chat surfaces now render a tier chip per result, and
+ * `executeSQL`'s card carries tier-1 SURVEYED. **The prompt clause is
+ * deliberately NOT removed in exchange.** MCP, the CLI and the chat-platform
+ * adapters render no Atlas UI at all, so deleting it would replace a
+ * statistical carrier with nothing on every surface Atlas does not draw. The
+ * two are not two sources of one claim: the badge STATES the tier, this tells
+ * the model to CITE provenance and forbids presenting one tier as another.
+ *
+ * ⚠️ The vocabularies do differ today — the badges carry the wire words
+ * (`fact` / `raw episode` / `document` / `warehouse`), this prompt teaches
+ * ADR-0038's *ATTESTED / ON THE RECORD / SURVEYED*. That is #5375's to settle,
+ * and is deliberate rather than an oversight: #5375 says "do not rename first
+ * and test after". If it adopts the proposed names, the labels in
+ * `@useatlas/schemas/trust-tier` (and its widget mirror) are the entire edit.
+ */
 export const SEARCH_BRAIN_DESCRIPTION = `### Search the Company Atlas
 Use the searchBrain tool for decisions, rationale, ownership, policy, and history:
 - Pass a natural-language \`query\`; narrow the document store with \`type\`, \`tags\`, \`collection\`, or \`since\`, and narrow the stores themselves with \`include\`

@@ -8,6 +8,7 @@ import { ExploreCard } from "./explore-card";
 import { SQLResultCard } from "./sql-result-card";
 import { ActionApprovalCard } from "../actions/action-approval-card";
 import { PythonResultCard } from "./python-result-card";
+import { SearchBrainCard } from "./search-brain-card";
 import type { ToolRenderers } from "../../lib/tool-renderer-types";
 
 export interface ToolPartProps {
@@ -83,6 +84,10 @@ export const ToolPart = memo(function ToolPart({ part, toolRenderers }: ToolPart
       return <ExploreCard part={part} />;
     case "executeSQL":
       return <SQLResultCard part={part} />;
+    // #5451 — `searchBrain` used to fall through to the gray "Tool: searchBrain"
+    // box, leaving ADR-0036's tier label rendered by no surface at all.
+    case "searchBrain":
+      return <SearchBrainCard part={part} />;
     case "executePython":
       return <PythonResultCard part={part} />;
     default: {

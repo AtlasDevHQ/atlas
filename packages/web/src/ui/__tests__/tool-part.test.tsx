@@ -78,6 +78,40 @@ describe("ToolPart", () => {
     expect(container.textContent).toContain("Test query");
   });
 
+  test("dispatches searchBrain to SearchBrainCard, not the gray fallback", () => {
+    // #5451 — this dispatch is the whole bug: `searchBrain` fell through to
+    // `default:`, so ADR-0036's tier label was rendered by no surface at all.
+    const { container } = render(
+      <ToolPart
+        part={makePart("searchBrain", {
+          input: { query: "who owns billing" },
+          output: {
+            results: [
+              { tier: "fact", subject: "Billing", predicate: "is owned by", object: "Payments", corroborationCount: 1, decay: { level: "fresh" } },
+            ],
+            neighbors: [],
+            tensionsTruncated: false,
+          },
+        })}
+      />,
+    );
+    expect(container.textContent).not.toContain("Tool: searchBrain");
+    expect(container.querySelectorAll('[data-testid="tier-badge"]')).toHaveLength(1);
+  });
+
+  test("executeSQL carries the warehouse tier — SURVEYED is this card, not searchBrain", () => {
+    const { container } = render(
+      <ToolPart
+        part={makePart("executeSQL", {
+          input: { sql: "SELECT 1", explanation: "Test query" },
+          output: { success: true, columns: ["?column?"], rows: [{ "?column?": 1 }] },
+        })}
+      />,
+    );
+    const badge = container.querySelector('[data-testid="tier-badge"]');
+    expect(badge?.getAttribute("data-tier")).toBe("warehouse");
+  });
+
   test("dispatches executePython to PythonResultCard", () => {
     const { container } = render(
       <ToolPart

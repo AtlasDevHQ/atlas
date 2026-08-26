@@ -32,6 +32,8 @@ import {
   type ToolUIPart,
   type DynamicToolUIPart,
 } from "ai";
+import { ANSWER_TRUST_TIERS } from "@useatlas/schemas";
+import { toRows } from "../../lib/brain-rows";
 import { isActionToolResult } from "../../lib/action-types";
 import { isRestWriteConfirmResult } from "../../lib/rest-operation-types";
 
@@ -203,6 +205,82 @@ export function isFailedToolPart(part: ToolTurnPart): boolean {
 }
 
 /**
+ * The distinct trust tiers that fed this turn's activity, in ADR-0036's trust
+ * order (#5451).
+ *
+ * This is what makes the tier chip reach a person who never expands anything.
+ * Every tool card that carries a tier lives INSIDE the receipt, and the receipt
+ * is collapsed by default on a finished turn — so a card-only fix would have
+ * satisfied "a surface renders the tier" while leaving the actual reading
+ * experience exactly as it was: answer prose, no label. The chips render on the
+ * collapsed summary row.
+ *
+ * Two sources, because the tier is not one tool's property:
+ *   - a successful `executeSQL` contributes `warehouse` — ADR-0036 tier 1,
+ *     SURVEYED, which never appears in a `searchBrain` result at all;
+ *   - each `searchBrain` row contributes its own `tier`, RAW and un-narrowed,
+ *     so a value this build does not recognize reaches {@link TierBadge} and
+ *     draws a loud "unknown tier" chip rather than vanishing.
+ *
+ * Failed queries contribute nothing: a query that errored grounded no part of
+ * the answer, and claiming warehouse authority for it would be the inverse of
+ * the bug this fixes.
+ *
+ * ⚠️ The PROMOTED artifact is a second argument, and forgetting it was a real
+ * bug in this file's first cut. {@link partitionTurn} lifts the last successful
+ * `executeSQL` OUT of `activity` to sit beside the answer — so reading activity
+ * alone means a turn that ran exactly one query, the commonest SURVEYED turn
+ * there is, showed NO `warehouse` chip on its receipt row. That is #5451's own
+ * failure re-created inside #5451's fix, on tier 1, the tier the wedge most
+ * depends on. It survived because the tests fed `activity` directly and never
+ * composed `partitionTurn` with this function.
+ */
+export function answerTrustTiers(
+  activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[],
+  answerBearingArtifact?: IndexedTurnPart<ToolTurnPart> | null,
+): string[] {
+  const tiers = new Set<string>();
+  const contributors = answerBearingArtifact
+    ? [...activity, answerBearingArtifact]
+    : activity;
+  for (const { part } of contributors) {
+    if (!isToolUIPart(part) || part.state !== "output-available") continue;
+    const name = getToolName(part);
+    if (name === "executeSQL") {
+      if (!isFailedToolPart(part)) tiers.add("warehouse");
+      continue;
+    }
+    if (name !== "searchBrain") continue;
+    // ⚠️ `toRows`, the SAME projection the card renders — not a second walk of
+    // `results` + `neighbors`. Two copies is two answers to "is a 1-hop
+    // neighbor a labelled row?", and ADR-0036 is explicit that it is.
+    for (const row of toRows(part.output as Record<string, unknown> | null)) {
+      tiers.add(row.tier);
+    }
+  }
+  return [...tiers].toSorted(byTrustOrder);
+}
+
+/**
+ * Trust order for the chips; anything this build doesn't know sorts last.
+ *
+ * The CANONICAL tuple, not a third hand-written copy of it. An earlier cut
+ * re-typed the four values here — in a file that can import them — where
+ * nothing pinned the copy and the cross-package drift test could not see it.
+ */
+const TRUST_ORDER: readonly string[] = ANSWER_TRUST_TIERS;
+
+function byTrustOrder(a: string, b: string): number {
+  const ai = TRUST_ORDER.indexOf(a);
+  const bi = TRUST_ORDER.indexOf(b);
+  if (ai === bi) return a.localeCompare(b);
+  if (ai === -1) return 1;
+  if (bi === -1) return -1;
+  return ai - bi;
+}
+
+
+/**
  * The receipt's one-line summary of what stayed in it, e.g.
  * "Explored schema · 2 queries". Counts describe the receipt's own contents —
  * the promoted artifact is visible next to the answer, not re-counted here.
@@ -218,6 +296,7 @@ export function summarizeActivity(
   let explores = 0;
   let queries = 0;
   let pythonRuns = 0;
+  let brainSearches = 0;
   let otherSteps = 0;
   let failed = 0;
   for (const { part } of activity) {
@@ -233,6 +312,12 @@ export function summarizeActivity(
       case "executePython":
         pythonRuns++;
         break;
+      // #5451 — named rather than counted as "N more steps": the tier chips
+      // beside this summary are meaningless if the line does not say the Atlas
+      // was read at all.
+      case "searchBrain":
+        brainSearches++;
+        break;
       default:
         otherSteps++;
     }
@@ -241,6 +326,11 @@ export function summarizeActivity(
   const segments: string[] = [];
   if (explores > 0) segments.push("Explored schema");
   if (queries > 0) segments.push(queries === 1 ? "1 query" : `${queries} queries`);
+  if (brainSearches > 0) {
+    segments.push(
+      brainSearches === 1 ? "Searched the Atlas" : `${brainSearches} Atlas searches`,
+    );
+  }
   if (pythonRuns > 0) {
     segments.push(pythonRuns === 1 ? "1 Python run" : `${pythonRuns} Python runs`);
   }

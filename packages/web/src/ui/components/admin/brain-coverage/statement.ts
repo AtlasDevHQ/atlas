@@ -37,14 +37,14 @@ import {
   CLASS_COPY,
   CLASS_ORDER,
   MAP_EDGE_COPY,
-  UNIT_CAPTION,
   cannotEstablishClaim,
   datePhrase,
   enumerationNeverSucceededClaim,
   frozenEnumerationClaim,
   neverEnumeratedClaim,
+  noUnitsFoundPhrase,
   notSurveyableClaim,
-  ratioPhrase,
+  surveyedOfPhrase,
 } from "./vocabulary";
 
 export interface ComposedStatement {
@@ -100,7 +100,6 @@ function availabilitySentence(coverage: BrainCoverage, cls: BrainCoverageSourceC
       // as an ordinary state.
       const asOf = datePhrase(arm.asOf);
       const stamp = asOf === null ? "" : `, as of ${asOf}`;
-      const caption = UNIT_CAPTION[arm.ratio.unit];
       // ⚠️ The FROZEN-counts clause belongs in the paragraph, not only on the
       // card. This arm's `unavailable` means the latest cycle failed after the
       // success `asOf` names, and it does NOT clear `countsConsistent` — so
@@ -117,14 +116,24 @@ function availabilitySentence(coverage: BrainCoverage, cls: BrainCoverageSourceC
         // A MEASURED emptiness — a cycle ran and found nothing — which is a
         // different statement from "nobody has looked", and reachable only on
         // this arm.
-        return `${copy.title} — no ${copy.units} were found ${caption}${stamp}.${frozen}`;
+        return `${copy.title} — Atlas found ${noUnitsFoundPhrase(arm.ratio.unit)}${stamp}.${frozen}`;
       }
-      const ratio = ratioPhrase(arm.ratio.surveyed, arm.ratio.enumerable, copy);
+      // ⚠️ ONE clause, not a ratio with a caption stapled to it (#5422). The
+      // card renders those as two lines and reads correctly; a sentence made by
+      // concatenating them said the unit noun twice — "2 of 7 chat channels of
+      // the channels Atlas's chat credentials can see". Both halves were right
+      // and the join was wrong, so the join moved into `vocabulary.ts` where the
+      // caption's parts live and the card composes from the same ones.
+      const ratio = surveyedOfPhrase(arm.ratio.surveyed, arm.ratio.enumerable, arm.ratio.unit);
+      // Agrees with its own subject. "1 of the rest are in scope" was on prod
+      // beside the stutter — a different defect in the same sentence, and the
+      // same cause: a clause assembled without anybody reading the result.
+      const idleCount = arm.ratio.inPerimeterWithoutEvidence;
       const idle =
-        arm.ratio.inPerimeterWithoutEvidence > 0
-          ? ` ${arm.ratio.inPerimeterWithoutEvidence.toLocaleString()} of the rest are in scope but have produced nothing yet.`
+        idleCount > 0
+          ? ` ${idleCount.toLocaleString()} of the rest ${idleCount === 1 ? "is" : "are"} in scope but ${idleCount === 1 ? "has" : "have"} produced nothing yet.`
           : "";
-      return `${copy.title} — Atlas surveys ${ratio} ${caption}${stamp}.${idle}${frozen}`;
+      return `${copy.title} — Atlas surveys ${ratio}${stamp}.${idle}${frozen}`;
     }
   }
 }

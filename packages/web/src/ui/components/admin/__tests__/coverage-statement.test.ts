@@ -3,6 +3,7 @@ import { composeStatement } from "@/ui/components/admin/brain-coverage/statement
 import {
   CLASS_COPY,
   CLASS_ORDER,
+  UNIT_CAPTION_PARTS,
   cannotEstablishClaim,
   enumerationNeverSucceededClaim,
   neverEnumeratedClaim,
@@ -15,7 +16,21 @@ import {
   AUTHORITY,
   chatArm,
   coverage as build,
+  warehouseArm,
 } from "@/ui/components/admin/brain-coverage/__tests__/_fixtures";
+
+/**
+ * Two enumerated classes at once, so the composition assertions see more than
+ * one caption.
+ *
+ * The default fixture enumerates `chat` alone and leaves `warehouse` on the
+ * cannot-establish arm, which carries no caption at all — a stutter test run
+ * against it would be checking one noun and passing for the wrong reason.
+ */
+const WAREHOUSE_AND_CHAT: Partial<BrainCoverage["availability"]> = {
+  chat: chatArm(),
+  warehouse: warehouseArm(),
+};
 
 /**
  * The composed statement (#5215, ADR-0041) — condition 6's top of page, tested
@@ -63,10 +78,74 @@ describe("composeStatement — every class answers (ADR-0041)", () => {
   });
 
   test("carries the credential-relative caption and the as-of date on the ratio", () => {
+    // ⚠️ The caption is now a CLAUSE rather than a phrase stapled on the end
+    // (#5422): "3 of the 7 channels Atlas's chat credentials can see". Both
+    // halves it was assembled from are still here and still load-bearing —
+    // what changed is the join, which used to say the unit noun twice. The
+    // card's own caption string is untouched; `coverage-honesty.test.tsx`
+    // still pins it verbatim.
     const [chat] = composeStatement(build()).availability;
-    expect(chat).toContain("3 of 7 chat channels");
-    expect(chat).toContain("of the channels Atlas's chat credentials can see");
+    expect(chat).toContain("3 of the 7 channels");
+    // The credential-relative scoping, which is the half that keeps the
+    // denominator honest and may never be dropped to tidy the sentence.
+    expect(chat).toContain("Atlas's chat credentials can see");
     expect(chat).toContain("as of");
+  });
+
+  test("the in-scope-but-idle clause agrees with its own subject", () => {
+    // "1 of the rest are in scope but have produced nothing yet" — on prod
+    // beside the stutter, same cause: a clause assembled and never read back.
+    const [chat] = composeStatement(build()).availability;
+    expect(chat).toContain("1 of the rest is in scope but has produced nothing yet");
+
+    const many = composeStatement(
+      build({
+        availability: {
+          chat: {
+            ...chatArm(),
+            ratio: { ...chatArm().ratio, inPerimeterWithoutEvidence: 3 },
+          },
+        },
+      }),
+    ).availability[0];
+    expect(many).toContain("3 of the rest are in scope but have produced nothing yet");
+  });
+
+  test("names each unit noun ONCE per sentence — the stutter, pinned (#5422)", () => {
+    // The defect this replaces, read off prod on 2026-08-26:
+    //
+    //   Chat — Atlas surveys 2 of 7 chat CHANNELS of the CHANNELS Atlas's chat
+    //   credentials can see, as of Aug 26, 2026.
+    //
+    // Both strings were correct and both are still here; the summary's
+    // concatenation was what doubled the noun. Asserting on the composed
+    // sentence rather than on either half is the point — a test that checked
+    // the two pieces separately is exactly the test that was already green
+    // while the page stuttered.
+    const statement = composeStatement(build({ availability: WAREHOUSE_AND_CHAT }));
+    for (const unit of Object.keys(UNIT_CAPTION_PARTS) as (keyof typeof UNIT_CAPTION_PARTS)[]) {
+      const noun = UNIT_CAPTION_PARTS[unit].units;
+      for (const sentence of statement.availability) {
+        const hits = sentence.split(noun).length - 1;
+        expect(hits).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  test("no noun repeats across a connector, in any sentence", () => {
+    // The GENERAL form of the same defect: two correct fragments meeting at a
+    // seam, with a preposition between them hiding the repeat from a
+    // back-to-back check. The prod stutter was "channels of the channels" —
+    // two words apart, which is why the filler window is two and not zero.
+    //
+    // Restricted to a closed set of connectors rather than `\w+` so it cannot
+    // fire on ordinary prose that legitimately reuses a word further along.
+    const connector = String.raw`(?:of|the|in|to|for|a|an)`;
+    const stutter = new RegExp(String.raw`\b(\w{4,})\b(?:\s+${connector}){1,2}\s+\1\b`, "i");
+    const statement = composeStatement(build({ availability: WAREHOUSE_AND_CHAT }));
+    for (const sentence of [...statement.availability, ...statement.mapEdges]) {
+      expect(stutter.exec(sentence)?.[0] ?? null).toBeNull();
+    }
   });
 
   test("never spells a percentage, in any sentence", () => {
@@ -145,7 +224,7 @@ describe("composeStatement — no invented dates, no invented denominators", () 
       build({ availability: { ...base.availability, warehouse } }),
     );
     const sentence = statement.availability[3];
-    expect(sentence).toContain("4 of 281 entity–dimension pairs");
+    expect(sentence).toContain("4 of the 281 entity–dimension pairs");
     expect(sentence).toContain("your semantic layer defines");
     // The load-bearing negative: no phrasing may claim the DENOMINATOR was
     // enrolled. `enrolled` describing a unit is fine; describing the 281 is not.
@@ -185,7 +264,10 @@ describe("composeStatement — no invented dates, no invented denominators", () 
     );
     const [chat] = statement.availability;
     // A cycle ran and found nothing — which is a claim, and carries its date.
-    expect(chat).toContain("no chat channels were found");
+    expect(chat).toContain("Atlas found no channels");
+    // Still SCOPED: it does not say the company has no channels, only that
+    // these credentials found none.
+    expect(chat).toContain("Atlas's chat credentials can see");
     expect(chat).toContain("as of");
     expect(chat).not.toContain("0 of 0");
   });
@@ -229,7 +311,7 @@ describe("composeStatement — no invented dates, no invented denominators", () 
     );
     const [sentence] = statement.availability;
     // The counts survive — they are the last that succeeded, not wrong.
-    expect(sentence).toContain("3 of 7 chat channels");
+    expect(sentence).toContain("3 of the 7 channels");
     expect(sentence).toContain("Enumeration has been unavailable since");
     expect(sentence).toContain("These counts are the last that succeeded");
     expect(sentence).toContain("Slack returned 429 for the channel listing.");

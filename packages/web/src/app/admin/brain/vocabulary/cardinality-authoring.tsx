@@ -196,6 +196,28 @@ export function CardinalityAuthoring({
    */
   const previewKind = cardinality === "single" ? "cardinality-flip" : "cardinality-removal";
 
+  /**
+   * Whether the write may be attempted.
+   *
+   * Five conditions, and each corresponds to a failure this page has actually
+   * shipped or nearly shipped: a write behind NO number, behind a PENDING one,
+   * behind a FAILED one, behind a number for a DIFFERENT SLOT, or behind a
+   * vocabulary this page could not read.
+   *
+   * ⚠️ Declared ABOVE `onWrite`, which reads it. As a hoisted function
+   * declaration reading a `const`, `onWrite` only worked because a click cannot
+   * happen before render finishes — a real guarantee today and a temporal-dead-zone
+   * throw the moment anything calls it during render. `page.tsx` orders
+   * `bothPicked` before `onAuthor` for the same reason.
+   */
+  const armed =
+    surface !== null &&
+    radius.radius !== null &&
+    radius.error === null &&
+    !radius.pending &&
+    aliasedOnto === null &&
+    vocabularyKnown;
+
   async function onPreview() {
     if (surface === null) return;
     const mine = ++generation.current;
@@ -242,21 +264,6 @@ export function CardinalityAuthoring({
     clearRadius();
     onWritten();
   }
-
-  /**
-   * Whether the write may be attempted.
-   *
-   * Four independent conditions, and each one has produced the same class of
-   * failure on this page before: a write behind no number, behind a stale
-   * number, behind a FAILED number, or behind a number for a different slot.
-   */
-  const armed =
-    surface !== null &&
-    radius.radius !== null &&
-    radius.error === null &&
-    !radius.pending &&
-    aliasedOnto === null &&
-    vocabularyKnown;
 
   return (
     <Card>

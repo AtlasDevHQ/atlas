@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.21",
+    title: "Correcting the Past, Visibly",
+    date: "2026-08-26",
+    summary:
+      "Three places where the Atlas was already right and nobody could see it. Correcting a claim that used to be true now keeps the old answer readable instead of erasing it; the trust level behind an answer is shown to you rather than left to how the assistant happens to phrase things; and every change to how claims are matched leaves a record of who made it and what it replaced.",
+    highlights: [
+      "Correcting an outdated claim keeps its history. Until now the only button in front of a reviewer withdrew a claim entirely \u2014 the right answer when something was never true, and the wrong one when it simply changed, because a withdrawal is designed to make the old value unreadable. A published claim now asks what actually happened, in plain words, and only the \u201cit was true and then it changed\u201d answer preserves the previous value as history",
+      "You are asked what happened, not which operation to run. The two outcomes are described by their consequences, and the option to record a change appears only on claims that can actually take one \u2014 so there is no dead control to puzzle over, and withdrawing something stays exactly as quick as it was",
+      "You can say when the new value started being true. Optional, and left blank it simply records the change as happening now",
+      "Answers show their trust level as a label. The Atlas has always tracked whether something is a reviewed fact, an on-the-record message, or a hosted document, but that distinction reached you only if the assistant chose to mention it \u2014 phrased differently each time, and silently missing on any given answer. It is now shown directly on the answer, and an unrecognized level is called out loudly rather than quietly disappearing",
+      "Every change to how claims are matched is now attributed. Deciding that a question has a single answer determines which claims can contradict each other, so it carries real consequence \u2014 that decision, and the three other vocabulary changes beside it, now record who made them",
+      "Replacing one of those decisions records what it replaced. Previously a later change overwrote the earlier one with no trace of the prior decision or its author; the earlier verdict and who reached it are now kept",
+      "The coverage page was re-verified in production, at 0% coverage as clearly as at 29%. A workspace with nothing surveyed still states its real, dated totals rather than hiding the zeros, and a category nothing has ever looked at reads differently from one measured as empty",
+    ],
+  },
+  {
     version: "v0.2.20",
     title: "A Human Name on the Claim",
     date: "2026-08-25",

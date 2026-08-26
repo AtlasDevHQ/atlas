@@ -126,7 +126,15 @@ export function toChanged(raw: unknown): string | null {
   const prior = history?.prior;
   if (prior == null || typeof prior !== "object") return null;
   const priorRow = prior as Record<string, unknown>;
-  const changedBy = history?.changedBy as Record<string, unknown> | undefined;
+  // Narrowed the same way `prior` is, one line up. The `?.` reads below are
+  // safe against a primitive anyway, but a module whose header makes
+  // defensive reading the point should not have one field checked and its
+  // neighbour cast.
+  const rawChangedBy = history?.changedBy;
+  const changedBy =
+    rawChangedBy != null && typeof rawChangedBy === "object"
+      ? (rawChangedBy as Record<string, unknown>)
+      : undefined;
 
   const when = formatDate(priorRow.validTo) ?? formatDate(changedBy?.at);
   const count = typeof history?.priorCount === "number" ? history.priorCount : 1;

@@ -77,6 +77,9 @@ import type {
   BrainFactWillWidenEntry,
   BrainResultTier,
   BrainSearchTensionView,
+  BrainFactChangeAgent,
+  BrainFactPriorVersion,
+  BrainFactHistoryView,
   BrainVocabularyAgreementExample,
   BrainVocabularyAliasEvidence,
   BrainVocabularyAuthorResponse,
@@ -393,6 +396,84 @@ export const BrainSearchTensionViewSchema = z.discriminatedUnion("visible", [
     withheldCount: z.number().int().positive(),
   }),
 ]) satisfies z.ZodType<BrainSearchTensionView, unknown>;
+
+/**
+ * Who retired the predecessor (#5461, PRD finish condition 5).
+ *
+ * A discriminated union on `kind`, and the discriminant is the whole ACL- and
+ * honesty-bearing property: the `promotion` arm is `z.strictObject`, so a
+ * producer that attached an actor to a gate-written supersession fails the
+ * `satisfies` here rather than shipping. On that path the replacement's actor
+ * is whoever the NEWER claim was extracted from — a person who never touched
+ * the old claim — so an actor on that arm is not a missing field, it is an
+ * accusation the record does not support.
+ */
+const BrainFactChangeAgentSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("correction"),
+    actor: z.string().nullable(),
+    actorIdentity: BrainActorIdentityViewSchema.nullable(),
+    at: z.string().nullable(),
+  }),
+  z.strictObject({
+    kind: z.literal("promotion"),
+    at: z.string().nullable(),
+  }),
+]) satisfies z.ZodType<BrainFactChangeAgent, unknown>;
+
+/**
+ * The previous answer, or a marker that this reader may not read it (#5461).
+ *
+ * `z.strictObject` on the withheld arm, per the M1 ACL-boundary rule and for
+ * {@link BrainFactAttributionViewSchema}'s exact reason: every field of a prior
+ * answer is CONTENT, so the withheld arm has nothing it could carry, and a
+ * producer that attached the claim to it must fail this gate rather than
+ * disclose it.
+ */
+export const BrainFactPriorVersionSchema = z.discriminatedUnion("visible", [
+  z.object({
+    visible: z.literal(true),
+    factId: z.string(),
+    object: z.string(),
+    validFrom: z.string().nullable(),
+    validTo: z.string().nullable(),
+  }),
+  z.strictObject({ visible: z.literal(false) }),
+]) satisfies z.ZodType<BrainFactPriorVersion, unknown>;
+
+/**
+ * What a claim replaced (#5461, PRD finish condition 5).
+ *
+ * SCOPE, the same note {@link BrainSearchTensionViewSchema} carries and for the
+ * same reason: `searchBrain` has no runtime response parse today, so this
+ * schema's job is the compile-time pin against `BrainFactHistoryView` (a
+ * drifted field fails the `satisfies` below) and the enforcement seam for any
+ * parser added later. The runtime guarantee on that path is the discriminated
+ * unions above plus `toHistoryView` in `lib/brain/history.ts` being the single
+ * constructor.
+ *
+ * ⚠️ The refinements are the cross-field backstop, and the first one is a
+ * DISCLOSURE boundary rather than a tidiness rule. `priorCount` counts
+ * non-retracted ancestors only — a retracted predecessor is excluded from the
+ * content AND the count, because `retract` is the GDPR-erasure path (#4916) and
+ * a count that survived an erasure would re-disclose it. So a `priorCount`
+ * above zero beside a null `prior` is not a variant this surface has; it is the
+ * shape an erasure leak would take, and it must be unrepresentable.
+ */
+export const BrainFactHistoryViewSchema = z
+  .object({
+    prior: BrainFactPriorVersionSchema.nullable(),
+    priorCount: z.number().int().nonnegative(),
+    changedBy: BrainFactChangeAgentSchema.nullable(),
+    truncated: z.boolean(),
+  })
+  .refine((v) => (v.prior === null) === (v.priorCount === 0), {
+    message:
+      "a claim with no previous answer counts none, and a counted ancestor has a previous answer — a count beside a null `prior` is the shape a retracted-predecessor leak would take",
+  })
+  .refine((v) => (v.prior === null) === (v.changedBy === null), {
+    message: "`changedBy` is set if and only if `prior` is — nothing changed it if nothing changed",
+  }) satisfies z.ZodType<BrainFactHistoryView, unknown>;
 
 /**
  * `reasons` is `z.string()`, not an enum over the refusal vocabulary. That

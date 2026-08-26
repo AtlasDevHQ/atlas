@@ -872,28 +872,36 @@ describeIfPg("searchBrain against the live schema", () => {
   it(
     "never surfaces a RETRACTED predecessor — not as content, and not as a count",
     async () => {
-      // ⚠️ THE guardrail. `retract` is the verb whose purpose is to make the
-      // past unreadable and the route a GDPR erasure takes. A `priorCount` of 1
-      // beside a null `prior` would tell the reader an earlier answer exists —
-      // re-disclosing exactly what the erasure removed — and would be
-      // indistinguishable from a predecessor withheld by ACL.
+      // ⚠️ THE guardrail, and it is #4916's: `retract` is the verb whose
+      // purpose is to make the past unreadable and the route a GDPR erasure
+      // takes, which is why `invalidated_at IS NULL` survives in BOTH branches
+      // of the temporal read. A `priorCount` of 1 beside a null `prior` would
+      // tell the reader an earlier answer exists — re-disclosing exactly what
+      // the erasure removed — and would be indistinguishable from a predecessor
+      // withheld by ACL.
+      //
+      // Deliberately the `6M` SHAPE from #5426's 2026-08-25 census: the one
+      // claim in prod whose answer had ever changed was retired with `retract`,
+      // and that is precisely what made condition 5 fail. The fixture is that
+      // row, so a regression here reproduces the original finding rather than
+      // an invented one.
       const ep = await seedEpisode({ sourceId: "hist-retracted" });
       const erased = await seedFact({
-        subject: "Gannet headcount",
-        predicate: "is",
-        object: "40",
+        subject: "Gannet raise",
+        predicate: "has target of",
+        object: "6M",
         episodeId: ep,
         invalidated: true,
       });
       const live = await seedFact({
-        subject: "Gannet headcount",
-        predicate: "is",
-        object: "55",
+        subject: "Gannet raise",
+        predicate: "has target of",
+        object: "8M",
         episodeId: ep,
       });
       await seedSupersedes(live, erased);
 
-      const res = await search(outsider(), { query: "Gannet headcount", include: ["fact"] });
+      const res = await search(outsider(), { query: "Gannet raise", include: ["fact"] });
       const fact = res.results.find((r) => r.tier === "fact" && r.id === live) as BrainFactResult;
 
       expect(fact.history.prior).toBeNull();
@@ -902,6 +910,50 @@ describeIfPg("searchBrain against the live schema", () => {
       // Belt and braces on a disclosure boundary: the erased value must not
       // appear anywhere in what is served, under any key.
       expect(JSON.stringify(fact.history)).not.toContain(erased);
+      expect(JSON.stringify(fact.history)).not.toContain("6M");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "keeps the retracted predecessor hidden under `asOf` too (#4916)",
+    async () => {
+      // The exclusion must not be a property of the DEFAULT read. #4916's rule
+      // is that tombstones stay hidden under ANY `asOf` — a point read is
+      // exactly where someone asking "what did we believe then" would expect an
+      // erased claim to reappear, and it must not.
+      //
+      // Structural today (`loadFactLineage` takes no `asOf`, so the walk is
+      // as-of-now regardless), which is why this is pinned rather than assumed:
+      // the day the lineage grows a temporal argument, this is the test that
+      // decides whether the tombstone term travels with it.
+      const ep = await seedEpisode({ sourceId: "hist-retracted-asof" });
+      const erased = await seedFact({
+        subject: "Petrel raise",
+        predicate: "has target of",
+        object: "6M",
+        episodeId: ep,
+        invalidated: true,
+      });
+      const live = await seedFact({
+        subject: "Petrel raise",
+        predicate: "has target of",
+        object: "8M",
+        episodeId: ep,
+        validFrom: new Date("2026-06-01T00:00:00Z"),
+      });
+      await seedSupersedes(live, erased);
+
+      const res = await search(outsider(), {
+        query: "Petrel raise",
+        include: ["fact"],
+        asOf: "2026-07-10T00:00:00Z",
+      });
+      const fact = res.results.find((r) => r.tier === "fact" && r.id === live) as BrainFactResult;
+
+      expect(fact.history.prior).toBeNull();
+      expect(fact.history.priorCount).toBe(0);
+      expect(JSON.stringify(fact.history)).not.toContain("6M");
     },
     PG_TEST_TIMEOUT_MS,
   );

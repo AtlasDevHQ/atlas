@@ -20,6 +20,22 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
+**Shipped 2026-08-26 — an answer that changed says so, in the answer** ([#5461](https://github.com/AtlasDevHQ/atlas/issues/5461); PR [#5462](https://github.com/AtlasDevHQ/atlas/pull/5462)) — the non-admin surface #5426 was originally filed for, built the day its blocker cleared. A reader asking an ordinary question whose answer changed is now told, in the answer, that it changed, what it said before, and who changed it — without visiting `/admin`, and without asking for history.
+
+⭐ **The finding that decided the shape: `supersedes` had no read path at all.** All three references in the tree were write- or gate-side — the cardinality repeat gate, vocabulary supersession, insert-time dedupe. The edge that exists precisely to preserve a previous answer had never been read back to anyone. So this was never "expose an admin thing to non-admins": **there was no admin thing**, and the read is born non-admin. Generalizable: *a record can hold a fact perfectly and still answer nobody, and "the machinery exists" is the claim that hides it* — the same error that rated this condition "Yes at the record level" twice.
+
+⭐ **There is exactly one non-admin path into brain data** — the `searchBrain` result on the chat stream — so `history` rides it as a sibling of `tensions`. No new endpoint, no new auth lane, no new page, and the embeddable widget gets it on the same terms. `api/index.ts` mounts no brain route outside `/api/v1/admin/*`, so a fetch-on-click design would have been web-only and would have failed *"someone asks a question"* for every widget and chat adapter.
+
+⚠️ **"Who changed it" needed no `admin_action_log` join.** It is a re-read of the live claim's OWN provenance — the correction lane mints the replacement, so the corrector is its author, already on the wire and already gated by #4836. That is the 2026-08-26 census's falsified-prediction entry below paying off: because the correction lane attributes the fact it mints, the answer was already in the record.
+
+⚠️ **`changedBy` discriminates on the replacement's `producer`, never its `actor`, and that is a correctness property rather than a nicety.** Two producers write `supersedes` — the correction verbs and the publish gate — and on the gate path the replacement's actor is whoever the NEWER claim was extracted from, a person who never touched the old claim. ⭐ Generalizable: **a field that answers one question is not a field that answers the adjacent one**, which is the same shape as *"who made this claim" ≠ "who changed this claim"* recorded below. Reading `actor` uniformly would render an accusation the record does not support, so the promotion arm names nobody and the schema's `z.strictObject` makes an actor on that arm unrepresentable.
+
+⚠️ **The retracted predecessor is excluded from the COUNT, not merely from the content.** `retract` is the GDPR-erasure path (#4916), and a `priorCount` that survived an erasure would re-disclose the erased claim on the very surface built to show history — while being indistinguishable from a predecessor withheld by ACL. The walk stops at a tombstone rather than counting through it, pinned against real Postgres and mutation-verified.
+
+⭐ **The half that satisfies the condition is the tool prose, not the card.** Most people read the sentence. `searchBrain`'s description now requires the change to be stated unprompted, pinned by tests the way #5458 pinned *"names neither verb"*. Generalizable for every surface on this board: **when an LLM is the renderer, the tool description IS the UI, and copy that is not pinned is copy that is optional.**
+
+⚠️ **Reachable, not read.** The record holds exactly one changed claim, so this fires on one row in thirty. The next census should read `supersedes` count alongside how often `history.prior` was non-null on a SERVED page — if the first grows and the second stays at zero, the surface works and nobody met it, which is a different failure from the one this fixed.
+
 **Measured 2026-08-26 — the arc runs `supersede` for the first time, and condition 5's RECORD half now holds** ([#5426](https://github.com/AtlasDevHQ/atlas/issues/5426), [#5454](https://github.com/AtlasDevHQ/atlas/issues/5454)) — a human corrected a published claim through the new surface on `us` prod at 16:25:09Z. `brain_fact.correct` **0 → 1**, `supersedes` edges **0 → 1**, `valid_to` set **0 → 1**, `valid_from` set **22 → 23**.
 
 ```

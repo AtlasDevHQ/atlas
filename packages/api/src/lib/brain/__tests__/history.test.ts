@@ -272,7 +272,7 @@ describe("loadFactLineage", () => {
     await loadFactLineage(s.db, ["live"], options(ctx, s));
 
     // A retraction can land BETWEEN the two reads. The walk's own exclusion is
-    // Postgres's to enforce (`history-pg.test.ts`); that the SECOND statement
+    // Postgres's to enforce (`search-pg.test.ts`); that the SECOND statement
     // carries the term too is this module's, and it is the difference between
     // one guard and none on a disclosure boundary.
     expect(s.calls.find((c) => !c.sql.includes(WALK_SQL))?.sql).toContain(

@@ -246,7 +246,7 @@ export async function loadFactLineage(
   /** Deduped ancestors per root — a diamond reaches the same claim at two depths. */
   const ancestors = new Map<string, Set<string>>();
   /** The best depth-1 candidate per root, by recorded time then id. */
-  const immediate = new Map<string, { priorId: string; recordedAt: string | null; raw: unknown }>();
+  const immediate = new Map<string, { priorId: string; recordedAt: string | null }>();
   for (const row of usable) {
     const { root, prior_id: priorId } = row;
     if (!root || !priorId) {
@@ -280,7 +280,7 @@ export async function loadFactLineage(
       (recordedAt ?? "") > (current.recordedAt ?? "") ||
       ((recordedAt ?? "") === (current.recordedAt ?? "") && priorId < current.priorId)
     ) {
-      immediate.set(root, { priorId, recordedAt, raw: row.recorded_at });
+      immediate.set(root, { priorId, recordedAt });
     }
   }
   if (immediate.size === 0) return { lineage, truncated };

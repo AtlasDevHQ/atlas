@@ -1532,9 +1532,15 @@ export type BrainFactPriorVersion =
  */
 export interface BrainFactHistoryView {
   /**
-   * The immediate predecessor — the most recently retired one where a claim
-   * retired several at once (a slot collision retires every rival in the same
-   * transaction). `null` if and only if this claim replaced nothing.
+   * The immediate predecessor — where a claim retired several at once (a slot
+   * collision retires every rival in the same transaction), the one whose
+   * supersession was most recently RECORDED. `null` if and only if this claim
+   * replaced nothing.
+   *
+   * ⚠️ Recorded, not "most recently retired". The order is taken from the
+   * `supersedes` edge's own stamp, which is the same for every reader —
+   * ordering on the predecessor's `valid_to` would read off the ACL'd statement
+   * and hand two readers of the same claim a different previous answer.
    */
   readonly prior: BrainFactPriorVersion | null;
   /**
@@ -1875,69 +1881,6 @@ export interface BrainFactTensionSweepResponse {
    */
   readonly truncated: boolean;
 }
-
-/**
- * The `POST /api/v1/admin/brain-facts/tension-forecast` request body (#5450).
- *
- * `predicateSurface` is optional, and its presence is the whole discriminator:
- * absent asks *"what would pressing sweep do right now?"*, present asks *"...and
- * what would it do if I ALSO approved this predicate `single`?"*
- *
- * ⚠️ A SURFACE, never a key. The key is derived server-side and never travels
- * back out — ADR-0037 §6, and the same choice the vocabulary preview's
- * cardinality arm makes for the same reason: a request type that accepted a key
- * is the seam through which one reaches a route body.
- */
-export interface BrainFactTensionForecastRequest {
-  /**
-   * The predicate to treat as approved `single` for this question only. Nothing
-   * is written, proposed, or approved — the counterfactual lives for the length
-   * of one statement.
-   */
-  readonly predicateSurface?: string;
-}
-
-/**
- * What a forecast answered (#5450).
- *
- * A DISCRIMINATED UNION rather than a record with a nullable count, on
- * `BrainVocabularyBlastRadius`' thesis and for the defect that taught it: the
- * numbers must not EXIST on the branch where they are meaningless, because a
- * renderer that reads them in the wrong order emits a confident false
- * all-clear. Here that all-clear is *"approving this predicate mints nothing"*,
- * which is a licence to approve.
- */
-export type BrainFactTensionForecastResponse =
-  | {
-      readonly kind: "forecast";
-      /**
-       * Advisory `in-tension-with` edges a sweep run in this same instant would
-       * write — `BrainFactTensionSweepResponse.minted`'s number, under both the
-       * same caps, for a press that has not happened.
-       *
-       * ⚠️ NOT a count of pairs in tension. A pair that already carries an edge
-       * is excluded, because both statements answer *"what would this ADD?"*
-       *
-       * ⚠️ A forecast, not a promise. Nothing is locked while you decide, so an
-       * ingest pass or a correction landing before you press moves the number.
-       */
-      readonly wouldMint: number;
-      /**
-       * The per-RUN bound bit — `BrainFactTensionSweepResponse.truncated`'s
-       * meaning exactly, including both of its ⚠️s.
-       */
-      readonly truncated: boolean;
-    }
-  /**
-   * The `predicateSurface` asked about norms away to nothing (`-`, `___`, a run
-   * of spaces), so it occupies no slot and can arm nothing.
-   *
-   * ⚠️ Deliberately NOT `wouldMint: 0`. A zero meaning *"we could not ask your
-   * question"* and a zero meaning *"approving this mints nothing"* are opposite
-   * advice, and collapsing them is the defect `BrainVocabularyBlastRadius`
-   * carries a whole member to avoid.
-   */
-  | { readonly kind: "unkeyable-surface" };
 
 /**
  * The four correction verbs (#4915, ADR-0036 §Temporal, conflict &

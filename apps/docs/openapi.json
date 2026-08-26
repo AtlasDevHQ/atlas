@@ -25090,6 +25090,21 @@
                                               "state": {
                                                 "type": "string",
                                                 "enum": [
+                                                  "machine"
+                                                ]
+                                              }
+                                            },
+                                            "required": [
+                                              "state"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "state": {
+                                                "type": "string",
+                                                "enum": [
                                                   "opaque"
                                                 ]
                                               },
@@ -25462,6 +25477,21 @@
                                                         "realName",
                                                         "email",
                                                         "snapshotAt"
+                                                      ],
+                                                      "additionalProperties": false
+                                                    },
+                                                    {
+                                                      "type": "object",
+                                                      "properties": {
+                                                        "state": {
+                                                          "type": "string",
+                                                          "enum": [
+                                                            "machine"
+                                                          ]
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "state"
                                                       ],
                                                       "additionalProperties": false
                                                     },

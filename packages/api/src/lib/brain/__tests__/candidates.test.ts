@@ -1221,8 +1221,59 @@ describe("BrainFactAttributionViewSchema — the withheld arm is enforced, not c
           snapshotAt: ISO,
         },
       },
+      // #5454's arm rides the same gate. It names no person, so it discloses
+      // less than the others — but "less" is not "nothing": on a withheld arm
+      // it would still tell a reader who cannot see `actor` that the claim came
+      // from a machine, which is a fact about the claim's origin they were not
+      // given. The withheld arm carries NOTHING, and that has no exceptions.
+      { visible: false, actorIdentity: { state: "machine" } },
     ]) {
       expect(BrainFactProvenanceViewSchema.safeParse(provenance(leak)).success).toBe(false);
+    }
+  });
+
+  // ── #5454: the fourth arm, and its emptiness ─────────────────────────────
+  //
+  // Mutations verified red (2026-08-26):
+  //   1. `schemas/src/brain.ts`: the `machine` arm's `z.strictObject` →
+  //      `z.object`. Red on "accepts a disclosed `machine` arm and REFUSES one
+  //      carrying any field".
+  //   2. `schemas/src/brain.ts`: the ATTRIBUTION withheld arm's
+  //      `z.strictObject` → `z.object`. Red on both "smuggles" tests above,
+  //      which is what covers the `machine` case added to the second one — it
+  //      is an extension of an enumerated pin, not a pin of its own.
+  it("accepts a disclosed `machine` arm and REFUSES one carrying any field", () => {
+    // The arm is empty on purpose: WHAT produced the claim is already on the
+    // wire beside it, verbatim, as `actor`. A field here would be a second and
+    // worse spelling of that handle — and `z.strictObject` is what makes adding
+    // one a parse failure rather than a silent widening.
+    expect(
+      BrainFactProvenanceViewSchema.safeParse(
+        provenance({
+          visible: true,
+          sourceId: "warehouse:Accounts@2026-08-26T00:00:00.000Z",
+          actor: "warehouse:system:warehouse-producer",
+          occurredAt: ISO,
+          actorIdentity: { state: "machine" },
+        }),
+      ).success,
+    ).toBe(true);
+    for (const overreach of [
+      { state: "machine", name: "warehouse:v1" },
+      { state: "machine", erased: false },
+      { state: "machine", producer: "warehouse:v1" },
+    ]) {
+      expect(
+        BrainFactProvenanceViewSchema.safeParse(
+          provenance({
+            visible: true,
+            sourceId: null,
+            actor: "warehouse:system:warehouse-producer",
+            occurredAt: null,
+            actorIdentity: overreach,
+          }),
+        ).success,
+      ).toBe(false);
     }
   });
 

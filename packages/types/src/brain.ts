@@ -112,12 +112,53 @@ export interface BrainActorIdentityDirectory {
 }
 
 /**
+ * There is no person behind this handle — a machine produced the claim
+ * ([#5454](https://github.com/AtlasDevHQ/atlas/issues/5454)).
+ *
+ * ## Why this is not {@link BrainActorIdentityOpaque}
+ *
+ * `opaque` is a positive assertion that Atlas LOOKED FOR A PERSON AND COULD NOT
+ * NAME THEM. Applied to `warehouse:system:warehouse-producer` that is a false
+ * statement in the same way rendering a blank is: there is no person, so there
+ * was never anybody to fail to name. A reader could not tell a machine producer
+ * from an author whose capture pass has not run — the two call for opposite
+ * actions (nothing, versus go and fix the cycle), and the three-state union had
+ * no arm that said which one this was. It was an unstated FOURTH meaning of an
+ * absent row, which is the conflation ADR-0036 §T5's amendment refused for the
+ * nullable-id design and for the same reason.
+ *
+ * ## Carries no fields, deliberately
+ *
+ * WHAT produced the claim is already on the wire beside this, verbatim, in
+ * {@link BrainFactAttributionVisible.actor} — `warehouse:system:warehouse-producer`
+ * names the producer better than any field here could, and is the value the
+ * whole union exists to explain rather than replace. There is nothing else to
+ * say: a machine has no display name, no snapshot, and no erasure question,
+ * because none of this is personal data.
+ *
+ * ## DERIVED from the handle, never stored
+ *
+ * No row in `brain_actor_identity` carries this state and the CHECK still
+ * admits only three (`BRAIN_ACTOR_IDENTITY_STATES`). Machine-ness is a
+ * structural property of the handle — the episode source's ADR-0036 class — so
+ * it is decided at read time with no database read at all, and it holds on a
+ * deployment whose capture cycle has never run.
+ */
+export interface BrainActorIdentityMachine {
+  readonly state: "machine";
+}
+
+/**
  * Atlas cannot name this person.
  *
  * A NAMED state, not a blank and not a silent fallback to the handle. The
  * record has to be able to say "we looked and could not name them" - collapsing
  * that into an absent field would leave a reviewer unable to tell it from a
  * field nobody wrote.
+ *
+ * It asserts that there IS a person. Where there is not one,
+ * {@link BrainActorIdentityMachine} says so instead — #5454 split that case out
+ * rather than leaving it as a fourth, unstated meaning of this state.
  *
  * Reached four ways, and the reader is deliberately not owed the difference
  * between the first two: no capture pass has reached this actor yet; a pass ran
@@ -141,7 +182,15 @@ export interface BrainActorIdentityOpaque {
 /**
  * Who the claim's `actor` handle actually is - the answer finish condition 2
  * asks for, in the three states ADR-0036 T5's `Amendment (2026-08-25, #5440)`
- * settles on.
+ * settles on, plus the one `Amendment (2026-08-26, #5454)` adds for a handle
+ * behind which there is no person at all.
+ *
+ * ⚠️ The four arms are NOT the four stored states. `brain_actor_identity` still
+ * carries exactly three (`BRAIN_ACTOR_IDENTITY_STATES`, mirroring
+ * `ck_brain_actor_identity_state`); `machine` is derived from the handle and
+ * `atlas` is reachable both from a stored pointer and from a `user:<id>` handle
+ * that IS one. The stored vocabulary and the rendered vocabulary are different
+ * questions and #5454 stopped them being one.
  *
  * A discriminated union rather than a nullable id, because a nullable id
  * collapses two different facts into one NULL: *not yet resolved* (transient, a
@@ -161,6 +210,7 @@ export interface BrainActorIdentityOpaque {
 export type BrainActorIdentityView =
   | BrainActorIdentityAtlas
   | BrainActorIdentityDirectory
+  | BrainActorIdentityMachine
   | BrainActorIdentityOpaque;
 
 export interface BrainFactAttributionVisible {

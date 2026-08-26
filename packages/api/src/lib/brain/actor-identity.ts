@@ -38,6 +38,32 @@
  *   `directory` — a DATED snapshot, because there is no live join to make.
  *   `opaque`    — Atlas cannot name them, and the record says so.
  *
+ * ## Two handles are answered from the HANDLE, with no stored row (#5454)
+ *
+ * The table above exists for one population: **someone with no Atlas account,
+ * named by a vendor's directory.** Two of the handles in the record are not
+ * that, and #5454 found both rendering `opaque` — a positive claim that Atlas
+ * looked for a person and could not name them, and false in both cases.
+ *
+ *   `user:<id>`   — the correction lane. `correctFact` stamps
+ *                   `` `user:${ctx.userId}` `` as the replacement claim's
+ *                   `provenance.actor`, so the payload after the colon IS a
+ *                   `"user".id`. There is a live join to make, and it is the
+ *                   same join the `atlas` arm makes — {@link derivableActor}
+ *                   makes it without a row in between.
+ *   `warehouse:…` — a machine. ADR-0042's producer is attributed to
+ *                   `system:warehouse-producer` deliberately ("the honest
+ *                   answer is the machine, because the machine is what read the
+ *                   warehouse"), and there is no person to name. It renders
+ *                   `machine`, not `opaque`.
+ *
+ * ⚠️ **Neither is a capture.** Nothing is written, nothing is snapshotted, no
+ * directory is read, and no vendor is involved — so ADR-0036 §T5's amendment,
+ * which reversed a privacy posture to persist a name Atlas would otherwise not
+ * hold, does not reach either lane. That asymmetry is the whole argument for
+ * deriving rather than capturing; `audience/identity-capture.ts`'s header
+ * carries the rest of it, on the path a reader of the capture code will meet.
+ *
  * ## Reading is by ACTOR and only by actor
  *
  * {@link loadActorIdentities} is the only read, it takes the handles a page of
@@ -51,10 +77,23 @@
 import type {
   BrainActorIdentityAtlas,
   BrainActorIdentityDirectory,
+  BrainActorIdentityMachine,
   BrainActorIdentityOpaque,
   BrainActorIdentityView,
 } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
+import { USER_PREFIX } from "@atlas/api/lib/brain/acl";
+
+/**
+ * The prefix every non-human principal in this codebase carries.
+ *
+ * Not a grant-grammar prefix like {@link USER_PREFIX} — it never appears in an
+ * ACL. It is the spelling the scheduler and producer lanes have used for every
+ * actor they stamp, and the thing that makes "no person did this" readable off
+ * the handle alone.
+ */
+const SYSTEM_PREFIX = "system:";
+import { WAREHOUSE_CLASS, episodeSourceClassOf } from "@atlas/api/lib/brain/sources";
 
 const log = createLogger("brain.actor-identity");
 
@@ -83,6 +122,13 @@ const ERASED_IDENTITY: BrainActorIdentityOpaque = Object.freeze({
   state: "opaque",
   erased: true,
 });
+
+/**
+ * The one `machine` value (#5454). Frozen and shared for {@link OPAQUE_IDENTITY}'s
+ * reason: every warehouse claim in a workspace reaches it, so an accidental
+ * mutation would be a corpus-wide wrong answer rather than a one-row one.
+ */
+export const MACHINE_IDENTITY: BrainActorIdentityMachine = Object.freeze({ state: "machine" });
 
 // ---------------------------------------------------------------------------
 // Reading
@@ -136,6 +182,131 @@ export const LOAD_ACTOR_IDENTITIES_SQL = `SELECT ai.actor,
          LEFT JOIN "user" u ON u.id = ai.user_id
         WHERE ai.workspace_id = $1
           AND ai.actor = ANY($2::text[])`;
+
+/**
+ * The Atlas accounts named DIRECTLY by a `user:<id>` handle (#5454).
+ *
+ * The same `"user"` read the `atlas` arm's join makes, keyed on the id the
+ * handle already carries instead of on a stored pointer — so the two states are
+ * the same state, reached with one indirection fewer.
+ *
+ * ⚠️ **WORKSPACE-SCOPED through `member`, and an earlier draft was not.**
+ *
+ * That draft argued containment at the write: *"the id in this handle was
+ * written by `correctFact`, which refuses every verb unless `ctx.role` is `owner`
+ * or `admin` ON THIS WORKSPACE."* True of the correction lane, and `correctFact`
+ * is not the only writer. `admin-migrate.ts` binds a region bundle's
+ * `provenance` VERBATIM, and its only actor check is `bundleFactNamesAPerson` —
+ * `typeof actor === "string" && actor.trim() !== ""`. A bundle carrying
+ * `user:<foreign-id>` passes that, lands published, and an unscoped read of
+ * Better-Auth's global `"user"` would then disclose that person's NAME AND EMAIL
+ * to any reader entitled to `actor` in the importing workspace, with no
+ * membership check anywhere.
+ *
+ * The stored path never had this hole — its row is `workspace_id`-scoped. So the
+ * derived path is scoped the same way, mirroring
+ * `RESOLVE_PRINCIPAL_EMAILS_SQL`'s `JOIN member m ON m."userId" = u.id` rather
+ * than arguing its way out of one. A handle naming somebody who is not a member
+ * here resolves to nothing and renders `opaque`, which is the honest answer:
+ * Atlas cannot name them *to this reader*.
+ *
+ * Exported so the real-Postgres test runs this exact string.
+ */
+export const LOAD_DERIVED_ATLAS_USERS_SQL = `SELECT u.id,
+              u.name,
+              u.email
+         FROM "user" u
+         JOIN member m ON m."userId" = u.id
+        WHERE m."organizationId" = $1
+          AND u.id = ANY($2::text[])`;
+
+/**
+ * An identity readable from the HANDLE ITSELF, with no captured row (#5454).
+ *
+ * Both arms exist because the stored table answers ONE question — *what is this
+ * vendor's directory name for a person who has no Atlas account* — and two
+ * handles in the record are not asking it. Left to the table both came back
+ * `opaque`: *Atlas looked for a person and could not name them*, which for a
+ * `user:<id>` is false (the id IS the answer) and for a machine is false twice
+ * over (there is nobody to name).
+ *
+ * `atlas-user` still needs the `"user"` read; `machine` needs no database at
+ * all, which is why it holds on a deployment whose capture cycle has never run.
+ */
+export type DerivedActor =
+  | { readonly kind: "atlas-user"; readonly userId: string }
+  | { readonly kind: "machine" };
+
+/**
+ * What a handle says about itself, or `null` — the table has to answer.
+ *
+ * ## `user:` is the GRANT grammar's prefix, imported rather than respelled
+ *
+ * `correctFact` builds the handle as `` `${USER_PREFIX}${ctx.userId}` `` and
+ * calls it a *"grammar-valid principal"*; this reads it back with the same
+ * constant. Two spellings of one prefix is the failure
+ * `AUTHORING_PRINCIPALS_SQL` (`audience/identity-capture.ts`) composes its handle in SQL to avoid — a
+ * handle that does not match renders `opaque` SILENTLY, which is the hardest
+ * failure mode here to notice.
+ *
+ * It cannot collide with a composed `${source}:${actor}` handle: `user` is not
+ * in `EPISODE_SOURCES` and `sources.ts` refuses a member that is not a bare
+ * slug, so no episode source can ever be spelled `user`. `actor-identity.test.ts`
+ * pins that, because the day one is added this function starts naming the wrong
+ * person rather than failing.
+ *
+ * ## `machine` is decided by the `system:` PREFIX, and by ADR-0036 class
+ *
+ * ⚠️ **An earlier draft of this function tested the class alone, and the arm was
+ * dead on every real row.** It assumed the stored handle was
+ * `warehouse:system:warehouse-producer`; it is not. `reconcile.ts` short-circuits
+ * on an explicit principal *before* composing the `${source}:${actor}` prefix, and
+ * `warehouse-producer.ts` passes `WAREHOUSE_PRODUCER_PRINCIPAL` — so what lands in
+ * `provenance.actor` is the bare `system:warehouse-producer`. `system` is not in
+ * `EPISODE_SOURCE_SPECS`, so `episodeSourceClassOf` answered `null` and every
+ * machine claim rendered `opaque`, exactly as before the arm existed. Thirteen
+ * fixtures in this repo store the bare string and none store the prefixed form;
+ * the tests passed only because they hand-built a handle production never writes.
+ *
+ * So the primary test is the **`system:` prefix**, which is this codebase's
+ * established spelling for a principal that is not a person — nine of them today
+ * (`system:warehouse-producer`, `system:brain-extraction`, `system:scheduler`,
+ * `system:audit-purge-scheduler`, …), every one a scheduler or a producer. It
+ * generalises where a literal would not: `system:brain-extraction` can reach
+ * `provenance.actor` too, and it is no more a person than the warehouse fiber is.
+ *
+ * The class test is KEPT beside it rather than replaced, for a handle that really
+ * was composed from an episode source. The warehouse CLASS carries the property
+ * independently: it has
+ * no vendor (`sources.ts`: *"neither comes from a connector"*), its facts are
+ * read out of the customer's own tables by a scheduled fiber, and
+ * `warehouse-producer.ts` attributes them to a system principal deliberately
+ * because *"the machine is what read the warehouse"*. A warehouse-class handle
+ * has no person behind it by construction.
+ *
+ * ⚠️ The class is read from the handle's PREFIX, which is `brain_episodes.source`
+ * — a column with no CHECK, restorable verbatim by a region import. An
+ * unrecognised prefix is therefore NOT machine: {@link episodeSourceClassOf}
+ * answers `null` for a kind this deployment's vocabulary does not know, and
+ * declining to claim a class it cannot see is the same posture
+ * `isWarehouseDerivedSource` takes on the correction gate.
+ */
+export function derivableActor(actor: string): DerivedActor | null {
+  if (actor.startsWith(USER_PREFIX)) {
+    const userId = actor.slice(USER_PREFIX.length);
+    return userId === "" ? null : { kind: "atlas-user", userId };
+  }
+  // The shape production actually writes. Checked FIRST because it is the only
+  // one that has ever appeared in a stored row.
+  if (actor.startsWith(SYSTEM_PREFIX) && actor.length > SYSTEM_PREFIX.length) {
+    return { kind: "machine" };
+  }
+  const separator = actor.indexOf(":");
+  if (separator <= 0) return null;
+  return episodeSourceClassOf(actor.slice(0, separator)) === WAREHOUSE_CLASS
+    ? { kind: "machine" }
+    : null;
+}
 
 function str(value: unknown): string | null {
   return typeof value === "string" && value !== "" ? value : null;
@@ -230,9 +401,31 @@ function projectIdentityRow(
 /**
  * The identities for a page of claims' actors.
  *
- * Takes the handles the caller already holds, so it adds ONE query per page
- * rather than per row — the property that lets it sit on the `searchBrain` hot
- * path beside `loadEpisodes`.
+ * Takes the handles the caller already holds, so it adds a BOUNDED number of
+ * queries per page rather than one per row — the property that lets it sit on
+ * the `searchBrain` hot path beside `loadEpisodes`. The bound is two, and the
+ * second is issued only when the page carries at least one `user:<id>` handle;
+ * a page of pure connector claims still costs exactly one query, as it always
+ * did. The two are independent reads and run CONCURRENTLY.
+ *
+ * ## Three sources of an answer, and their precedence (#5454)
+ *
+ *   1. **`machine`, from the handle.** Decided before any query — a
+ *      warehouse-class handle has no person behind it, and that is true whether
+ *      or not this deployment has a database to ask. Those handles are not sent
+ *      to either statement.
+ *   2. **The stored row**, for everything else.
+ *   3. **`user:<id>`, from the handle**, for the handles step 2 did not answer.
+ *
+ * ⚠️ **The stored row WINS over the `user:` derivation, and `machine` wins over
+ * the stored row.** Not an inconsistency — the two questions differ. A stored
+ * row is a deliberate act with an erasure path attached, so anywhere one could
+ * exist it is authoritative and the derivation only fills a gap; nothing writes
+ * `user:` rows today, and this ordering is what keeps that true if something
+ * ever does. Machine-ness is not an act at all — it is what the handle IS — so
+ * a row asserting a person behind a warehouse producer would be wrong on its
+ * face, and there is no erasure question to preserve because none of it is
+ * personal data.
  *
  * ⚠️ There is NO ACL predicate here, and that is correct rather than an
  * omission. The gate on a name is the gate on `actor`, which the caller has
@@ -266,6 +459,10 @@ function projectIdentityRow(
  * It is LOGGED at `warn` with the error, because a workspace whose names have
  * all silently gone `opaque` is exactly the condition an operator has to be
  * able to find.
+ *
+ * The `machine` arm is the one answer that SURVIVES that failure, and it does so
+ * for free rather than by special pleading: it never needed a row, so there is
+ * nothing about it a failed read could have lost.
  */
 export async function loadActorIdentities(
   db: ActorIdentityReader,
@@ -274,32 +471,120 @@ export async function loadActorIdentities(
   requestId?: string,
 ): Promise<ReadonlyMap<string, BrainActorIdentityView>> {
   const out = new Map<string, BrainActorIdentityView>();
-  const wanted = [...new Set(actors.filter((a) => typeof a === "string" && a !== ""))];
+  const wanted: string[] = [];
+  /** `user:<id>` handle → the id, for the ones the stored read leaves unanswered. */
+  const derivedUsers = new Map<string, string>();
+
+  for (const actor of new Set(actors.filter((a) => typeof a === "string" && a !== ""))) {
+    const derived = derivableActor(actor);
+    if (derived?.kind === "machine") {
+      // Decided, and deliberately not sent to either statement — there is no
+      // person here for a row to be about.
+      out.set(actor, MACHINE_IDENTITY);
+      continue;
+    }
+    if (derived?.kind === "atlas-user") derivedUsers.set(actor, derived.userId);
+    wanted.push(actor);
+  }
   if (wanted.length === 0) return out;
 
-  let result: { rows: readonly unknown[] };
-  try {
-    result = await db.query(LOAD_ACTOR_IDENTITIES_SQL, [workspaceId, wanted]);
-  } catch (err) {
-    log.warn(
-      {
-        workspaceId,
-        requestId,
-        actors: wanted.length,
-        error: err instanceof Error ? err.message : String(err),
-      },
-      'brain actor identity: the identity read failed — every claim on this page reports "cannot name this person". A missing `"user"` relation means this deployment runs without Better Auth\'s tables',
-    );
-    return out;
-  }
+  const [stored, users] = await Promise.all([
+    // Two independent reads, run together rather than in sequence: neither
+    // feeds the other, and a waterfall would double this function's latency on
+    // exactly the page — a review queue full of corrections — that needs both.
+    readRows(db, LOAD_ACTOR_IDENTITIES_SQL, [workspaceId, wanted], {
+      workspaceId,
+      requestId,
+      actors: wanted.length,
+      what: "the identity read",
+    }),
+    derivedUsers.size === 0
+      ? Promise.resolve<readonly unknown[]>([])
+      : readRows(db, LOAD_DERIVED_ATLAS_USERS_SQL, [workspaceId, [...new Set(derivedUsers.values())]], {
+          workspaceId,
+          requestId,
+          actors: derivedUsers.size,
+          what: "the `user:` handle read",
+        }),
+  ]);
 
-  for (const raw of result.rows) {
+  for (const raw of stored) {
     const row = raw as Record<string, unknown>;
     const actor = str(row.actor);
     if (actor === null) continue;
     out.set(actor, projectIdentityRow(row, workspaceId, requestId));
   }
+
+  if (derivedUsers.size > 0) {
+    const byId = new Map<string, { name: string | null; email: string | null }>();
+    for (const raw of users) {
+      const row = raw as Record<string, unknown>;
+      const id = str(row.id);
+      if (id === null) continue;
+      byId.set(id, { name: str(row.name), email: str(row.email) });
+    }
+    for (const [actor, userId] of derivedUsers) {
+      // Step 2's answer stands — see the precedence note in the header.
+      if (out.has(actor)) continue;
+      const account = byId.get(userId);
+      // No such account. The same degradation `projectIdentityRow` applies to a
+      // dangling stored pointer, for the same reason: a deleted account is not
+      // a licence to assert a name Atlas can no longer stand behind, and
+      // rendering the id as if it were a person is what `opaque` exists against.
+      if (account === undefined || (account.name === null && account.email === null)) {
+        log.debug(
+          { workspaceId, actor, requestId },
+          'brain actor identity: a `user:` handle names an account the live `"user"` read did not return — the account was deleted; reporting the actor as opaque rather than asserting a name',
+        );
+        out.set(actor, OPAQUE_IDENTITY);
+        continue;
+      }
+      out.set(actor, {
+        state: "atlas",
+        userId,
+        name: account.name,
+        email: account.email,
+      } satisfies BrainActorIdentityAtlas);
+    }
+  }
+
   return out;
+}
+
+/**
+ * One read, or `[]` with the failure logged — the degrade-to-`opaque` posture
+ * the header argues for, in ONE place so both statements take it.
+ *
+ * Returning rows rather than throwing is what keeps the two reads independent:
+ * a deployment with no `"user"` relation fails BOTH, and a `Promise.all` over
+ * rejecting promises would lose whichever answer did come back.
+ */
+async function readRows(
+  db: ActorIdentityReader,
+  sql: string,
+  params: unknown[],
+  ctx: {
+    readonly workspaceId: string;
+    readonly requestId: string | undefined;
+    readonly actors: number;
+    readonly what: string;
+  },
+): Promise<readonly unknown[]> {
+  try {
+    const result = await db.query(sql, params);
+    return result.rows;
+  } catch (err) {
+    log.warn(
+      {
+        workspaceId: ctx.workspaceId,
+        requestId: ctx.requestId,
+        actors: ctx.actors,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      `brain actor identity: ${ctx.what} failed — those claims report "cannot name this person". A missing \`"user"\` relation means this deployment runs without Better Auth's tables`,
+    );
+    return [];
+  }
 }
 
 /**
@@ -535,7 +820,7 @@ const CAPTURE_BATCH_SIZE = 200;
  * The caller must hand over DISTINCT actors. Two rows with the same key in one
  * statement is a Postgres error (`ON CONFLICT DO UPDATE command cannot affect
  * row a second time`), not a silent last-writer-wins — which is the safe
- * direction, and {@link AUTHORING_PRINCIPALS_SQL}'s `SELECT DISTINCT`
+ * direction, and `AUTHORING_PRINCIPALS_SQL` (`audience/identity-capture.ts`)'s `SELECT DISTINCT`
  * guarantees it upstream.
  */
 export async function captureActorIdentities(

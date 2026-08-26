@@ -39,6 +39,50 @@
  *
  * Naming confers nothing — no membership, no grant, no entitlement — so the
  * revocation argument that governs the membership half does not reach here.
+ *
+ * ## ⚠️ Two lanes this pass deliberately does NOT reach (#5454)
+ *
+ * The `source:` parameter is bound to `SLACK_HISTORY_SOURCE` at the one call
+ * site (`audience/sync.ts`), so only `slack:` authors are ever captured. #5440's
+ * prod census read that as a gap and proposed widening it. **It was declined,
+ * and the two uncaptured lanes are answered from the HANDLE instead**
+ * (`actor-identity.ts`'s `derivableActor`) — `user:<id>` on the correction
+ * lane, and warehouse-class handles, which render `machine`.
+ *
+ * Four reasons, in the order that decided it:
+ *
+ *   1. **This table exists to hold what Atlas would otherwise not have.** ADR-0036
+ *      §T5's amendment reversed a stated privacy posture — *"never stores an
+ *      address, never persists the source roster"* — to persist a VENDOR's
+ *      directory name for someone with no Atlas account. Neither of these lanes
+ *      asks for that: there is no vendor, no directory read, and nothing that
+ *      is not already in the record. A row for either would widen the blast
+ *      radius of that reversal (another shape to erase, to travel on a region
+ *      bundle, to keep in sync) for zero information gained.
+ *   2. **A capture would be keyed to a handle nothing looks up.**
+ *      {@link AUTHORING_PRINCIPALS_SQL} composes `source || ':' || source_actor`,
+ *      so a correction episode captures as `human:<userId>` — while the fact
+ *      `correctFact` mints carries `user:<userId>`, its own grammar-valid
+ *      principal. The two never join, and the failure is the silent one this
+ *      module's SQL is composed in Postgres to avoid: the claim stays `opaque`
+ *      forever while a junk identity row sits beside it naming nobody.
+ *      Repairing that needs a SECOND, TypeScript-side spelling of the handle
+ *      rule, which is the duplication the SQL composition exists to prevent.
+ *   3. **This pass does not run on every deployment.** It rides the Slack
+ *      audience cycle, which is *"gated on Slack chat installs and is
+ *      workspace-opt-out-able"* (`grant-sweep.ts`). A self-hosted workspace with
+ *      no chat install still takes corrections and still runs warehouse
+ *      producers — and under a capture-based fix would name nobody on either,
+ *      permanently. Derivation holds everywhere, including there.
+ *   4. **A correction is interactive; this pass is every 30 minutes.** The one
+ *      write whose entire point is *"who changed this"* would name its author
+ *      only on the next cycle. Derivation is correct at the instant of the
+ *      write.
+ *
+ * The bound this leaves: derivation covers exactly the handles that carry their
+ * own answer. Everything else still needs a captured row, and widening the
+ * `source:` parameter remains the right move the day a connector class arrives
+ * whose authors this cycle cannot see.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";

@@ -37,6 +37,7 @@ export type {
   BrainFactTensionVisible,
   BrainVocabularyAliasEvidence,
   BrainVocabularyBlastRadius,
+  BrainVocabularyCardinality,
   BrainVocabularyCardinalityEntry,
   BrainVocabularyCorrectionEvidence,
   BrainVocabularyCoverage,

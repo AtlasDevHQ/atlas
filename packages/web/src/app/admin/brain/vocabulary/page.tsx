@@ -19,6 +19,8 @@ import { CoverageStatement } from "./coverage-statement";
 import { BlastRadiusPreview } from "./blast-radius";
 import { NormPicker, ScopeBadge } from "./norm-picker";
 import { PendingQueue } from "./pending-queue";
+import { CardinalityAuthoring } from "./cardinality-authoring";
+import { TensionSweepPanel } from "./tension-sweep";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
@@ -511,6 +513,34 @@ function ClaimVocabulary() {
           ) : null}
         </CardContent>
       </Card>
+
+      {/* CARDINALITY AUTHORING, second (#5447).
+          After aliases rather than before, because the two are not peers: an
+          alias decides what a spelling MEANS, and a cardinality entry decides
+          what a slot ALLOWS — and the second reads the first (the write applies
+          the alias closure, which is why that card has to know what is in force).
+          Reversing them would put the dependent decision first. */}
+      <CardinalityAuthoring
+        edges={edges}
+        // ⚠️ Known only when the fetch SUCCEEDED and returned the whole list.
+        // `edges` falls back to `[]` on failure and is silently cut when
+        // `truncated`, so an absent alias edge is not evidence of no alias — and
+        // that card blocks its write rather than guessing. `inForce` is checked
+        // for presence too: the first render has neither data nor error.
+        vocabularyKnown={
+          inForceError === null && inForce !== null && inForce !== undefined && !inForce.truncated
+        }
+        onWritten={() => {
+          setNotice(null);
+          // Unawaited deliberately — see `onAuthor`.
+          void refetch();
+        }}
+      />
+
+      {/* THE SWEEP, third — after both authoring cards and before what is in
+          force, because it is what one runs immediately AFTER a cardinality
+          write and its whole content is a claim about rows that already exist. */}
+      <TensionSweepPanel />
 
       {/* IN FORCE. */}
       <Card>

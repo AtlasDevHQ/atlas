@@ -10,8 +10,13 @@
 #      `bun run test:api` reaches this shape THROUGH the package script, so
 #      matching on the literal `bun test` text alone would miss it.
 #
-# Always allowed: a single named file, and `--changed=<ref>` (the sanctioned
-# pre-flight). Remote CI on the PR is the real gate.
+# Always allowed: NAMED test files (every positional must be one -- a glob is
+# not, it expands at run time), `--changed=<ref>` (the sanctioned pre-flight),
+# and `--parallel=N` for N <= 6 WITH an explicit target. Remote CI on the PR is
+# the real gate.
+#
+# Also refused: `bun test` with TEST_DATABASE_URL set -- the project memory
+# names that shape specifically as the one a human stopped by hand.
 set -uo pipefail
 
 cmd="$(jq -r '.tool_input.command // empty' 2>/dev/null)" || exit 0
@@ -103,6 +108,18 @@ Remote CI on the PR is the gate -- push, open a draft PR, let ci.yml run (~4 min
 Drop the flag: \`bun test --parallel --changed=origin/main\`"
   fi
 
+  # The project memory: "especially not with `TEST_DATABASE_URL` set". That run
+  # points the real-Postgres suites at a live database, and the crash takes the
+  # container down with the box -- destroying the database the run needed.
+  if printf '%s' "$seg" | grep -qE 'TEST_DATABASE_URL='; then
+    deny "BLOCKED: \`bun test\` with TEST_DATABASE_URL set turns on ~89 real-Postgres suites at once. The project memory names this shape specifically as the one that had to be stopped by hand.
+
+Run a single pg suite directly if you need one:
+  bun test path/to/one-pg.test.ts
+
+Remote CI runs these against a dedicated Postgres service -- that is the gate."
+  fi
+
   args="$(printf '%s' "$seg" | sed -E 's/.*\bbun[[:space:]]+test\b//')"
 
   # --changed=<ref> bounds the run to the branch's source graph.
@@ -110,11 +127,38 @@ Drop the flag: \`bun test --parallel --changed=origin/main\`"
     continue
   fi
 
-  # An explicit worker cap is the sanctioned escape hatch for the rare run that
-  # genuinely needs breadth. Only a SMALL one: `--parallel=32` is the default
-  # spelled out longhand, not a cap.
+  # Count the positionals up front -- both the cap hatch and the named-file
+  # allowance need them.
+  #
+  # ⚠️ A GLOB IS NOT A FILE. `src/lib/zzz/*.test.ts` is ONE token ending in
+  # `.test.ts`, and bash expands it to N files when bun runs. Matching on the
+  # suffix alone let a whole directory through under a filename -- the same
+  # laundering shape as the quantifier hole, one character away.
+  positional_count=0
+  nonfile_count=0
+  for tok in $args; do
+    case "$tok" in
+      -*) continue ;;
+    esac
+    positional_count=$((positional_count + 1))
+    case "$tok" in
+      *'*'*|*'?'*|*'['*) nonfile_count=$((nonfile_count + 1)) ;;
+      *.test.ts|*.test.tsx) ;;
+      *) nonfile_count=$((nonfile_count + 1)) ;;
+    esac
+  done
+
+  # The sanctioned escape hatch, and it is TWO conditions, not one.
+  #
+  # The memory says: "If a full local run is ever genuinely necessary, ask
+  # first, and cap the workers (`bun test --parallel=6`)." A hook cannot ask, so
+  # it enforces the half it can -- and requires an explicit TARGET, because
+  # `--parallel=8` with no target is the whole 1,131-file suite wearing a cap.
+  #
+  # 6, not 8: 6 is the only number the record names. 8 was invented here and
+  # nothing measures it.
   cap="$(printf '%s' "$args" | grep -oE -- '--parallel=[0-9]+' | head -1 | cut -d= -f2)"
-  if [ -n "$cap" ] && [ "$cap" -le 8 ] 2>/dev/null; then
+  if [ -n "$cap" ] && [ "$cap" -le 6 ] 2>/dev/null && [ "$positional_count" -gt 0 ]; then
     continue
   fi
 
@@ -133,18 +177,6 @@ Drop the flag: \`bun test --parallel --changed=origin/main\`"
   # time. Bare directory globs were already caught -- the mixed arg list was
   # the whole hole, which is why the fix is a quantifier and not a new rule.
   # ---------------------------------------------------------------------
-  positional_count=0
-  nonfile_count=0
-  for tok in $args; do
-    case "$tok" in
-      -*) continue ;;
-    esac
-    positional_count=$((positional_count + 1))
-    case "$tok" in
-      *.test.ts|*.test.tsx) ;;
-      *) nonfile_count=$((nonfile_count + 1)) ;;
-    esac
-  done
   if [ "$positional_count" -gt 0 ] && [ "$nonfile_count" -eq 0 ]; then
     continue
   fi

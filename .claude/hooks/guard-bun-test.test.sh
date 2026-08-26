@@ -57,6 +57,16 @@ check deny 'bun test --parallel packages/api/src/lib/brain/__tests__/' 'the 102-
 check allow 'bun test src/a.test.ts src/b.test.ts' 'several named files are still one worker each'
 check allow 'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'an explicit small worker cap is the sanctioned escape hatch'
 
+# --- found by an independent spec review, 2026-08-26 -------------------------
+# Each of these was ALLOW against the first draft of the quantifier fix.
+check deny 'bun test --parallel src/lib/zzz/*.test.ts' 'a GLOB is one token ending in .test.ts and expands to N files'
+check deny 'bun test --parallel src/**/*.test.ts' 'a recursive glob is the same laundering, worse'
+check deny 'bun test --parallel=8' 'a worker cap with NO target is still the whole suite'
+check deny 'bun test --parallel=6' 'even at the sanctioned 6, no target means everything'
+check deny 'bun test --parallel=32 packages/api/src/lib/brain/__tests__/' 'a cap that is the default spelled longhand is not a cap'
+check deny 'TEST_DATABASE_URL=postgres://x bun test --parallel=4 src/a.test.ts' 'the shape a human had to stop by hand'
+check allow 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'the memory own number, with a target'
+
 # --- invocations that must be allowed ---------------------------------------
 check allow 'bun test --parallel --changed=origin/main' 'the sanctioned pre-flight'
 check allow 'bun test packages/web/src/a.test.ts' 'a single named file'

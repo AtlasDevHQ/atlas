@@ -35,7 +35,7 @@ cd packages/api && bun test --parallel --changed=origin/main   # only tests affe
 cd packages/api && bun test --parallel --changed=HEAD~3        # last-3-commit window
 ```
 
-`--changed` is bun's native replacement for the deleted `--affected`/`--since` flags (and scripts/affected.ts went with them). Run the full `bun run test` before opening a PR — the full `packages/api` suite is ~3 min under `--parallel` (it was ~51 min through the old runner).
+`--changed` is bun's native replacement for the deleted `--affected`/`--since` flags (and scripts/affected.ts went with them). ⚠️ **Do not run the full `bun run test` locally before a PR.** It is a whole-suite `--parallel` run — one worker per core — and CLAUDE.md makes remote CI on the PR the gate, with the local pre-flight being the cheap subset (`--changed`, plus `lint`, `type`, `lint:type-aware`). `.claude/hooks/guard-bun-test.sh` refuses the whole-suite shapes at the tool boundary, including the ones reached *through* the package scripts, so the rule holds against habit rather than against memory. The full `packages/api` suite is ~3 min under `--parallel` in CI (it was ~51 min through the old runner).
 
 ## Pre-PR gates via `/ci`
 

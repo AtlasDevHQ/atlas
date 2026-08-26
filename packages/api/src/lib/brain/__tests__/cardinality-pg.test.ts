@@ -450,9 +450,11 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         ).toBe(0);
 
         // The control: approving the same row, and nothing else, fires it.
+        // Answers the CARDINALITY that became in force, not a boolean (#5448) —
+        // the value the decide door's audit row records.
         expect(
           await decidePredicateCardinality(pool, ws, slotKey("owned by", identityAlias)!, "approved", "curator-1"),
-        ).toBe(true);
+        ).toBe("single");
         expect(await collisionCount(ws)).toBe(1);
       },
       PG_TEST_TIMEOUT_MS,
@@ -503,7 +505,9 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
           sourceClass: "correction_event",
           proposedBy: CORRECTION_EVENT_PRODUCER,
         });
-        expect(await decidePredicateCardinality(pool, ws, key, "rejected", "curator-1")).toBe(true);
+        expect(await decidePredicateCardinality(pool, ws, key, "rejected", "curator-1")).toBe(
+          "single",
+        );
 
         const again = await proposePredicateCardinality(pool, ws, {
           predicateKey: key,
@@ -582,6 +586,56 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
             [ws],
           ),
         ).rejects.toThrow(/ck_brain_predicate_cardinality_source_class/);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "the declaration reports what it REPLACED, read in the write's own snapshot (#5448)",
+      async () => {
+        // ⚠️ Only real Postgres can decide this one. The claim is that a
+        // data-modifying CTE's sibling SELECT sees the row as it was BEFORE the
+        // upsert in the same statement — the snapshot rule — and that is a
+        // property of the engine, not of the code. A double scripted with a
+        // `previous_cardinality` is asserting its own script; if the rule went
+        // the other way the audit row would report the value just written as the
+        // value it replaced, i.e. every flip would look like a no-op.
+        const ws = "ws-5448-prior";
+        const key = slotKey("has goal of", identityAlias)!;
+
+        const first = await declarePredicateCardinality(pool, ws, {
+          predicateKey: key,
+          cardinality: "single",
+          authoredBy: "curator-1",
+        });
+        // Nothing was there, and `none` is what says so — the state the audit
+        // row must not confuse with "there was one and I could not read it".
+        expect(first).toEqual({ ok: true, cardinality: "single", previous: { kind: "none" } });
+
+        const flip = await declarePredicateCardinality(pool, ws, {
+          predicateKey: key,
+          cardinality: "multi",
+          authoredBy: "curator-2",
+        });
+        // THE assertion. `single` — the value before this statement, not the
+        // `multi` it just wrote — plus the reviewer this upsert has now
+        // overwritten, which is the only place that person survives at all.
+        expect(flip).toEqual({
+          ok: true,
+          cardinality: "multi",
+          previous: {
+            kind: "replaced",
+            cardinality: "single",
+            status: "approved",
+            reviewedBy: "curator-1",
+          },
+        });
+
+        // And the write landed: the prior read is a disclosure, not a substitute
+        // for the upsert, so the row must now say what the second call asked for
+        // and name its author.
+        const written = await readPredicateCardinality(pool, ws, key);
+        expect(written).toMatchObject({ cardinality: "multi", proposedBy: "curator-2" });
       },
       PG_TEST_TIMEOUT_MS,
     );
@@ -1008,7 +1062,7 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         predicateAlias: (norm) => (norm === "is priced at" ? "priced at" : norm),
         requestId: "req-decide",
       });
-      expect(decided).toBe("decided");
+      expect(decided).toEqual({ kind: "decided", cardinality: "single" });
       expect(await readPredicateCardinality(pool, ws, "priced at")).toMatchObject({
         cardinality: "single",
         status: "approved",
@@ -1049,7 +1103,7 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         predicateAlias: identityAlias,
         requestId: "req-reject",
       });
-      expect(decided).toBe("decided");
+      expect(decided).toEqual({ kind: "decided", cardinality: "single" });
       const record = await readPredicateCardinality(pool, ws, "reports to");
       expect(record).toMatchObject({ status: "rejected" });
       // ⚠️ And the GATE is not armed. `cardinalitySingleSql` requires
@@ -1087,7 +1141,7 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         reviewedBy: "user-owner",
         predicateAlias: identityAlias,
       });
-      expect(decided).toBe("not-pending");
+      expect(decided).toEqual({ kind: "not-pending" });
       expect(await readPredicateCardinality(pool, ws, "priced at")).toMatchObject({
         status: "pending",
       });
@@ -1109,7 +1163,7 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         reviewedBy: "user-owner",
         predicateAlias: identityAlias,
       });
-      expect(unaddressable).toBe("unaddressable");
+      expect(unaddressable).toEqual({ kind: "unaddressable" });
 
       // ...and a REAL row decided twice is `not-pending` the second time, which
       // is the race the first sentence must not be confused with.
@@ -1125,8 +1179,8 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         reviewedBy: "user-owner",
         predicateAlias: identityAlias,
       };
-      expect(await decidePredicateCardinalityForSurface(pool, ws, input)).toBe("decided");
-      expect(await decidePredicateCardinalityForSurface(pool, ws, input)).toBe("not-pending");
+      expect(await decidePredicateCardinalityForSurface(pool, ws, input)).toEqual({ kind: "decided", cardinality: "single" });
+      expect(await decidePredicateCardinalityForSurface(pool, ws, input)).toEqual({ kind: "not-pending" });
     },
     PG_TEST_TIMEOUT_MS,
   );

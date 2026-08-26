@@ -17,6 +17,12 @@
  *   - **No identity key reaches a body.** Every response schema is
  *     `z.strictObject` and every response is parsed through it before it goes
  *     out, so an extra key is REFUSED rather than stripped.
+ *   - **Every write leaves an `admin_action_log` row** (#5448). This router
+ *     emitted none until then, so "who curated this predicate" and "who swept"
+ *     answered from different stores — and the write with the larger blast
+ *     radius was the unaudited one. The rows are asserted against the REAL
+ *     catalog constants, `admin-brain-facts.test.ts`'s rule: a hand-typed
+ *     string passes through a rename.
  */
 
 import { beforeEach, describe, expect, it, mock } from "bun:test";
@@ -29,6 +35,10 @@ import type {
   AliasRemovalOutcome,
 } from "@atlas/api/lib/brain/vocabulary-decide";
 import type { CardinalityDecisionResult } from "@atlas/api/lib/brain/cardinality";
+// The REAL catalog, imported before the `mock.module` below replaces the barrel
+// for the router — a static import is hoisted above every factory, so this
+// binding is the shipped constant and the router still sees the double.
+import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 
 const CURRENT_ORG = "org-1";
 
@@ -38,6 +48,32 @@ const INTERNAL_DB = { query: async () => ({ rows: [] as Record<string, unknown>[
 void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery: async () => [] }),
   getInternalDB: () => INTERNAL_DB,
+}));
+
+/**
+ * The audit rows this router emits (#5448).
+ *
+ * BOTH helpers land in one array on `admin-brain-facts.test.ts`'s reasoning: a
+ * partial factory link-fails the moment anything on the import graph reaches the
+ * other export, and collecting both is also what lets a test assert that a
+ * particular verb emitted NOTHING rather than merely nothing through one door.
+ *
+ * The REAL catalog is re-exported rather than hand-copied — a copy drifts
+ * silently through a rename, which is the one failure an audit assertion cannot
+ * survive.
+ */
+const auditRows: Array<Record<string, unknown>> = [];
+void mock.module("@atlas/api/lib/audit", () => ({
+  logAdminAction: (entry: Record<string, unknown>) => auditRows.push(entry),
+  logAdminActionAwait: async (entry: Record<string, unknown>) => {
+    auditRows.push(entry);
+  },
+  ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
+  // The barrel's other two exports. This docblock cites the mock-all-exports
+  // rule two paragraphs up and then supplied 3 of 5 -- the same latent link
+  // failure it warns about, in the file that warns about it.
+  errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  causeToError: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
 }));
 
 // Mock-ALL-exports. This file cites the rule for its other three factories and
@@ -198,13 +234,13 @@ void mock.module("@atlas/api/lib/brain/vocabulary-in-force", () => ({
   IN_FORCE_PAGE_MAX: 200,
 }));
 
-let cardinalityResult: unknown = { ok: true, cardinality: "single" };
+let cardinalityResult: unknown = { ok: true, cardinality: "single", previous: { kind: "none" } };
 const cardinalityCalls: unknown[] = [];
 const cardinalityDecideCalls: { workspaceId: string; input: unknown }[] = [];
 /**
- * ⚠️ Typed to the union, so the four LEGITIMATE values stay pinned to the seam.
+ * ⚠️ Typed to the union, so the three LEGITIMATE arms stay pinned to the seam.
  *
- * The route branches positively on `"decided"` and throws on a `never` default,
+ * The route branches positively on `kind === "decided"` and throws on a `never` default,
  * and that default is the whole point of the three-way result: the earlier shape
  * fell through to SUCCESS, so a new member would have been reported to the
  * approver as *"Curated: … now holds one value at a time"* for a write that may
@@ -218,7 +254,7 @@ const cardinalityDecideCalls: { workspaceId: string; input: unknown }[] = [];
  * Without it the `never` default is unreachable from any test — collapsing it
  * back to the fall-through left every other test in this file green.
  */
-let cardinalityDecided: CardinalityDecisionResult = "decided";
+let cardinalityDecided: CardinalityDecisionResult = { kind: "decided", cardinality: "single" };
 void mock.module("@atlas/api/lib/brain/cardinality", () => ({
   declarePredicateCardinalityForSurface: async (
     _db: unknown,
@@ -230,7 +266,7 @@ void mock.module("@atlas/api/lib/brain/cardinality", () => ({
   },
   declarePredicateCardinality: async () => ({ ok: true, cardinality: "single" }),
   proposePredicateCardinality: async () => ({ ok: true, cardinality: "single" }),
-  decidePredicateCardinality: async () => true,
+  decidePredicateCardinality: async () => "single",
   decidePredicateCardinalityForSurface: async (_db: unknown, workspaceId: string, input: unknown) => {
     cardinalityDecideCalls.push({ workspaceId, input });
     return cardinalityDecided;
@@ -381,6 +417,7 @@ beforeEach(() => {
   READER_ROLE = "owner";
   READER_ORIGIN = "authenticated";
   ORG_ID = CURRENT_ORG;
+  auditRows.length = 0;
   authorCalls.length = 0;
   removeCalls.length = 0;
   surfaceCalls.length = 0;
@@ -388,10 +425,10 @@ beforeEach(() => {
   authorOutcome = { kind: "authored", id: "proposal-1", convergedOnProposal: false };
   removeOutcome = { kind: "removed", id: "proposal-1", memoryCreated: false };
   blastRadius = { kind: "structurally-empty", reason: "object-position" };
-  cardinalityResult = { ok: true, cardinality: "single" };
+  cardinalityResult = { ok: true, cardinality: "single", previous: { kind: "none" } };
   cardinalityCalls.length = 0;
   cardinalityDecideCalls.length = 0;
-  cardinalityDecided = "decided";
+  cardinalityDecided = { kind: "decided", cardinality: "single" };
   lastDefect = null;
   decideCalls.length = 0;
   decideOutcome = { kind: "approved", id: "proposal-1" };
@@ -909,7 +946,7 @@ describe("POST /cardinality", () => {
   });
 
   it("un-curates with `multi` — the adjudicated record that values coexist", async () => {
-    cardinalityResult = { ok: true, cardinality: "multi" };
+    cardinalityResult = { ok: true, cardinality: "multi", previous: { kind: "none" } };
     const res = await post("/cardinality", {
       predicateSurface: "reports to",
       cardinality: "multi",
@@ -931,6 +968,363 @@ describe("POST /cardinality", () => {
     const res = await post("/cardinality", { predicateKey: "reports to", cardinality: "single" });
     expect(res.status).toBe(422);
     expect(cardinalityCalls).toHaveLength(0);
+  });
+});
+
+/**
+ * The `admin_action_log` rows this router owes (#5448).
+ *
+ * ## What was measured, and why it is not a nit
+ *
+ * Two admin writes ran back to back against prod on 2026-08-25:
+ * `POST /cardinality` left NO row, and `POST /tension-sweep` left one. The
+ * cardinality write was attributed — but on the row it wrote (`proposed_by` /
+ * `reviewed_by`), not in the log. So attribution was not missing, it was SPLIT
+ * ACROSS TWO STORES, and the split fell in the wrong place: the sweep is
+ * advisory and additive, while the cardinality entry is the input that ARMS it
+ * and is retroactively blast-radius-bearing by the route's own description.
+ *
+ * ## Why the row and not the column
+ *
+ * `brain_predicate_cardinality` is one row per `(workspace, predicate)` and the
+ * human door is `ON CONFLICT DO UPDATE`, so a later flip to `multi` OVERWRITES
+ * `proposed_by` / `reviewed_by`. Without a row, the earlier decision and its
+ * author are gone with no trace — the same last-write-wins shape #5424 found on
+ * `brain_facts.updated_at`.
+ *
+ * ## Why these tests cannot be satisfied vacuously
+ *
+ * Every arm that asserts a row is paired with an arm that asserts NO row for the
+ * same verb on a path that wrote nothing (`already_approved`, `not_decidable`,
+ * a 403). An "audit everything unconditionally" build passes the first half and
+ * fails the second.
+ */
+describe("every write leaves an audit row (#5448)", () => {
+  describe("POST /cardinality — the write with the larger blast radius", () => {
+    it("emits the row, naming the actor's workspace, the SURFACE, and the value written", async () => {
+      const res = await post("/cardinality", {
+        predicateSurface: "has goal of",
+        cardinality: "single",
+      });
+      expect(res.status).toBe(200);
+      expect(auditRows).toHaveLength(1);
+      expect(auditRows[0]).toMatchObject({
+        // The REAL catalog constant. A hand-typed string survives a rename and
+        // the assertion stops meaning anything.
+        actionType: REAL_ADMIN_ACTIONS.brainVocabulary.cardinality,
+        targetType: "brainVocabulary",
+        // The SURFACE. There is no row id — the table is keyed on the predicate
+        // — and the canonical key may not travel.
+        targetId: "has goal of",
+        metadata: {
+          workspaceId: CURRENT_ORG,
+          predicateSurface: "has goal of",
+          cardinality: "single",
+          previous: "none",
+        },
+      });
+    });
+
+    it("⚠️ audits the UN-CURATION too, and names the decision it erased", async () => {
+      // THE arm. The flip to `multi` is the one that overwrites `reviewed_by`,
+      // so it is the write whose absence from the log erases a prior decision
+      // outright rather than merely leaving it un-cross-referenced.
+      cardinalityResult = {
+        ok: true,
+        cardinality: "multi",
+        previous: {
+          kind: "replaced",
+          cardinality: "single",
+          status: "approved",
+          reviewedBy: "curator-0",
+        },
+      };
+      const res = await post("/cardinality", {
+        predicateSurface: "has goal of",
+        cardinality: "multi",
+      });
+      expect(res.status).toBe(200);
+      expect(auditRows[0]?.metadata).toEqual({
+        workspaceId: CURRENT_ORG,
+        predicateSurface: "has goal of",
+        cardinality: "multi",
+        previous: "single",
+        previousStatus: "approved",
+        // The person whose decision this write just overwrote. It survives
+        // NOWHERE else once the upsert commits — which is the whole finding.
+        previousReviewedBy: "curator-0",
+      });
+    });
+
+    it("distinguishes `none` from `unreadable` — opposite facts, not one null", async () => {
+      // A nullable `previousCardinality` renders "this predicate had never been
+      // curated" and "there was an entry and Atlas could not read it"
+      // identically. The second is the one worth finding, and it is the one an
+      // auditor would otherwise read as the first.
+      cardinalityResult = { ok: true, cardinality: "single", previous: { kind: "unreadable" } };
+      await post("/cardinality", { predicateSurface: "has goal of", cardinality: "single" });
+      expect(auditRows[0]?.metadata).toMatchObject({ previous: "unreadable" });
+      // And no `previousStatus` / `previousReviewedBy`: there is nothing to
+      // report there, and reporting `null` would be a claim about a row nobody
+      // could read.
+      expect(auditRows[0]?.metadata).not.toHaveProperty("previousStatus");
+      expect(auditRows[0]?.metadata).not.toHaveProperty("previousReviewedBy");
+    });
+
+    it("⚠️ still audits a curation whose RESPONSE could not be described", async () => {
+      // The route emits the row after the commit and before `checkedWrite`, and
+      // this is why. `response_schema_mismatch` is the one 500 where the write
+      // LANDED — the helper's own message tells the approver so — and a trail
+      // that drops exactly those rows is missing the writes an operator is most
+      // likely to be hunting.
+      cardinalityResult = {
+        ok: true,
+        cardinality: "sometimes",
+        previous: { kind: "none" },
+      };
+      const res = await post("/cardinality", {
+        predicateSurface: "has goal of",
+        cardinality: "single",
+      });
+      expect(res.status).toBe(500);
+      expect(((await res.json()) as { error: string }).error).toBe("response_schema_mismatch");
+      expect(auditRows).toHaveLength(1);
+      expect(auditRows[0]).toMatchObject({
+        actionType: REAL_ADMIN_ACTIONS.brainVocabulary.cardinality,
+        targetId: "has goal of",
+      });
+    });
+
+    it("records an unrecognised prior state as `unreadable` rather than throwing", async () => {
+      // ⚠️ The `default` arm, and the reason it exists rather than being a
+      // `never`. This code runs after the write has COMMITTED, so a prior-state
+      // arm the route does not know would throw between the commit and the
+      // response — turning a 500 that says "the curation is in force" into an
+      // unhandled defect that says the opposite. Driven through a cast, which is
+      // the only way a typed caller can reach it.
+      cardinalityResult = {
+        ok: true,
+        cardinality: "single",
+        previous: { kind: "quantum-superposed" },
+      };
+      const res = await post("/cardinality", {
+        predicateSurface: "has goal of",
+        cardinality: "single",
+      });
+      expect(res.status).toBe(200);
+      expect(auditRows[0]?.metadata).toMatchObject({ previous: "unreadable" });
+    });
+
+    it("⚠️ no canonical identity key reaches the payload", async () => {
+      // `keys-not-on-the-wire.test.ts` refuses `predicate_key` in any read
+      // surface, and an audit row an operator reads is one. The route speaks
+      // surfaces; the derivation stays inside `lib/brain/cardinality.ts`.
+      await post("/cardinality", { predicateSurface: "has goal of", cardinality: "single" });
+      const serialized = JSON.stringify(auditRows[0]);
+      expect(serialized).not.toContain("predicateKey");
+      expect(serialized).not.toContain("predicate_key");
+    });
+
+    it("audits NOTHING when the store refused — and nothing when the reader may not", async () => {
+      // The non-vacuity half. A build that logged unconditionally would pass
+      // every arm above and record two curations that never happened.
+      cardinalityResult = {
+        ok: false,
+        refusal: "degenerate-key",
+        message: "that surface normalizes away to nothing",
+      };
+      expect(
+        (await post("/cardinality", { predicateSurface: "—", cardinality: "single" })).status,
+      ).toBe(400);
+      expect(auditRows).toHaveLength(0);
+
+      cardinalityResult = { ok: true, cardinality: "single", previous: { kind: "none" } };
+      READER_ROLE = "member";
+      expect(
+        (await post("/cardinality", { predicateSurface: "has goal of", cardinality: "single" }))
+          .status,
+      ).toBe(403);
+      expect(auditRows).toHaveLength(0);
+    });
+  });
+
+  describe("the sibling writes — fixed rather than exempted", () => {
+    // #5448's fourth criterion. All three change WHAT WOULD COLLIDE, which is
+    // the property that makes the cardinality flip worth auditing at all, so no
+    // argument for exempting them survives the argument for auditing that one.
+
+    it("POST /author records the pair, the position, and whether it converged", async () => {
+      const res = await post("/author", {
+        position: "predicate",
+        fromNorm: "is priced at",
+        toNorm: "priced at",
+      });
+      expect(res.status).toBe(200);
+      expect(auditRows).toHaveLength(1);
+      expect(auditRows[0]).toMatchObject({
+        actionType: REAL_ADMIN_ACTIONS.brainVocabulary.author,
+        targetType: "brainVocabulary",
+        targetId: "predicate:is priced at",
+        metadata: {
+          workspaceId: CURRENT_ORG,
+          position: "predicate",
+          fromNorm: "is priced at",
+          toNorm: "priced at",
+          proposalId: "proposal-1",
+          // The response tells the approver the trail will record the producer's
+          // source rather than direct authoring. This IS the trail, so it has to
+          // carry the same distinction or the response is describing a row that
+          // does not say what it claims.
+          convergedOnProposal: false,
+        },
+      });
+    });
+
+    it("POST /author audits nothing on `already_approved` — nothing was written", async () => {
+      authorOutcome = { kind: "already_approved", id: "proposal-1" };
+      expect(
+        (
+          await post("/author", {
+            position: "predicate",
+            fromNorm: "is priced at",
+            toNorm: "priced at",
+          })
+        ).status,
+      ).toBe(200);
+      // A row here would claim a decision that was made by someone else, at some
+      // other time, for this actor.
+      expect(auditRows).toHaveLength(0);
+    });
+
+    it("POST /remove records the removal AND whether rejection memory was minted", async () => {
+      // The sharpest version of the erosion: a removal DELETES the edge, so
+      // `approved_by` does not survive even as a stale value the way
+      // `proposed_by` does on the cardinality row.
+      removeOutcome = { kind: "removed", id: "proposal-2", memoryCreated: true };
+      const res = await post("/remove", {
+        position: "predicate",
+        fromNorm: "is priced at",
+        toNorm: "priced at",
+      });
+      expect(res.status).toBe(200);
+      expect(auditRows[0]).toMatchObject({
+        actionType: REAL_ADMIN_ACTIONS.brainVocabulary.remove,
+        targetType: "brainVocabulary",
+        targetId: "predicate:is priced at",
+        metadata: {
+          workspaceId: CURRENT_ORG,
+          proposalId: "proposal-2",
+          // A SECOND permanent write this verb performed, invisible everywhere
+          // else once the edge is gone.
+          memoryCreated: true,
+        },
+      });
+    });
+
+    it("POST /remove audits nothing on `already_removed`", async () => {
+      removeOutcome = { kind: "already_removed", id: "proposal-1" };
+      await post("/remove", {
+        position: "predicate",
+        fromNorm: "is priced at",
+        toNorm: "priced at",
+      });
+      expect(auditRows).toHaveLength(0);
+    });
+
+    it("POST /decide records an alias approval with the DIRECTION that was chosen", async () => {
+      // An undirected proposal is decided by choosing an ordering of the pair,
+      // so which way it was pointed is the whole content of the decision. A row
+      // saying only "approved" would not record it.
+      const res = await post("/decide", {
+        kind: "alias",
+        proposalId: "proposal-9",
+        decision: "approved",
+        direction: { fromNorm: "is priced at", toNorm: "priced at" },
+      });
+      expect(res.status).toBe(200);
+      expect(auditRows[0]).toMatchObject({
+        actionType: REAL_ADMIN_ACTIONS.brainVocabulary.decide,
+        targetType: "brainVocabulary",
+        targetId: "proposal-1",
+        metadata: {
+          workspaceId: CURRENT_ORG,
+          kind: "alias",
+          decision: "approved",
+          direction: { fromNorm: "is priced at", toNorm: "priced at" },
+        },
+      });
+    });
+
+    it("POST /decide records a REJECTION, and whether it dropped an edge", async () => {
+      // A rejection permanently binds producers, so it is exactly as worth
+      // attributing as an approval — and one that dropped an edge re-keyed the
+      // corpus back, which is a removal wearing a rejection's name.
+      decideOutcome = { kind: "rejected", id: "proposal-9", removedEdge: true };
+      await post("/decide", { kind: "alias", proposalId: "proposal-9", decision: "rejected" });
+      expect(auditRows[0]).toMatchObject({
+        actionType: REAL_ADMIN_ACTIONS.brainVocabulary.decide,
+        metadata: { kind: "alias", decision: "rejected", removedEdge: true },
+      });
+    });
+
+    it("POST /decide records a cardinality decision by SURFACE, not by id", async () => {
+      const res = await post("/decide", {
+        kind: "cardinality",
+        predicateSurface: "has goal of",
+        decision: "approved",
+      });
+      expect(res.status).toBe(200);
+      expect(auditRows[0]).toMatchObject({
+        actionType: REAL_ADMIN_ACTIONS.brainVocabulary.decide,
+        targetId: "has goal of",
+        metadata: {
+          workspaceId: CURRENT_ORG,
+          kind: "cardinality",
+          predicateSurface: "has goal of",
+          decision: "approved",
+          // ⚠️ WHAT was armed, not only that a decision happened. Approving a
+          // pending `single` makes every published pair in that slot
+          // supersedable at the next publish — identically to `POST
+          // /cardinality`, whose row carries the value. A row saying only
+          // `approved` sends an operator back to the mutable column, which is
+          // the split #5448 exists to close.
+          cardinality: "single",
+        },
+      });
+    });
+
+    it("the decide row carries the cardinality that became IN FORCE, not the one asked for", async () => {
+      // The seam is the only thing that knows. The request body names a VERDICT
+      // (`approved`), never a cardinality — so if `CardinalityDecisionResult`
+      // did not carry the value back, this field could not exist at any level of
+      // care in the route. Driving a `multi` row through an `approved` verdict
+      // is what proves the value is read rather than assumed from the verb.
+      cardinalityDecided = { kind: "decided", cardinality: "multi" };
+      const res = await post("/decide", {
+        kind: "cardinality",
+        predicateSurface: "has goal of",
+        decision: "approved",
+      });
+      expect(res.status).toBe(200);
+      expect(auditRows[0]).toMatchObject({
+        actionType: REAL_ADMIN_ACTIONS.brainVocabulary.decide,
+        metadata: { kind: "cardinality", decision: "approved", cardinality: "multi" },
+      });
+    });
+
+    it("POST /decide audits nothing when there was nothing to decide", async () => {
+      decideOutcome = { kind: "not_decidable", id: "proposal-9" };
+      await post("/decide", { kind: "alias", proposalId: "proposal-9", decision: "approved" });
+      expect(auditRows).toHaveLength(0);
+
+      cardinalityDecided = { kind: "not-pending" };
+      await post("/decide", {
+        kind: "cardinality",
+        predicateSurface: "has goal of",
+        decision: "approved",
+      });
+      expect(auditRows).toHaveLength(0);
+    });
   });
 });
 
@@ -1232,7 +1626,7 @@ describe("POST /decide", () => {
     });
 
     it("addresses the row by SURFACE and answers `nothing_to_decide` on a lost race", async () => {
-      cardinalityDecided = "not-pending";
+      cardinalityDecided = { kind: "not-pending" };
       const res = await post("/decide", {
         kind: "cardinality",
         predicateSurface: "reports to",
@@ -1272,7 +1666,7 @@ describe("POST /decide", () => {
       // addresses no row, and folding it into the race arm made the client say
       // "someone else got there first" — a confident, specific, wrong
       // explanation for a request that never reached a row at all.
-      cardinalityDecided = "unaddressable";
+      cardinalityDecided = { kind: "unaddressable" };
       const res = await post("/decide", {
         kind: "cardinality",
         predicateSurface: "---",
@@ -1290,7 +1684,7 @@ describe("POST /decide", () => {
       // reachable from here, so the old title described coverage the test did
       // not have. What it does measure is the split: `checkedWrite` on the arm
       // that WROTE, `checked` on the one that did not.
-      cardinalityDecided = "decided";
+      cardinalityDecided = { kind: "decided", cardinality: "single" };
       const res = await post("/decide", {
         kind: "cardinality",
         predicateSurface: "reports to",
@@ -1338,10 +1732,10 @@ describe("POST /decide", () => {
       // result the route has not been taught — and the honest answer to it is a
       // 500 with a requestId, not the strongest success string in the file.
       //
-      // Reachable only because the mock's field is typed `string`; with the
-      // union's own type nothing can inject this, which is exactly why the
-      // branch was unfalsified.
-      cardinalityDecided = "quantum-superposed" as CardinalityDecisionResult;
+      // Reachable only through the cast on this line. The declaration is typed
+      // to the union — which is what keeps the three real arms pinned — so a
+      // fourth `kind` cannot be injected without saying so out loud here.
+      cardinalityDecided = { kind: "quantum-superposed" } as unknown as CardinalityDecisionResult;
       const res = await post("/decide", {
         kind: "cardinality",
         predicateSurface: "reports to",

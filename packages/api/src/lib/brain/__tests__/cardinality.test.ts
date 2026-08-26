@@ -257,16 +257,41 @@ describe("proposePredicateCardinalityForSurface — the producer's door (#5042)"
   });
 });
 
+/**
+ * The declaration statement's one row, with no prior entry — a FIRST curation.
+ *
+ * The statement is `written LEFT JOIN prior`, so `written` always yields a row
+ * and the three `previous_*` columns come back NULL when nothing was there.
+ * Scripted rather than left to the executor's empty-rows default, because that
+ * default is what a drifted statement also produces and the two must not be the
+ * same fixture.
+ */
+const FIRST_CURATION = {
+  wrote: 1,
+  previous_cardinality: null,
+  previous_status: null,
+  previous_reviewed_by: null,
+};
+
+/** The same row when an earlier approved `single` is being replaced. */
+const replacing = (over: Record<string, unknown> = {}) => ({
+  wrote: 1,
+  previous_cardinality: "single",
+  previous_status: "approved",
+  previous_reviewed_by: "curator-0",
+  ...over,
+});
+
 describe("declarePredicateCardinality — the human door", () => {
   it("writes `approved` in one step, and records the author on BOTH columns", async () => {
-    const { exec, sql, params } = executor();
+    const { exec, sql, params } = executor([{ match: "WITH prior", rows: [FIRST_CURATION] }]);
     const result = await declarePredicateCardinality(exec, WS, {
       predicateKey: KEY,
       cardinality: "single",
       authoredBy: "curator-1",
     });
 
-    expect(result).toEqual({ ok: true, cardinality: "single" });
+    expect(result).toEqual({ ok: true, cardinality: "single", previous: { kind: "none" } });
     expect(sql[0]).toContain("'approved'");
     expect(sql[0]).toContain("'human'");
     // ⚠️ `proposed_by` is overwritten on the conflict path too. Without it, a
@@ -282,14 +307,14 @@ describe("declarePredicateCardinality — the human door", () => {
     // A producer cannot; a human can. It is the record of the question being
     // DECLINED (ADR-0037 §3(b)'s `located in`), and the only route out of a
     // `single` short of deleting the row.
-    const { exec, params } = executor();
+    const { exec, params } = executor([{ match: "WITH prior", rows: [FIRST_CURATION] }]);
     const result = await declarePredicateCardinality(exec, WS, {
       predicateKey: KEY,
       cardinality: "multi",
       authoredBy: "curator-1",
     });
 
-    expect(result).toEqual({ ok: true, cardinality: "multi" });
+    expect(result).toEqual({ ok: true, cardinality: "multi", previous: { kind: "none" } });
     expect(params[0]?.[2]).toBe("multi");
   });
 
@@ -299,13 +324,148 @@ describe("declarePredicateCardinality — the human door", () => {
     // workspace's own decision, and the gate exists so a person can change it.
     // Without this a mistaken rejection would make a predicate permanently
     // un-curatable.
-    const { exec, sql } = executor();
+    const { exec, sql } = executor([{ match: "WITH prior", rows: [FIRST_CURATION] }]);
     await declarePredicateCardinality(exec, WS, {
       predicateKey: KEY,
       cardinality: "single",
       authoredBy: "curator-1",
     });
     expect(sql[0]).toContain("ON CONFLICT (workspace_id, predicate_key) DO UPDATE");
+  });
+
+  describe("what it REPLACED — the record #5448 found missing", () => {
+    it("captures the prior entry in the SAME statement as the write", async () => {
+      // ⚠️ One statement, not a SELECT then an INSERT. Two curators flipping one
+      // predicate concurrently would both read the same "prior" across two
+      // statements, and one audit row would then name a decision that was
+      // already gone — attribution that is confidently, specifically wrong.
+      const { exec, sql } = executor([{ match: "WITH prior", rows: [replacing()] }]);
+      await declarePredicateCardinality(exec, WS, {
+        predicateKey: KEY,
+        cardinality: "multi",
+        authoredBy: "curator-1",
+      });
+      expect(sql).toHaveLength(1);
+      expect(sql[0]).toContain("WITH prior AS");
+      expect(sql[0]).toContain("INSERT INTO brain_predicate_cardinality");
+    });
+
+    it("reports the cardinality, status and reviewer it overwrote", async () => {
+      // The un-curation arm, which is where the erosion bites: the upsert
+      // overwrites `reviewed_by`, so without this row the earlier decision and
+      // its author are gone with no trace anywhere.
+      const { exec } = executor([{ match: "WITH prior", rows: [replacing()] }]);
+      const result = await declarePredicateCardinality(exec, WS, {
+        predicateKey: KEY,
+        cardinality: "multi",
+        authoredBy: "curator-1",
+      });
+      expect(result).toEqual({
+        ok: true,
+        cardinality: "multi",
+        previous: {
+          kind: "replaced",
+          cardinality: "single",
+          status: "approved",
+          reviewedBy: "curator-0",
+        },
+      });
+    });
+
+    it("answers `none` for a first curation — absent MEANS multi, and armed nothing", async () => {
+      const { exec } = executor([{ match: "WITH prior", rows: [FIRST_CURATION] }]);
+      const result = await declarePredicateCardinality(exec, WS, {
+        predicateKey: KEY,
+        cardinality: "single",
+        authoredBy: "curator-1",
+      });
+      expect(result).toMatchObject({ previous: { kind: "none" } });
+    });
+
+    it("reads a machine decision's NULL reviewer as null, not as an empty author", async () => {
+      // 0192's three-valued domain: NULL for a machine decision. `''` is an
+      // unattributed row wearing an attributed one's shape, and the audit row
+      // must not report it as a person.
+      const { exec } = executor([
+        { match: "WITH prior", rows: [replacing({ previous_reviewed_by: null })] },
+      ]);
+      expect(
+        await declarePredicateCardinality(exec, WS, {
+          predicateKey: KEY,
+          cardinality: "multi",
+          authoredBy: "curator-1",
+        }),
+      ).toMatchObject({ previous: { kind: "replaced", reviewedBy: null } });
+
+      const { exec: exec2 } = executor([
+        { match: "WITH prior", rows: [replacing({ previous_reviewed_by: "" })] },
+      ]);
+      expect(
+        await declarePredicateCardinality(exec2, WS, {
+          predicateKey: KEY,
+          cardinality: "multi",
+          authoredBy: "curator-1",
+        }),
+      ).toMatchObject({ previous: { kind: "replaced", reviewedBy: null } });
+    });
+
+    it("⚠️ answers `unreadable` rather than substituting a value nobody wrote", async () => {
+      // The divergence from `narrowCardinality`, which answers `multi` on drift
+      // so a READER is never told a decision was made that nobody made. Here the
+      // value goes into an audit row, where a substituted value is not
+      // conservative — it is a false record of what a named person replaced.
+      for (const row of [
+        replacing({ previous_cardinality: "sometimes" }),
+        replacing({ previous_status: "applying" }),
+      ]) {
+        const { exec } = executor([{ match: "WITH prior", rows: [row] }]);
+        expect(
+          await declarePredicateCardinality(exec, WS, {
+            predicateKey: KEY,
+            cardinality: "multi",
+            authoredBy: "curator-1",
+          }),
+        ).toMatchObject({ previous: { kind: "unreadable" } });
+      }
+    });
+
+    it("answers `unreadable`, NOT `none`, when the statement returned no row at all", async () => {
+      // `written` yields a row on both the insert and the update arm, so no row
+      // means the statement drifted. Reading that as a first curation would
+      // record "this predicate had never been curated" about a flip that may
+      // have overwritten someone's approved `single`.
+      const { exec } = executor();
+      expect(
+        await declarePredicateCardinality(exec, WS, {
+          predicateKey: KEY,
+          cardinality: "single",
+          authoredBy: "curator-1",
+        }),
+      ).toMatchObject({ previous: { kind: "unreadable" } });
+    });
+
+    it("does not project the predicate key", async () => {
+      // `readPredicateCardinality`'s pin, applied to the statement this issue
+      // grew a projection on. The declaration statement now has a SELECT list
+      // where it had none, which is exactly the drift that arm guards.
+      const { exec, sql } = executor([{ match: "WITH prior", rows: [FIRST_CURATION] }]);
+      await declarePredicateCardinality(exec, WS, {
+        predicateKey: KEY,
+        cardinality: "single",
+        authoredBy: "curator-1",
+      });
+      for (const projection of sql[0]!.split(/\bSELECT\b/).slice(1)) {
+        expect(projection.split(/\bFROM\b/)[0]).not.toContain("predicate_key");
+      }
+      // Positive control — the split DOES see a projected key.
+      expect(
+        "WITH x AS (SELECT cardinality, predicate_key FROM y) SELECT 1"
+          .split(/\bSELECT\b/)
+          .slice(1)
+          .map((p) => p.split(/\bFROM\b/)[0])
+          .join(""),
+      ).toContain("predicate_key");
+    });
   });
 
   it("refuses a degenerate key", async () => {
@@ -336,19 +496,36 @@ describe("declarePredicateCardinality — the human door", () => {
 });
 
 describe("decidePredicateCardinality", () => {
-  it("only moves a PENDING row, and says whether it moved", async () => {
+  it("only moves a PENDING row, and returns WHAT became in force", async () => {
     // `WHERE status = 'pending'` makes the statement correct on its own terms:
     // two reviewers racing one proposal produce one decision and one no-op,
     // without a lock, because the second UPDATE re-evaluates against the
     // committed row version and matches zero rows.
-    const { exec, sql } = executor([{ match: "UPDATE", rows: [{ decided: 1 }] }]);
-    expect(await decidePredicateCardinality(exec, WS, KEY, "approved", "curator-1")).toBe(true);
+    //
+    // ⚠️ The return is the CARDINALITY, not a boolean (#5448). Approving a
+    // pending `single` arms retroactive supersession, and the audit row on the
+    // decide door has to be able to name what it armed — a boolean discarded
+    // that at the seam, so no amount of care in the route could recover it.
+    const { exec, sql } = executor([{ match: "UPDATE", rows: [{ cardinality: "single" }] }]);
+    expect(await decidePredicateCardinality(exec, WS, KEY, "approved", "curator-1")).toBe("single");
     expect(sql[0]).toContain("status = 'pending'");
+    expect(sql[0], "the statement returns the value, not a constant").toContain(
+      "RETURNING cardinality",
+    );
   });
 
-  it("reports `false` when the row was already decided", async () => {
+  it("reports `null` when the row was already decided", async () => {
     const { exec } = executor();
-    expect(await decidePredicateCardinality(exec, WS, KEY, "rejected", "curator-1")).toBe(false);
+    expect(await decidePredicateCardinality(exec, WS, KEY, "rejected", "curator-1")).toBeNull();
+  });
+
+  it("an out-of-vocabulary stored value reads as `multi`, never as itself", async () => {
+    // `narrowCardinality`, not a cast. The value is bound for an operator-facing
+    // audit row, and `multi` is the reading that never supersedes — so a drifted
+    // column cannot make the row claim an arming that the publish gate would not
+    // honour.
+    const { exec } = executor([{ match: "UPDATE", rows: [{ cardinality: "sometimes" }] }]);
+    expect(await decidePredicateCardinality(exec, WS, KEY, "approved", "curator-1")).toBe("multi");
   });
 
   it("REJECTING is an update, never a delete — the row is the memory", async () => {

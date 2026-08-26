@@ -98,6 +98,7 @@ import {
 import {
   declarePredicateCardinalityForSurface,
   decidePredicateCardinalityForSurface,
+  priorAuditFields,
   type CardinalityRefusal,
 } from "@atlas/api/lib/brain/cardinality";
 import type { PositionalDecision } from "@atlas/api/lib/brain/vocabulary-visibility";
@@ -133,8 +134,66 @@ import {
 } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
+// The BARREL, like `admin-brain-facts.ts` — not the two leaf modules. The route
+// tests `mock.module` `@atlas/api/lib/audit`, so a leaf import walks past the
+// double and writes a real row.
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 
 const log = createLogger("admin-brain-vocabulary");
+
+/**
+ * An alias write's SLOT — the address these verbs act on (#5448).
+ *
+ * ⚠️ A type rather than three loose params, because `position` + `fromNorm`
+ * (+ `toNorm`) travel together through every alias audit row AND through the
+ * `targetId`, and the `position:fromNorm` formatting was written out twice
+ * before this existed. One of the two is how the convention drifts.
+ */
+interface AliasSlot {
+  readonly position: string;
+  readonly fromNorm: string;
+  readonly toNorm?: string;
+}
+
+/** The slot's audit address. ONE site, so `/author` and `/remove` cannot diverge. */
+function slotAddress(slot: AliasSlot): string {
+  return `${slot.position}:${slot.fromNorm}`;
+}
+
+/**
+ * Emit one claim-vocabulary audit row (#5448).
+ *
+ * Collapses six call sites that differed only in verb, target and payload. The
+ * three invariants they all share are asserted HERE rather than re-typed six
+ * times, which is what stops the seventh from quietly omitting one:
+ *
+ * - `targetType` is always `brainVocabulary`.
+ * - `workspaceId` is always in the metadata.
+ * - ⚠️ FIRE-AND-FORGET, on `brainFact.tensionSweep`'s reasoning. These routes
+ *   have already COMMITTED by the time a row is built, and `logAdminActionAwait`
+ *   surfaces an error so the admin retries — which `checkedWrite` exists on this
+ *   very router to prevent. An open circuit breaker costs the durable row, not
+ *   the trail: the pino line is emitted either way.
+ *
+ * ⚠️ `targetId` is a SURFACE or a slot, never a row id — these writes address
+ * slots, and `brain_predicate_cardinality` has no id at all (it is keyed on the
+ * predicate). Metadata never carries a canonical identity key:
+ * `keys-not-on-the-wire.test.ts` refuses `predicate_key` in a read surface, and
+ * an audit row an operator reads is one.
+ */
+function vocabularyAudit(
+  actionType: (typeof ADMIN_ACTIONS.brainVocabulary)[keyof typeof ADMIN_ACTIONS.brainVocabulary],
+  workspaceId: string,
+  targetId: string,
+  metadata: Record<string, unknown>,
+): void {
+  logAdminAction({
+    actionType,
+    targetType: "brainVocabulary",
+    targetId,
+    metadata: { workspaceId, ...metadata },
+  });
+}
 
 /**
  * Every response is parsed through its own wire schema before it goes out.
@@ -914,7 +973,7 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
         // Folded into `nothing_to_decide` it produced the client sentence
         // *"someone else got there first"*, which is a confident, specific and
         // wrong explanation. 409 with the seam's own vocabulary instead.
-        if (decided === "unaddressable") {
+        if (decided.kind === "unaddressable") {
           return c.json(
             refusalBody(
               "degenerate-key",
@@ -946,8 +1005,8 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
         // "Curated: … now holds one value at a time" for a write that may not
         // have happened — on the one verb that arms retroactive supersession.
         // Every other refusal path in this file has a `never` default.
-        if (decided !== "decided") {
-          if (decided !== "not-pending") {
+        if (decided.kind !== "decided") {
+          if (decided.kind !== "not-pending") {
             const unexpected: never = decided;
             throw new Error(
               `Unhandled cardinality decision result: ${JSON.stringify(unexpected)}`,
@@ -961,6 +1020,23 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
           };
           return c.json(checked(BrainVocabularyDecideResponseSchema, nothing), 200);
         }
+
+        // #5448's sibling row. Emitted only past the `decided` guard above, so
+        // it never claims a decision that did not move a row — and BOTH
+        // verdicts, because a rejection is a decision that permanently binds
+        // producers and is exactly as worth attributing as an approval.
+        vocabularyAudit(ADMIN_ACTIONS.brainVocabulary.decide, orgId, body.predicateSurface, {
+          kind: "cardinality",
+          predicateSurface: body.predicateSurface,
+          decision: body.decision,
+          // ⚠️ WHAT was decided, not only that something was. Approving a
+          // pending `single` arms retroactive supersession exactly as
+          // `POST /cardinality` does, and a row saying only `approved` sends
+          // an operator asking *"what did this arm?"* back to the mutable
+          // column — the split this whole issue closed on the other door.
+          // The seam had to widen to carry it (`CardinalityDecisionResult`).
+          cardinality: decided.cardinality,
+        });
 
         const cardinalityResponse: BrainVocabularyDecideResponse =
           body.decision === "approved"
@@ -1019,6 +1095,16 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
             outcome: "approved",
             proposalId: outcome.id,
           };
+          vocabularyAudit(ADMIN_ACTIONS.brainVocabulary.decide, orgId, outcome.id, {
+            kind: "alias",
+            proposalId: outcome.id,
+            decision: "approved",
+            // The DIRECTION the approver supplied, or its absence. An
+            // undirected proposal is decided by choosing an ordering of the
+            // pair, and which way it was pointed is the whole content of the
+            // decision — a row saying only "approved" would not record it.
+            direction: body.decision === "approved" ? (body.direction ?? null) : null,
+          });
           const described = checkedWrite(BrainVocabularyDecideResponseSchema, approvedBody, {
             verb: "authoring",
             proposalId: outcome.id,
@@ -1036,6 +1122,15 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
             // would not know that happened.
             removedEdge: outcome.removedEdge,
           };
+          vocabularyAudit(ADMIN_ACTIONS.brainVocabulary.decide, orgId, outcome.id, {
+            kind: "alias",
+            proposalId: outcome.id,
+            decision: "rejected",
+            // A rejection that dropped an edge re-keyed the corpus back. That
+            // is a removal wearing a rejection's name, and the trail has to
+            // say which happened for the same reason the response does.
+            removedEdge: outcome.removedEdge,
+          });
           const described = checkedWrite(BrainVocabularyDecideResponseSchema, rejectedBody, {
             // A rejection that dropped an edge is a REMOVAL; one that did not is
             // a REJECTION. Neither is an authoring, and calling it one claimed a
@@ -1117,10 +1212,13 @@ adminBrainVocabulary.openapi(authorRoute, async (c) => {
       const { mode, user, orgId } = yield* AuthContext;
       if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
 
-      const body = c.req.valid("json");
+      // `request`, not `body` — the `authored` arm below declares its own
+      // response `body`, which shadows this one for the whole block, so the
+      // audit row could not name what was asked for while both were `body`.
+      const request = c.req.valid("json");
       const ctx = yield* approverContext(mode, user, orgId, requestId);
       const outcome = yield* Effect.tryPromise({
-        try: () => authorAliasEdge(orgId, body, ctx, { requestId }),
+        try: () => authorAliasEdge(orgId, request, ctx, { requestId }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
@@ -1137,6 +1235,25 @@ adminBrainVocabulary.openapi(authorRoute, async (c) => {
             proposalId: outcome.id,
             convergedOnProposal: outcome.convergedOnProposal,
           };
+          // #5448's sibling row. Only the `authored` arm — `already_approved`
+          // wrote nothing, and a row there would claim a decision that was made
+          // by someone else at some other time.
+          vocabularyAudit(
+            ADMIN_ACTIONS.brainVocabulary.author,
+            orgId,
+            slotAddress(request),
+            {
+              position: request.position,
+              fromNorm: request.fromNorm,
+              toNorm: request.toNorm,
+              proposalId: outcome.id,
+              // Whether this landed on a proposal a producer had already raised.
+              // The response tells the approver the trail will record the
+              // producer's source rather than direct authoring; this is that
+              // trail, so it has to carry the same distinction.
+              convergedOnProposal: outcome.convergedOnProposal,
+            },
+          );
           const described = checkedWrite(
             BrainVocabularyAuthorResponseSchema,
             body,
@@ -1191,10 +1308,12 @@ adminBrainVocabulary.openapi(removeRoute, async (c) => {
       const { mode, user, orgId } = yield* AuthContext;
       if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
 
-      const body = c.req.valid("json");
+      // `request`, not `body` — the `removed` arm shadows it, exactly as the
+      // authoring handler above does.
+      const request = c.req.valid("json");
       const ctx = yield* approverContext(mode, user, orgId, requestId);
       const outcome = yield* Effect.tryPromise({
-        try: () => removeInForceAliasEdge(orgId, body, ctx, { requestId }),
+        try: () => removeInForceAliasEdge(orgId, request, ctx, { requestId }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
@@ -1205,6 +1324,26 @@ adminBrainVocabulary.openapi(removeRoute, async (c) => {
             proposalId: outcome.id,
             memoryCreated: outcome.memoryCreated,
           };
+          // #5448's sibling row, and the sharpest version of the erosion the
+          // issue names: a removal DELETES the edge, so `approved_by` does not
+          // survive even as a stale value. Only the `removed` arm —
+          // `already_removed` wrote nothing.
+          vocabularyAudit(
+            ADMIN_ACTIONS.brainVocabulary.remove,
+            orgId,
+            slotAddress(request),
+            {
+              position: request.position,
+              fromNorm: request.fromNorm,
+              toNorm: request.toNorm,
+              proposalId: outcome.id,
+              // Whether Atlas had to MINT the rejection memory because the edge
+              // arrived from another region without a decision record. That is a
+              // second, permanent write this verb performed, and it is invisible
+              // anywhere else once the edge is gone.
+              memoryCreated: outcome.memoryCreated,
+            },
+          );
           const described = checkedWrite(
             BrainVocabularyRemoveResponseSchema,
             body,
@@ -1305,6 +1444,33 @@ adminBrainVocabulary.openapi(cardinalityRoute, async (c) => {
           declarationRefusalStatus(result.refusal),
         );
       }
+
+      // THE row #5448 measured missing. Emitted for BOTH directions — the
+      // un-curation to `multi` is the flip that overwrites `reviewed_by`, so it
+      // is the one whose absence erases a prior decision outright.
+      //
+      // Placed after the commit and before the response is described, so a
+      // `response_schema_mismatch` 500 still leaves the write attributed: the
+      // write LANDED on that path, and an audit trail that drops the rows whose
+      // description failed is missing exactly the rows an operator is looking
+      // for.
+      //
+      // Fire-and-forget for the reason the catalog entry records: awaiting would
+      // report a committed write as a failure, which is the misreport
+      // `checkedWrite` exists on this router to prevent.
+      // The SURFACE as the target. There is no row id to name — the table is
+      // keyed on `(workspace, predicate_key)` — and the key may not travel.
+      vocabularyAudit(
+        ADMIN_ACTIONS.brainVocabulary.cardinality,
+        orgId,
+        body.predicateSurface,
+        {
+          predicateSurface: body.predicateSurface,
+          cardinality: result.cardinality,
+          ...priorAuditFields(result.previous),
+        },
+      );
+
       // `checkedWrite`, not `checked`: `declarePredicateCardinalityForSurface`
       // has COMMITTED by the time this body is built, and the write it describes
       // arms retroactive supersession for every future claim in the slot. The
@@ -1328,6 +1494,7 @@ adminBrainVocabulary.openapi(cardinalityRoute, async (c) => {
     { label: "declare brain predicate cardinality" },
   );
 });
+
 
 /**
  * The author id to record, or `null` when this reader may not author at all.

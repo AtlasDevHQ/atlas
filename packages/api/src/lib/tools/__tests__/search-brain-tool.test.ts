@@ -859,3 +859,42 @@ describe("searchBrain `asOf` argument description — the carve-out travels with
     ).toBe(true);
   });
 });
+
+/**
+ * The tool prose is the surface condition 5 is actually judged on (#5461).
+ *
+ * Most people read the SENTENCE, not the result card — so "someone can see that
+ * the answer changed" is delivered by what the model is told to say, and a
+ * regression here is invisible to every other test in this file. Pinned the way
+ * #5458 pinned "the copy names neither verb": the wording is a product
+ * invariant, not a style preference.
+ */
+describe("searchBrain `history` prose — the change is stated unprompted (#5461)", () => {
+  const description = SEARCH_BRAIN_DESCRIPTION;
+
+  it("tells the model to report the change without being asked", () => {
+    // The whole condition: a reader who did not know to ask still learns the
+    // answer changed. A description that merely DOCUMENTED the field would
+    // leave that to the model's discretion, which is what "reachable, not
+    // chosen" means one layer up.
+    expect(description).toContain("history");
+    expect(description).toMatch(/even when the question did not ask about history/i);
+  });
+
+  it("forbids naming anyone on the promotion arm", () => {
+    // The one instruction here that prevents an accusation. On a gate-written
+    // supersession the replacement's actor is whoever the NEWER claim was
+    // extracted from — a person who never touched the old claim.
+    expect(description).toMatch(/kind: .?"?promotion"?.?[^\n]*name NOBODY/i);
+  });
+
+  it("keeps the withheld arm distinguishable from an unknown one", () => {
+    // "Restricted" and "unknown" are different claims about the record, and
+    // only one of them is true.
+    expect(description).toMatch(/restricted, never that it is unknown/i);
+  });
+
+  it("never lets a previous answer be presented as current", () => {
+    expect(description).toMatch(/Never present a .?prior.? value as current/i);
+  });
+});

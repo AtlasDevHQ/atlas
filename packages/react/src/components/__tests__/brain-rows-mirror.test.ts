@@ -37,6 +37,30 @@ const FIXTURES: unknown[] = [
   { tier: "raw-episode", headline: "we <b>moved</b> billing" },
   { tier: "document", path: "runbooks/billing.md", title: "Billing runbook" },
   { tier: "document" },
+  // `history` (#5461) — the arms and the junk. A row whose history is a string
+  // or whose `prior` is a number must project identically in both copies, for
+  // the same reason the malformed tiers above are here.
+  { tier: "fact", subject: "Series A", predicate: "has target raise of", object: "10M" },
+  {
+    tier: "fact",
+    subject: "Series A",
+    predicate: "has target raise of",
+    object: "10M",
+    history: {
+      prior: { visible: true, factId: "f8", object: "8M", validFrom: null, validTo: "2026-08-26" },
+      priorCount: 1,
+      changedBy: {
+        kind: "correction",
+        actor: "user:x",
+        actorIdentity: { state: "atlas", userId: "x", name: "Dana Okafor", email: null },
+        at: "2026-08-26",
+      },
+      truncated: false,
+    },
+  },
+  { tier: "fact", object: "10M", history: "not an object" },
+  { tier: "fact", object: "10M", history: { prior: 7, priorCount: "many" } },
+  { tier: "fact", object: "10M", history: { prior: null, priorCount: 0, changedBy: null } },
   { tier: "episode-raw" },
   { tier: "" },
   { tier: 42 },
@@ -127,6 +151,156 @@ describe("widget brain-row projection mirror", () => {
     for (const tier of ANSWER_TRUST_TIERS) {
       expect(WEB_CHIPS, `web chip for ${tier}`).toHaveProperty(tier);
       expect(WIDGET_CHIPS, `widget chip for ${tier}`).toHaveProperty(tier);
+    }
+  });
+});
+
+/**
+ * The changed-answer copy (#5461, PRD finish condition 5).
+ *
+ * Asserted on CONTENT, not merely on agreement between the copies. The wording
+ * is what the condition is judged on — "can see the previous answer, and who
+ * changed it" — so two copies that agree on the wrong sentence are still wrong,
+ * and a mirror test that only compared them would not notice.
+ *
+ * Run against the widget's copy and cross-checked against the web one, so the
+ * pin covers both surfaces. Condition 5 says "someone asks a question", and a
+ * reader in an embedded widget is that someone.
+ */
+describe("the changed-answer line", () => {
+  const CORRECTION = {
+    history: {
+      prior: { visible: true, factId: "f8", object: "8M", validFrom: null, validTo: "2026-08-26" },
+      priorCount: 1,
+      changedBy: {
+        kind: "correction",
+        actor: "user:x",
+        actorIdentity: { state: "atlas", userId: "x", name: "Dana Okafor", email: null },
+        at: "2026-08-26",
+      },
+      truncated: false,
+    },
+  };
+
+  test("says what the answer used to be, and names the person who changed it", () => {
+    const line = widget.toChanged(CORRECTION);
+    expect(line).toContain("8M");
+    expect(line).toContain("Dana Okafor");
+    expect(line).toEqual(web.toChanged(CORRECTION));
+  });
+
+  test("is silent for a claim that never changed", () => {
+    // Almost every row. A line reading "no earlier version" on 29 rows out of
+    // 30 would bury the one that matters.
+    for (const raw of [
+      {},
+      { history: null },
+      { history: { prior: null, priorCount: 0, changedBy: null, truncated: false } },
+    ]) {
+      expect(widget.toChanged(raw)).toBeNull();
+      expect(web.toChanged(raw)).toBeNull();
+    }
+  });
+
+  test("names NOBODY when the publish gate retired the predecessor", () => {
+    // The actor on a gate-retired claim is whoever the NEWER claim was
+    // extracted from — a person who never touched the old one.
+    const raw = {
+      history: {
+        prior: { visible: true, factId: "f8", object: "8M", validFrom: null, validTo: "2026-08-26" },
+        priorCount: 1,
+        changedBy: { kind: "promotion", at: "2026-08-26" },
+        truncated: false,
+      },
+    };
+    const line = widget.toChanged(raw)!;
+    expect(line).toContain("8M");
+    expect(line).toContain("newer claim was published");
+    expect(line).not.toMatch(/changed by/i);
+    expect(line).toEqual(web.toChanged(raw));
+  });
+
+  test("says RESTRICTED, never unknown, when the earlier value is withheld", () => {
+    // "Unknown" would be a different and false statement about the record.
+    const raw = {
+      history: {
+        prior: { visible: false },
+        priorCount: 1,
+        changedBy: { kind: "correction", actor: null, actorIdentity: null, at: "2026-08-26" },
+        truncated: false,
+      },
+    };
+    const line = widget.toChanged(raw)!;
+    expect(line).toContain("restricted");
+    expect(line).not.toMatch(/unknown/i);
+    expect(line).toEqual(web.toChanged(raw));
+  });
+
+  test("never renders a vendor handle where a name goes", () => {
+    // `slack:U0AQW6KF2EM` is an id, not a name. Putting it where a name belongs
+    // tells a reader they have been told who did this when they have not.
+    const raw = {
+      history: {
+        prior: { visible: true, factId: "f8", object: "8M", validFrom: null, validTo: "2026-08-26" },
+        priorCount: 1,
+        changedBy: {
+          kind: "correction",
+          actor: "slack:U0AQW6KF2EM",
+          actorIdentity: { state: "opaque", erased: false },
+          at: "2026-08-26",
+        },
+        truncated: false,
+      },
+    };
+    const line = widget.toChanged(raw)!;
+    expect(line).not.toContain("U0AQW6KF2EM");
+    expect(line).toContain("cannot name");
+    expect(line).toEqual(web.toChanged(raw));
+  });
+
+  test("dates a directory name, because that name is a snapshot", () => {
+    const raw = {
+      history: {
+        prior: { visible: true, factId: "f8", object: "8M", validFrom: null, validTo: "2026-08-26" },
+        priorCount: 1,
+        changedBy: {
+          kind: "correction",
+          actor: "slack:U1",
+          actorIdentity: {
+            state: "directory",
+            displayName: "Dana Okafor",
+            realName: null,
+            email: null,
+            snapshotAt: "2026-04-02",
+          },
+          at: "2026-08-26",
+        },
+        truncated: false,
+      },
+    };
+    const line = widget.toChanged(raw)!;
+    expect(line).toContain("Dana Okafor");
+    expect(line).toMatch(/as of/i);
+    expect(line).toEqual(web.toChanged(raw));
+  });
+
+  test("says how many times it changed when only the latest is carried", () => {
+    const raw = {
+      history: {
+        prior: { visible: true, factId: "f8", object: "8M", validFrom: null, validTo: "2026-08-26" },
+        priorCount: 3,
+        changedBy: { kind: "promotion", at: "2026-08-26" },
+        truncated: false,
+      },
+    };
+    expect(widget.toChanged(raw)).toContain("3 times");
+  });
+
+  test("survives junk rather than taking the card down with it", () => {
+    // A projection that throws on a shape surprise is the bug, not a symptom.
+    for (const raw of [{ history: "nope" }, { history: { prior: 7 } }, null, "x", 42, []]) {
+      expect(() => widget.toChanged(raw)).not.toThrow();
+      expect(widget.toChanged(raw)).toEqual(web.toChanged(raw));
     }
   });
 });

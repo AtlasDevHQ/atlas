@@ -809,4 +809,210 @@ describeIfPg("searchBrain against the live schema", () => {
     },
     PG_TEST_TIMEOUT_MS,
   );
+
+  // -------------------------------------------------------------------------
+  // `history` — the previous answer (#5461, PRD finish condition 5)
+  // -------------------------------------------------------------------------
+
+  /**
+   * These belong on a live database and nowhere else.
+   *
+   * `history.test.ts` pins every decision `lib/brain/history.ts` makes in
+   * TypeScript, but the guardrail that matters most is a PREDICATE: the
+   * recursive walk joins `brain_facts ... invalidated_at IS NULL` at every
+   * level, and a unit fixture asserting that a retracted ancestor "returns no
+   * row" would be asserting about the fixture. Only a real retracted row proves
+   * the composition.
+   *
+   * The stakes are the reason for the duplication with item 3 at the top of
+   * this file: `retract` is the GDPR-erasure path, so a lineage that counted
+   * THROUGH a tombstone would re-disclose an erased claim's existence on the
+   * one surface built to show history.
+   */
+  async function seedSupersedes(newId: string, oldId: string): Promise<void> {
+    await pool.query(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
+       VALUES ($1, 'supersedes', $2, $3)`,
+      [WS, newId, oldId],
+    );
+  }
+
+  it(
+    "serves the previous answer to a reader entitled to it",
+    async () => {
+      const ep = await seedEpisode({ sourceId: "hist-visible" });
+      const old = await seedFact({
+        subject: "Kestrel raise",
+        predicate: "has target of",
+        object: "8M",
+        episodeId: ep,
+        validTo: new Date("2026-08-26T16:25:09Z"),
+      });
+      const live = await seedFact({
+        subject: "Kestrel raise",
+        predicate: "has target of",
+        object: "10M",
+        episodeId: ep,
+        provenance: { source: "human", actor: "user:corrector", producer: "correction" },
+      });
+      await seedSupersedes(live, old);
+
+      const res = await search(outsider(), { query: "Kestrel raise", include: ["fact"] });
+      const fact = res.results.find((r) => r.tier === "fact" && r.id === live) as BrainFactResult;
+
+      expect(fact.history.priorCount).toBe(1);
+      expect(fact.history.prior).toMatchObject({ visible: true, object: "8M" });
+      // The correction lane mints the replacement, so the corrector IS the
+      // replacement's author — no `admin_action_log` join anywhere.
+      expect(fact.history.changedBy).toMatchObject({ kind: "correction" });
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "never surfaces a RETRACTED predecessor — not as content, and not as a count",
+    async () => {
+      // ⚠️ THE guardrail, and it is #4916's: `retract` is the verb whose
+      // purpose is to make the past unreadable and the route a GDPR erasure
+      // takes, which is why `invalidated_at IS NULL` survives in BOTH branches
+      // of the temporal read. A `priorCount` of 1 beside a null `prior` would
+      // tell the reader an earlier answer exists — re-disclosing exactly what
+      // the erasure removed — and would be indistinguishable from a predecessor
+      // withheld by ACL.
+      //
+      // Deliberately the `6M` SHAPE from #5426's 2026-08-25 census: the one
+      // claim in prod whose answer had ever changed was retired with `retract`,
+      // and that is precisely what made condition 5 fail. The fixture is that
+      // row, so a regression here reproduces the original finding rather than
+      // an invented one.
+      const ep = await seedEpisode({ sourceId: "hist-retracted" });
+      const erased = await seedFact({
+        subject: "Gannet raise",
+        predicate: "has target of",
+        object: "6M",
+        episodeId: ep,
+        invalidated: true,
+      });
+      const live = await seedFact({
+        subject: "Gannet raise",
+        predicate: "has target of",
+        object: "8M",
+        episodeId: ep,
+      });
+      await seedSupersedes(live, erased);
+
+      const res = await search(outsider(), { query: "Gannet raise", include: ["fact"] });
+      const fact = res.results.find((r) => r.tier === "fact" && r.id === live) as BrainFactResult;
+
+      expect(fact.history.prior).toBeNull();
+      expect(fact.history.priorCount).toBe(0);
+      expect(fact.history.changedBy).toBeNull();
+      // Belt and braces on a disclosure boundary: the erased value must not
+      // appear anywhere in what is served, under any key.
+      expect(JSON.stringify(fact.history)).not.toContain(erased);
+      expect(JSON.stringify(fact.history)).not.toContain("6M");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "keeps the retracted predecessor hidden under `asOf` too (#4916)",
+    async () => {
+      // The exclusion must not be a property of the DEFAULT read. #4916's rule
+      // is that tombstones stay hidden under ANY `asOf` — a point read is
+      // exactly where someone asking "what did we believe then" would expect an
+      // erased claim to reappear, and it must not.
+      //
+      // Structural today (`loadFactLineage` takes no `asOf`, so the walk is
+      // as-of-now regardless), which is why this is pinned rather than assumed:
+      // the day the lineage grows a temporal argument, this is the test that
+      // decides whether the tombstone term travels with it.
+      const ep = await seedEpisode({ sourceId: "hist-retracted-asof" });
+      const erased = await seedFact({
+        subject: "Petrel raise",
+        predicate: "has target of",
+        object: "6M",
+        episodeId: ep,
+        invalidated: true,
+      });
+      const live = await seedFact({
+        subject: "Petrel raise",
+        predicate: "has target of",
+        object: "8M",
+        episodeId: ep,
+        validFrom: new Date("2026-06-01T00:00:00Z"),
+      });
+      await seedSupersedes(live, erased);
+
+      const res = await search(outsider(), {
+        query: "Petrel raise",
+        include: ["fact"],
+        asOf: "2026-07-10T00:00:00Z",
+      });
+      const fact = res.results.find((r) => r.tier === "fact" && r.id === live) as BrainFactResult;
+
+      expect(fact.history.prior).toBeNull();
+      expect(fact.history.priorCount).toBe(0);
+      expect(JSON.stringify(fact.history)).not.toContain("6M");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "withholds a predecessor the reader may not see while still reporting the change",
+    async () => {
+      // The predecessor carries its OWN frozen grant. An entitled reader of
+      // today's answer is not automatically entitled to yesterday's.
+      const ep = await seedEpisode({ sourceId: "hist-withheld" });
+      const old = await seedFact({
+        subject: "Merlin margin",
+        predicate: "is",
+        object: "31 percent",
+        episodeId: ep,
+        visibleTo: ["audience:private-channel"],
+        validTo: new Date("2026-08-20T00:00:00Z"),
+      });
+      const live = await seedFact({
+        subject: "Merlin margin",
+        predicate: "is",
+        object: "44 percent",
+        episodeId: ep,
+      });
+      await seedSupersedes(live, old);
+
+      const res = await search(outsider(), { query: "Merlin margin", include: ["fact"] });
+      const fact = res.results.find((r) => r.tier === "fact" && r.id === live) as BrainFactResult;
+
+      // Existence is disclosed, content is not — `BrainSearchTensionWithheld`'s
+      // split. Omitting it would read as "this never changed".
+      expect(fact.history.prior).toEqual({ visible: false });
+      expect(fact.history.priorCount).toBe(1);
+      expect(JSON.stringify(fact.history)).not.toContain("31 percent");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "leaves an unchanged claim's history empty and silent",
+    async () => {
+      const ep = await seedEpisode({ sourceId: "hist-none" });
+      const only = await seedFact({
+        subject: "Osprey runbook",
+        predicate: "is owned by",
+        object: "platform",
+        episodeId: ep,
+      });
+
+      const res = await search(outsider(), { query: "Osprey runbook", include: ["fact"] });
+      const fact = res.results.find((r) => r.tier === "fact" && r.id === only) as BrainFactResult;
+
+      expect(fact.history).toEqual({
+        prior: null,
+        priorCount: 0,
+        changedBy: null,
+        truncated: false,
+      });
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
 });

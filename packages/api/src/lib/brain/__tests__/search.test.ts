@@ -100,6 +100,16 @@ const SQL = {
   episodePage: "FROM brain_episodes e",
   tensionEdges: "edge_type = 'in-tension-with'",
   tensionCounterparts: "AND f.id = ANY(",
+  /**
+   * The `supersedes` lineage walk (#5461).
+   *
+   * Named here because it is the SECOND read this module issues that binds an
+   * id array against `brain_facts`, and the two selectors below located the
+   * tension counterpart statement by that shape alone. Excluding it by name
+   * keeps those assertions about the statement they mean; matching on the shape
+   * would silently re-point them at whichever read happened to be issued first.
+   */
+  lineageWalk: "WITH RECURSIVE lineage",
 } as const;
 
 function reader(
@@ -1139,7 +1149,12 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
       limit: 10,
       expand: false,
     });
-    const counterpart = db.calls.find((c) => c.sql.includes("= ANY(") && !c.sql.includes("in-tension-with"));
+    const counterpart = db.calls.find(
+      (c) =>
+        c.sql.includes("= ANY(") &&
+        !c.sql.includes("in-tension-with") &&
+        !c.sql.includes(SQL.lineageWalk),
+    );
     // Both columns are SELECTED (that is #4935's label) — what must never
     // appear is a PREDICATE on either axis. Matched as a SHAPE, not as the two
     // spellings the fact query happens to use today: `IS NOT NULL`, `>=`, and
@@ -1258,7 +1273,10 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
       asOf: "2026-06-01T00:00:00.000Z",
     });
     const counterpartSql = db.calls.find(
-      (c) => c.sql.includes("= ANY(") && !c.sql.includes("in-tension-with"),
+      (c) =>
+        c.sql.includes("= ANY(") &&
+        !c.sql.includes("in-tension-with") &&
+        !c.sql.includes(SQL.lineageWalk),
     )?.sql;
     // No temporal predicate reached the counterpart query, so the rival is
     // still listed even though it was live at the requested instant.
@@ -1597,7 +1615,13 @@ describe("searchBrainCore — read-time decay (#4914)", () => {
     const { db } = await factFor(factRow({ last_observed_at: OLD }));
     expect(db.calls.length).toBeGreaterThan(0);
     for (const call of db.calls) {
-      expect(call.sql.trimStart()).toMatch(/^SELECT/i);
+      // `WITH RECURSIVE` admitted for the lineage walk (#5461) — a CTE is a
+      // read only if its terms are, which is the second assertion's job. The
+      // claim is "no write path", never "every statement starts with SELECT":
+      // `WITH x AS (INSERT ...)` would satisfy a bare prefix check and is
+      // exactly what this test exists to catch.
+      expect(call.sql.trimStart()).toMatch(/^(SELECT|WITH RECURSIVE)/i);
+      expect(call.sql).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE|MERGE)\b/i);
     }
   });
 

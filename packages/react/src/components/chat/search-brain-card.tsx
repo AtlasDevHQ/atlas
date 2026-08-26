@@ -105,6 +105,28 @@ function SearchBrainCardInner({ part }: { part: unknown }) {
                     {row.secondary}
                   </span>
                 )}
+                {/*
+                  The changed-answer line (#5461, PRD finish condition 5).
+                  Rendered BELOW the metadata line and styled apart from it on
+                  purpose: this is not more metadata about the claim, it is the
+                  claim that used to be the answer, and the one thing it has to
+                  do is not be skimmed past. Absent entirely — not empty — for
+                  the overwhelming majority of rows, which never changed.
+
+                  The widget carries it on the same terms the first-party chat
+                  does. Condition 5 says "someone asks a question", and a reader
+                  in an embedded widget is that someone — a history that
+                  appeared only in the first-party app would satisfy the
+                  condition for whoever already had `/admin` access.
+                */}
+                {row.changed && (
+                  <span
+                    data-testid="brain-result-changed"
+                    className="mt-1 block border-l-2 border-amber-400/70 pl-2 text-zinc-700 dark:border-amber-500/60 dark:text-zinc-300"
+                  >
+                    {row.changed}
+                  </span>
+                )}
               </span>
             </li>
           ))}

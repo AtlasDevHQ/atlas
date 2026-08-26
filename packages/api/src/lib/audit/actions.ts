@@ -1076,6 +1076,83 @@ export const ADMIN_ACTIONS = {
      */
     eraseActorIdentity: "brain_fact.erase_actor_identity",
   },
+  /**
+   * Claim-vocabulary authoring (#5448, ADR-0037 §6) — the four writes on
+   * `/api/v1/admin/brain-vocabulary`.
+   *
+   * ## Why this domain exists at all
+   *
+   * Measured in prod on 2026-08-25: `POST /cardinality` and
+   * `POST /tension-sweep` ran back to back as the same admin, and only the
+   * SWEEP left a row. The cardinality write was attributed — but on the row it
+   * wrote (`proposed_by` / `reviewed_by`), not in the log. So attribution was
+   * not missing, it was **split across two stores, and the split fell in the
+   * wrong place**: the sweep is advisory and additive, while the cardinality
+   * entry is the input that ARMS it and is retroactively blast-radius-bearing.
+   * The write with the larger consequence was the one absent from the log, and
+   * an operator asking *"why did these edges appear"* found the sweep and its
+   * actor and then had to know to go read a different table for who armed it.
+   *
+   * ## Why the row rather than the column
+   *
+   * `brain_predicate_cardinality` is `ON CONFLICT DO UPDATE` on a single row per
+   * `(workspace, predicate)`, so a later flip to `multi` OVERWRITES
+   * `proposed_by` / `reviewed_by` and the earlier decision and its author are
+   * gone with no trace. That is the last-write-wins shape #5424 found on
+   * `brain_facts.updated_at`, where the fix was likewise to record the values in
+   * the audit row rather than to reconstruct them from a mutable column.
+   * `metadata.previous` is that record — see below.
+   *
+   * ## All four writes, not only the flip
+   *
+   * `author`, `remove` and `decide` had the identical gap and every one of them
+   * changes WHAT WOULD COLLIDE, which is the property that makes the flip worth
+   * auditing in the first place. `remove` erodes the same way and worse: it
+   * DELETES the edge, so `approved_by` does not even survive as a stale value.
+   * They are audited rather than exempted because no argument for exempting them
+   * survives the argument for auditing `cardinality`.
+   *
+   * ## Metadata shape, one rule for all four
+   *
+   * `workspaceId` always. Then the SURFACES the write named — `predicateSurface`
+   * for `cardinality`, `position` + `fromNorm` (+ `toNorm` where the verb has
+   * one) for the alias verbs. ⚠️ **Never a canonical identity key.**
+   * `keys-not-on-the-wire.test.ts` refuses `predicate_key` in any read surface,
+   * and an audit row an operator reads is one; the routes speak surfaces and the
+   * derivation stays inside `lib/brain/cardinality.ts`.
+   *
+   * `cardinality` carries two more: `cardinality`, the value written, and
+   * `previous`, what it replaced. `previous` is a three-state STRING —
+   * `"none"` / `"single"` / `"multi"` / `"unreadable"` — not a nullable value,
+   * because *no entry existed* and *an entry existed and could not be read* are
+   * opposite facts (see `PriorCardinalityEntry`). On the `replaced` arm
+   * `previousStatus` and `previousReviewedBy` come with it, which is what makes
+   * the erased decision recoverable at all.
+   *
+   * ⚠️ Emitted FIRE-AND-FORGET, on `brainFact.tensionSweep`'s reasoning
+   * verbatim: `logAdminActionAwait`'s contract is *"surface an error so the
+   * admin retries"*, and these routes have already COMMITTED by the time the row
+   * is built — `checkedWrite` exists on this very router to stop a landed write
+   * being reported as a failure, and awaiting the audit here would reintroduce
+   * exactly that. The pino line is emitted before the insert either way, so an
+   * open circuit breaker costs the durable row and not the trail.
+   *
+   * ⚠️ `targetId` is a SURFACE, not a row id — the third irregularity in the
+   * brain domains, after `tensionSweep`'s workspace and `eraseActorIdentity`'s
+   * actor handle. These writes address slots, not rows: the proposal id a write
+   * happens to touch is not what an auditor is looking for, and for `cardinality`
+   * there is no id at all (the table is keyed on the predicate).
+   */
+  brainVocabulary: {
+    /** A human curated or un-curated a canonical predicate — the flip that arms the sweep. */
+    cardinality: "brain_vocabulary.cardinality",
+    /** An alias edge was authored directly. */
+    author: "brain_vocabulary.author",
+    /** An in-force alias edge was taken back out, writing permanent rejection memory. */
+    remove: "brain_vocabulary.remove",
+    /** A producer's pending proposal was approved or rejected — either kind. */
+    decide: "brain_vocabulary.decide",
+  },
 } as const;
 
 /** Union of all admin action type string values. */

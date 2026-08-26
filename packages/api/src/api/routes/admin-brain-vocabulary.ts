@@ -99,6 +99,7 @@ import {
   declarePredicateCardinalityForSurface,
   decidePredicateCardinalityForSurface,
   type CardinalityRefusal,
+  type PriorCardinalityEntry,
 } from "@atlas/api/lib/brain/cardinality";
 import type { PositionalDecision } from "@atlas/api/lib/brain/vocabulary-visibility";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
@@ -133,6 +134,10 @@ import {
 } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
+// The BARREL, like `admin-brain-facts.ts` — not the two leaf modules. The route
+// tests `mock.module` `@atlas/api/lib/audit`, so a leaf import walks past the
+// double and writes a real row.
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 
 const log = createLogger("admin-brain-vocabulary");
 
@@ -962,6 +967,22 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
           return c.json(checked(BrainVocabularyDecideResponseSchema, nothing), 200);
         }
 
+        // #5448's sibling row. Emitted only past the `decided` guard above, so
+        // it never claims a decision that did not move a row — and BOTH
+        // verdicts, because a rejection is a decision that permanently binds
+        // producers and is exactly as worth attributing as an approval.
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.brainVocabulary.decide,
+          targetType: "brainVocabulary",
+          targetId: body.predicateSurface,
+          metadata: {
+            workspaceId: orgId,
+            kind: "cardinality",
+            predicateSurface: body.predicateSurface,
+            decision: body.decision,
+          },
+        });
+
         const cardinalityResponse: BrainVocabularyDecideResponse =
           body.decision === "approved"
             ? { outcome: "approved", proposalId: null }
@@ -1019,6 +1040,22 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
             outcome: "approved",
             proposalId: outcome.id,
           };
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.brainVocabulary.decide,
+            targetType: "brainVocabulary",
+            targetId: outcome.id,
+            metadata: {
+              workspaceId: orgId,
+              kind: "alias",
+              proposalId: outcome.id,
+              decision: "approved",
+              // The DIRECTION the approver supplied, or its absence. An
+              // undirected proposal is decided by choosing an ordering of the
+              // pair, and which way it was pointed is the whole content of the
+              // decision — a row saying only "approved" would not record it.
+              direction: body.decision === "approved" ? (body.direction ?? null) : null,
+            },
+          });
           const described = checkedWrite(BrainVocabularyDecideResponseSchema, approvedBody, {
             verb: "authoring",
             proposalId: outcome.id,
@@ -1036,6 +1073,21 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
             // would not know that happened.
             removedEdge: outcome.removedEdge,
           };
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.brainVocabulary.decide,
+            targetType: "brainVocabulary",
+            targetId: outcome.id,
+            metadata: {
+              workspaceId: orgId,
+              kind: "alias",
+              proposalId: outcome.id,
+              decision: "rejected",
+              // A rejection that dropped an edge re-keyed the corpus back. That
+              // is a removal wearing a rejection's name, and the trail has to
+              // say which happened for the same reason the response does.
+              removedEdge: outcome.removedEdge,
+            },
+          });
           const described = checkedWrite(BrainVocabularyDecideResponseSchema, rejectedBody, {
             // A rejection that dropped an edge is a REMOVAL; one that did not is
             // a REJECTION. Neither is an authoring, and calling it one claimed a
@@ -1117,10 +1169,13 @@ adminBrainVocabulary.openapi(authorRoute, async (c) => {
       const { mode, user, orgId } = yield* AuthContext;
       if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
 
-      const body = c.req.valid("json");
+      // `request`, not `body` — the `authored` arm below declares its own
+      // response `body`, which shadows this one for the whole block, so the
+      // audit row could not name what was asked for while both were `body`.
+      const request = c.req.valid("json");
       const ctx = yield* approverContext(mode, user, orgId, requestId);
       const outcome = yield* Effect.tryPromise({
-        try: () => authorAliasEdge(orgId, body, ctx, { requestId }),
+        try: () => authorAliasEdge(orgId, request, ctx, { requestId }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
@@ -1137,6 +1192,26 @@ adminBrainVocabulary.openapi(authorRoute, async (c) => {
             proposalId: outcome.id,
             convergedOnProposal: outcome.convergedOnProposal,
           };
+          // #5448's sibling row. Only the `authored` arm — `already_approved`
+          // wrote nothing, and a row there would claim a decision that was made
+          // by someone else at some other time.
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.brainVocabulary.author,
+            targetType: "brainVocabulary",
+            targetId: `${request.position}:${request.fromNorm}`,
+            metadata: {
+              workspaceId: orgId,
+              position: request.position,
+              fromNorm: request.fromNorm,
+              toNorm: request.toNorm,
+              proposalId: outcome.id,
+              // Whether this landed on a proposal a producer had already raised.
+              // The response tells the approver the trail will record the
+              // producer's source rather than direct authoring; this is that
+              // trail, so it has to carry the same distinction.
+              convergedOnProposal: outcome.convergedOnProposal,
+            },
+          });
           const described = checkedWrite(
             BrainVocabularyAuthorResponseSchema,
             body,
@@ -1191,10 +1266,12 @@ adminBrainVocabulary.openapi(removeRoute, async (c) => {
       const { mode, user, orgId } = yield* AuthContext;
       if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
 
-      const body = c.req.valid("json");
+      // `request`, not `body` — the `removed` arm shadows it, exactly as the
+      // authoring handler above does.
+      const request = c.req.valid("json");
       const ctx = yield* approverContext(mode, user, orgId, requestId);
       const outcome = yield* Effect.tryPromise({
-        try: () => removeInForceAliasEdge(orgId, body, ctx, { requestId }),
+        try: () => removeInForceAliasEdge(orgId, request, ctx, { requestId }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
@@ -1205,6 +1282,27 @@ adminBrainVocabulary.openapi(removeRoute, async (c) => {
             proposalId: outcome.id,
             memoryCreated: outcome.memoryCreated,
           };
+          // #5448's sibling row, and the sharpest version of the erosion the
+          // issue names: a removal DELETES the edge, so `approved_by` does not
+          // survive even as a stale value. Only the `removed` arm —
+          // `already_removed` wrote nothing.
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.brainVocabulary.remove,
+            targetType: "brainVocabulary",
+            targetId: `${request.position}:${request.fromNorm}`,
+            metadata: {
+              workspaceId: orgId,
+              position: request.position,
+              fromNorm: request.fromNorm,
+              toNorm: request.toNorm,
+              proposalId: outcome.id,
+              // Whether Atlas had to MINT the rejection memory because the edge
+              // arrived from another region without a decision record. That is a
+              // second, permanent write this verb performed, and it is invisible
+              // anywhere else once the edge is gone.
+              memoryCreated: outcome.memoryCreated,
+            },
+          });
           const described = checkedWrite(
             BrainVocabularyRemoveResponseSchema,
             body,
@@ -1305,6 +1403,34 @@ adminBrainVocabulary.openapi(cardinalityRoute, async (c) => {
           declarationRefusalStatus(result.refusal),
         );
       }
+
+      // THE row #5448 measured missing. Emitted for BOTH directions — the
+      // un-curation to `multi` is the flip that overwrites `reviewed_by`, so it
+      // is the one whose absence erases a prior decision outright.
+      //
+      // Placed after the commit and before the response is described, so a
+      // `response_schema_mismatch` 500 still leaves the write attributed: the
+      // write LANDED on that path, and an audit trail that drops the rows whose
+      // description failed is missing exactly the rows an operator is looking
+      // for.
+      //
+      // Fire-and-forget for the reason the catalog entry records: awaiting would
+      // report a committed write as a failure, which is the misreport
+      // `checkedWrite` exists on this router to prevent.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.brainVocabulary.cardinality,
+        targetType: "brainVocabulary",
+        // The SURFACE. There is no row id to name — the table is keyed on
+        // `(workspace, predicate_key)` — and the key may not travel.
+        targetId: body.predicateSurface,
+        metadata: {
+          workspaceId: orgId,
+          predicateSurface: body.predicateSurface,
+          cardinality: result.cardinality,
+          ...priorFields(result.previous),
+        },
+      });
+
       // `checkedWrite`, not `checked`: `declarePredicateCardinalityForSurface`
       // has COMMITTED by the time this body is built, and the write it describes
       // arms retroactive supersession for every future claim in the slot. The
@@ -1328,6 +1454,54 @@ adminBrainVocabulary.openapi(cardinalityRoute, async (c) => {
     { label: "declare brain predicate cardinality" },
   );
 });
+
+/**
+ * What the curation REPLACED, as `admin_action_log` metadata (#5448).
+ *
+ * ⚠️ `previous` is a STRING with four values, not a nullable one. `"none"` (no
+ * entry existed, so nothing was armed) and `"unreadable"` (an entry existed and
+ * the store could not narrow it) are opposite facts that a `null` renders
+ * identically, and the second is the one an auditor is looking for.
+ *
+ * `previousStatus` / `previousReviewedBy` are ABSENT rather than `null` on the
+ * other arms, `brainFact.correct`'s metadata rule verbatim: a consumer reads a
+ * missing key as *"this write replaced nothing there"*, where a `null` would
+ * read as a decision that was looked for and came back empty.
+ *
+ * ⚠️ **Total, with a `default` that cannot be reached from a typed caller.**
+ * This runs AFTER the write has committed, so a value the switch does not cover
+ * would throw between the commit and the response — turning a describable
+ * `response_schema_mismatch` (which tells the approver the curation is in force)
+ * into an unhandled defect that says the opposite. The one thing an audit row
+ * may never do is sink the report of the write it is auditing.
+ */
+function priorFields(previous: PriorCardinalityEntry): Record<string, unknown> {
+  switch (previous?.kind) {
+    case "replaced":
+      return {
+        previous: previous.cardinality,
+        previousStatus: previous.status,
+        // The person whose decision this write just overwrote. Without it the
+        // erasure is total: the upsert overwrites `reviewed_by` on the row and
+        // nothing else records who it was.
+        previousReviewedBy: previous.reviewedBy,
+      };
+    case "none":
+      return { previous: "none" };
+    case "unreadable":
+      return { previous: "unreadable" };
+    default:
+      // A seam that grew an arm, or a double that did not supply one. Recorded
+      // as unreadable — which is exactly what it is — rather than omitted, so
+      // the row still says a curation happened and says its prior state is not
+      // known.
+      log.warn(
+        { previous },
+        "Predicate cardinality audit: the store reported a prior-entry state this route does not recognise — recording it as unreadable",
+      );
+      return { previous: "unreadable" };
+  }
+}
 
 /**
  * The author id to record, or `null` when this reader may not author at all.

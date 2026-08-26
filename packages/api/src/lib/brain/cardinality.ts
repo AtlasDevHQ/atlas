@@ -610,8 +610,17 @@ export async function proposePredicateCardinalityForSurface(
  * was empty and the operator-facing consequence is identical — a row that
  * licenses (or proposes) an irreversible, retroactive change with nobody
  * recorded as having asked for it.
+ *
+ * Typed to the REFUSAL alone rather than to `CardinalityWriteResult`, so it
+ * stays assignable to both callers' result unions — {@link
+ * DeclarationWriteResult} carries `previous` on its success arm, and a wide
+ * return type would drag that arm in where only a refusal is being expressed.
  */
-function unattributed(predicateKey: string): CardinalityWriteResult {
+function unattributed(predicateKey: string): {
+  readonly ok: false;
+  readonly refusal: "unattributed";
+  readonly message: string;
+} {
   return {
     ok: false,
     refusal: "unattributed",
@@ -662,7 +671,7 @@ export async function declarePredicateCardinality(
   executor: CardinalityExecutor,
   workspaceId: string,
   input: CardinalityDeclarationInput,
-): Promise<CardinalityWriteResult> {
+): Promise<DeclarationWriteResult> {
   const { predicateKey } = input;
   if (predicateKey === null || predicateKey === "") {
     return {
@@ -676,33 +685,175 @@ export async function declarePredicateCardinality(
   }
   if (input.authoredBy === "") return unattributed(predicateKey);
 
-  await executor.query(
-    `INSERT INTO brain_predicate_cardinality
-       (workspace_id, predicate_key, cardinality, status, source_class, proposed_by,
-        reviewed_by, reviewed_at)
-     VALUES ($1, $2, $3, 'approved', 'human', $4, $4, now())
-     ON CONFLICT (workspace_id, predicate_key) DO UPDATE
-        SET cardinality = EXCLUDED.cardinality,
-            status = 'approved',
-            source_class = 'human',
-            -- Overwritten with the author, NOT left as the producer's id. This
-            -- path authors OVER a pending proposal, so without it the row
-            -- commits saying source_class = human beside a proposed_by naming
-            -- the correction-event producer -- a pair 0192's own column comment
-            -- makes self-contradictory ("the producer id, OR the human who
-            -- authored the row directly"), and the one an audit of a
-            -- retroactive re-key reads first.
-            proposed_by = EXCLUDED.proposed_by,
-            reviewed_by = EXCLUDED.reviewed_by,
-            reviewed_at = now()`,
+  // ⚠️ ONE statement, and the `prior` CTE is why (#5448).
+  //
+  // The upsert overwrites `cardinality`, `status` and `reviewed_by` in place, so
+  // the decision it replaced — and the person who made it — exist nowhere
+  // afterwards. #5424 found the same last-write-wins shape on
+  // `brain_facts.updated_at`, and the fix there was to record the prior values
+  // in the audit row rather than to reconstruct them from a mutable column.
+  // This is that fix applied to the act that decides what may retire a claim.
+  //
+  // A separate SELECT before the write would be a race: two curators flipping
+  // one predicate would both read the same "prior" and one audit row would name
+  // a decision that was already gone. A data-modifying CTE runs in the
+  // statement's own snapshot, so `prior` sees the row exactly as it was when
+  // this write began — and Postgres guarantees `written` executes to completion
+  // whether or not the outer query reads it, so the write is not conditional on
+  // the read.
+  const { rows } = await executor.query(
+    `WITH prior AS (
+       SELECT cardinality AS previous_cardinality,
+              status AS previous_status,
+              reviewed_by AS previous_reviewed_by
+         FROM brain_predicate_cardinality
+        WHERE workspace_id = $1 AND predicate_key = $2
+     ), written AS (
+       INSERT INTO brain_predicate_cardinality
+         (workspace_id, predicate_key, cardinality, status, source_class, proposed_by,
+          reviewed_by, reviewed_at)
+       VALUES ($1, $2, $3, 'approved', 'human', $4, $4, now())
+       ON CONFLICT (workspace_id, predicate_key) DO UPDATE
+          SET cardinality = EXCLUDED.cardinality,
+              status = 'approved',
+              source_class = 'human',
+              -- Overwritten with the author, NOT left as the producer's id. This
+              -- path authors OVER a pending proposal, so without it the row
+              -- commits saying source_class = human beside a proposed_by naming
+              -- the correction-event producer -- a pair 0192's own column comment
+              -- makes self-contradictory ("the producer id, OR the human who
+              -- authored the row directly"), and the one an audit of a
+              -- retroactive re-key reads first.
+              proposed_by = EXCLUDED.proposed_by,
+              reviewed_by = EXCLUDED.reviewed_by,
+              reviewed_at = now()
+       RETURNING 1 AS wrote
+     )
+     SELECT written.wrote,
+            prior.previous_cardinality,
+            prior.previous_status,
+            prior.previous_reviewed_by
+       FROM written LEFT JOIN prior ON true`,
     [workspaceId, predicateKey, input.cardinality, input.authoredBy],
   );
+  const previous = narrowPrior(rows[0], { workspaceId, predicateKey });
   log.info(
-    { workspaceId, predicateKey, cardinality: input.cardinality, authoredBy: input.authoredBy },
+    {
+      workspaceId,
+      predicateKey,
+      cardinality: input.cardinality,
+      authoredBy: input.authoredBy,
+      previous: previous.kind === "replaced" ? previous.cardinality : previous.kind,
+    },
     "brain cardinality: a human declared a canonical predicate's cardinality — `single` makes every existing published pair in that slot supersedable at the next publish",
   );
-  return { ok: true, cardinality: input.cardinality };
+  return { ok: true, cardinality: input.cardinality, previous };
 }
+
+/**
+ * What this write REPLACED — three states, never a nullable value.
+ *
+ * `null` would conflate the two states that matter most to an auditor: *there
+ * was no entry* (the first curation of this predicate, which armed nothing
+ * before) and *there was one and this reader could not narrow it* (schema
+ * drift). They are opposite facts and the second is the one worth finding, so
+ * they get separate arms — the shape #5440 settled on for actor identity, and
+ * for the same reason.
+ *
+ * ⚠️ It carries `reviewedBy`. That is the whole point of capturing it at all:
+ * the upsert overwrites `reviewed_by`, so without this the earlier decision's
+ * author is gone with no trace, which is the erosion #5448 measured.
+ */
+export type PriorCardinalityEntry =
+  /** No entry existed. Absent from this table MEANS `multi`, so nothing was armed. */
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "replaced";
+      readonly cardinality: PredicateCardinality;
+      readonly status: CardinalityStatus;
+      /** NULL for a machine decision — 0192's three-valued domain, verbatim. */
+      readonly reviewedBy: string | null;
+    }
+  /** A row was there and its stored values are outside the CHECK's vocabulary. */
+  | { readonly kind: "unreadable" };
+
+/**
+ * Narrow the prior row, or say the reading failed.
+ *
+ * ⚠️ It does NOT reuse {@link narrowCardinality} / {@link narrowStatus}, and the
+ * divergence is deliberate. Those two answer with the least-authoritative value
+ * so a READER is never told a decision was made that nobody made. Here the value
+ * is going into an audit row, where a substituted value is not conservative — it
+ * is a false record of what a named person replaced. `unreadable` is the honest
+ * answer, and it is a state a forensic query can filter on.
+ */
+function narrowPrior(
+  first: unknown,
+  meta: { workspaceId: string; predicateKey: string },
+): PriorCardinalityEntry {
+  if (typeof first !== "object" || first === null) {
+    // The statement always returns exactly one row — `written` returns one on
+    // both the insert and the update arm — so no row at all means the executor
+    // is a double that did not script this shape, or the statement drifted.
+    log.warn(
+      { ...meta, row: typeof first },
+      "brain cardinality: the declaration statement returned no readable row, so what this write replaced is UNKNOWN — recording it as unreadable rather than as a first curation",
+    );
+    return { kind: "unreadable" };
+  }
+  const row = first as Record<string, unknown>;
+  // `null` here is the LEFT JOIN answering "no prior row", which is the one
+  // state the outer join can produce and the CHECK cannot: `cardinality` is
+  // NOT NULL on the table.
+  if (row.previous_cardinality === null || row.previous_cardinality === undefined) {
+    return { kind: "none" };
+  }
+  const cardinality = row.previous_cardinality;
+  const status = row.previous_status;
+  if (cardinality !== "single" && cardinality !== "multi") {
+    log.warn(
+      { ...meta, previousCardinality: cardinality },
+      "brain cardinality: the replaced entry carries a cardinality outside the vocabulary — the audit row records it as unreadable rather than substituting a value nobody wrote",
+    );
+    return { kind: "unreadable" };
+  }
+  if (typeof status !== "string" || !(CARDINALITY_STATUSES as readonly string[]).includes(status)) {
+    log.warn(
+      { ...meta, previousStatus: status },
+      "brain cardinality: the replaced entry carries a status outside the vocabulary — the audit row records it as unreadable rather than substituting a value nobody wrote",
+    );
+    return { kind: "unreadable" };
+  }
+  const reviewedBy = row.previous_reviewed_by;
+  return {
+    kind: "replaced",
+    cardinality,
+    status: status as CardinalityStatus,
+    reviewedBy: typeof reviewedBy === "string" && reviewedBy !== "" ? reviewedBy : null,
+  };
+}
+
+/**
+ * {@link declarePredicateCardinality}'s result — {@link CardinalityWriteResult}
+ * with {@link PriorCardinalityEntry} on the success arm.
+ *
+ * Its own type rather than a field added to `CardinalityWriteResult`, because
+ * the propose path shares that union and has nothing to report there: it is
+ * `ON CONFLICT DO NOTHING`, so a successful proposal replaced nothing by
+ * construction and a `previous` field on it would be a constant dressed as an
+ * observation.
+ *
+ * The REFUSAL arm stays wide (`CardinalityRefusal`), which is what keeps
+ * {@link declarePredicateCardinalityForSurface}'s unreachable-arm throw live —
+ * see that function.
+ */
+export type DeclarationWriteResult =
+  | {
+      readonly ok: true;
+      readonly cardinality: PredicateCardinality;
+      readonly previous: PriorCardinalityEntry;
+    }
+  | { readonly ok: false; readonly refusal: CardinalityRefusal; readonly message: string };
 
 /**
  * What DIRECT AUTHORING can refuse — strictly narrower than
@@ -721,7 +872,12 @@ export async function declarePredicateCardinality(
  * compiler is what keeps them agreeing.
  */
 export type DeclarationResult =
-  | { readonly ok: true; readonly cardinality: PredicateCardinality }
+  | {
+      readonly ok: true;
+      readonly cardinality: PredicateCardinality;
+      /** What this write replaced — the route's audit row reads it (#5448). */
+      readonly previous: PriorCardinalityEntry;
+    }
   | {
       readonly ok: false;
       readonly refusal: Extract<CardinalityRefusal, "degenerate-key" | "unattributed">;

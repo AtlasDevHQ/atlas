@@ -585,6 +585,56 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
       },
       PG_TEST_TIMEOUT_MS,
     );
+
+    it(
+      "the declaration reports what it REPLACED, read in the write's own snapshot (#5448)",
+      async () => {
+        // ⚠️ Only real Postgres can decide this one. The claim is that a
+        // data-modifying CTE's sibling SELECT sees the row as it was BEFORE the
+        // upsert in the same statement — the snapshot rule — and that is a
+        // property of the engine, not of the code. A double scripted with a
+        // `previous_cardinality` is asserting its own script; if the rule went
+        // the other way the audit row would report the value just written as the
+        // value it replaced, i.e. every flip would look like a no-op.
+        const ws = "ws-5448-prior";
+        const key = slotKey("has goal of", identityAlias)!;
+
+        const first = await declarePredicateCardinality(pool, ws, {
+          predicateKey: key,
+          cardinality: "single",
+          authoredBy: "curator-1",
+        });
+        // Nothing was there, and `none` is what says so — the state the audit
+        // row must not confuse with "there was one and I could not read it".
+        expect(first).toEqual({ ok: true, cardinality: "single", previous: { kind: "none" } });
+
+        const flip = await declarePredicateCardinality(pool, ws, {
+          predicateKey: key,
+          cardinality: "multi",
+          authoredBy: "curator-2",
+        });
+        // THE assertion. `single` — the value before this statement, not the
+        // `multi` it just wrote — plus the reviewer this upsert has now
+        // overwritten, which is the only place that person survives at all.
+        expect(flip).toEqual({
+          ok: true,
+          cardinality: "multi",
+          previous: {
+            kind: "replaced",
+            cardinality: "single",
+            status: "approved",
+            reviewedBy: "curator-1",
+          },
+        });
+
+        // And the write landed: the prior read is a disclosure, not a substitute
+        // for the upsert, so the row must now say what the second call asked for
+        // and name its author.
+        const written = await readPredicateCardinality(pool, ws, key);
+        expect(written).toMatchObject({ cardinality: "multi", proposedBy: "curator-2" });
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
   });
 
   // -------------------------------------------------------------------------

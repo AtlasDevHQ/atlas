@@ -70,9 +70,14 @@ check allow 'echo "bun test --parallel"' 'an echo naming it'
 check allow "grep -rn 'bun test' docs/" 'a grep for it'
 # ⚠️ 2026-08-26: the third time this guard blocked its own fix. A -m body that
 # spans lines is the everyday shape, and the scrubber was line-oriented.
+# The quoted command here is a BARE directory glob, denied by every version of
+# this guard. So the case can only pass if the scrubber actually recognised the
+# multi-line body as data -- it cannot pass by accident through the quantifier
+# hole, which is how an earlier draft of this case passed against the very
+# guard it was meant to falsify.
 check allow 'git commit -m "fix: a guard
 
-  bun test --parallel src/a/__tests__/ src/b/c.test.ts
+  bun test --parallel packages/api/src/lib/brain/__tests__/
 
 was going straight past it"' 'a MULTI-LINE commit body quoting the command'
 check allow 'cat > /tmp/x.md <<EOF

@@ -203,6 +203,76 @@ export function isFailedToolPart(part: ToolTurnPart): boolean {
 }
 
 /**
+ * The distinct trust tiers that fed this turn's activity, in ADR-0036's trust
+ * order (#5451).
+ *
+ * This is what makes the tier chip reach a person who never expands anything.
+ * Every tool card that carries a tier lives INSIDE the receipt, and the receipt
+ * is collapsed by default on a finished turn — so a card-only fix would have
+ * satisfied "a surface renders the tier" while leaving the actual reading
+ * experience exactly as it was: answer prose, no label. The chips render on the
+ * collapsed summary row.
+ *
+ * Two sources, because the tier is not one tool's property:
+ *   - a successful `executeSQL` contributes `warehouse` — ADR-0036 tier 1,
+ *     SURVEYED, which never appears in a `searchBrain` result at all;
+ *   - each `searchBrain` row contributes its own `tier`, RAW and un-narrowed,
+ *     so a value this build does not recognize reaches {@link TierBadge} and
+ *     draws a loud "unknown tier" chip rather than vanishing.
+ *
+ * Failed queries contribute nothing: a query that errored grounded no part of
+ * the answer, and claiming warehouse authority for it would be the inverse of
+ * the bug this fixes.
+ */
+export function answerTrustTiers(
+  activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[],
+): string[] {
+  const tiers = new Set<string>();
+  for (const { part } of activity) {
+    if (!isToolUIPart(part) || part.state !== "output-available") continue;
+    const name = getToolName(part);
+    if (name === "executeSQL") {
+      if (!isFailedToolPart(part)) tiers.add("warehouse");
+      continue;
+    }
+    if (name !== "searchBrain") continue;
+    for (const row of brainResultRows(part.output)) {
+      tiers.add(typeof row.tier === "string" ? row.tier : "");
+    }
+  }
+  return [...tiers].toSorted(byTrustOrder);
+}
+
+/** Trust order for the chips; anything this build doesn't know sorts last. */
+const TRUST_ORDER: readonly string[] = ["warehouse", "fact", "raw-episode", "document"];
+
+function byTrustOrder(a: string, b: string): number {
+  const ai = TRUST_ORDER.indexOf(a);
+  const bi = TRUST_ORDER.indexOf(b);
+  if (ai === bi) return a.localeCompare(b);
+  if (ai === -1) return 1;
+  if (bi === -1) return -1;
+  return ai - bi;
+}
+
+/**
+ * Every labeled row a `searchBrain` output carries — matches AND 1-hop
+ * neighbors, because ADR-0036 is explicit that an expansion result is not a
+ * lesser class of row that may skip the label.
+ */
+function brainResultRows(output: unknown): Record<string, unknown>[] {
+  if (output == null || typeof output !== "object") return [];
+  const envelope = output as Record<string, unknown>;
+  const rows = [
+    ...(Array.isArray(envelope.results) ? envelope.results : []),
+    ...(Array.isArray(envelope.neighbors) ? envelope.neighbors : []),
+  ];
+  return rows.map((row) =>
+    row != null && typeof row === "object" ? (row as Record<string, unknown>) : {},
+  );
+}
+
+/**
  * The receipt's one-line summary of what stayed in it, e.g.
  * "Explored schema · 2 queries". Counts describe the receipt's own contents —
  * the promoted artifact is visible next to the answer, not re-counted here.
@@ -218,6 +288,7 @@ export function summarizeActivity(
   let explores = 0;
   let queries = 0;
   let pythonRuns = 0;
+  let brainSearches = 0;
   let otherSteps = 0;
   let failed = 0;
   for (const { part } of activity) {
@@ -233,6 +304,12 @@ export function summarizeActivity(
       case "executePython":
         pythonRuns++;
         break;
+      // #5451 — named rather than counted as "N more steps": the tier chips
+      // beside this summary are meaningless if the line does not say the Atlas
+      // was read at all.
+      case "searchBrain":
+        brainSearches++;
+        break;
       default:
         otherSteps++;
     }
@@ -241,6 +318,11 @@ export function summarizeActivity(
   const segments: string[] = [];
   if (explores > 0) segments.push("Explored schema");
   if (queries > 0) segments.push(queries === 1 ? "1 query" : `${queries} queries`);
+  if (brainSearches > 0) {
+    segments.push(
+      brainSearches === 1 ? "Searched the Atlas" : `${brainSearches} Atlas searches`,
+    );
+  }
   if (pythonRuns > 0) {
     segments.push(pythonRuns === 1 ? "1 Python run" : `${pythonRuns} Python runs`);
   }

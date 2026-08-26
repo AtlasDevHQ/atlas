@@ -7,11 +7,13 @@ import { Markdown } from "./markdown";
 import { ToolPart } from "./tool-part";
 import { parseSuggestions } from "../../lib/helpers";
 import {
+  answerTrustTiers,
   summarizeActivity,
   type IndexedTurnPart,
   type TextTurnPart,
   type ToolTurnPart,
 } from "./turn-partitioner";
+import { TierBadge } from "./tier-badge";
 import type { PythonProgressData } from "./python-result-card";
 
 /**
@@ -37,6 +39,12 @@ export function TurnReceipt({
   const [open, setOpen] = useState(defaultOpen);
   if (activity.length === 0) return null;
 
+  // #5451 — on the collapsed row, not inside it. Every card that carries a
+  // tier lives in the expanded body, so chips shown only there would leave a
+  // finished answer reading exactly as it did when no surface rendered the
+  // tier at all: prose, and a summary line the reader has no reason to click.
+  const tiers = answerTrustTiers(activity);
+
   return (
     <div className="max-w-[95%]" data-testid="turn-receipt">
       <button
@@ -50,6 +58,19 @@ export function TurnReceipt({
           className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")}
         />
         <span>{summarizeActivity(activity)}</span>
+        {tiers.length > 0 && (
+          <span
+            data-testid="turn-trust-tiers"
+            className="inline-flex items-center gap-1"
+            // Names the row for assistive tech, so the chips read as one
+            // statement about the answer rather than four loose words.
+            aria-label={`Grounded in: ${tiers.join(", ")}`}
+          >
+            {tiers.map((tier) => (
+              <TierBadge key={tier} tier={tier} />
+            ))}
+          </span>
+        )}
       </button>
       {open && (
         <div className="mt-1 space-y-2 border-l-2 border-zinc-200 pl-3 dark:border-zinc-800">

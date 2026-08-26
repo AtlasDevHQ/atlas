@@ -9,6 +9,7 @@ import { LoadingCard } from "./loading-card";
 import { DataTable } from "./data-table";
 import { SQLBlock } from "./sql-block";
 import { ResultCardBase, ResultCardErrorBoundary } from "./result-card-base";
+import { TierBadge } from "./tier-badge";
 
 const ResultChart = lazy(() => import("../chart/result-chart").then((m) => ({ default: m.ResultChart })));
 const ChartFallback = <div className="h-64 animate-pulse rounded-lg bg-zinc-100 dark:bg-zinc-800" />;
@@ -181,6 +182,12 @@ function SQLResultCardInner({
         title={String((args.explanation ?? "Query result") as string | number | boolean)}
         headerExtra={
           <span className="flex items-center gap-1.5 text-zinc-500">
+            {/*
+              #5451 — SURVEYED (ADR-0036 tier 1) never comes through
+              `searchBrain`; it IS this card. A UI that labelled only brain
+              results would leave the tier the wedge most depends on unlabelled.
+            */}
+            <TierBadge tier="warehouse" />
             {headerBadge}
             {rows.length} row{rows.length !== 1 ? "s" : ""}
             {result.truncated ? "+" : ""}

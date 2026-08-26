@@ -28,3 +28,4 @@ export * from "./session-memory";
 export * from "./durable-run";
 export * from "./sla";
 export * from "./brain";
+export * from "./trust-tier";

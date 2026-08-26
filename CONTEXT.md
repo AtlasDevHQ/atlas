@@ -312,7 +312,8 @@ How one agent turn is presented in the chat transcript. A turn has two faces: th
 
 - **Receipt**:
   The collapsed one-line summary the activity settles into once the answer begins (e.g. "Explored schema · 2 queries"). Expands on demand to the full activity — the work is inspectable, not ambient.
-  _Avoid_: "thinking layer", "collapsed section".
+  Since #5451 the collapsed row also carries the turn's **trust tier** chips (ADR-0036) — the distinct tiers the answer was grounded in, `warehouse` from a successful `executeSQL` and each row tier from `searchBrain`. They are on the collapsed row deliberately: every tool card that carries a tier lives in the expanded body, so chips shown only there would satisfy "a surface renders the tier" while leaving a finished answer reading exactly as it did when nothing rendered it — prose, and a summary line the reader has no reason to click.
+  _Avoid_: "thinking layer", "collapsed section"; treating the tier chips as a receipt detail that may be collapsed with the rest (the invariant is that they are *not*).
 
 - **Narration**:
   The agent's inter-step commentary ("the region column looks unpopulated, checking..."). Part of the activity, never part of the answer.

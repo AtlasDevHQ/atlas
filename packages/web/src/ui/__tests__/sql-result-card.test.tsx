@@ -55,6 +55,16 @@ describe("SQLResultCard", () => {
     expect(container.textContent).toContain("SQL");
   });
 
+  test("renders the warehouse tier chip on a successful query (#5451)", () => {
+    // ADR-0036 tier 1 — SURVEYED — never comes through `searchBrain`; it is
+    // this card. A UI labelling only brain results leaves it unlabelled.
+    const { container } = render(<SQLResultCard part={makePart()} />);
+    const badge = container.querySelector('[data-testid="tier-badge"]');
+    expect(badge?.getAttribute("data-tier")).toBe("warehouse");
+    expect(badge?.getAttribute("data-tier-known")).toBe("true");
+    expect(badge?.textContent?.trim()).toBe("warehouse");
+  });
+
   test("renders error state for failed query", () => {
     const { container } = render(
       <SQLResultCard

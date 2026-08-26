@@ -17,6 +17,7 @@ import { LoadingCard } from "./loading-card";
 import { DataTable } from "./data-table";
 import { SQLBlock } from "./sql-block";
 import { ResultCardBase, ResultCardErrorBoundary } from "./result-card-base";
+import { TierBadge } from "./tier-badge";
 
 /** Convert structured rows (Record<string, unknown>[]) to string[][] for chart detection. */
 function toStringRows(columns: string[], rows: Record<string, unknown>[]): string[][] {
@@ -182,6 +183,12 @@ function SQLResultCardInner({
       title={String((args.explanation as string) ?? "Query result")}
       headerExtra={
         <span className="flex items-center gap-1.5 text-zinc-500">
+          {/*
+            #5451 — SURVEYED (ADR-0036 tier 1) never comes through `searchBrain`;
+            it IS this card. A UI that labelled only brain results would leave
+            the tier the wedge most depends on unlabelled.
+          */}
+          <TierBadge tier="warehouse" />
           {isOnDashboard && (
             <span
               className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-600/20 dark:text-emerald-400"

@@ -12,6 +12,7 @@ import { CreateDashboardCard } from "./create-dashboard-card";
 import { DashboardEditCard, DASHBOARD_EDIT_TOOL_NAMES } from "./dashboard-edit-card";
 import { DraftEditUndoCard } from "./draft-edit-undo-card";
 import { RestWriteConfirmCard } from "./rest-write-confirm-card";
+import { SearchBrainCard } from "./search-brain-card";
 import type { PreviousExecution } from "./result-card-types";
 
 /** Extract the tool invocation ID from an AI SDK tool part. */
@@ -50,6 +51,11 @@ export const ToolPart = memo(function ToolPart({
       return <ExploreCard part={part} />;
     case "executeSQL":
       return <SQLResultCard part={part} previousExecution={previousExecution} repeatedCount={repeatedCount} />;
+    // #5451 — `searchBrain` used to fall through to the gray "Tool: searchBrain"
+    // box, which is how ADR-0036's tier label came to be rendered by no surface
+    // at all. The card labels every row.
+    case "searchBrain":
+      return <SearchBrainCard part={part} />;
     case "executePython": {
       const invocationId = getToolInvocationId(part);
       const events = invocationId ? pythonProgress?.get(invocationId) : undefined;

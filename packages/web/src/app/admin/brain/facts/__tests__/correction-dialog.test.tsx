@@ -42,14 +42,15 @@ function candidate(overrides: Partial<BrainFactCandidate> = {}): BrainFactCandid
     episode: null,
     tensions: [],
     promotionBlock: null,
-    decay: { state: "fresh", lastObservedAt: null, halfLifeDays: null },
+    // `unknown` carries no numbers — the schema refuses an age beside it.
+    decay: { level: "unknown", ageDays: null, lastObservedAt: null },
     validFrom: null,
     validTo: null,
     extractedAt: null,
     ingestedAt: null,
     updatedAt: null,
     ...overrides,
-  } as BrainFactCandidate;
+  };
 }
 
 const PUBLISHED_OPEN = candidate({ status: "published", object: "8M" });
@@ -130,5 +131,50 @@ describe("CorrectionDialog", () => {
     const copy = container.textContent ?? "";
     expect(copy.toLowerCase()).not.toContain("retract");
     expect(copy.toLowerCase()).not.toContain("supersede");
+  });
+});
+
+describe("CorrectionDialog form state across targets", () => {
+  test("a corrected value does not survive onto the next claim", () => {
+    // Radix fires `onOpenChange` only for changes IT initiates (escape, overlay,
+    // cancel). The success path closes this dialog by setting `target` to null
+    // from the parent, which is a controlled prop change and does NOT invoke
+    // that callback — so a reset hung off it never runs after a correction.
+    //
+    // Left unfixed, the reviewer corrects one claim to "10M", opens the dialog
+    // on a DIFFERENT claim, and finds "It was true — it changed" still selected
+    // with "10M" still in the field. One careless confirm supersedes the second
+    // claim with the first one's value.
+    const { getByText, getByLabelText, queryByText, rerender } = mount(PUBLISHED_OPEN);
+
+    fireEvent.click(getByText(/It was true/));
+    fireEvent.change(getByLabelText(/Series A has target raise of/), {
+      target: { value: "10M" },
+    });
+
+    // The success path: parent nulls the target, then opens on another claim.
+    const other = candidate({ id: "fact-2", status: "published", subject: "Series B" });
+    rerender(
+      <CorrectionDialog
+        target={null}
+        busy={false}
+        error={null}
+        onOpenChange={() => {}}
+        onSubmit={() => {}}
+      />,
+    );
+    rerender(
+      <CorrectionDialog
+        target={other}
+        busy={false}
+        error={null}
+        onOpenChange={() => {}}
+        onSubmit={() => {}}
+      />,
+    );
+
+    // Back to the withdrawal answer, with no value carried over.
+    expect(getByText("Reject")).toBeDefined();
+    expect(queryByText("Save new value")).toBeNull();
   });
 });

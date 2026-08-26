@@ -62,6 +62,51 @@ const STATUS_FILTERS = [
 ] as const;
 
 /**
+ * The row action, whose LABEL follows the row rather than the feature (#5426).
+ *
+ * One definition behind both surfaces — the queue's action column and the
+ * detail sheet's footer — for `tension-state.ts`'s reason: they previously
+ * would have spelled the same predicate twice, and two spellings of "may this
+ * claim be corrected" is how the queue and the sheet come to disagree about
+ * what a reviewer may do to the same claim.
+ *
+ * A draft can only ever be rejected, so it keeps the reviewer's word and the
+ * destructive styling. A published claim with an open window is the one state
+ * where "what happened to this" is a real question.
+ */
+function CorrectAction({
+  candidate,
+  variant,
+  disabled,
+  onSelect,
+}: {
+  readonly candidate: BrainFactCandidate;
+  readonly variant: "ghost" | "outline";
+  readonly disabled: boolean;
+  readonly onSelect: (e?: { stopPropagation: () => void }) => void;
+}) {
+  const correctable = canSupersede(candidate);
+  return (
+    <Button
+      variant={variant}
+      size="sm"
+      className={
+        variant === "outline" && !correctable ? "text-destructive hover:text-destructive" : undefined
+      }
+      disabled={disabled}
+      onClick={(e) => onSelect(e)}
+    >
+      {correctable ? (
+        <Pencil className="mr-1.5 size-3.5" aria-hidden />
+      ) : (
+        <X className="mr-1.5 size-3.5" aria-hidden />
+      )}
+      {correctable ? "Correct" : "Reject"}
+    </Button>
+  );
+}
+
+/**
  * The fact review gate (#4772, ADR-0036) — the human end of the company-brain
  * wedge.
  *
@@ -117,28 +162,18 @@ export default function BrainFactsPage() {
       // published claim with an open window is the one state where "what
       // happened to this" is a real question, so it opens the correction
       // dialog instead (#5426).
-      cell: ({ row }) => {
-        const correctable = canSupersede(row.original);
-        return (
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={inProgress.has(row.original.id)}
-            onClick={(e) => {
-              e.stopPropagation();
-              setCorrectionError(null);
-              setCorrectionTarget(row.original);
-            }}
-          >
-            {correctable ? (
-              <Pencil className="mr-1.5 size-3.5" aria-hidden />
-            ) : (
-              <X className="mr-1.5 size-3.5" aria-hidden />
-            )}
-            {correctable ? "Correct" : "Reject"}
-          </Button>
-        );
-      },
+      cell: ({ row }) => (
+        <CorrectAction
+          candidate={row.original}
+          variant="ghost"
+          disabled={inProgress.has(row.original.id)}
+          onSelect={(e) => {
+            e?.stopPropagation();
+            setCorrectionError(null);
+            setCorrectionTarget(row.original);
+          }}
+        />
+      ),
       enableSorting: false,
       enableHiding: false,
       size: 112,
@@ -547,27 +582,15 @@ export default function BrainFactsPage() {
                 <CandidateDetail candidate={detail} />
 
                 <div className="flex gap-2 border-t px-4 py-4">
-                  <Button
+                  <CorrectAction
+                    candidate={detail}
                     variant="outline"
-                    size="sm"
-                    className={
-                      canSupersede(detail)
-                        ? undefined
-                        : "text-destructive hover:text-destructive"
-                    }
                     disabled={inProgress.has(detail.id)}
-                    onClick={() => {
+                    onSelect={() => {
                       setCorrectionError(null);
                       setCorrectionTarget(detail);
                     }}
-                  >
-                    {canSupersede(detail) ? (
-                      <Pencil className="mr-1.5 size-3.5" aria-hidden />
-                    ) : (
-                      <X className="mr-1.5 size-3.5" aria-hidden />
-                    )}
-                    {canSupersede(detail) ? "Correct" : "Reject"}
-                  </Button>
+                  />
                   <Button
                     size="sm"
                     variant="secondary"

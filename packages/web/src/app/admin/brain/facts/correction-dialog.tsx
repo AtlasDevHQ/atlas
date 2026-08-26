@@ -66,14 +66,31 @@ export function CorrectionDialog({
   const [kind, setKind] = useState<CorrectionIntent["kind"]>("never-true");
   const [object, setObject] = useState("");
   const [since, setSince] = useState("");
+  const [formFor, setFormFor] = useState<string | null>(null);
 
-  const offersChange = target !== null && canSupersede(target);
-
-  function reset() {
+  // ⚠️ Radix fires `onOpenChange` only for changes IT initiates — escape, the
+  // overlay, the cancel button. The SUCCESS path closes this dialog by nulling
+  // `target` from the parent, which is a controlled prop change and does not
+  // invoke that callback, so a reset hung off it never runs after a correction
+  // lands. The reviewer would then open the dialog on the NEXT claim and find
+  // the previous claim's answer still selected and its value still typed in —
+  // one careless confirm away from superseding the wrong claim with the wrong
+  // object.
+  //
+  // Adjusting state during render on a changed prop, rather than in an effect:
+  // React's own documented pattern for this, and it re-renders before anything
+  // is painted rather than after. The key is the TARGET IDENTITY including
+  // null, so the close→reopen edge resets too, not only a switch between two
+  // different claims.
+  const openFor = target?.id ?? null;
+  if (openFor !== formFor) {
+    setFormFor(openFor);
     setKind("never-true");
     setObject("");
     setSince("");
   }
+
+  const offersChange = target !== null && canSupersede(target);
 
   function submit() {
     if (!target) return;
@@ -93,10 +110,7 @@ export function CorrectionDialog({
   return (
     <AlertDialog
       open={!!target}
-      onOpenChange={(open) => {
-        if (!open) reset();
-        onOpenChange(open);
-      }}
+      onOpenChange={onOpenChange}
     >
       <AlertDialogContent>
         <AlertDialogHeader>

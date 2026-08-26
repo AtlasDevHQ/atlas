@@ -1608,13 +1608,11 @@ export async function correctFact(
       "brain correction: a supersede COMMITTED with no canonical predicate key — this should be impossible since #5047 (the ingest guard refuses a null slot key and `brain_facts` key columns are NOT NULL), so one of those invariants has moved. The correction itself is committed and correct; what is lost is the cardinality proposal for this predicate, silently, for every correction on this slot until it is fixed",
     );
   } else if (supersededPredicate !== null) {
-    try {
-      await withTransaction((tx) =>
-        proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate),
-      );
-    } catch {
-      // intentionally ignored: the mutation removes the deadline, not the absorb
-    }
+    await proposeUnderDeadline(
+      () => withTransaction((tx) => proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate)),
+      resolveAuditDeadline(deps.auditWriteTimeoutMs),
+      { workspaceId: ctx.workspaceId, factId: result.factId, requestId },
+    );
   }
   return { kind: "corrected", result };
 }

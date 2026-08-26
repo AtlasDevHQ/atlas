@@ -15,8 +15,17 @@
  * bug, not a symptom of it.
  */
 
-/** One rendered line: the tier chip plus what the row says. */
-export interface BrainRow {
+/**
+ * One rendered line: the tier chip plus what the row says.
+ *
+ * ⚠️ NOT named `Brain*`. `check-docs-brain-snippets.ts` reserves the exported
+ * `Brain*` namespace for published contracts and compares each such name
+ * against one declaration — so exporting the same `BrainRow` from two packages
+ * made the comparison depend on scan order and failed the gate. This is a local
+ * presentation shape, not a published Brain contract, and it should never have
+ * been in that namespace.
+ */
+export interface ResultLine {
   /**
    * The raw wire value, NOT narrowed. Passing `string` straight to the badge is
    * what makes an unrecognized tier visible instead of absent.
@@ -52,7 +61,7 @@ export function formatDate(value: unknown): string | null {
 /**
  * Project one fused row onto a line, by tier.
  */
-export function toRow(raw: unknown, linked: boolean): BrainRow {
+export function toRow(raw: unknown, linked: boolean): ResultLine {
   const row = raw != null && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const tier = typeof row.tier === "string" ? row.tier : "";
 
@@ -111,7 +120,7 @@ export function toRow(raw: unknown, linked: boolean): BrainRow {
   }
 }
 
-export function toRows(result: Record<string, unknown> | null): BrainRow[] {
+export function toRows(result: Record<string, unknown> | null): ResultLine[] {
   if (!result) return [];
   const results = Array.isArray(result.results) ? result.results : [];
   const neighbors = Array.isArray(result.neighbors) ? result.neighbors : [];

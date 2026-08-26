@@ -62,7 +62,7 @@ function SearchBrainCardInner({ part }: { part: unknown }) {
       badgeClassName="bg-primary/15 text-primary dark:bg-primary/20 dark:text-primary"
       title={query}
       headerExtra={
-        <span className="text-zinc-500">
+        <span className="text-muted-foreground">
           {rows.length} result{rows.length === 1 ? "" : "s"}
         </span>
       }
@@ -74,12 +74,12 @@ function SearchBrainCardInner({ part }: { part: unknown }) {
         </p>
       )}
       {!unavailable && rows.length === 0 && (
-        <p className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">
+        <p className="px-3 py-2 text-xs text-muted-foreground">
           Searched the Atlas; nothing matched.
         </p>
       )}
       {rows.length > 0 && (
-        <ul data-testid="brain-results" className="divide-y divide-zinc-100 dark:divide-zinc-800">
+        <ul data-testid="brain-results" className="divide-y divide-border">
           {rows.map((row, index) => (
             <li
               key={index}
@@ -88,11 +88,11 @@ function SearchBrainCardInner({ part }: { part: unknown }) {
             >
               <TierBadge tier={row.tier} className="mt-0.5" />
               <span className="min-w-0 flex-1">
-                <span className="block break-words text-zinc-700 dark:text-zinc-300">
+                <span className="block break-words text-foreground">
                   {row.primary}
                 </span>
                 {(row.secondary || row.linked) && (
-                  <span className="mt-0.5 block text-zinc-500 dark:text-zinc-400">
+                  <span className="mt-0.5 block text-muted-foreground">
                     {row.linked && <span className="mr-1">linked ·</span>}
                     {row.secondary}
                   </span>

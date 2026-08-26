@@ -59,8 +59,21 @@ scrubbed="$(printf '%s\n' "$cmd" | awk '
 ')"
 
 # A mention inside quotes is an argument or a message, never the command word.
-scrubbed="$(printf '%s' "$scrubbed" | sed -E "s/'[^']*'/ /g")"
-scrubbed="$(printf '%s' "$scrubbed" | sed -E 's/"[^"]*"/ /g')"
+#
+# ⚠️ Joined onto ONE line first, because a quoted span routinely crosses
+# newlines -- `git commit -m "<multi-line body>"` is the everyday case, and
+# sed is line-oriented, so the per-line version below scrubbed nothing on it.
+# That is not hypothetical: this guard blocked the commit that introduced it,
+# then the patch that fixed that, and then (2026-08-26) the patch that closed
+# the directory-laundering hole -- three times, same cause, each time on a
+# multi-line -m body quoting the very command it matches.
+#
+# \x01 is the join sentinel; `[^"]*` crosses it freely, which is the point.
+scrubbed="$(printf '%s' "$scrubbed" \
+  | awk '{ printf "%s\001", $0 }' \
+  | sed -E "s/'[^']*'/ /g" \
+  | sed -E 's/"[^"]*"/ /g' \
+  | tr '\001' '\n')"
 
 # Split the compound command into segments so `cd x && bun test` is seen.
 segments="$(printf '%s' "$scrubbed" | sed -E 's/(\&\&|\|\||[;|]|\n)/\n/g')"
@@ -92,21 +105,60 @@ Drop the flag: \`bun test --parallel --changed=origin/main\`"
 
   args="$(printf '%s' "$seg" | sed -E 's/.*\bbun[[:space:]]+test\b//')"
 
-  # An explicit target file is always fine -- one file, one worker.
-  if printf '%s' "$args" | grep -qE '(^|[[:space:]])[^[:space:]-][^[:space:]]*\.test\.(ts|tsx)([[:space:]]|$)'; then
-    continue
-  fi
   # --changed=<ref> bounds the run to the branch's source graph.
   if printf '%s' "$args" | grep -qE -- '--changed(=|[[:space:]])'; then
+    continue
+  fi
+
+  # An explicit worker cap is the sanctioned escape hatch for the rare run that
+  # genuinely needs breadth. Only a SMALL one: `--parallel=32` is the default
+  # spelled out longhand, not a cap.
+  cap="$(printf '%s' "$args" | grep -oE -- '--parallel=[0-9]+' | head -1 | cut -d= -f2)"
+  if [ -n "$cap" ] && [ "$cap" -le 8 ] 2>/dev/null; then
+    continue
+  fi
+
+  # ---------------------------------------------------------------------
+  # Named files are fine -- one file, one worker. But EVERY positional must
+  # be one.
+  #
+  # ⚠️ This asked "does ANY argument look like a test file" until 2026-08-26,
+  # which meant a single named file laundered any number of directory globs
+  # beside it:
+  #
+  #   bun test --parallel src/app/admin/brain/__tests__/ ... coverage-statement.test.ts
+  #
+  # That is a full 32-worker run wearing one filename. It ran five times in a
+  # single session and took the box down; this guard watched it go past every
+  # time. Bare directory globs were already caught -- the mixed arg list was
+  # the whole hole, which is why the fix is a quantifier and not a new rule.
+  # ---------------------------------------------------------------------
+  positional_count=0
+  nonfile_count=0
+  for tok in $args; do
+    case "$tok" in
+      -*) continue ;;
+    esac
+    positional_count=$((positional_count + 1))
+    case "$tok" in
+      *.test.ts|*.test.tsx) ;;
+      *) nonfile_count=$((nonfile_count + 1)) ;;
+    esac
+  done
+  if [ "$positional_count" -gt 0 ] && [ "$nonfile_count" -eq 0 ]; then
     continue
   fi
 
   if printf '%s' "$args" | grep -qE -- '--parallel'; then
     deny "BLOCKED: \`bun test --parallel\` with no --changed is a WHOLE-SUITE run -- one worker per core (nproc=$(nproc) here). It exhausts file descriptors and can hang the machine.
 
+A DIRECTORY is a whole-suite run even when a named .test.ts sits beside it --
+one file in the list does not bound the other arguments.
+
 Scope it:
   bun test --parallel --changed=origin/main    # branch's source graph
-  bun test path/to/one.test.ts                 # single file
+  bun test path/to/one.test.ts                 # single file (repeat for several)
+  bun test --parallel=4 <dir>/                 # explicit small cap, if breadth is genuinely needed
 
 Remote CI on the PR is the gate."
   fi

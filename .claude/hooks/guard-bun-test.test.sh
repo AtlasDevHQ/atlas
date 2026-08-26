@@ -47,6 +47,16 @@ check deny 'bun run test:api' 'so does the api script'
 check deny 'bun run --filter @atlas/api test' 'and the filtered form'
 check deny 'bun test --no-isolate --changed=origin/main' 'no-isolate is refused even when scoped'
 
+# ⚠️ THE LAUNDERING CASE, 2026-08-26. The allow-list asked "does ANY argument
+# look like a test file", not "are they ALL", so one named file waved through
+# any number of directory globs beside it. This exact shape ran five times in
+# one session at 32 workers a go and took the box down; the guard never fired.
+check deny 'bun test --parallel src/app/admin/brain/__tests__/ src/ui/components/admin/__tests__/coverage-statement.test.ts' 'a named file does not launder a directory glob'
+check deny 'bun test --parallel src/ui/components/admin/brain-coverage/' 'a bare directory glob is a full-worker run'
+check deny 'bun test --parallel packages/api/src/lib/brain/__tests__/' 'the 102-file directory from the last recurrence'
+check allow 'bun test src/a.test.ts src/b.test.ts' 'several named files are still one worker each'
+check allow 'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'an explicit small worker cap is the sanctioned escape hatch'
+
 # --- invocations that must be allowed ---------------------------------------
 check allow 'bun test --parallel --changed=origin/main' 'the sanctioned pre-flight'
 check allow 'bun test packages/web/src/a.test.ts' 'a single named file'
@@ -58,6 +68,13 @@ check allow 'bun run lint' 'an unrelated script'
 check allow "git commit -m 'docs: never use bun test --parallel bare'" 'a commit message naming it'
 check allow 'echo "bun test --parallel"' 'an echo naming it'
 check allow "grep -rn 'bun test' docs/" 'a grep for it'
+# ⚠️ 2026-08-26: the third time this guard blocked its own fix. A -m body that
+# spans lines is the everyday shape, and the scrubber was line-oriented.
+check allow 'git commit -m "fix: a guard
+
+  bun test --parallel src/a/__tests__/ src/b/c.test.ts
+
+was going straight past it"' 'a MULTI-LINE commit body quoting the command'
 check allow 'cat > /tmp/x.md <<EOF
 Run bun test --parallel here.
 EOF' 'a heredoc documenting it'

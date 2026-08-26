@@ -60,6 +60,7 @@
 import type { BrainCoverage } from "@/ui/lib/types";
 import { CLASS_COPY } from "./vocabulary";
 import {
+  MARK_ORDER,
   buildSheet,
   type PlateBlankReason,
   type PlateMarkKind,
@@ -95,7 +96,12 @@ const BLANK_STATE: Record<PlateBlankReason, string> = {
 };
 
 interface MarkCopy {
+  /**
+   * The name a reader learns. PINNED — see
+   * `./__tests__/reader-vocabulary.test.ts`.
+   */
   readonly name: string;
+  /** The gloss. Free to be reworded; nothing pins it. */
   readonly detail: string;
 }
 
@@ -136,6 +142,37 @@ const MARK_COPY: Record<PlateMarkKind, MarkCopy> = {
     detail: "Atlas's credentials can see it exists. Nobody has put it in the perimeter.",
   },
 };
+
+/**
+ * Everything a person has to learn to read this sheet, as names.
+ *
+ * ## Why this is exported, and what it is FOR
+ *
+ * A legibility finding is a claim about a specific vocabulary: somebody was
+ * shown five marks and two ground states and told us, in their own words, what
+ * they thought each meant. That finding survives a re-skin — different colours,
+ * different geometry, different gloss — and it does NOT survive the vocabulary
+ * changing underneath it, because then the thing they read is not the thing
+ * shipping.
+ *
+ * So this is the list a demonstration is *about*, and
+ * `./__tests__/reader-vocabulary.test.ts` is the gate that reddens when it
+ * moves. Without something mechanical, "is the demonstration still valid?" is a
+ * judgement call nobody makes on a Tuesday — which is how #5427's browser read
+ * came to be eight hours stale with nothing anywhere knowing.
+ *
+ * ⚠️ Names only. The glosses in {@link MARK_COPY} are free to be reworded, and
+ * so are colours, spacing and layout — none of those change what a reader has to
+ * hold in their head.
+ */
+export const PLATE_READER_VOCABULARY = {
+  /** The five soundings. */
+  marks: MARK_ORDER.map((kind) => MARK_COPY[kind].name),
+  /** The ground states, which are drawn rather than counted. */
+  ground: ["Unsurveyed", "Torn edge"],
+  /** The words beneath a quad that has nothing in it. */
+  blankStates: Object.values(BLANK_STATE),
+} as const;
 
 // ---------------------------------------------------------------------------
 // Sheet geometry

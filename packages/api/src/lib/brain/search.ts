@@ -157,6 +157,11 @@ import {
 } from "@atlas/api/lib/brain/acl";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import { projectProvenance } from "@atlas/api/lib/brain/candidates";
+import {
+  actorsIn,
+  loadActorIdentities,
+  type BrainActorIdentityLookup,
+} from "@atlas/api/lib/brain/actor-identity";
 import { attributionDecision } from "@atlas/api/lib/brain/attribution";
 import { loadTensionClusters } from "@atlas/api/lib/brain/tensions";
 import { notAnObservationSql } from "@atlas/api/lib/brain/observation";
@@ -687,6 +692,7 @@ function toFactResult(
   row: FactRow,
   ctx: BrainPrincipalContext,
   tensions: readonly BrainSearchTensionView[],
+  identities: BrainActorIdentityLookup,
   requestId?: string,
 ): BrainFactResult {
   const workspaceId = ctx.workspaceId;
@@ -715,7 +721,12 @@ function toFactResult(
     validTo: iso(row.valid_to),
     ingestedAt: iso(row.ingested_at),
     snippet: str(row.snippet),
-    provenance: projectProvenance(row.provenance, row.source_episode_id, attribution),
+    provenance: projectProvenance(
+      row.provenance,
+      row.source_episode_id,
+      attribution,
+      identities,
+    ),
     corroborationCount: count(row.corroboration_count, "corroboration_count", workspaceId),
     decay: computeDecaySignal(
       {
@@ -808,6 +819,16 @@ async function loadTensions(
     requestId,
   });
 
+  // Resolved off each counterpart's OWN provenance, for the reason
+  // `attributionDecision` is re-run per counterpart below: a counterpart is a
+  // fact in its own right and was fetched through its own ACL predicate.
+  const counterpartIdentities = await loadActorIdentities(
+    db,
+    ctx.workspaceId,
+    actorsIn([...clusters.values()].flatMap((c) => c.counterparts.map(({ row }) => row.provenance))),
+    requestId,
+  );
+
   const views = new Map<string, BrainSearchTensionView[]>();
   for (const [owner, cluster] of clusters) {
     const list: BrainSearchTensionView[] = cluster.counterparts.map(({ row, direction }) => ({
@@ -827,6 +848,7 @@ async function loadTensions(
         row.provenance,
         row.source_episode_id,
         attributionDecision(row, ctx, requestId),
+        counterpartIdentities,
       ),
     }));
     if (cluster.withheld.length > 0) {
@@ -1045,9 +1067,17 @@ export async function searchBrainCore(
     return false;
   });
   const factIds = facts.map((r) => r.id);
-  const tensions = wantFacts
-    ? await loadTensions(db, factIds, ctx, requestId)
-    : { views: new Map<string, BrainSearchTensionView[]>(), truncated: false };
+  const [tensions, factIdentities] = await Promise.all([
+    wantFacts
+      ? loadTensions(db, factIds, ctx, requestId)
+      : Promise.resolve({ views: new Map<string, BrainSearchTensionView[]>(), truncated: false }),
+    // The NAME behind each claim's `actor` handle (#5440). One query for the
+    // page. This is the path an end user reaches, so it is the one where an
+    // opaque vendor handle actually fails finish condition 2 — and the one
+    // where a name reachable past #4836's gate would matter most, which is why
+    // it lands inside the attribution's visible arm and nowhere else.
+    loadActorIdentities(db, ctx.workspaceId, actorsIn(facts.map((r) => r.provenance)), requestId),
+  ]);
 
   // The partially-malformed-grant observation seam (`acl.ts`). These are rows
   // the reader ALREADY holds, so this costs no extra fetch — and it catches the
@@ -1072,7 +1102,7 @@ export async function searchBrainCore(
         "brain search: fact `visible_to` did not decode as an array — the grant could not be inspected",
       );
     }
-    return toFactResult(row, ctx, tensions.views.get(row.id) ?? [], requestId);
+    return toFactResult(row, ctx, tensions.views.get(row.id) ?? [], factIdentities, requestId);
   });
 
   const episodeResults: BrainEpisodeResult[] = [];

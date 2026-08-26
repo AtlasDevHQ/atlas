@@ -11,6 +11,7 @@
  *   POST /:id/retract — reject a candidate (the `retract` correction verb)
  *   POST /:id/correct — apply a `correct_fact` verb (#4915)
  *   POST /tension-sweep — mint advisory tension edges over EXISTING rows (#5029)
+ *   POST /actor-identity/erase — clear one author's directory snapshot (#5440)
  *
  * `/retract` and `/correct {verb: "retract"}` are the SAME code path
  * (`correctFact` in `lib/brain/correction.ts`) — one retract semantics, not
@@ -133,15 +134,21 @@ import {
   contentionMessage,
   sweepTensionEdges,
 } from "@atlas/api/lib/brain/tension-sweep";
+import { eraseActorIdentity } from "@atlas/api/lib/brain/actor-identity";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 // The BARREL, like `admin-publish.ts` — not the two leaf modules. The route
 // tests `mock.module` `@atlas/api/lib/audit`, so a leaf import walks past the
 // double and writes a real row.
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
-import type { AuthMode, BrainFactTensionSweepResponse } from "@useatlas/types";
+import type {
+  AuthMode,
+  BrainActorIdentityEraseResponse,
+  BrainFactTensionSweepResponse,
+} from "@useatlas/types";
 import {
   BRAIN_FACT_STATUS_FILTERS,
+  BrainActorIdentityEraseResponseSchema,
   BrainFactCandidateListResponseSchema,
   BrainFactCandidateSummarySchema,
   BrainFactCorrectRequestSchema,
@@ -483,6 +490,62 @@ const tensionSweepRoute = createRoute({
     409: {
       description:
         "The sweep could not run, and `error` is one of three values naming WHICH bound it hit. `reconcile-lock` — another operation holds this workspace's reconcile lock, either an ingest pass or a sweep already running (the two cannot overlap, since both write these edges); retry in a few seconds. `conflicting-lock` — a conflicting lock on this workspace's facts, most often a concurrent publish or correction (the sweep deliberately does not queue behind either) and less often a migration or an index build; retry in a few seconds, and check for maintenance if it persists. `unfinished` — the statement did not complete, which is either a time-bound expiry or a cancellation, and Postgres does not distinguish them; retry once and escalate to an operator if it repeats. Every value names what is KNOWN rather than a cause the server could not establish, because none of these SQLSTATEs carries one. Nothing was changed in any of the three",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const eraseActorIdentityRoute = createRoute({
+  method: "post",
+  path: "/actor-identity/erase",
+  tags: ["Admin — Brain Facts"],
+  summary: "Clear one author's directory snapshot",
+  description:
+    "Clears the DATED DIRECTORY SNAPSHOT Atlas holds for one source principal (#5440, ADR-0036 §T5). " +
+    "Every claim that principal authored returns to the `opaque` identity state — the review surface and `searchBrain` render an explicit \"cannot name this person\" instead of the name — and **no claim is deleted, retracted or otherwise changed**. That is the `retract` shape applied to a person: the record keeps the statement and loses the person. " +
+    "The erasure is DURABLE. The audience sync's capture pass skips an erased handle forever, so the name does not come back on the next cycle. There is no un-erase verb; re-capturing a cleared name is a deliberate database operation, not an API call. " +
+    "⚠️ Only a `directory` snapshot can be erased, and the narrowness is the point. An `atlas` identity stores no snapshot — its name is a live join to a Better Auth account whose own erasure path is account deletion — so clearing one would remove nothing and would leave a current colleague unnameable on every claim they made. " +
+    "Needs the owner or admin entitlement, re-resolved against this workspace rather than read off the session, on the same bar `/tension-sweep` applies: this writes workspace-wide state that no per-claim grant scopes.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            actor: z
+              .string()
+              .min(1)
+              .max(256)
+              .openapi({
+                description:
+                  "The actor handle exactly as it appears on the claim's provenance — `slack:U0AQW6KF2EM`. Read it off the review surface; it is never guessed from a name, because there is no query from a name to a handle and adding one would make this a people directory.",
+                example: "slack:U0AQW6KF2EM",
+              }),
+          }),
+        },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "The snapshot was cleared. The body echoes the handle and nothing else — deliberately NOT a count of affected claims, which would report the size of one person's presence in the record to a caller who asked only to remove their name",
+      content: { "application/json": { schema: BrainActorIdentityEraseResponseSchema } },
+    },
+    ...commonResponses,
+    403: {
+      description:
+        "Forbidden — erasure writes workspace-wide identity state and needs the owner or admin entitlement, re-resolved against the workspace being written rather than read off the session",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description:
+        "No identity is recorded for that handle in this workspace. Nothing was changed — and nothing needed to be: a handle with no row already renders `opaque`",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description:
+        "That handle carries no snapshot to clear. Either it resolves to an Atlas account (`atlas`, whose name is a LIVE join and whose erasure path is account deletion, not this route) or it is already `opaque`. Reported rather than answered as a silent success, so an operator learns which case they are in",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -1018,5 +1081,142 @@ function sweepDenialMessage(ctx: BrainPrincipalContext): string {
         "makes an approved `single` cardinality entry reach rows that already exist."
     : `Sweeping for tension edges needs a resolved reader identity; this one is "${ctx.origin}".`;
 }
+
+/**
+ * Who to record as the eraser.
+ *
+ * `recordedAuthor`'s shape (`admin-brain-vocabulary.ts`), narrowed to a
+ * NON-NULL return because `erased_by` carries a `<> ''` CHECK and the bar has
+ * already been cleared by the time this is called. Switched on the ORIGIN
+ * rather than written as a role test, for that helper's reason: a fourth arm on
+ * `BrainPrincipalContext` has to be considered here rather than inheriting
+ * whichever answer a `??` chain happens to give it.
+ *
+ * The `unresolved` arm is unreachable — `sweepTarget` returned `null` for it and
+ * the route already answered 403 — and it returns a value rather than throwing
+ * because an exception on an unreachable branch turns a hypothetical into a 500.
+ */
+function recordedEraser(ctx: BrainPrincipalContext): string {
+  switch (ctx.origin) {
+    case "authenticated":
+      return ctx.userId ?? "unknown-admin";
+    case "unauthenticated-local":
+      return "local-operator";
+    case "unresolved":
+      return "unresolved-reader";
+  }
+}
+
+adminBrainFacts.openapi(eraseActorIdentityRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const ctx = yield* reviewerContext(mode, user, orgId, requestId);
+
+      // The SAME bar `/tension-sweep` applies, and reusing `sweepTarget` rather
+      // than writing a second predicate is deliberate: both are workspace-wide
+      // writes that no per-claim grant scopes, so two spellings of one bar could
+      // only ever drift apart. The binding it hands back is the workspace the
+      // entitlement was CHECKED against, which is the workspace written below.
+      const target = sweepTarget(ctx);
+      if (target === null) {
+        log.warn(
+          { workspaceId: orgId, origin: ctx.origin, role: ctx.role, requestId },
+          "Brain actor-identity erasure refused — the reader does not clear the owner/admin bar",
+        );
+        return c.json(
+          {
+            error: "forbidden",
+            message:
+              ctx.origin === "authenticated"
+                ? `Erasing an actor's directory snapshot needs the owner or admin entitlement; this reader is ` +
+                  `"${ctx.role ?? "no org role"}". It clears a name from every claim that principal authored, ` +
+                  "workspace-wide, and the capture pass never restores it."
+                : `Erasing an actor's directory snapshot needs a resolved reader identity; this one is "${ctx.origin}".`,
+            requestId,
+          },
+          403,
+        );
+      }
+
+      const actor = c.req.valid("json").actor.trim();
+      if (actor === "") {
+        return c.json(
+          {
+            error: "invalid_request",
+            message:
+              "`actor` must be the handle exactly as it appears on the claim's provenance, such as `slack:U0AQW6KF2EM`.",
+            requestId,
+          },
+          400,
+        );
+      }
+
+      const db = getInternalDB();
+      const outcome = yield* Effect.tryPromise({
+        try: () => eraseActorIdentity(db, target, actor, recordedEraser(ctx)),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      if (!outcome.ok) {
+        // The two refusals are kept DISTINGUISHABLE, unlike `/retract`'s
+        // deliberately-indistinguishable 404 trio. Nothing is disclosed by the
+        // difference: the caller already holds the handle (it is on the claim
+        // they are reading), so neither answer confirms the existence of
+        // anything they could not already see. What the difference buys is the
+        // operator knowing whether to look elsewhere or to stop.
+        return outcome.reason === "not-found"
+          ? c.json(
+              {
+                error: "not_found",
+                message:
+                  `No identity is recorded for "${actor}" in this workspace, so there is nothing to erase. ` +
+                  "Claims by that handle already render as \"cannot name this person\".",
+                requestId,
+              },
+              404,
+            )
+          : c.json(
+              {
+                error: "conflict",
+                message:
+                  `"${actor}" carries no directory snapshot to clear. It either resolves to an Atlas account — ` +
+                  "whose name is read live from that account, and whose erasure path is account deletion rather " +
+                  "than this route — or it is already opaque.",
+                requestId,
+              },
+              409,
+            );
+      }
+
+      // Fire-and-forget, on `tensionSweep`'s argument rather than the
+      // correction verbs': the pino line is emitted unconditionally before the
+      // durable row is attempted, so an open circuit breaker costs the row and
+      // not the trail — and reporting an erasure that COMMITTED as a failure is
+      // the worse error here, since there is no un-erase verb to retry past it.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.brainFact.eraseActorIdentity,
+        targetType: "brainFact",
+        // The ACTOR HANDLE, not a fact id. An erasure is scoped to a person
+        // across every claim they made; see the catalog entry, which records
+        // this as the second irregular `targetId` in the domain.
+        targetId: actor,
+        metadata: { workspaceId: target },
+      });
+
+      return c.json(
+        checked<BrainActorIdentityEraseResponse>(BrainActorIdentityEraseResponseSchema, {
+          erased: true,
+          actor,
+        }),
+        200,
+      );
+    }),
+  );
+});
 
 export { adminBrainFacts };

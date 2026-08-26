@@ -39,6 +39,7 @@ import {
   type ExportedBrainSlackChannelExclusion,
   type ExportedBrainSlackIngestScope,
   type ExportedBrainEnrollment,
+  type ExportedBrainActorIdentity,
   type ExportedBrainEntity,
   type ExportedVocabularySlotPosition,
 } from "@useatlas/types";
@@ -207,6 +208,7 @@ export async function exportWorkspaceBundle(
     slackScopeResult,
     enrollmentResult,
     entityStoreResult,
+    actorIdentityResult,
   ] = await Promise.all([
     // --- 1. Conversations + Messages (2 queries, no N+1) ---
     pool.query(
@@ -503,6 +505,29 @@ export async function exportWorkspaceBundle(
       `SELECT entity_id, entity, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at
        FROM brain_entity WHERE ${scopeClause("workspace_id", orgScope)}
        ORDER BY entity, entity_id ASC`,
+      params,
+    ),
+    // The human NAME behind each claim's vendor handle (#5440, ADR-0036 §T5).
+    // The WHOLE row, every state, no predicate — and each of those is a
+    // decision rather than a default.
+    //
+    // Every state travels because each is a different, non-reconstructible
+    // fact: an `atlas` row's user id is the live-join pointer, a `directory`
+    // row's snapshot is the only name that will ever exist for someone who has
+    // left the vendor, and an `opaque` row carrying `erased_at` is an
+    // OPERATOR'S ERASURE — which, dropped, the destination's first audience
+    // cycle would silently undo. That is the one direction an erasure must
+    // survive, so the section carries the tombstones as carefully as the names.
+    //
+    // `snapshot_at` travels VERBATIM and is never re-stamped at import: it says
+    // when the vendor named this person, and a destination that re-stamped it
+    // would assert a reading it never took — `brain_coverage_snapshot`'s
+    // fabrication, which is why THAT table is classified `stays`.
+    pool.query(
+      `SELECT actor, source, vendor_user_id, state, user_id,
+              display_name, real_name, email, snapshot_at, erased_at, erased_by
+       FROM brain_actor_identity WHERE ${scopeClause("workspace_id", orgScope)}
+       ORDER BY actor ASC`,
       params,
     ),
   ]);
@@ -911,6 +936,23 @@ export async function exportWorkspaceBundle(
     snapshotAt: toISO(r.snapshot_at),
   }));
 
+  const brainActorIdentities: ExportedBrainActorIdentity[] = actorIdentityResult.rows.map((r) => ({
+    actor: r.actor as string,
+    source: r.source as string,
+    vendorUserId: r.vendor_user_id as string,
+    state: r.state as string,
+    userId: (r.user_id as string | null) ?? null,
+    displayName: (r.display_name as string | null) ?? null,
+    realName: (r.real_name as string | null) ?? null,
+    email: (r.email as string | null) ?? null,
+    // `toISO` on both, so a `null` column stays `null` rather than becoming an
+    // epoch string. `snapshot_at` null-vs-set is what the destination's CHECK
+    // reads to tell a `directory` row from an `opaque` one.
+    snapshotAt: r.snapshot_at === null ? null : toISO(r.snapshot_at),
+    erasedAt: r.erased_at === null ? null : toISO(r.erased_at),
+    erasedBy: (r.erased_by as string | null) ?? null,
+  }));
+
   // --- Build bundle ---
   const bundle: ExportBundle = {
     manifest: {
@@ -941,6 +983,7 @@ export async function exportWorkspaceBundle(
         brainSlackChannelExclusions: brainSlackChannelExclusions.length,
         brainEnrollments: brainEnrollments.length,
         brainEntities: brainEntities.length,
+        brainActorIdentities: brainActorIdentities.length,
       },
     },
     conversations,
@@ -959,6 +1002,7 @@ export async function exportWorkspaceBundle(
     ...(brainSlackIngestScope !== undefined ? { brainSlackIngestScope } : {}),
     brainEnrollments,
     brainEntities,
+    brainActorIdentities,
   };
 
   log.info(

@@ -213,10 +213,10 @@ function resetRosters(): void {
 
 /** Slack's directory. `U_GRACE`'s address matches no Atlas user, by design. */
 const SLACK_DIRECTORY: readonly SlackDirectoryUser[] = [
-  { id: "U_ALAN", email: "exec@wedge.test", deleted: false, isBot: false },
-  { id: "U_ADA", email: "plain@wedge.test", deleted: false, isBot: false },
-  { id: "U_GRACE", email: "nobody@wedge.test", deleted: false, isBot: false },
-  { id: "U_BOT", email: null, deleted: false, isBot: true },
+  { id: "U_ALAN", email: "exec@wedge.test", displayName: null, realName: null, deleted: false, isBot: false },
+  { id: "U_ADA", email: "plain@wedge.test", displayName: null, realName: null, deleted: false, isBot: false },
+  { id: "U_GRACE", email: "nobody@wedge.test", displayName: null, realName: null, deleted: false, isBot: false },
+  { id: "U_BOT", email: null, displayName: null, realName: null, deleted: false, isBot: true },
 ];
 
 /** The deploy-window claim, restated a day later. 2026-06-26T10:00:00Z. */
@@ -365,6 +365,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS "user" (
         id TEXT PRIMARY KEY,
+        name TEXT,
         email TEXT NOT NULL
       )
     `);

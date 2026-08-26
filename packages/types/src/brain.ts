@@ -60,14 +60,130 @@ export type BrainFactReviewStatus = "draft" | "published" | "archived";
  * `reconciledAt` are Atlas's own batch-scheduled pipeline clocks, not the
  * moment anything was said.
  */
+/**
+ * The claim's author, resolved to an Atlas account — the name comes from a LIVE
+ * join to `"user"`, so renaming the account changes every surface with no
+ * re-ingest and no backfill.
+ *
+ * NOTHING is snapshotted in this state, deliberately. Where a live join exists
+ * a snapshot is strictly worse: it goes stale with no re-derivation path.
+ */
+export interface BrainActorIdentityAtlas {
+  readonly state: "atlas";
+  /** Better-Auth `"user".id`. A display pointer — never an ACL input. */
+  readonly userId: string;
+  /** LIVE `"user".name`. Null only when the account carries none. */
+  readonly name: string | null;
+  /** LIVE `"user".email`. The fallback when an account has no name set. */
+  readonly email: string | null;
+}
+
+/**
+ * The claim's author, named by the SOURCE's directory, with no Atlas account —
+ * a contractor, a guest, someone who never signed up, someone who has left.
+ *
+ * A DATED SNAPSHOT, and the date is not decoration. There is no live join to
+ * make here, so the alternative to a stale name is no name at all: for someone
+ * who has left both the chat vendor and the company this is the only record
+ * that will ever name them. {@link snapshotAt} is what makes a stale name
+ * legible AS STALE rather than asserted as current.
+ *
+ * Captured only for principals who **authored an ingested episode** — never the
+ * roster. That bound is the whole of ADR-0036 T5's `Amendment (2026-08-25,
+ * #5440)`: what is persisted beyond the resolver's inward-only join is the name
+ * of someone whose words are already in the record.
+ */
+export interface BrainActorIdentityDirectory {
+  readonly state: "directory";
+  /** The name the person chose to be called. Often empty at the vendor. */
+  readonly displayName: string | null;
+  /** The name the workspace administrator sees. */
+  readonly realName: string | null;
+  /**
+   * The durable cross-system identifier.
+   *
+   * On the wire under the SAME gate as `actor`, and for the reason a reviewer
+   * needs it: a display name alone can be a nickname two people share, and
+   * finish condition 2 asks a reviewer to point at THE PERSON.
+   */
+  readonly email: string | null;
+  /** ISO-8601 - when this snapshot was taken. */
+  readonly snapshotAt: string;
+}
+
+/**
+ * Atlas cannot name this person.
+ *
+ * A NAMED state, not a blank and not a silent fallback to the handle. The
+ * record has to be able to say "we looked and could not name them" - collapsing
+ * that into an absent field would leave a reviewer unable to tell it from a
+ * field nobody wrote.
+ *
+ * Reached four ways, and the reader is deliberately not owed the difference
+ * between the first two: no capture pass has reached this actor yet; a pass ran
+ * and the directory did not name them; the `atlas` pointer no longer resolves
+ * (the account was deleted, and a deleted account is not a licence to assert a
+ * name Atlas can no longer stand behind); or an operator ERASED the snapshot,
+ * which is the one case {@link erased} reports.
+ */
+export interface BrainActorIdentityOpaque {
+  readonly state: "opaque";
+  /**
+   * An operator erased a snapshot that used to name this person.
+   *
+   * The `retract` shape: the record keeps the statement and loses the person.
+   * Reported rather than hidden so an operator can see the erasure took, and so
+   * it is distinguishable from "never captured" - it names nobody either way.
+   */
+  readonly erased: boolean;
+}
+
+/**
+ * Who the claim's `actor` handle actually is - the answer finish condition 2
+ * asks for, in the three states ADR-0036 T5's `Amendment (2026-08-25, #5440)`
+ * settles on.
+ *
+ * A discriminated union rather than a nullable id, because a nullable id
+ * collapses two different facts into one NULL: *not yet resolved* (transient, a
+ * sweep fixes it) and *resolved, and this person has no Atlas account*
+ * (permanent, and a legitimate state of a real person). Migration 0187's header
+ * names that conflation on slot keys; `object_cmp` and
+ * `PromotionReport.supersessionHeldBack` already use the shape that avoids it.
+ *
+ * WARNING: it lives INSIDE {@link BrainFactAttributionVisible} and that
+ * placement is the ACL property, not a layout choice. A name is a strictly more
+ * identifying rendering of `actor`, which #4836 withholds from a reader who
+ * reaches the fact only through publish-time grant widening. Sitting inside the
+ * visible arm makes it STRUCTURALLY unreachable from the withheld arm - the
+ * same guarantee the triple itself has - so a name cannot silently undo #4836
+ * on `searchBrain`, the path an end user reaches.
+ */
+export type BrainActorIdentityView =
+  | BrainActorIdentityAtlas
+  | BrainActorIdentityDirectory
+  | BrainActorIdentityOpaque;
+
 export interface BrainFactAttributionVisible {
   readonly visible: true;
   /** The source's own stable id for the evidence. Slack: `<channelId>:<ts>`. */
   readonly sourceId: string | null;
-  /** The principal that asserted the claim. */
+  /**
+   * The principal that asserted the claim - the vendor's own handle,
+   * `slack:U0AQW6KF2EM`, VERBATIM and never rewritten (ADR-0037 5).
+   *
+   * It is not a name. {@link actorIdentity} is.
+   */
   readonly actor: string | null;
   /** When the claim was asserted at the source. */
   readonly occurredAt: string | null;
+  /**
+   * WHO that handle is - finish condition 2's human name (#5440).
+   *
+   * `null` if and only if {@link actor} is `null`: no author means no identity
+   * question to answer, which is a different thing from an author Atlas cannot
+   * name. The latter is {@link BrainActorIdentityOpaque} and says so out loud.
+   */
+  readonly actorIdentity: BrainActorIdentityView | null;
 }
 
 /**
@@ -1579,6 +1695,22 @@ export interface BrainFactRetractResponse {
  * already-swept corpus reports `0` — that is convergence, not a failure, and a
  * client that renders it as "nothing found" is describing the wrong thing.
  */
+/**
+ * What an actor-identity erasure did (#5440, ADR-0036 T5).
+ *
+ * Deliberately NOT a count of affected claims. The erasure is scoped to a
+ * PERSON, not to a claim, and reporting "12 claims now render opaque" would
+ * report the size of one person's presence in the record to a caller who asked
+ * only to remove their name - a disclosure the erasure itself is meant to
+ * reduce. The handle is echoed so a script can confirm which row it hit.
+ */
+export interface BrainActorIdentityEraseResponse {
+  /** Always `true` - a refusal is a 404 or a 409, never a `false` here. */
+  readonly erased: true;
+  /** The actor handle whose snapshot was cleared, echoed verbatim. */
+  readonly actor: string;
+}
+
 export interface BrainFactTensionSweepResponse {
   /**
    * Advisory `in-tension-with` edges this run created. Additive: the sweep

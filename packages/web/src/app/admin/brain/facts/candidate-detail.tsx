@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  BrainActorIdentityView,
   BrainFactCandidate,
   BrainFactDecayView,
   BrainFactProvenanceView,
@@ -78,6 +79,69 @@ function AttributionRestricted() {
   );
 }
 
+/**
+ * WHO the vendor handle is — finish condition 2's human name (#5440).
+ *
+ * Three states, rendered as three genuinely different sentences, because the
+ * whole reason the wire carries a discriminated union rather than a nullable
+ * name is that they are different facts about the world:
+ *
+ *   - `atlas` — the name is read LIVE from the Atlas account on every request.
+ *     Rendered with no date, deliberately: there is nothing to be stale.
+ *   - `directory` — a DATED snapshot from the source's directory, and the date
+ *     is rendered beside the name rather than in a tooltip. A stale name has to
+ *     be legible AS STALE; a name presented bare is a name asserted as current.
+ *   - `opaque` — an explicit "cannot name this person". NOT a blank, and not a
+ *     silent fallback to the handle: an em-dash here would read as "nobody
+ *     asserted this claim", which is false, and the handle is exactly what
+ *     finish condition 2 ruled insufficient.
+ *
+ * The handle itself still renders above, verbatim, in every state — `actor` is
+ * never rewritten (ADR-0037 §5), and a reviewer chasing a claim back into Slack
+ * needs it.
+ */
+function ActorIdentity({ identity }: { identity: BrainActorIdentityView }) {
+  if (identity.state === "atlas") {
+    const name = identity.name ?? identity.email;
+    return (
+      <span className="flex flex-wrap items-baseline gap-x-1.5">
+        <span className="font-medium">{orDash(name)}</span>
+        <span className="text-[11px] text-muted-foreground">Atlas account · resolved live</span>
+      </span>
+    );
+  }
+
+  if (identity.state === "directory") {
+    // Display name first, then real name, then the address. The vendor lets a
+    // person choose the first and an administrator set the second, so
+    // preferring the chosen one is the same order the source itself renders in.
+    const name = identity.displayName ?? identity.realName;
+    return (
+      <span className="flex flex-wrap items-baseline gap-x-1.5">
+        <span className="font-medium">{orDash(name ?? identity.email)}</span>
+        {name !== null && identity.email !== null ? (
+          <span className="text-[11px] text-muted-foreground">{identity.email}</span>
+        ) : null}
+        <span className="text-[11px] text-muted-foreground">
+          {"· from the source directory, as of "}
+          <RelativeTimestamp iso={identity.snapshotAt} />
+        </span>
+      </span>
+    );
+  }
+
+  return (
+    <span className="flex flex-wrap items-baseline gap-x-1.5 text-muted-foreground">
+      <span className="font-medium">Cannot name this person</span>
+      <span className="text-[11px]">
+        {identity.erased
+          ? "· an operator cleared this name; the claim is unchanged"
+          : "· no Atlas account, and the source directory does not name them"}
+      </span>
+    </span>
+  );
+}
+
 function ProvenanceGrid({ provenance }: { provenance: BrainFactProvenanceView }) {
   const { attribution } = provenance;
   return (
@@ -86,7 +150,23 @@ function ProvenanceGrid({ provenance }: { provenance: BrainFactProvenanceView })
       <Field label="Producer">{orDash(provenance.producer)}</Field>
       {attribution.visible ? (
         <>
-          <Field label="Asserted by">{orDash(attribution.actor)}</Field>
+          <Field label="Asserted by">
+            {/*
+              The HANDLE and the PERSON, in that order and both always present.
+              The handle is what the record stores and what a reviewer pastes
+              into Slack to find the message; the identity beneath it is what
+              finish condition 2 actually asks for. Neither replaces the other —
+              rewriting `actor` into a name is what ADR-0037 §5's
+              retain-the-surface rule forbids, and rendering only the handle is
+              the gap #5440 exists to close.
+            */}
+            <span className="font-mono break-all">{orDash(attribution.actor)}</span>
+            {attribution.actorIdentity !== null ? (
+              <div className="mt-1">
+                <ActorIdentity identity={attribution.actorIdentity} />
+              </div>
+            ) : null}
+          </Field>
           <Field label="Source ID">
             <span className="font-mono break-all">{orDash(attribution.sourceId)}</span>
           </Field>

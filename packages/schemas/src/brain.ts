@@ -28,6 +28,8 @@ import type {
   BrainCorrectionVerb,
   BrainEntityRole,
   BrainFactCandidate,
+  BrainActorIdentityEraseResponse,
+  BrainActorIdentityView,
   BrainFactAttributionView,
   BrainFactDecayLevel,
   BrainFactDecayView,
@@ -243,12 +245,53 @@ export function isBrainFactStatusFilter(value: unknown): value is BrainFactStatu
  * union plus `projectProvenance` being the single constructor, not a runtime
  * check. Both are covered by test; only one is covered by Zod.
  */
+/**
+ * WHO the claim's `actor` handle is, in the three states ADR-0036 T5's
+ * `Amendment (2026-08-25, #5440)` settles on.
+ *
+ * Discriminated on `state` for the same reason `visible` discriminates the
+ * arms above: the three carry genuinely different payloads, and a flat object
+ * of nullables would let a caller read a `directory` snapshot's stale name off
+ * a row that actually resolves LIVE. Each arm is `z.strictObject` so a producer
+ * that attached a snapshot to the `atlas` arm - the one case where a snapshot
+ * is strictly worse than the live join - fails the response check rather than
+ * shipping a name that can never be re-derived.
+ *
+ * WARNING: this schema is only ever reached through the `visible: true` arm of
+ * {@link BrainFactAttributionViewSchema}. That nesting is the ACL property
+ * (#4836): a name is a strictly more identifying rendering of `actor`, so it
+ * must be withheld under exactly the same predicate, and the withheld arm's
+ * `z.strictObject` is what makes carrying one there a parse error.
+ */
+export const BrainActorIdentityViewSchema = z.discriminatedUnion("state", [
+  z.strictObject({
+    state: z.literal("atlas"),
+    userId: z.string(),
+    name: z.string().nullable(),
+    email: z.string().nullable(),
+  }),
+  z.strictObject({
+    state: z.literal("directory"),
+    displayName: z.string().nullable(),
+    realName: z.string().nullable(),
+    email: z.string().nullable(),
+    snapshotAt: z.string(),
+  }),
+  z.strictObject({
+    state: z.literal("opaque"),
+    erased: z.boolean(),
+  }),
+]) satisfies z.ZodType<BrainActorIdentityView, unknown>;
+
 export const BrainFactAttributionViewSchema = z.discriminatedUnion("visible", [
   z.object({
     visible: z.literal(true),
     sourceId: z.string().nullable(),
     actor: z.string().nullable(),
     occurredAt: z.string().nullable(),
+    // Null IFF `actor` is null - no author, no identity question. An author
+    // Atlas cannot name is the `opaque` arm, which says so out loud.
+    actorIdentity: BrainActorIdentityViewSchema.nullable(),
   }),
   z.strictObject({
     visible: z.literal(false),
@@ -456,6 +499,21 @@ export const BrainFactRetractResponseSchema = z.object({
  * browser. The `/oversight` route's `z.strictObject` withholds are the
  * precedent.
  */
+/**
+ * The actor-identity erasure's report (#5440).
+ *
+ * `z.strictObject` for `BrainFactTensionSweepResponseSchema`'s reason, one
+ * domain over: the obvious next thing a producer would attach is the list of
+ * claims that just went opaque, and that list is this person's whole presence
+ * in the record - across every grant in the workspace, to a caller who asked
+ * only to remove a name. Strict makes attaching it a parse failure at the ACL
+ * boundary rather than a disclosure in a browser.
+ */
+export const BrainActorIdentityEraseResponseSchema = z.strictObject({
+  erased: z.literal(true),
+  actor: z.string(),
+}) satisfies z.ZodType<BrainActorIdentityEraseResponse, unknown>;
+
 export const BrainFactTensionSweepResponseSchema = z.strictObject({
   minted: z.number().int().nonnegative(),
   truncated: z.boolean(),

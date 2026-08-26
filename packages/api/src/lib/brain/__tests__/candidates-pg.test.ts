@@ -1072,6 +1072,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         sourceId: "C-FOUNDERS:1799999999.001",
         actor: "U-FOUNDER",
         occurredAt: "2026-05-30T00:00:00.000Z",
+        actorIdentity: { state: "opaque", erased: false },
       });
     },
     PG_TEST_TIMEOUT_MS,
@@ -1114,6 +1115,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         sourceId: "C-ENG:1799999999.002",
         actor: "U-ENG",
         occurredAt: "2026-05-30T00:00:00.000Z",
+        actorIdentity: { state: "opaque", erased: false },
       });
     },
     PG_TEST_TIMEOUT_MS,

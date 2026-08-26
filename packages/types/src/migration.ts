@@ -88,6 +88,8 @@ export interface ExportManifest {
     brainEnrollments?: number;
     /** The entity store's snapshot entries (#5043, ADR-0037 §5). */
     brainEntities?: number;
+    /** Resolved actor identities — the human name on each claim (#5440). */
+    brainActorIdentities?: number;
   };
 }
 
@@ -740,6 +742,54 @@ export interface ExportedBrainEntity {
   snapshotAt: string;
 }
 
+/**
+ * One actor's resolved identity — the human NAME behind a claim's vendor handle
+ * (#5440, ADR-0036 T5's `Amendment (2026-08-25, #5440)`).
+ *
+ * ## It travels, and the failure direction is why
+ *
+ * `admin-migrate.ts` enumerates brain tables EXPLICITLY, and a table absent
+ * from that list does not travel — silently. The bundle imports fine, every
+ * count reads clean, and every migrated claim comes out `opaque`: a workspace
+ * that could name its authors before the cutover cannot afterwards, with no
+ * error anywhere. That is ADR-0039's invisible direction, and it is the same
+ * argument #5424 used when it refused to let migration strand attribution.
+ *
+ * ## What travels, per state
+ *
+ * `atlas` rows carry the Better-Auth user id and NO name — the destination
+ * joins `"user"` live, exactly as the source did, and Better-Auth's tables are
+ * global by ADR-0024 so the id resolves there without being carried.
+ *
+ * `directory` rows carry the snapshot AND its original date, unchanged. Not
+ * re-stamped at import: the date says when the vendor named this person, and a
+ * destination that re-stamped it would assert a reading it never took — the
+ * fabrication `brain_coverage_snapshot` is classified `stays` to avoid.
+ *
+ * `opaque` rows travel too, including an ERASED one. An erasure that did not
+ * cross would be undone by the destination's first audience cycle, which is the
+ * one thing an erasure must never be.
+ */
+export interface ExportedBrainActorIdentity {
+  /** The claim's `provenance.actor`, verbatim — `slack:U0AQW6KF2EM`. */
+  actor: string;
+  source: string;
+  vendorUserId: string;
+  /** `atlas` | `directory` | `opaque`. */
+  state: string;
+  /** `atlas` only. A Better-Auth user id; the NAME is joined live. */
+  userId?: string | null;
+  /** `directory` only — the dated snapshot. */
+  displayName?: string | null;
+  realName?: string | null;
+  email?: string | null;
+  /** ISO-8601. Present iff `state` is `directory`; carried, never re-stamped. */
+  snapshotAt?: string | null;
+  /** ISO-8601. Set iff an operator erased — and it MUST cross, or the cutover undoes it. */
+  erasedAt?: string | null;
+  erasedBy?: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Full bundle
 // ---------------------------------------------------------------------------
@@ -808,6 +858,17 @@ export interface ExportBundle {
    * optional-on-the-wire shape as the sections above.
    */
   brainEntities?: ExportedBrainEntity[];
+  /**
+   * Resolved actor identities (#5440, ADR-0036 §T5). Same optional-on-the-wire
+   * shape as the sections above.
+   *
+   * ⚠️ Absent is NOT the same as empty, and the difference is invisible at the
+   * destination: a bundle from a region that never ran a capture pass and a
+   * bundle whose producer forgot this section both land every claim `opaque`.
+   * The reason it must nonetheless be optional is v2 compatibility — see the
+   * type's own header for why dropping the section is the silent failure.
+   */
+  brainActorIdentities?: ExportedBrainActorIdentity[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1010,6 +1071,16 @@ export interface ImportResult {
    * radius arriving from a direction nobody is watching.
    */
   brainEntities: { imported: number; skipped: number };
+  /**
+   * Resolved actor identities (#5440).
+   *
+   * ⚠️ `DO NOTHING` on conflict, for `brainEntities`' reason one domain over:
+   * an older arriving snapshot must never overwrite a newer local one, and —
+   * sharper here — must never overwrite a local ERASURE. A bundle taken before
+   * an operator cleared a name would otherwise restore it at the destination,
+   * which is the one outcome an erasure has to survive.
+   */
+  brainActorIdentities: { imported: number; skipped: number };
 }
 
 // ---------------------------------------------------------------------------

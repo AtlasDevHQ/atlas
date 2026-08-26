@@ -31,6 +31,7 @@ export type {
   BrainFactOversightBucket,
   BrainFactWillSupersede,
   BrainFactWillWiden,
+  BrainActorIdentityView,
   BrainFactProvenanceView,
   BrainFactTensionView,
   BrainFactTensionVisible,

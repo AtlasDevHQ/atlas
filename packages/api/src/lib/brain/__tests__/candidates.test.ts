@@ -22,6 +22,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { NO_ACTOR_IDENTITIES } from "@atlas/api/lib/brain/actor-identity";
 import {
   BrainReaderUnresolvedError,
   CANDIDATE_PAGE_MAX,
@@ -137,9 +138,9 @@ describe("projectProvenance", () => {
   it("flags provisional on key PRESENCE, not truthiness", () => {
     // `provisional` is written only when true, so a filter keyed on the value
     // would be defeated the moment a producer started writing `false`.
-    expect(projectProvenance({ provisional: true }, null, "disclose").provisional).toBe(true);
-    expect(projectProvenance({}, null, "disclose").provisional).toBe(false);
-    expect(projectProvenance({ provisional: false }, null, "disclose").provisional).toBe(false);
+    expect(projectProvenance({ provisional: true }, null, "disclose", NO_ACTOR_IDENTITIES).provisional).toBe(true);
+    expect(projectProvenance({}, null, "disclose", NO_ACTOR_IDENTITIES).provisional).toBe(false);
+    expect(projectProvenance({ provisional: false }, null, "disclose", NO_ACTOR_IDENTITIES).provisional).toBe(false);
   });
 
   // #4939 — an INVERSE guard. The three correction markers
@@ -165,6 +166,7 @@ describe("projectProvenance", () => {
       },
       null,
       "disclose",
+      NO_ACTOR_IDENTITIES,
     );
     for (const marker of ["reReview", "reAuthority", "pinned"]) {
       expect(
@@ -180,7 +182,7 @@ describe("projectProvenance", () => {
   });
 
   it("reports an incomplete payload rather than rendering blanks", () => {
-    const complete = projectProvenance(factRow().provenance, null, "disclose");
+    const complete = projectProvenance(factRow().provenance, null, "disclose", NO_ACTOR_IDENTITIES);
     expect(complete.payloadComplete).toBe(true);
 
     // A renamed key must not read as "the producer recorded nothing".
@@ -188,6 +190,7 @@ describe("projectProvenance", () => {
       { ...(factRow().provenance as object), producer: undefined },
       null,
       "disclose",
+      NO_ACTOR_IDENTITIES,
     );
     expect(renamed.payloadComplete).toBe(false);
     expect(renamed.producer).toBeNull();
@@ -198,26 +201,35 @@ describe("projectProvenance", () => {
       { ...(factRow().provenance as object), actor: null },
       null,
       "disclose",
+      NO_ACTOR_IDENTITIES,
     );
     expect(p.payloadComplete).toBe(true);
-    expect(p.attribution).toEqual({ visible: true, sourceId: "C1/17", actor: null, occurredAt: ISO });
+    expect(p.attribution).toEqual({
+      visible: true,
+      sourceId: "C1/17",
+      actor: null,
+      occurredAt: ISO,
+      // Null IFF `actor` is null — no author, no identity question. An
+      // author Atlas cannot name is `opaque`, which is a different claim.
+      actorIdentity: null,
+    });
   });
 
   it("degrades a non-object payload to all-null instead of throwing", () => {
-    const p = projectProvenance("not an object", null, "disclose");
+    const p = projectProvenance("not an object", null, "disclose", NO_ACTOR_IDENTITIES);
     expect(p.payloadComplete).toBe(false);
     expect(p.episodeId).toBeNull();
   });
 
   it("keeps only real entity roles out of `unresolved`", () => {
-    const p = projectProvenance({ provisional: true, unresolved: ["subject", "elbow"] }, null, "disclose");
+    const p = projectProvenance({ provisional: true, unresolved: ["subject", "elbow"] }, null, "disclose", NO_ACTOR_IDENTITIES);
     expect(p.unresolved).toEqual(["subject"]);
   });
 
   it("derives provisional from a side-list carrying no flag", () => {
     // Reachable through a region-import bundle. Without the OR it would present
     // as "resolved, but here are the unresolved sides".
-    const p = projectProvenance({ unresolved: ["object"] }, null, "disclose");
+    const p = projectProvenance({ unresolved: ["object"] }, null, "disclose", NO_ACTOR_IDENTITIES);
     expect(p.provisional).toBe(true);
   });
 
@@ -225,13 +237,13 @@ describe("projectProvenance", () => {
     // The jsonb copy and `source_episode_id` naming different evidence for the
     // same claim is a real integrity failure on a provenance surface — and the
     // jsonb copy's only capability, absent this check, is to disagree.
-    const p = projectProvenance(factRow().provenance, "some-other-episode", "disclose");
+    const p = projectProvenance(factRow().provenance, "some-other-episode", "disclose", NO_ACTOR_IDENTITIES);
     expect(p.payloadComplete).toBe(false);
   });
 
   it("skips the episode cross-check when the caller has nothing to compare", () => {
-    expect(projectProvenance(factRow().provenance, undefined, "disclose").payloadComplete).toBe(true);
-    expect(projectProvenance(factRow().provenance, "ep-1", "disclose").payloadComplete).toBe(true);
+    expect(projectProvenance(factRow().provenance, undefined, "disclose", NO_ACTOR_IDENTITIES).payloadComplete).toBe(true);
+    expect(projectProvenance(factRow().provenance, "ep-1", "disclose", NO_ACTOR_IDENTITIES).payloadComplete).toBe(true);
   });
 
   it("reports an unparseable timestamp as an incomplete payload", () => {
@@ -241,13 +253,14 @@ describe("projectProvenance", () => {
       { ...(factRow().provenance as object), occurredAt: "yesterday" },
       null,
       "disclose",
+      NO_ACTOR_IDENTITIES,
     );
     expect(p.payloadComplete).toBe(false);
   });
 
   it("treats a dropped nullable key as incomplete, not as a legitimate null", () => {
     const { occurredAt: _dropped, ...withoutKey } = factRow().provenance as Record<string, unknown>;
-    expect(projectProvenance(withoutKey, null, "disclose").payloadComplete).toBe(false);
+    expect(projectProvenance(withoutKey, null, "disclose", NO_ACTOR_IDENTITIES).payloadComplete).toBe(false);
   });
 });
 
@@ -1027,6 +1040,9 @@ describe("loadFactCandidates — attribution on a widened fact (#4836)", () => {
       sourceId: "C1/17",
       actor: "U1",
       occurredAt: ISO,
+      // Nothing captured an identity for this handle, so the NAMED
+      // "cannot name this person" state — never a blank, never the handle.
+      actorIdentity: { state: "opaque", erased: false },
     });
   });
 
@@ -1039,6 +1055,9 @@ describe("loadFactCandidates — attribution on a widened fact (#4836)", () => {
       sourceId: "C1/17",
       actor: "U1",
       occurredAt: ISO,
+      // Nothing captured an identity for this handle, so the NAMED
+      // "cannot name this person" state — never a blank, never the handle.
+      actorIdentity: { state: "opaque", erased: false },
     });
   });
 
@@ -1085,7 +1104,7 @@ describe("loadFactCandidates — attribution on a widened fact (#4836)", () => {
 
 describe("projectProvenance — the withheld arm (#4836)", () => {
   it("replaces the triple with a variant that cannot carry it", () => {
-    const p = projectProvenance(factRow().provenance, "ep-1", "withhold");
+    const p = projectProvenance(factRow().provenance, "ep-1", "withhold", NO_ACTOR_IDENTITIES);
     expect(p.attribution).toEqual({ visible: false });
     expect(Object.keys(p.attribution)).toEqual(["visible"]);
   });
@@ -1094,7 +1113,7 @@ describe("projectProvenance — the withheld arm (#4836)", () => {
     // The degraded arm returns before the payload is read at all. If it built
     // its own attribution independently, the two arms could disagree about
     // entitlement — and the arm that disagrees is the one reached by drift.
-    const p = projectProvenance("not an object", null, "withhold");
+    const p = projectProvenance("not an object", null, "withhold", NO_ACTOR_IDENTITIES);
     expect(p.attribution).toEqual({ visible: false });
   });
 
@@ -1102,15 +1121,27 @@ describe("projectProvenance — the withheld arm (#4836)", () => {
     // Entitlement and integrity are two different answers on the wire and must
     // stay independent: withheld-but-well-formed, and disclosed-but-drifted,
     // are both real states a reviewer has to be able to tell apart.
-    expect(projectProvenance(factRow().provenance, "ep-1", "withhold").payloadComplete).toBe(true);
-    expect(projectProvenance({ actor: null }, null, "withhold").payloadComplete).toBe(false);
+    expect(projectProvenance(factRow().provenance, "ep-1", "withhold", NO_ACTOR_IDENTITIES).payloadComplete).toBe(true);
+    expect(projectProvenance({ actor: null }, null, "withhold", NO_ACTOR_IDENTITIES).payloadComplete).toBe(false);
+  });
+
+  it("cannot carry the actor's NAME either — the structural half of #5440", () => {
+    // The projection is the guarantee on `searchBrain`, which has no response
+    // parse. Even handed a resolved identity for this exact handle, the
+    // withheld arm has nowhere to put it.
+    const identities = new Map([
+      ["U1", { state: "atlas" as const, userId: "u1", name: "Ada Lovelace", email: null }],
+    ]);
+    const p = projectProvenance(factRow().provenance, "ep-1", "withhold", identities);
+    expect(p.attribution).toEqual({ visible: false });
+    expect(JSON.stringify(p)).not.toContain("Ada Lovelace");
   });
 
   it("still projects source, producer and the pipeline timestamps", () => {
     // Withholding is scoped to the three fields that name a person and a
     // place. `extractedAt` / `reconciledAt` are Atlas's own batch-scheduled
     // pipeline clocks, not the moment anything was said.
-    const p = projectProvenance(factRow().provenance, "ep-1", "withhold");
+    const p = projectProvenance(factRow().provenance, "ep-1", "withhold", NO_ACTOR_IDENTITIES);
     expect(p.source).toBe("slack");
     expect(p.producer).toBe("extraction:v1");
     expect(p.episodeId).toBe("ep-1");
@@ -1159,9 +1190,88 @@ describe("BrainFactAttributionViewSchema — the withheld arm is enforced, not c
     );
     expect(
       BrainFactProvenanceViewSchema.safeParse(
-        provenance({ visible: true, sourceId: "C1/17", actor: "U1", occurredAt: ISO }),
+        provenance({
+          visible: true,
+          sourceId: "C1/17",
+          actor: "U1",
+          occurredAt: ISO,
+          actorIdentity: { state: "opaque", erased: false },
+        }),
       ).success,
     ).toBe(true);
+  });
+
+  // ── #5440: the NAME rides the same gate and gains none of its own ────────
+  it("REFUSES a withheld arm that smuggles the actor's NAME back in", () => {
+    // ⚠️ THE property that keeps #5440 from silently undoing #4836. A name is a
+    // strictly more identifying rendering of `actor`, so a withheld arm that
+    // could carry one would disclose MORE than the field it replaced — and it
+    // would do so on `searchBrain`, the path an end user reaches, where there
+    // is no response parse and the discriminated union is the whole guarantee.
+    for (const leak of [
+      { visible: false, actorIdentity: { state: "atlas", userId: "u1", name: "Ada", email: null } },
+      { visible: false, actorIdentity: null },
+      {
+        visible: false,
+        actorIdentity: {
+          state: "directory",
+          displayName: "dana",
+          realName: null,
+          email: null,
+          snapshotAt: ISO,
+        },
+      },
+    ]) {
+      expect(BrainFactProvenanceViewSchema.safeParse(provenance(leak)).success).toBe(false);
+    }
+  });
+
+  it("REFUSES a disclosed arm that omits the identity, so `opaque` must be SAID", () => {
+    // An absent field would render as a blank, which is exactly the outcome
+    // finish condition 2 refuses. "Cannot name this person" has to be stated.
+    expect(
+      BrainFactProvenanceViewSchema.safeParse(
+        provenance({ visible: true, sourceId: "C1/17", actor: "U1", occurredAt: ISO }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("REFUSES an `atlas` identity carrying a snapshot", () => {
+    // The state where a snapshot is strictly worse than the live join: it goes
+    // stale with no re-derivation path. `z.strictObject` on each arm is what
+    // makes a producer that attached one fail here rather than ship a name that
+    // can never be re-derived.
+    expect(
+      BrainFactProvenanceViewSchema.safeParse(
+        provenance({
+          visible: true,
+          sourceId: "C1/17",
+          actor: "U1",
+          occurredAt: ISO,
+          actorIdentity: {
+            state: "atlas",
+            userId: "u1",
+            name: "Ada",
+            email: null,
+            snapshotAt: ISO,
+          },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("REFUSES a `directory` identity with no date", () => {
+    expect(
+      BrainFactProvenanceViewSchema.safeParse(
+        provenance({
+          visible: true,
+          sourceId: "C1/17",
+          actor: "U1",
+          occurredAt: ISO,
+          actorIdentity: { state: "directory", displayName: "dana", realName: null, email: null },
+        }),
+      ).success,
+    ).toBe(false);
   });
 
   it("REFUSES a disclosed arm missing the fields it promises", () => {
@@ -1178,7 +1288,12 @@ describe("BrainFactAttributionViewSchema — the withheld arm is enforced, not c
     // pairing matters because `searchBrain` has no response parse, so on that
     // path the projection IS the guarantee.
     for (const decision of ["disclose", "withhold"] as const) {
-      const built = projectProvenance(factRow().provenance, "ep-1", decision);
+      const built = projectProvenance(
+        factRow().provenance,
+        "ep-1",
+        decision,
+        NO_ACTOR_IDENTITIES,
+      );
       expect(BrainFactProvenanceViewSchema.safeParse(built).success).toBe(true);
     }
   });

@@ -114,6 +114,15 @@ const RECONCILED_SECTIONS = [
   // of them looks byte-identical to one working correctly, and would otherwise
   // report a clean cutover.
   "brainEntities",
+  // #5440, ADR-0036 §T5. Reconciled for `brainEntities`' reason with the
+  // failure one notch worse: a target that landed none of them renders every
+  // migrated claim `opaque` — "we cannot name this person" — which is an
+  // HONEST sentence and therefore completely indistinguishable from a
+  // workspace whose capture pass has simply not run. The cutover would report
+  // clean and the record would have lost the only mapping from its handles to
+  // people. The section also carries operator ERASURES as tombstones, so
+  // silently dropping it would additionally undo them.
+  "brainActorIdentities",
 ] as const satisfies readonly (keyof ExportManifest["counts"] & keyof ImportResult)[];
 
 type RefusalCapableSection = {

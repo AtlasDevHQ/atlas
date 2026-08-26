@@ -397,6 +397,25 @@ const COLUMN_OVERRIDES: Readonly<Record<string, Readonly<Record<string, string>>
     status: `'pending'`,
     source_class: `'human'`,
   },
+  // #5440: `state` is CHECKed to the three-state set, and three more CHECKs
+  // derive the rest of the row FROM it — so the whole shape has to agree. Seeded
+  // `directory`, deliberately: that is the state that actually holds personal
+  // data about someone who is not an Atlas user, and it is what the purge
+  // decision is ABOUT. An `atlas` row would seed a pointer and no name, which
+  // would let the assertion pass while deleting nothing anyone would miss.
+  brain_actor_identity: {
+    actor: `('slack:U' || $1)`,
+    source: `'slack'`,
+    vendor_user_id: `('U' || $1)`,
+    state: `'directory'`,
+    user_id: `NULL`,
+    display_name: `('dana-' || $1)`,
+    real_name: `('Dana Okafor ' || $1)`,
+    email: `('dana-' || $1 || '@contractor.test')`,
+    snapshot_at: `now()`,
+    erased_at: `NULL`,
+    erased_by: `NULL`,
+  },
 };
 
 describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => {

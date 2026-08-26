@@ -25008,13 +25008,113 @@
                                           "string",
                                           "null"
                                         ]
+                                      },
+                                      "actorIdentity": {
+                                        "oneOf": [
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "state": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "atlas"
+                                                ]
+                                              },
+                                              "userId": {
+                                                "type": "string"
+                                              },
+                                              "name": {
+                                                "type": [
+                                                  "string",
+                                                  "null"
+                                                ]
+                                              },
+                                              "email": {
+                                                "type": [
+                                                  "string",
+                                                  "null"
+                                                ]
+                                              }
+                                            },
+                                            "required": [
+                                              "state",
+                                              "userId",
+                                              "name",
+                                              "email"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "state": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "directory"
+                                                ]
+                                              },
+                                              "displayName": {
+                                                "type": [
+                                                  "string",
+                                                  "null"
+                                                ]
+                                              },
+                                              "realName": {
+                                                "type": [
+                                                  "string",
+                                                  "null"
+                                                ]
+                                              },
+                                              "email": {
+                                                "type": [
+                                                  "string",
+                                                  "null"
+                                                ]
+                                              },
+                                              "snapshotAt": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "state",
+                                              "displayName",
+                                              "realName",
+                                              "email",
+                                              "snapshotAt"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "state": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "opaque"
+                                                ]
+                                              },
+                                              "erased": {
+                                                "type": "boolean"
+                                              }
+                                            },
+                                            "required": [
+                                              "state",
+                                              "erased"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
                                       }
                                     },
                                     "required": [
                                       "visible",
                                       "sourceId",
                                       "actor",
-                                      "occurredAt"
+                                      "occurredAt",
+                                      "actorIdentity"
                                     ]
                                   },
                                   {
@@ -25289,13 +25389,113 @@
                                                     "string",
                                                     "null"
                                                   ]
+                                                },
+                                                "actorIdentity": {
+                                                  "oneOf": [
+                                                    {
+                                                      "type": "object",
+                                                      "properties": {
+                                                        "state": {
+                                                          "type": "string",
+                                                          "enum": [
+                                                            "atlas"
+                                                          ]
+                                                        },
+                                                        "userId": {
+                                                          "type": "string"
+                                                        },
+                                                        "name": {
+                                                          "type": [
+                                                            "string",
+                                                            "null"
+                                                          ]
+                                                        },
+                                                        "email": {
+                                                          "type": [
+                                                            "string",
+                                                            "null"
+                                                          ]
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "state",
+                                                        "userId",
+                                                        "name",
+                                                        "email"
+                                                      ],
+                                                      "additionalProperties": false
+                                                    },
+                                                    {
+                                                      "type": "object",
+                                                      "properties": {
+                                                        "state": {
+                                                          "type": "string",
+                                                          "enum": [
+                                                            "directory"
+                                                          ]
+                                                        },
+                                                        "displayName": {
+                                                          "type": [
+                                                            "string",
+                                                            "null"
+                                                          ]
+                                                        },
+                                                        "realName": {
+                                                          "type": [
+                                                            "string",
+                                                            "null"
+                                                          ]
+                                                        },
+                                                        "email": {
+                                                          "type": [
+                                                            "string",
+                                                            "null"
+                                                          ]
+                                                        },
+                                                        "snapshotAt": {
+                                                          "type": "string"
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "state",
+                                                        "displayName",
+                                                        "realName",
+                                                        "email",
+                                                        "snapshotAt"
+                                                      ],
+                                                      "additionalProperties": false
+                                                    },
+                                                    {
+                                                      "type": "object",
+                                                      "properties": {
+                                                        "state": {
+                                                          "type": "string",
+                                                          "enum": [
+                                                            "opaque"
+                                                          ]
+                                                        },
+                                                        "erased": {
+                                                          "type": "boolean"
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "state",
+                                                        "erased"
+                                                      ],
+                                                      "additionalProperties": false
+                                                    },
+                                                    {
+                                                      "type": "null"
+                                                    }
+                                                  ]
                                                 }
                                               },
                                               "required": [
                                                 "visible",
                                                 "sourceId",
                                                 "actor",
-                                                "occurredAt"
+                                                "occurredAt",
+                                                "actorIdentity"
                                               ]
                                             },
                                             {
@@ -27021,6 +27221,188 @@
           }
         },
         "operationId": "postAdminBrainFactsTensionSweep"
+      }
+    },
+    "/api/v1/admin/brain-facts/actor-identity/erase": {
+      "post": {
+        "tags": [
+          "Admin — Brain Facts"
+        ],
+        "summary": "Clear one author's directory snapshot",
+        "description": "Clears the DATED DIRECTORY SNAPSHOT Atlas holds for one source principal (#5440, ADR-0036 §T5). Every claim that principal authored returns to the `opaque` identity state — the review surface and `searchBrain` render an explicit \"cannot name this person\" instead of the name — and **no claim is deleted, retracted or otherwise changed**. That is the `retract` shape applied to a person: the record keeps the statement and loses the person. The erasure is DURABLE. The audience sync's capture pass skips an erased handle forever, so the name does not come back on the next cycle. There is no un-erase verb; re-capturing a cleared name is a deliberate database operation, not an API call. ⚠️ Only a `directory` snapshot can be erased, and the narrowness is the point. An `atlas` identity stores no snapshot — its name is a live join to a Better Auth account whose own erasure path is account deletion — so clearing one would remove nothing and would leave a current colleague unnameable on every claim they made. Needs the owner or admin entitlement, re-resolved against this workspace rather than read off the session, on the same bar `/tension-sweep` applies: this writes workspace-wide state that no per-claim grant scopes.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "actor": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "description": "The actor handle exactly as it appears on the claim's provenance — `slack:U0AQW6KF2EM`. Read it off the review surface; it is never guessed from a name, because there is no query from a name to a handle and adding one would make this a people directory.",
+                    "example": "slack:U0AQW6KF2EM"
+                  }
+                },
+                "required": [
+                  "actor"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The snapshot was cleared. The body echoes the handle and nothing else — deliberately NOT a count of affected claims, which would report the size of one person's presence in the record to a caller who asked only to remove their name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "erased": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "actor": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "erased",
+                    "actor"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — bad filter value or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — erasure writes workspace-wide identity state and needs the owner or admin entitlement, re-resolved against the workspace being written rather than read off the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No identity is recorded for that handle in this workspace. Nothing was changed — and nothing needed to be: a handle with no row already renders `opaque`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That handle carries no snapshot to clear. Either it resolves to an Atlas account (`atlas`, whose name is a LIVE join and whose erasure path is account deletion, not this route) or it is already `opaque`. Reported rather than answered as a silent success, so an operator learns which case they are in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainFactsActorIdentityErase"
       }
     },
     "/api/v1/admin/brain-vocabulary/surfaces": {
@@ -61426,6 +61808,9 @@
                           },
                           "brainEntities": {
                             "type": "number"
+                          },
+                          "brainActorIdentities": {
+                            "type": "number"
                           }
                         },
                         "required": [
@@ -61502,6 +61887,10 @@
                     "items": {}
                   },
                   "brainEntities": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "brainActorIdentities": {
                     "type": "array",
                     "items": {}
                   }
@@ -61830,6 +62219,21 @@
                         "imported",
                         "skipped"
                       ]
+                    },
+                    "brainActorIdentities": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
                     }
                   },
                   "required": [
@@ -61848,7 +62252,8 @@
                     "brainVocabularyEdges",
                     "brainSlackChannelExclusions",
                     "brainEnrollments",
-                    "brainEntities"
+                    "brainEntities",
+                    "brainActorIdentities"
                   ]
                 }
               }

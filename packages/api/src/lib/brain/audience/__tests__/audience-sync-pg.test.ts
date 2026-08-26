@@ -110,7 +110,7 @@ describeIfPg("brain audience membership (real Postgres)", () => {
     }
     await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
     // Better Auth's tables, stubbed to exactly the shape the resolver joins.
-    await pool.query(`CREATE TABLE IF NOT EXISTS "user" (id TEXT PRIMARY KEY, email TEXT NOT NULL)`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS "user" (id TEXT PRIMARY KEY, name TEXT, email TEXT NOT NULL)`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS member (
         id TEXT PRIMARY KEY,

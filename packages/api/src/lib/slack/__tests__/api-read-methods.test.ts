@@ -280,9 +280,9 @@ describe("fetchUsersListPage", () => {
     });
     const result = await fetchUsersListPage("t", { limit: 200 });
     expect(result.ok && result.users).toEqual([
-      { id: "U_GONE", email: "gone@corp.test", deleted: true, isBot: false },
-      { id: "U_BOT", email: null, deleted: false, isBot: true },
-      { id: "U_OK", email: "ok@corp.test", deleted: false, isBot: false },
+      { id: "U_GONE", email: "gone@corp.test", displayName: null, realName: null, deleted: true, isBot: false },
+      { id: "U_BOT", email: null, displayName: null, realName: null, deleted: false, isBot: true },
+      { id: "U_OK", email: "ok@corp.test", displayName: null, realName: null, deleted: false, isBot: false },
     ]);
   });
 

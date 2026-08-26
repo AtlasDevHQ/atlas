@@ -92,8 +92,17 @@ const PROVENANCE = {
   producer: "extraction:v1",
   // The attribution triple travels as a discriminated variant (#4836) — who
   // stated the claim first, where, and when, withheld as a unit from a reader
-  // who reaches the fact only through publish-time grant widening.
-  attribution: { visible: true, sourceId: "C1/17", actor: "U1", occurredAt: ISO },
+  // who reaches the fact only through publish-time grant widening. `#5440`'s
+  // human NAME rides INSIDE the visible arm for the same reason: a name is a
+  // more identifying rendering of `actor`, so the withheld arm must be
+  // structurally unable to carry it.
+  attribution: {
+    visible: true,
+    sourceId: "C1/17",
+    actor: "U1",
+    occurredAt: ISO,
+    actorIdentity: { state: "opaque" as const, erased: false },
+  },
   extractedAt: ISO,
   reconciledAt: ISO,
   provisional: false,
@@ -737,6 +746,92 @@ describe("withheld attribution is named, never blank (#4836)", () => {
     expect(text).not.toContain("Attribution restricted");
     expect(text).toContain("Asserted by");
     expect(text).toContain("C1/17");
+  });
+});
+
+describe("the actor's human NAME, in three states (#5440)", () => {
+  // Finish condition 2: *"pick any claim at random and point at THE PERSON"*.
+  // Until #5440 this surface rendered `slack:U0AQW6KF2EM` verbatim, which the
+  // condition's own test does not accept. Each state gets its own assertion
+  // because the three are genuinely different sentences, and an implementation
+  // that rendered one name for all three would pass a single-case test.
+
+  const withIdentity = (actorIdentity: unknown) =>
+    candidate({
+      provenance: {
+        ...PROVENANCE,
+        attribution: { ...PROVENANCE.attribution, actorIdentity },
+      },
+    });
+
+  async function openSheet(rows: ReturnType<typeof candidate>[]) {
+    const view = await renderPage(rows);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Fact candidate"));
+    return document.body.textContent ?? "";
+  }
+
+  test("renders an Atlas account's name as resolved LIVE, with no date", async () => {
+    // No date, deliberately: there is nothing here that can go stale, and
+    // stamping one would invite a reader to discount a current name as old.
+    const text = await openSheet([
+      withIdentity({ state: "atlas", userId: "user-1", name: "Ada Lovelace", email: "ada@corp.test" }),
+    ]);
+    expect(text).toContain("Ada Lovelace");
+    expect(text).toContain("resolved live");
+    // The HANDLE survives beside it. `provenance.actor` is never rewritten
+    // (ADR-0037 §5), and a reviewer chasing a claim back into Slack needs it.
+    expect(text).toContain("U1");
+  });
+
+  test("labels a directory snapshot AS a snapshot, with its date", async () => {
+    // For someone with no Atlas account this is the only record that will ever
+    // name them — and an undated name asserted as current is the failure the
+    // date exists against.
+    const text = await openSheet([
+      withIdentity({
+        state: "directory",
+        displayName: "dana",
+        realName: "Dana Okafor",
+        email: "dana@contractor.test",
+        snapshotAt: ISO,
+      }),
+    ]);
+    expect(text).toContain("dana");
+    expect(text).toContain("from the source directory");
+    expect(text).toContain("dana@contractor.test");
+  });
+
+  test("says CANNOT NAME rather than rendering a blank or the handle", async () => {
+    // The two renderings finish condition 2 explicitly refuses. A blank reads
+    // as "nobody asserted this claim"; the handle is what was ruled
+    // insufficient in the first place.
+    const text = await openSheet([withIdentity({ state: "opaque", erased: false })]);
+    expect(text).toContain("Cannot name this person");
+    expect(text).toContain("does not name them");
+    expect(text).not.toContain("an operator cleared this name");
+  });
+
+  test("distinguishes an ERASED name from one that was never captured", async () => {
+    // Both name nobody. Only one of them is a decision a person made, and an
+    // operator needs to see that their erasure took.
+    const text = await openSheet([withIdentity({ state: "opaque", erased: true })]);
+    expect(text).toContain("Cannot name this person");
+    expect(text).toContain("an operator cleared this name");
+  });
+
+  test("withholds the NAME from a widened-in reader, along with the handle", async () => {
+    // ⚠️ The property that keeps #5440 from silently undoing #4836: a name is a
+    // strictly more identifying rendering of `actor`, so it must be withheld
+    // under the same predicate. The withheld arm structurally cannot carry it,
+    // and this is the assertion that the SURFACE agrees.
+    const view = await renderPage([candidate({ provenance: WITHHELD_ATTRIBUTION })]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Fact candidate"));
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Attribution restricted");
+    expect(text).not.toContain("Cannot name this person");
+    expect(text).not.toContain("resolved live");
   });
 });
 

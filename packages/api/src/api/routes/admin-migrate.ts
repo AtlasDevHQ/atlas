@@ -52,6 +52,10 @@ import {
 } from "@atlas/api/lib/brain/object-cmp";
 
 import { normalizeEnrollmentPair } from "@atlas/api/lib/brain/enrollment";
+import {
+  BRAIN_ACTOR_IDENTITY_STATES,
+  type BrainActorIdentityState,
+} from "@atlas/api/lib/brain/actor-identity";
 import { isWarehouseRowId } from "@atlas/api/lib/brain/warehouse-producer";
 import type { ExportBundle, ExportedBrainFact, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -1024,6 +1028,140 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
     }
   }
 
+  if ("brainActorIdentities" in obj && obj.brainActorIdentities !== undefined) {
+    if (!Array.isArray(obj.brainActorIdentities)) {
+      return { ok: false, error: "Invalid 'brainActorIdentities' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainActorIdentities.length; i++) {
+      const x = obj.brainActorIdentities[i] as Record<string, unknown> | null;
+      if (!x || typeof x !== "object") {
+        return { ok: false, error: `brainActorIdentities[${i}]: must be an object.` };
+      }
+      for (const field of ["actor", "source", "vendorUserId", "state"] as const) {
+        const value = x[field];
+        if (typeof value !== "string" || value === "") {
+          return {
+            ok: false,
+            error: `brainActorIdentities[${i}].${field}: must be a non-empty string.`,
+          };
+        }
+      }
+      // Guards `ck_brain_actor_identity_state`. Refused HERE rather than left to
+      // the CHECK because a 23514 mid-import aborts the whole transaction with a
+      // constraint name and no section, where this names the row and the field.
+      if (!BRAIN_ACTOR_IDENTITY_STATES.includes(x.state as BrainActorIdentityState)) {
+        return {
+          ok: false,
+          error:
+            `brainActorIdentities[${i}].state: must be one of ` +
+            `${BRAIN_ACTOR_IDENTITY_STATES.join(", ")}. An unrecognised state is a bundle from a ` +
+            "region running a newer vocabulary; importing it would land a row every reader " +
+            "degrades to `opaque` while the table reports it as resolved.",
+        };
+      }
+      // The three-state shape, guarding the migration's four CHECKs.
+      //
+      // ⚠️ The ABSENCE half is checked as hard as the presence half, and that is
+      // the reason this is spelled out rather than left to the database. Two
+      // reasons, and the second is why it is worth the lines: a `directory` row
+      // carrying a `userId` would render live-or-snapshot depending on which
+      // field a reader reached for first, which is the collapse the
+      // discriminated union exists to make impossible — and a row that fails
+      // `ck_brain_actor_identity_*_shape` at INSERT aborts the WHOLE import
+      // transaction with a 23514, a constraint name and no section, which is
+      // exactly what the `state` whitelist above was added to prevent.
+      const str = (v: unknown): string | null =>
+        typeof v === "string" && v !== "" ? v : null;
+      /** Fields that must be ABSENT for this state — the `NULL`-or-missing half. */
+      const mustBeAbsent = (fields: readonly string[], why: string) => {
+        for (const field of fields) {
+          const value = x[field];
+          if (value === null || value === undefined) continue;
+          return {
+            ok: false as const,
+            error: `brainActorIdentities[${i}].${field}: a \`${String(x.state)}\` identity must not carry it — ${why}`,
+          };
+        }
+        return null;
+      };
+      if (x.state === "atlas") {
+        if (str(x.userId) === null) {
+          return {
+            ok: false,
+            error: `brainActorIdentities[${i}].userId: an \`atlas\` identity must carry the Better Auth user id it resolves through — the name is joined live from it, so a row without one names nobody.`,
+          };
+        }
+        const absent = mustBeAbsent(
+          ["displayName", "realName", "email", "snapshotAt"],
+          "its name is read LIVE from the account, and a snapshot beside a live join is one that goes stale with no re-derivation path.",
+        );
+        if (absent) return absent;
+      } else if (x.state === "directory") {
+        if (str(x.snapshotAt) === null) {
+          return {
+            ok: false,
+            error: `brainActorIdentities[${i}].snapshotAt: a \`directory\` identity must carry the date its snapshot was taken. Undated, a stale name is asserted as current — which is the failure the date exists to prevent.`,
+          };
+        }
+        if (
+          str(x.displayName) === null &&
+          str(x.realName) === null &&
+          str(x.email) === null
+        ) {
+          return {
+            ok: false,
+            error: `brainActorIdentities[${i}]: a \`directory\` identity must name somebody (displayName, realName or email). A nameless one is an \`opaque\` row with extra steps, and it would render as a blank.`,
+          };
+        }
+        const absent = mustBeAbsent(
+          ["userId"],
+          "a `directory` identity is one with no Atlas account, so a user id on it is a claim the state itself denies.",
+        );
+        if (absent) return absent;
+      } else {
+        const absent = mustBeAbsent(
+          ["userId", "displayName", "realName", "email", "snapshotAt"],
+          "`opaque` means Atlas cannot name this person, so any field that names one contradicts it.",
+        );
+        if (absent) return absent;
+      }
+      // An erasure MUST arrive as `opaque`, and MUST name who performed it.
+      // A bundle carrying `erasedAt` beside a live snapshot would restore, at
+      // the destination, exactly the name an operator removed at the source;
+      // one carrying `erasedAt` without `erasedBy` trips
+      // `ck_brain_actor_identity_erasure_shape` at INSERT and takes the whole
+      // cutover with it.
+      if (str(x.erasedAt) !== null) {
+        if (x.state !== "opaque") {
+          return {
+            ok: false,
+            error: `brainActorIdentities[${i}]: carries \`erasedAt\` but is not \`opaque\`. An erasure that arrives as a live identity would restore the name it removed.`,
+          };
+        }
+        if (str(x.erasedBy) === null) {
+          return {
+            ok: false,
+            error: `brainActorIdentities[${i}].erasedBy: an erasure must name who performed it — attribution on the erasure is what makes it answerable later.`,
+          };
+        }
+      }
+      // Both timestamps are NULLABLE here, so `missingTimestamps` (which
+      // requires presence) is the wrong tool: what has to hold is that a
+      // PRESENT one parses. An unparseable value would abort the import at
+      // INSERT time with a Postgres message naming no section.
+      for (const key of ["snapshotAt", "erasedAt"] as const) {
+        const value = x[key];
+        if (value === null || value === undefined) continue;
+        if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
+          return {
+            ok: false,
+            error: `brainActorIdentities[${i}].${key}: must be a parseable ISO-8601 timestamp or absent.`,
+          };
+        }
+      }
+    }
+  }
+
   return { ok: true, bundle: obj as unknown as ExportBundle };
 }
 
@@ -1127,6 +1265,7 @@ const ImportResultSchema = z.object({
   // digest of `(workspace, entity, primary key)`, so two regions holding one id
   // hold one warehouse row — there is no contradictory decision to refuse.
   brainEntities: z.object({ imported: z.number(), skipped: z.number() }),
+  brainActorIdentities: z.object({ imported: z.number(), skipped: z.number() }),
 });
 
 /**
@@ -1220,6 +1359,7 @@ const importRoute = createRoute({
                 brainSlackChannelExclusions: z.number().optional(),
                 brainEnrollments: z.number().optional(),
                 brainEntities: z.number().optional(),
+                brainActorIdentities: z.number().optional(),
               }),
             }),
             conversations: z.array(z.unknown()),
@@ -1258,6 +1398,7 @@ const importRoute = createRoute({
             // green cutover, because every lookup abstaining is the store's
             // designed behaviour.
             brainEntities: z.array(z.unknown()).optional(),
+            brainActorIdentities: z.array(z.unknown()).optional(),
           }),
         },
       },
@@ -1866,6 +2007,7 @@ export async function importBundle(
     brainSlackChannelExclusions: { imported: 0, skipped: 0, refused: 0 },
     brainEnrollments: { imported: 0, skipped: 0, namingDropped: 0, namingApplied: 0 },
     brainEntities: { imported: 0, skipped: 0 },
+    brainActorIdentities: { imported: 0, skipped: 0 },
   };
 
   // --- 1. Conversations + Messages ---
@@ -2640,6 +2782,58 @@ export async function importBundle(
     );
     if (rows.length > 0) result.brainEntities.imported++;
     else result.brainEntities.skipped++;
+  }
+
+  // --- 9c. The human NAME behind each claim's actor handle (#5440, ADR-0036 §T5) ---
+  //
+  // ⚠️ This section exists because the enumeration above is EXPLICIT and its
+  // omissions are SILENT. A brain table absent from this file does not travel,
+  // the bundle imports clean, every count reads fine, and every migrated claim
+  // comes out `opaque` — a workspace that could name its authors before the
+  // cutover cannot afterwards, with no error anywhere. ADR-0036 §T5's amendment
+  // decided snapshots travel for exactly that reason. (Evidence the enumeration
+  // does drift: `brain_predicate_cardinality` is absent from this file today —
+  // deliberately, per its `bundle-scope.ts` entry, but nothing here says so.)
+  //
+  // Ordered BEFORE the facts below, and unlike the entity store's ordering note
+  // this one is not merely for a reader: nothing enforces it with an FK — the
+  // join is `provenance ->> 'actor'` to `actor`, a VALUE join with no
+  // constraint — but landing the identities first means a half-finished import
+  // never has a window where claims are readable and their authors are not.
+  //
+  // `DO NOTHING`, for `brain_entity`'s reason sharpened by one more: an older
+  // arriving snapshot must not overwrite a newer local one, AND must not
+  // overwrite a local ERASURE. A bundle taken before an operator cleared a name
+  // would otherwise restore it here, which is the one outcome an erasure has to
+  // survive. `snapshot_at` and `erased_at` are written VERBATIM rather than
+  // stamped `now()`: the dates say when the vendor named this person and when a
+  // human removed the name, and re-stamping either would assert a reading this
+  // region never took.
+  for (const entry of bundle.brainActorIdentities ?? []) {
+    const { rows } = await client.query(
+      `INSERT INTO brain_actor_identity
+         (workspace_id, actor, source, vendor_user_id, state, user_id,
+          display_name, real_name, email, snapshot_at, erased_at, erased_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (workspace_id, actor) DO NOTHING
+       RETURNING actor`,
+      [
+        orgId,
+        entry.actor,
+        entry.source,
+        entry.vendorUserId,
+        entry.state,
+        entry.userId ?? null,
+        entry.displayName ?? null,
+        entry.realName ?? null,
+        entry.email ?? null,
+        entry.snapshotAt ?? null,
+        entry.erasedAt ?? null,
+        entry.erasedBy ?? null,
+      ],
+    );
+    if (rows.length > 0) result.brainActorIdentities.imported++;
+    else result.brainActorIdentities.skipped++;
   }
 
   // --- 10. Company brain (#4767, ADR-0036) — facts ride inside their episode ---

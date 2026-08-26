@@ -684,6 +684,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS "user" (
         id TEXT PRIMARY KEY,
+        name TEXT,
         email TEXT NOT NULL
       )
     `);

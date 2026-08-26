@@ -209,6 +209,12 @@ export const CLEANUP_TABLE_RULES = {
   // nothing to order against.
   brain_entity: { kind: "column", column: "workspace_id" },
 
+  // The human NAME behind each claim's actor handle (#5440, ADR-0036 §T5).
+  // Plain column rule for `brain_entity`'s reason: no FK in either direction —
+  // the join to `brain_facts` is `provenance ->> 'actor'` to `actor`, a VALUE
+  // join with no constraint — so there is nothing to order against.
+  brain_actor_identity: { kind: "column", column: "workspace_id" },
+
   // ── Stays residue (region-local; registry says NOT retained) ─────────────
   // The vocabulary's derived closure (#5022). `expression` rather than
   // `column`, and the predicate IS just the column — the kind is chosen for its

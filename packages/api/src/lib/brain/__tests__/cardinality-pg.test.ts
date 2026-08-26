@@ -450,9 +450,11 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         ).toBe(0);
 
         // The control: approving the same row, and nothing else, fires it.
+        // Answers the CARDINALITY that became in force, not a boolean (#5448) —
+        // the value the decide door's audit row records.
         expect(
           await decidePredicateCardinality(pool, ws, slotKey("owned by", identityAlias)!, "approved", "curator-1"),
-        ).toBe(true);
+        ).toBe("single");
         expect(await collisionCount(ws)).toBe(1);
       },
       PG_TEST_TIMEOUT_MS,
@@ -503,7 +505,9 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
           sourceClass: "correction_event",
           proposedBy: CORRECTION_EVENT_PRODUCER,
         });
-        expect(await decidePredicateCardinality(pool, ws, key, "rejected", "curator-1")).toBe(true);
+        expect(await decidePredicateCardinality(pool, ws, key, "rejected", "curator-1")).toBe(
+          "single",
+        );
 
         const again = await proposePredicateCardinality(pool, ws, {
           predicateKey: key,

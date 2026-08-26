@@ -115,24 +115,132 @@ export const CLASS_COPY: Record<BrainCoverageSourceClass, ClassCopy> = {
 };
 
 /**
- * The denominator's caption — what the number is *of*, per unit.
+ * The denominator's caption, IN ITS TWO PARTS (#5422).
  *
- * Each one names the CREDENTIAL, never the company, and each says so in words an
- * admin can act on: widening a scope grows the denominator, so a ratio going
- * down after connecting more sources is correct behaviour rather than a
- * regression, and the caption is where a reader learns that.
+ * ## Why the caption is decomposed rather than written out
+ *
+ * The caption reads correctly on the card, where it sits on its own line beneath
+ * the ratio. Concatenated into a sentence it doubled its own noun:
+ *
+ * > Chat — Atlas surveys 2 of 7 chat **channels** of the **channels** Atlas's
+ * > chat credentials can see, as of Aug 26, 2026.
+ *
+ * Neither string was wrong; the composition was. And the caption cannot simply
+ * be dropped from the sentence — *"of the channels Atlas's chat credentials can
+ * see"* is the credential-relative scoping that keeps the denominator honest
+ * (ADR-0041), and it is pinned by test.
+ *
+ * So the two sites compose from the SAME parts rather than one site
+ * concatenating the other's finished string. The card still gets a caption whose
+ * every character is unchanged — {@link UNIT_CAPTION} is derived from these, so
+ * the card cannot drift from the paragraph even in principle — and the paragraph
+ * gets a sentence that names the noun once.
+ *
+ * ⚠️ {@link UnitCaptionParts.units} is NOT {@link ClassCopy.units}. The class
+ * noun qualifies itself ("chat channels") because a card heading needs to stand
+ * alone; the caption noun does not ("channels") because the sentence it lands in
+ * already said "Chat". They are two nouns for two positions, and collapsing them
+ * puts the qualifier back exactly where the stutter was.
  */
-export const UNIT_CAPTION: Record<BrainCoverageUnitOrigin, string> = {
-  "chat-channel-roster": "of the channels Atlas's chat credentials can see",
-  "granted-recording-scopes": "of the recordings Atlas's granted scopes can see",
-  "mailbox-list": "of the mailboxes Atlas's mail credentials can see",
+export interface UnitCaptionParts {
+  /** The denominator's own noun, plural — "channels", never "chat channels". */
+  readonly units: string;
+  /** The singular, for a denominator of one. */
+  readonly unit: string;
+  /**
+   * What BOUNDS the denominator — "Atlas's chat credentials can see".
+   *
+   * Always names the credential or the artifact, never the company. This is the
+   * half that makes a ratio honest: widening a scope grows the denominator, so a
+   * ratio going down after connecting more sources is correct behaviour rather
+   * than a regression, and this clause is where a reader learns that.
+   */
+  readonly scope: string;
+}
+
+export const UNIT_CAPTION_PARTS: Record<BrainCoverageUnitOrigin, UnitCaptionParts> = {
+  "chat-channel-roster": {
+    units: "channels",
+    unit: "channel",
+    scope: "Atlas's chat credentials can see",
+  },
+  "granted-recording-scopes": {
+    units: "recordings",
+    unit: "recording",
+    scope: "Atlas's granted scopes can see",
+  },
+  "mailbox-list": {
+    units: "mailboxes",
+    unit: "mailbox",
+    scope: "Atlas's mail credentials can see",
+  },
   // Named for its SOURCE, not for a filter applied to it: the universe is what
   // the admin's own semantic layer describes, and enrollment (ADR-0039) is what
   // selects the surveyed subset FROM it — the two are a numerator/denominator
   // pair, so naming the denominator after the numerator's rule made the ratio
   // read as "4 of 281, all of which were enrolled".
-  "semantic-layer-enrollment": "of the entity–dimension pairs your semantic layer defines",
+  //
+  // Its scope clause is also the one that is not "can see": a semantic layer
+  // DEFINES its pairs. The parts are per-unit rather than a shared template for
+  // exactly this reason.
+  "semantic-layer-enrollment": {
+    units: "entity–dimension pairs",
+    unit: "entity–dimension pair",
+    scope: "your semantic layer defines",
+  },
 };
+
+/**
+ * The card's caption — the standalone phrase, DERIVED from the parts above.
+ *
+ * Every character is what it was before the decomposition, and it stays that way
+ * by construction rather than by two people remembering: the card and the
+ * paragraph now share one declaration site, so there is no edit that reaches one
+ * and misses the other.
+ */
+function captionOf(unit: BrainCoverageUnitOrigin): string {
+  const parts = UNIT_CAPTION_PARTS[unit];
+  return `of the ${parts.units} ${parts.scope}`;
+}
+
+export const UNIT_CAPTION: Record<BrainCoverageUnitOrigin, string> = {
+  "chat-channel-roster": captionOf("chat-channel-roster"),
+  "granted-recording-scopes": captionOf("granted-recording-scopes"),
+  "mailbox-list": captionOf("mailbox-list"),
+  "semantic-layer-enrollment": captionOf("semantic-layer-enrollment"),
+};
+
+/**
+ * The ratio as ONE clause — the paragraph's form, where the card uses two lines.
+ *
+ * *"3 of the 7 channels Atlas's chat credentials can see"*. The noun appears
+ * once, the credential-relative scoping is intact, and it takes a date after it
+ * without reading as a list of fragments.
+ *
+ * Singular agrees with the DENOMINATOR, same as {@link ratioPhrase} — that is
+ * the number the noun belongs to.
+ */
+export function surveyedOfPhrase(
+  surveyed: number,
+  enumerable: number,
+  unit: BrainCoverageUnitOrigin,
+): string {
+  const parts = UNIT_CAPTION_PARTS[unit];
+  const noun = enumerable === 1 ? parts.unit : parts.units;
+  return `${surveyed.toLocaleString()} of the ${enumerable.toLocaleString()} ${noun} ${parts.scope}`;
+}
+
+/**
+ * The measured-emptiness clause — a cycle ran, and there was nothing.
+ *
+ * Same parts, same reason. *"no channels Atlas's chat credentials can see"* is
+ * still a scoped statement: it does not say the company has no channels, only
+ * that these credentials found none, which is the whole discipline.
+ */
+export function noUnitsFoundPhrase(unit: BrainCoverageUnitOrigin): string {
+  const parts = UNIT_CAPTION_PARTS[unit];
+  return `no ${parts.units} ${parts.scope}`;
+}
 
 /**
  * The map edges — ADR-0041's third state, as SENTENCES.

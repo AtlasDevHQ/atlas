@@ -129,6 +129,8 @@ const WS = "ws-condition-2";
 const IMPORT_WS = "ws-condition-2-import";
 const ACTOR_ID = "user-admin-c2";
 const ACTOR_EMAIL = "admin@condition-2.test";
+/** In `"user"`, NOT a member of WS. The derived read must never name them here. */
+const OUTSIDER_ID = "user-outsider-c2";
 
 /** The attribution triple the condition names, read off one stored fact. */
 interface AttributionRead {
@@ -188,6 +190,34 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
       `INSERT INTO "user" (id, name, email) VALUES ($1, 'Ada Lovelace', $2)
        ON CONFLICT (id) DO NOTHING`,
       [ACTOR_ID, ACTOR_EMAIL],
+    );
+    // ...and `member`, because the derived read is WORKSPACE-SCOPED (#5454
+    // review). Better Auth's `"user"` is global; an unscoped read would hand a
+    // foreign person's name and email to any reader entitled to `actor` here,
+    // which `admin-migrate.ts` makes reachable by binding an imported bundle's
+    // provenance verbatim. So the join goes through `member`, and the fixture
+    // has to model the membership that a real corrector necessarily has —
+    // `correctFact` refuses every verb unless the caller is owner or admin ON
+    // THIS WORKSPACE, so "an actor with no membership row" is not a state the
+    // correction lane can produce.
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS member (
+         id TEXT PRIMARY KEY,
+         "organizationId" TEXT NOT NULL,
+         "userId" TEXT NOT NULL
+       )`,
+    );
+    await pool.query(
+      `INSERT INTO member (id, "organizationId", "userId") VALUES ($1, $2, $3)
+       ON CONFLICT (id) DO NOTHING`,
+      [`m-${ACTOR_ID}`, WS, ACTOR_ID],
+    );
+    // A person who exists in `"user"` but is NOT a member here. Nothing in this
+    // workspace may name them — the falsifier for the scoping itself.
+    await pool.query(
+      `INSERT INTO "user" (id, name, email) VALUES ($1, 'Grace Hopper', $2)
+       ON CONFLICT (id) DO NOTHING`,
+      [OUTSIDER_ID, "grace@example.test"],
     );
     _resetPool(pool);
   }, PG_TEST_TIMEOUT_MS);
@@ -449,6 +479,40 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
         [WS, episodeId],
       );
       expect(rows[0]?.n).toBe("0");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "§2e a `user:` handle for someone who is NOT a member here is never named",
+    async () => {
+      // The falsifier for the workspace scoping (#5454 review). Better Auth's
+      // `"user"` is GLOBAL, and `correctFact` is not the only writer of
+      // `provenance.actor`: `admin-migrate.ts` binds an imported region
+      // bundle's provenance verbatim behind a check that only asserts the actor
+      // is a non-empty string. So a bundle carrying `user:<foreign-id>` lands
+      // published, and an unscoped read of `"user"` would hand that person's
+      // NAME AND EMAIL to any reader entitled to `actor` in this workspace.
+      //
+      // Grace Hopper exists in `"user"` and has no `member` row for WS. The
+      // read must decline to name her — `opaque` is the honest answer: Atlas
+      // cannot name her TO THIS READER.
+      //
+      // ⚠️ Delete the `JOIN member` from LOAD_DERIVED_ATLAS_USERS_SQL and this
+      // goes red with her real name in the diff, which is the whole point of
+      // asserting it against a real database rather than a double.
+      const outsider = `user:${OUTSIDER_ID}`;
+      const identities = await loadActorIdentities(identityReader, WS, [
+        outsider,
+        `user:${ACTOR_ID}`,
+      ]);
+      expect(identityFor(identities, outsider)).toEqual({ state: "opaque", erased: false });
+      // The control, same call: a real member IS named, so the scoping is a
+      // narrowing rather than the read being broken.
+      expect(identityFor(identities, `user:${ACTOR_ID}`)).toMatchObject({
+        state: "atlas",
+        name: "Ada Lovelace",
+      });
     },
     PG_TEST_TIMEOUT_MS,
   );

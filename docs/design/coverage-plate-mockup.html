@@ -35,9 +35,83 @@
   unsurveyed ground DRAWN rather than omitted, the Day one / Month six
   edition toggle, and the fade rule.
 
+  ⚠️ Three items in that list did NOT survive contact with ADR-0041 — the five
+  states, the edition toggle and the fade rule. This paragraph is kept as
+  written rather than quietly corrected, because it is what the design actually
+  claimed; what happened to each claim is set out under WHERE THE SHIPPED PLATE
+  DIFFERS FROM THIS FILE, below.
+
   NOT authoritative: every count, label string and date. Those come from
   `lib/brain/coverage.ts` at build time, under ADR-0041's rules — which this
   mockup predates and does not encode. Where the two disagree, the ADR wins.
+
+  WHERE THE SHIPPED PLATE DIFFERS FROM THIS FILE
+  ----------------------------------------------
+  Added 2026-08-26, when the plate was built (#5422 -> PR #5470,
+  `packages/web/src/ui/components/admin/brain-coverage/plate.tsx`).
+
+  The paragraph above says the ADR wins where the two disagree. It did not say
+  WHERE they disagree, and there turned out to be five places. That omission is
+  the same failure this file was committed to end: a reader opens an
+  authoritative-sounding design and has to rediscover the divergences alone.
+  So they are named here, each with the line that overrode it.
+
+  1. THE FIVE STATES ARE THE OTHER ARM'S AXIS.
+     Surveyed / Attested / On the record / In dispute / Unsurveyed are TRUST
+     TIERS — what has been observed and where it stands, which ADR-0041 calls
+     the authority arm and `oversight.ts` already owns. The plate draws the
+     AVAILABILITY arm, whose axis is three survey-unit states: surveyed,
+     enumerated, unenumerable (ADR-0041 § Three states, and the third is a
+     mark). What survived is the SHAPE of the argument — a small closed set of
+     states, each with its own mark, none of them omitted. The specific five
+     did not, because they answer a different question.
+
+  2. A QUAD IS A SOURCE CLASS, NOT A SUBJECT.
+     The quads here are subjects — Pricing & Plans, Churn Reasons, Runbooks.
+     ADR-0041 refuses the subject/organization-side reading outright: *"Atlas
+     has no org chart; deriving one from channel names or SSO groups is a
+     guess"*, admissible only as a human-authored mapping that does not exist.
+     The shipped quad is one source class and a sounding is one survey unit —
+     a channel, a mailbox, an (entity, dimension) pair — which is the only atom
+     the ADR admits. It also refuses a SECOND atom per class (#5357), so there
+     is no finer grouping available to draw.
+
+  3. FOREST, NOT TEAL.
+     ADR-0023 section 4 commits the product surface to forest, *"never teal"*.
+     The colour STRUCTURE is this file's and was kept exactly — an ordinal
+     single-hue ramp for how deep a unit sits in the perimeter, plus exactly one
+     reserved caution colour used nowhere else. Only the hue moved, re-stepped
+     onto the brand and revalidated in both modes. The hatch is deliberately
+     louder than it is here (~1.97:1 against the card, versus ~1.35:1), because
+     unsurveyed ground being VISIBLE is this design's central claim and the
+     original is close to invisible on a bright screen.
+
+  4. THE FADE RULE DID NOT SHIP, AND CANNOT ON THIS WIRE.
+     Two routes, both closed by ADR-0041 itself:
+       - Fade by evidence age contradicts it in text — *"a source that hasn't
+         moved is current, however old its newest evidence"*. A quiet-but-current
+         unit would dim into looking stale, collapsing two of the three freshness
+         renderings the ADR requires stay distinct.
+       - Fade by measured lag is honest, but `lagMs` exists per NAMED unit only;
+         the freshness tally carries no lag. Withheld and clipped units would
+         stay bright while named ones dimmed, making the label-disclosure policy
+         visible as brightness.
+     ⚠️ And the competitive argument does not survive the translation anyway.
+     *"Surveyed soundings never fade, because they re-read live data"* inverts
+     here: the class that re-reads live data is `warehouse`, which declares
+     `no-activity-metadata`, so its units are permanently `unverified` — the
+     DIMMEST state on the sheet. Fade is a finding on #5422, not a task.
+
+  5. NO DAY ONE / MONTH SIX TOGGLE.
+     Here it switches between two sets of illustrative numbers, which is what a
+     mockup needs. The product has one state — the real one — and a control that
+     manufactured another would be exactly the sample data #5422's AC4 forbids.
+     The day-one state still drove the build; it is what the page shows on a
+     first-week workspace, unaided.
+
+  Everything else came across: quads and soundings, one mark per counted thing,
+  unsurveyed ground DRAWN rather than omitted and set in italic, the map's edge
+  marked without a number, and no single figure anywhere on the sheet.
 
   This file is the artifact's authored source, with the publishing host's
   <!doctype>/<head> wrapper stripped. Republish it via the Artifact tool

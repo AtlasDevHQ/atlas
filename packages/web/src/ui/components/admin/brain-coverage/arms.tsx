@@ -168,7 +168,17 @@ function ClassCard({
 }) {
   const copy = CLASS_COPY[sourceClass];
   return (
-    <Card className="shadow-none" data-testid={`coverage-class-${sourceClass}`}>
+    // The `id` is the plate's link target (#5422) — a quad on the Coverage
+    // Plate is an anchor to its own card, which is the "one interaction away"
+    // AC3 asks for. `scroll-mt-6` keeps the card's heading clear of the sticky
+    // admin chrome when the anchor lands. It duplicates `data-testid` on
+    // purpose: the test hook is a test hook, and hanging navigation off it
+    // would make a rename of one silently break the other.
+    <Card
+      id={`coverage-class-${sourceClass}`}
+      className="scroll-mt-6 shadow-none"
+      data-testid={`coverage-class-${sourceClass}`}
+    >
       <CardHeader className="pb-2">
         <CardTitle className="text-base">{copy.title}</CardTitle>
       </CardHeader>

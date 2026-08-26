@@ -31,7 +31,7 @@ const known = (...edges: BrainVocabularyEdgeEntry[]): PredicateVocabulary => ({
 describe("an unaliased predicate resolves to itself", () => {
   test("no edges at all", () => {
     const r = resolveWriteSlot(known(), "reports to");
-    expect(r).toEqual({ kind: "direct", previewSurface: "reports to" });
+    expect(r).toEqual({ kind: "direct", previewNorm: "reports to" });
     expect(isResolved(r)).toBe(true);
   });
 
@@ -46,7 +46,7 @@ describe("an unaliased predicate resolves to itself", () => {
     // drop, because the caller already hands over a filtered list and this looks
     // redundant.
     const r = resolveWriteSlot(known(edge("reports to", "manages", "subject")), "reports to");
-    expect(r).toEqual({ kind: "direct", previewSurface: "reports to" });
+    expect(r).toEqual({ kind: "direct", previewNorm: "reports to" });
   });
 });
 
@@ -55,7 +55,7 @@ describe("an aliased predicate folds, and the fold is disclosed", () => {
     const r = resolveWriteSlot(known(edge("led by", "leads")), "led by");
     expect(r).toEqual({
       kind: "folded",
-      previewSurface: "leads",
+      previewNorm: "leads",
       path: ["led by", "leads"],
     });
     expect(isResolved(r)).toBe(true);
@@ -73,7 +73,7 @@ describe("an aliased predicate folds, and the fold is disclosed", () => {
     );
     expect(r).toEqual({
       kind: "folded",
-      previewSurface: "d",
+      previewNorm: "d",
       path: ["a", "b", "c", "d"],
     });
   });

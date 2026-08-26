@@ -97,14 +97,14 @@ export type SlotResolution =
    */
   | { readonly kind: "unresolvable"; readonly because: "loading" | "failed" | "incomplete" }
   /** Unaliased: the write and the preview both key on the pick. */
-  | { readonly kind: "direct"; readonly previewSurface: string }
+  | { readonly kind: "direct"; readonly previewNorm: string }
   /**
-   * Aliased: the write keys on {@link previewSurface}, and so will the preview.
+   * Aliased: the write keys on {@link previewNorm}, and so will the preview.
    * `path` is the fold, picked norm first, for the disclosure.
    */
   | {
       readonly kind: "folded";
-      readonly previewSurface: string;
+      readonly previewNorm: string;
       readonly path: readonly string[];
     }
   /** The walk could not terminate. Refused rather than guessed. */
@@ -158,8 +158,8 @@ export function resolveWriteSlot(
     if (next === undefined) {
       // Terminal. `path.length === 1` means nothing folded at all.
       return path.length === 1
-        ? { kind: "direct", previewSurface: current }
-        : { kind: "folded", previewSurface: current, path };
+        ? { kind: "direct", previewNorm: current }
+        : { kind: "folded", previewNorm: current, path };
     }
     if (seen.has(next)) {
       path.push(next);

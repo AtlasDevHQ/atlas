@@ -28,10 +28,45 @@ import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
  * renders everything unconditionally.
  */
 
+/**
+ * EVERY export, per `.claude/rules/testing.md` — not the three-export shape the
+ * directory siblings use.
+ *
+ * `mock.module` REPLACES the module, so a shape that names three exports deletes
+ * the rest: any primitive or provider reaching for `useParams()` dies with a
+ * `TypeError` whose stack points at the component, not at this stub. The
+ * enrollment pane's own suite hit that and mocks the full surface; 48 files
+ * repo-wide still carry the short shape, so this is the rule's side of a live
+ * inconsistency rather than a novel precaution.
+ *
+ * The three navigation escapes THROW rather than returning a value. A test that
+ * silently redirects looks like a component that rendered nothing, which is the
+ * failure this whole suite is written to make impossible.
+ */
 void mock.module("next/navigation", () => ({
   usePathname: () => "/admin/brain/vocabulary",
-  useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
+  useRouter: () => ({
+    push: () => {},
+    replace: () => {},
+    back: () => {},
+    forward: () => {},
+    refresh: () => {},
+    prefetch: () => {},
+  }),
   useSearchParams: () => new URLSearchParams(),
+  useParams: () => ({}),
+  useSelectedLayoutSegment: () => null,
+  useSelectedLayoutSegments: () => [],
+  useServerInsertedHTML: () => {},
+  redirect: () => {
+    throw new Error("redirect() called in a test");
+  },
+  permanentRedirect: () => {
+    throw new Error("permanentRedirect() called in a test");
+  },
+  notFound: () => {
+    throw new Error("notFound() called in a test");
+  },
 }));
 
 const stubAuthClient: AtlasAuthClient = {

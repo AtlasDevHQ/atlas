@@ -1,18 +1,17 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import type { z } from "zod";
 import type {
-  BrainVocabularyBlastRadius,
   BrainVocabularyCardinality,
   BrainVocabularySurfaceOption,
 } from "@/ui/lib/types";
 import { isResolved, resolveWriteSlot, type PredicateVocabulary } from "./write-slot";
+import { usePreviewSlot } from "./use-preview-slot";
 import {
   BRAIN_VOCABULARY_CARDINALITIES,
   BrainVocabularyCardinalityRequestSchema,
   BrainVocabularyCardinalityWriteResponseSchema,
-  BrainVocabularyPreviewResponseSchema,
 } from "@/ui/lib/admin-schemas";
 import { BlastRadiusPreview } from "./blast-radius";
 import { NormPicker } from "./norm-picker";
@@ -75,12 +74,20 @@ import { AlertTriangle } from "lucide-react";
  * `is priced at` as correctly curating `priced at` — but the pair of them
  * defeats the single property that justifies offering this control.
  *
- * This card therefore detects that state from the in-force edges it is handed,
- * names the target, and refuses to arm the write. The operator's route is to pick
- * the target norm, where the preview and the write agree. Fixing the API to close
- * the alias in `/preview` would be the better repair and is out of this change's
- * scope; until then a surface that wrote silently across the divergence would be
- * the confident-false-number failure this whole area is built to refuse.
+ * This card therefore RESOLVES the pick through the in-force edges it is handed
+ * and previews the norm the write will land on — `write-slot.ts` owns that walk
+ * and the argument for it. The fold is disclosed, so the operator sees which norm
+ * the count is about; an unresolvable or non-terminating chain refuses instead.
+ *
+ * ⚠️ An earlier cut simply blocked any aliased pick and told the operator to
+ * choose the target instead. Recorded because it reads as the safer option and is
+ * not: the picker lists norms of observed SURFACES, and an alias exists precisely
+ * because claims spell the source — so the target was usually absent from the list
+ * and the slot became uncurable through the UI, which is the console `fetch` this
+ * card was built to end.
+ *
+ * Fixing `/preview` to apply the closure itself is the better repair and is API
+ * work this change does not touch.
  */
 /**
  * The write body, typed from the SERVER's own schema.
@@ -129,7 +136,7 @@ interface CardinalityCopy {
    * A property of the arm, not of `!== "single"`: it is true of the value that IS
    * the table's default, and a third arm would be neither the default nor `single`.
    */
-  readonly isTheDefault: boolean;
+  readonly isAbsentRowDefault: boolean;
 }
 
 const CARDINALITY_COPY: Record<BrainVocabularyCardinality, CardinalityCopy> = {
@@ -141,7 +148,7 @@ const CARDINALITY_COPY: Record<BrainVocabularyCardinality, CardinalityCopy> = {
       "under — so the count below is the floor, never a total.",
     previewKind: "cardinality-flip",
     writeLabel: "Curate as single-valued",
-    isTheDefault: false,
+    isAbsentRowDefault: false,
   },
   multi: {
     label: "multi — values coexist",
@@ -150,7 +157,7 @@ const CARDINALITY_COPY: Record<BrainVocabularyCardinality, CardinalityCopy> = {
       "way back out of single short of a database operation.",
     previewKind: "cardinality-removal",
     writeLabel: "Record as multi-valued",
-    isTheDefault: true,
+    isAbsentRowDefault: true,
   },
 };
 
@@ -168,35 +175,23 @@ export function CardinalityAuthoring({
 }) {
   const [surface, setSurface] = useState<BrainVocabularySurfaceOption | null>(null);
   const [cardinality, setCardinality] = useState<BrainVocabularyCardinality>("single");
-  const [radius, setRadius] = useState<{
-    readonly radius: BrainVocabularyBlastRadius | null;
-    readonly pending: boolean;
-    readonly error: string | null;
-  }>({ radius: null, pending: false, error: null });
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   /**
-   * The same generation counter the page's two preview slots carry, and for the
-   * same defect: every reset here is synchronous and none of them invalidates an
-   * in-flight preview, so a response for the OLD decision lands afterwards and
-   * re-arms the write gate with a number computed for a different predicate — or,
-   * worse here, for the opposite VERB, since changing the direction resets
-   * without previewing.
+   * The slot, its staleness guard and its two derived questions — shared with
+   * `page.tsx` rather than re-rolled here.
+   *
+   * The generation bump this hook owns matters more on this card than on either
+   * of the page's two slots: changing the DIRECTION resets without previewing, so
+   * a late response for the opposite verb would otherwise land in a cleared slot
+   * and arm an un-curation behind a flip's count.
    */
-  const generation = useRef(0);
+  const preview = usePreviewSlot();
 
-  const previewMutation = useAdminMutation<
-    z.infer<typeof BrainVocabularyPreviewResponseSchema>
-  >({ path: "/api/v1/admin/brain-vocabulary/preview", method: "POST" });
   const writeMutation = useAdminMutation<
     z.infer<typeof BrainVocabularyCardinalityWriteResponseSchema>
   >({ path: "/api/v1/admin/brain-vocabulary/cardinality", method: "POST" });
-
-  function clearRadius() {
-    generation.current += 1;
-    setRadius({ radius: null, pending: false, error: null });
-  }
 
   /**
    * Which slot the write will land in — resolved, not merely detected.
@@ -231,11 +226,7 @@ export function CardinalityAuthoring({
    * throw the moment anything calls it during render. `page.tsx` orders
    * `bothPicked` before `onAuthor` for the same reason.
    */
-  const armed =
-    isResolved(slot) &&
-    radius.radius !== null &&
-    radius.error === null &&
-    !radius.pending;
+  const armed = isResolved(slot) && preview.hasRadius;
 
   async function onPreview() {
     // ⚠️ Gated on the SLOT being resolved, not merely on something being picked.
@@ -243,28 +234,17 @@ export function CardinalityAuthoring({
     // place: the number would be about the picked norm while the write went to
     // its alias target.
     if (!isResolved(slot)) return;
-    const mine = ++generation.current;
-    setRadius({ radius: null, pending: true, error: null });
-    const result = await previewMutation.mutate({
-      // ⚠️ `slot.previewSurface`, NOT `surface.norm`. This is the fix: the
-      // resolved norm is the one `/cardinality` will key its write on, so it is
-      // the only surface whose count describes the decision being made.
-      body: { kind: copy.previewKind, predicateSurface: slot.previewSurface },
-    });
-    // The decision moved on while this was in flight — drop it. See `generation`.
-    if (mine !== generation.current) return;
-    if (!result.ok) {
-      setRadius({ radius: null, pending: false, error: friendlyError(result.error) });
-      return;
-    }
-    setRadius({ radius: result.data?.radius ?? null, pending: false, error: null });
+    // ⚠️ `slot.previewNorm`, NOT `surface.norm`. This is the fix: the resolved
+    // norm is the one `/cardinality` will key its write on, so it is the only
+    // value whose count describes the decision being made.
+    await preview.load({ kind: copy.previewKind, predicateSurface: slot.previewNorm });
   }
 
   async function onWrite() {
     if (surface === null || !armed) return;
     setError(null);
     setNotice(null);
-    // ⚠️ The PICKED norm, deliberately — not `slot.previewSurface`.
+    // ⚠️ The PICKED norm, deliberately — not `slot.previewNorm`.
     //
     // The route applies the closure itself and documents doing so ("curating `is
     // priced at` after `is priced at → priced at` is approved correctly curates
@@ -305,7 +285,7 @@ export function CardinalityAuthoring({
             `absence of a decision.`,
     );
     setSurface(null);
-    clearRadius();
+    preview.clear();
     onWritten();
   }
 
@@ -326,7 +306,7 @@ export function CardinalityAuthoring({
           value={surface}
           onChange={(next) => {
             setSurface(next);
-            clearRadius();
+            preview.clear();
             setError(null);
             // ⚠️ The NOTICE too. A successful write clears the picker and leaves
             // its confirmation on screen, which is right until the operator picks
@@ -358,7 +338,7 @@ export function CardinalityAuthoring({
               // opposite signs. Without this, picking `single`, previewing, then
               // switching to `multi` would arm the un-curation behind the flip's
               // number.
-              clearRadius();
+              preview.clear();
               setError(null);
             }}
           >
@@ -383,7 +363,7 @@ export function CardinalityAuthoring({
             operator who writes `multi` has not changed how Atlas treats the slot
             — they have recorded that they looked. Without this, `multi` reads as
             a no-op and the one thing it is for is invisible. */}
-        {copy.isTheDefault ? (
+        {copy.isAbsentRowDefault ? (
           <Alert>
             <AlertDescription className="text-sm">
               A predicate that is <strong>absent from this table already means multi</strong> — that
@@ -407,13 +387,13 @@ export function CardinalityAuthoring({
           <Alert>
             <AlertDescription className="text-sm">
               <span className="font-medium">
-                “{slot.path[0]}” folds onto “{slot.previewSurface}”
+                “{slot.path[0]}” folds onto “{slot.previewNorm}”
                 {slot.path.length > 2 ? ` through ${slot.path.slice(1, -1).join(" → ")}` : ""}, so
-                this decision curates “{slot.previewSurface}”.
+                this decision curates “{slot.previewNorm}”.
               </span>{" "}
               The write applies your workspace&rsquo;s alias closure, so the count below is “
-              {slot.previewSurface}”&rsquo;s — the slot the write lands in, not the spelling you
-              picked. Check that “{slot.previewSurface}” is the predicate you meant: it is the one
+              {slot.previewNorm}”&rsquo;s — the slot the write lands in, not the spelling you
+              picked. Check that “{slot.previewNorm}” is the predicate you meant: it is the one
               being curated.
             </AlertDescription>
           </Alert>
@@ -460,9 +440,9 @@ export function CardinalityAuthoring({
         ) : null}
 
         <BlastRadiusPreview
-          radius={radius.radius}
-          pending={radius.pending}
-          error={radius.error}
+          radius={preview.slot.radius}
+          pending={preview.slot.pending}
+          error={preview.slot.error}
         />
 
         {error !== null ? (
@@ -490,7 +470,7 @@ export function CardinalityAuthoring({
             // Gated on the slot being RESOLVED, matching `onPreview`'s own guard:
             // a live button over an unresolved pick would offer a number for a
             // slot the write does not use.
-            disabled={!isResolved(slot) || radius.pending}
+            disabled={!isResolved(slot) || preview.slot.pending}
             onClick={onPreview}
           >
             Preview the cardinality impact
@@ -500,7 +480,9 @@ export function CardinalityAuthoring({
           </Button>
         </div>
 
-        {isResolved(slot) && radius.radius === null && radius.error === null && !radius.pending ? (
+        {/* `awaitingFirst` rather than a second spelling of the triple. The two
+            re-derivations had already drifted by a term. */}
+        {isResolved(slot) && preview.awaitingFirst ? (
           <p className="text-muted-foreground text-xs">
             Preview first. Curating a predicate changes what replaces what across every claim
             already in that slot, so the blast radius is not optional.

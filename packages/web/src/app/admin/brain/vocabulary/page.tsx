@@ -1,9 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import type { z } from "zod";
 import type {
-  BrainVocabularyBlastRadius,
   BrainVocabularyEdgeEntry,
   BrainVocabularySlotPosition,
   BrainVocabularySurfaceOption,
@@ -11,10 +10,9 @@ import type {
 import {
   BrainVocabularyAuthorResponseSchema,
   BrainVocabularyInForceResponseSchema,
-  BrainVocabularyPreviewResponseSchema,
   BrainVocabularyRemoveResponseSchema,
 } from "@/ui/lib/admin-schemas";
-import { BrainVocabularyPreviewRequestSchema } from "@/ui/lib/admin-schemas";
+import { usePreviewSlot } from "./use-preview-slot";
 import { CoverageStatement } from "./coverage-statement";
 import { BlastRadiusPreview } from "./blast-radius";
 import { NormPicker, ScopeBadge } from "./norm-picker";
@@ -48,24 +46,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { AlertTriangle, ArrowRight, Trash2 } from "lucide-react";
-
-/**
- * The preview body, typed from the SERVER's own schema.
- *
- * `Record<string, unknown>` compiled for a misspelled `fromNorm` and failed as a
- * 400 at runtime — on the one call whose result gates a workspace-wide re-key.
- * `z.input` is the SSOT rather than a hand-written mirror.
- */
-type PreviewRequest = z.input<typeof BrainVocabularyPreviewRequestSchema>;
-
-/** One preview's three states, kept together so they cannot drift apart. */
-interface PreviewSlot {
-  readonly radius: BrainVocabularyBlastRadius | null;
-  readonly pending: boolean;
-  readonly error: string | null;
-}
-
-const EMPTY_PREVIEW: PreviewSlot = { radius: null, pending: false, error: null };
 
 const POSITIONS: readonly {
   value: BrainVocabularySlotPosition;
@@ -161,30 +141,8 @@ function ClaimVocabulary() {
    * two are live at the same time — the dialog renders over the card — and a
    * keyed slot would still have to answer "whose is this?" at both call sites.
    */
-  const [authorRadius, setAuthorRadius] = useState<PreviewSlot>(EMPTY_PREVIEW);
-  const [removeRadius, setRemoveRadius] = useState<PreviewSlot>(EMPTY_PREVIEW);
-
-  /**
-   * ⚠️ Generation counters, one per slot — the ASYNC half of the same defect the
-   * two-slot split fixed synchronously.
-   *
-   * Every reset path (`onChange`, the position select, Cancel, a completed
-   * write) is synchronous and clears a slot immediately. None of them
-   * invalidates an in-flight preview, so a response for the OLD decision lands
-   * afterwards and repopulates the slot it was cleared from:
-   *
-   *   - pick A→B, Preview, change the `to` pick before it returns → the late
-   *     A→B radius arrives, `bothPicked` is true again, and "Author this alias"
-   *     enables against a number computed for a pair nobody is authoring;
-   *   - Remove edge 1, Cancel, Remove edge 2 → if edge 1's response lands last
-   *     it fills the slot, and the destructive button enables showing edge 1's
-   *     counterfactual for edge 2.
-   *
-   * Bumping the counter on every write to a slot means a response can prove it
-   * is still the current question before it answers.
-   */
-  const authorGeneration = useRef(0);
-  const removeGeneration = useRef(0);
+  const authorPreview = usePreviewSlot();
+  const removePreview = usePreviewSlot();
 
   const {
     data: inForce,
@@ -196,9 +154,6 @@ function ClaimVocabulary() {
     { schema: BrainVocabularyInForceResponseSchema },
   );
 
-  const previewMutation = useAdminMutation<
-    z.infer<typeof BrainVocabularyPreviewResponseSchema>
-  >({ path: "/api/v1/admin/brain-vocabulary/preview", method: "POST" });
   const authorMutation = useAdminMutation<
     z.infer<typeof BrainVocabularyAuthorResponseSchema>
   >({ path: "/api/v1/admin/brain-vocabulary/author", method: "POST" });
@@ -207,73 +162,30 @@ function ClaimVocabulary() {
   >({ path: "/api/v1/admin/brain-vocabulary/remove", method: "POST" });
 
   /**
-   * Ask for one decision's blast radius.
+   * The load and the generation bump both live in `usePreviewSlot` now.
    *
-   * Shared by authoring and removal on purpose. The grill's *"a removal is a
-   * re-key too"* is the whole reason the *In force* pane exists, and two preview
-   * paths would be two places for the disclosure to drift from the transaction.
+   * The two ⚠️ arguments that used to sit here — one shared `loadRadius` because
+   * *"a removal is a re-key too"* and two preview paths would be two places for
+   * the disclosure to drift, and the bump-on-clear that makes an abandoned
+   * decision's late response unable to re-arm a write gate — are recorded in that
+   * hook, which is where the code they describe went. Including the asymmetry
+   * note: the author clear-bump is falsifiable (`preview-gate.test.tsx`, *"a
+   * preview that lands AFTER a reset"*, turns red without it) and the removal one
+   * is not, since every path back into that slot bumps on entry.
+   *
+   * The two-slot split stays a property of THIS component, because it is about
+   * which decisions are live at once — see the slots' own comment above.
    */
-  async function loadRadius(
-    body: PreviewRequest,
-    into: (slot: PreviewSlot) => void,
-    generation: { current: number },
-  ): Promise<void> {
-    const mine = ++generation.current;
-    into({ radius: null, pending: true, error: null });
-    const result = await previewMutation.mutate({ body });
-    // The decision moved on while this was in flight. Drop the answer — writing
-    // it would re-arm a write gate with a number about a different question.
-    if (mine !== generation.current) return;
-    if (!result.ok) {
-      into({ radius: null, pending: false, error: friendlyError(result.error) });
-      return;
-    }
-    into({ radius: result.data?.radius ?? null, pending: false, error: null });
-  }
-
-  /**
-   * Clearing a slot BUMPS its generation, so an in-flight response for the
-   * decision being abandoned cannot land afterwards. Written as helpers rather
-   * than repeated at the six reset sites, because the bump is the half that is
-   * easy to forget and impossible to see missing.
-   *
-   * ⚠️ **The two bumps are not equally load-bearing, and only one is
-   * falsifiable — stated rather than left for the next reader to re-derive.**
-   *
-   * `loadRadius` bumps on ENTRY, so any reset followed by a new preview is
-   * already covered. The clear-bump matters only where a reset is followed by NO
-   * new request, and the slot is read afterwards:
-   *
-   *   - AUTHOR: real and tested. Re-picking a norm resets without previewing, so
-   *     a stale response would land into a slot nothing has re-pended and re-arm
-   *     the write gate (`preview-gate.test.tsx`, "a preview that lands AFTER a
-   *     reset"; deleting this bump turns it red).
-   *   - REMOVE: **unfalsifiable by construction.** Every path back into that slot
-   *     goes through the Remove button, which calls `loadRadius` and bumps on
-   *     entry — so a stale write is always overwritten before anything reads it.
-   *     Deleting this bump breaks no test, and no test can be written for it. It
-   *     is kept for symmetry: the asymmetry is an accident of which buttons exist
-   *     today, not a property of the design, and a future "re-preview" affordance
-   *     on the dialog would make it load-bearing overnight.
-   */
-  function clearAuthorRadius() {
-    authorGeneration.current += 1;
-    setAuthorRadius(EMPTY_PREVIEW);
-  }
-  function clearRemoveRadius() {
-    removeGeneration.current += 1;
-    setRemoveRadius(EMPTY_PREVIEW);
-  }
-
   const bothPicked = from !== null && to !== null;
 
   async function onPreviewAuthoring() {
     if (!bothPicked) return;
-    await loadRadius(
-      { kind: "alias-approval", position, fromNorm: from.norm, toNorm: to.norm },
-      setAuthorRadius,
-      authorGeneration,
-    );
+    await authorPreview.load({
+      kind: "alias-approval",
+      position,
+      fromNorm: from.norm,
+      toNorm: to.norm,
+    });
   }
 
   async function onAuthor() {
@@ -301,7 +213,7 @@ function ClaimVocabulary() {
     );
     setFrom(null);
     setTo(null);
-    clearAuthorRadius();
+    authorPreview.clear();
     // Unawaited deliberately: `useAdminFetch` owns the refetch's own loading and
     // error state, so awaiting it here would only delay clearing the form. A
     // rejection surfaces through `inForceError`, which the page already renders.
@@ -335,7 +247,7 @@ function ClaimVocabulary() {
             : ""),
     );
     setRemoveTarget(null);
-    clearRemoveRadius();
+    removePreview.clear();
     // Unawaited deliberately — see `onAuthor`.
     void refetch();
   }
@@ -466,7 +378,7 @@ function ClaimVocabulary() {
                 setPosition(picked.value);
                 setFrom(null);
                 setTo(null);
-                clearAuthorRadius();
+                authorPreview.clear();
                 setAuthorError(null);
               }}
             >
@@ -494,7 +406,7 @@ function ClaimVocabulary() {
               value={from}
               onChange={(next) => {
                 setFrom(next);
-                clearAuthorRadius();
+                authorPreview.clear();
               }}
               excludeNorm={to?.norm}
             />
@@ -504,7 +416,7 @@ function ClaimVocabulary() {
               value={to}
               onChange={(next) => {
                 setTo(next);
-                clearAuthorRadius();
+                authorPreview.clear();
               }}
               excludeNorm={from?.norm}
             />
@@ -524,9 +436,9 @@ function ClaimVocabulary() {
           ) : null}
 
           <BlastRadiusPreview
-            radius={authorRadius.radius}
-            pending={authorRadius.pending}
-            error={authorRadius.error}
+            radius={authorPreview.slot.radius}
+            pending={authorPreview.slot.pending}
+            error={authorPreview.slot.error}
           />
 
           {authorError !== null ? (
@@ -539,19 +451,19 @@ function ClaimVocabulary() {
           <div className="flex gap-2">
             <Button
               variant="outline"
-              disabled={!bothPicked || authorRadius.pending}
+              disabled={!bothPicked || authorPreview.slot.pending}
               onClick={onPreviewAuthoring}
             >
               Preview the impact
             </Button>
             <Button
-              disabled={!bothPicked || authorMutation.saving || authorRadius.radius === null}
+              disabled={!bothPicked || authorMutation.saving || authorPreview.slot.radius === null}
               onClick={onAuthor}
             >
               Author this alias
             </Button>
           </div>
-          {bothPicked && authorRadius.radius === null ? (
+          {bothPicked && authorPreview.slot.radius === null ? (
             <p className="text-muted-foreground text-xs">
               Preview first. This decision re-keys every affected claim in the workspace, so the
               blast radius is not optional.
@@ -660,15 +572,11 @@ function ClaimVocabulary() {
                     onClick={() => {
                       setRemoveTarget(edge);
                       setRemoveError(null);
-                      void loadRadius(
-                        {
-                          kind: "alias-removal",
-                          position: edge.position,
-                          fromNorm: edge.fromNorm,
-                        },
-                        setRemoveRadius,
-                        removeGeneration,
-                      );
+                      void removePreview.load({
+                        kind: "alias-removal",
+                        position: edge.position,
+                        fromNorm: edge.fromNorm,
+                      });
                     }}
                   >
                     <Trash2 className="mr-1.5 size-3.5" aria-hidden />
@@ -730,7 +638,7 @@ function ClaimVocabulary() {
           if (!open) {
           setRemoveTarget(null);
           setRemoveError(null);
-          clearRemoveRadius();
+          removePreview.clear();
         }
         }}
       >
@@ -759,9 +667,9 @@ function ClaimVocabulary() {
               </Alert>
             ) : null}
             <BlastRadiusPreview
-              radius={removeRadius.radius}
-              pending={removeRadius.pending}
-              error={removeRadius.error}
+              radius={removePreview.slot.radius}
+              pending={removePreview.slot.pending}
+              error={removePreview.slot.error}
             />
           </div>
           <AlertDialogFooter>
@@ -778,9 +686,9 @@ function ClaimVocabulary() {
               variant="destructive"
               disabled={
                 removeMutation.saving ||
-                removeRadius.pending ||
-                removeRadius.radius === null ||
-                removeRadius.error !== null
+                removePreview.slot.pending ||
+                removePreview.slot.radius === null ||
+                removePreview.slot.error !== null
               }
               onClick={onConfirmRemove}
             >

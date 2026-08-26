@@ -101,7 +101,6 @@ import {
   type ActorIdentityReader,
 } from "@atlas/api/lib/brain/actor-identity";
 import { WAREHOUSE_PRODUCER_PRINCIPAL } from "@atlas/api/lib/brain/warehouse-producer";
-import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import {
   RECONCILE_BLOCK_REASONS,
   reconcileFacts,
@@ -708,7 +707,12 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
       // Against a real database because the claim is about what happens when
       // the TABLE HAS NOTHING TO SAY: an in-memory double asserting an empty
       // fixture proves only that the fixture was empty.
-      const actor = `${WAREHOUSE_SOURCE}:${WAREHOUSE_PRODUCER_PRINCIPAL}`;
+      // ⚠️ The BARE principal. `warehouse-producer.ts` stamps this verbatim;
+      // nothing composes a `warehouse:` prefix onto it. This test asserted the
+      // composed form and so proved nothing about production rows -- the input
+      // was a literal the author assumed, which is the "asserts its own script"
+      // failure this file warns about elsewhere.
+      const actor = WAREHOUSE_PRODUCER_PRINCIPAL;
       const identities = await loadActorIdentities(identityReader, WS, [actor, "slack:U-nobody"]);
       expect(identityFor(identities, actor)).toEqual({ state: "machine" });
       // The control, in the same call: an ordinary handle with no row is still

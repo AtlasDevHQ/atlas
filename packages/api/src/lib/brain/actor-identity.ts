@@ -83,6 +83,16 @@ import type {
 } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { USER_PREFIX } from "@atlas/api/lib/brain/acl";
+
+/**
+ * The prefix every non-human principal in this codebase carries.
+ *
+ * Not a grant-grammar prefix like {@link USER_PREFIX} — it never appears in an
+ * ACL. It is the spelling the scheduler and producer lanes have used for every
+ * actor they stamp, and the thing that makes "no person did this" readable off
+ * the handle alone.
+ */
+const SYSTEM_PREFIX = "system:";
 import { WAREHOUSE_CLASS, episodeSourceClassOf } from "@atlas/api/lib/brain/sources";
 
 const log = createLogger("brain.actor-identity");
@@ -180,13 +190,25 @@ export const LOAD_ACTOR_IDENTITIES_SQL = `SELECT ai.actor,
  * handle already carries instead of on a stored pointer — so the two states are
  * the same state, reached with one indirection fewer.
  *
- * ⚠️ NO workspace scope, for {@link LOAD_ACTOR_IDENTITIES_SQL}'s reason applied
- * to a DIFFERENT write. Better-Auth's `"user"` is global (ADR-0024); the id in
- * this handle was written by `correctFact`, which refuses every verb unless
- * `ctx.role` is `owner` or `admin` ON THIS WORKSPACE, so an id can only reach
- * `provenance.actor` through a request that was already member-scoped. Same
- * shape of containment as the resolver's `member`-scoped email join, enforced at
- * the write; re-scoping here would be a second implementation of it.
+ * ⚠️ **WORKSPACE-SCOPED through `member`, and an earlier draft was not.**
+ *
+ * That draft argued containment at the write: *"the id in this handle was
+ * written by `correctFact`, which refuses every verb unless `ctx.role` is `owner`
+ * or `admin` ON THIS WORKSPACE."* True of the correction lane, and `correctFact`
+ * is not the only writer. `admin-migrate.ts` binds a region bundle's
+ * `provenance` VERBATIM, and its only actor check is `bundleFactNamesAPerson` —
+ * `typeof actor === "string" && actor.trim() !== ""`. A bundle carrying
+ * `user:<foreign-id>` passes that, lands published, and an unscoped read of
+ * Better-Auth's global `"user"` would then disclose that person's NAME AND EMAIL
+ * to any reader entitled to `actor` in the importing workspace, with no
+ * membership check anywhere.
+ *
+ * The stored path never had this hole — its row is `workspace_id`-scoped. So the
+ * derived path is scoped the same way, mirroring
+ * `RESOLVE_PRINCIPAL_EMAILS_SQL`'s `JOIN member m ON m."userId" = u.id` rather
+ * than arguing its way out of one. A handle naming somebody who is not a member
+ * here resolves to nothing and renders `opaque`, which is the honest answer:
+ * Atlas cannot name them *to this reader*.
  *
  * Exported so the real-Postgres test runs this exact string.
  */
@@ -194,7 +216,9 @@ export const LOAD_DERIVED_ATLAS_USERS_SQL = `SELECT u.id,
               u.name,
               u.email
          FROM "user" u
-        WHERE u.id = ANY($1::text[])`;
+         JOIN member m ON m."userId" = u.id
+        WHERE m."organizationId" = $1
+          AND u.id = ANY($2::text[])`;
 
 /**
  * An identity readable from the HANDLE ITSELF, with no captured row (#5454).
@@ -221,7 +245,7 @@ export type DerivedActor =
  * `correctFact` builds the handle as `` `${USER_PREFIX}${ctx.userId}` `` and
  * calls it a *"grammar-valid principal"*; this reads it back with the same
  * constant. Two spellings of one prefix is the failure
- * {@link AUTHORING_PRINCIPALS_SQL} composes its handle in SQL to avoid — a
+ * `AUTHORING_PRINCIPALS_SQL` (`audience/identity-capture.ts`) composes its handle in SQL to avoid — a
  * handle that does not match renders `opaque` SILENTLY, which is the hardest
  * failure mode here to notice.
  *
@@ -231,11 +255,29 @@ export type DerivedActor =
  * pins that, because the day one is added this function starts naming the wrong
  * person rather than failing.
  *
- * ## `machine` is decided by ADR-0036 CLASS, not by the producer's name
+ * ## `machine` is decided by the `system:` PREFIX, and by ADR-0036 class
  *
- * `warehouse:system:warehouse-producer` is today's only instance, and matching
- * that literal would leave the next warehouse producer rendering as an
- * unnameable person. The warehouse CLASS is what carries the property: it has
+ * ⚠️ **An earlier draft of this function tested the class alone, and the arm was
+ * dead on every real row.** It assumed the stored handle was
+ * `warehouse:system:warehouse-producer`; it is not. `reconcile.ts` short-circuits
+ * on an explicit principal *before* composing the `${source}:${actor}` prefix, and
+ * `warehouse-producer.ts` passes `WAREHOUSE_PRODUCER_PRINCIPAL` — so what lands in
+ * `provenance.actor` is the bare `system:warehouse-producer`. `system` is not in
+ * `EPISODE_SOURCE_SPECS`, so `episodeSourceClassOf` answered `null` and every
+ * machine claim rendered `opaque`, exactly as before the arm existed. Thirteen
+ * fixtures in this repo store the bare string and none store the prefixed form;
+ * the tests passed only because they hand-built a handle production never writes.
+ *
+ * So the primary test is the **`system:` prefix**, which is this codebase's
+ * established spelling for a principal that is not a person — nine of them today
+ * (`system:warehouse-producer`, `system:brain-extraction`, `system:scheduler`,
+ * `system:audit-purge-scheduler`, …), every one a scheduler or a producer. It
+ * generalises where a literal would not: `system:brain-extraction` can reach
+ * `provenance.actor` too, and it is no more a person than the warehouse fiber is.
+ *
+ * The class test is KEPT beside it rather than replaced, for a handle that really
+ * was composed from an episode source. The warehouse CLASS carries the property
+ * independently: it has
  * no vendor (`sources.ts`: *"neither comes from a connector"*), its facts are
  * read out of the customer's own tables by a scheduled fiber, and
  * `warehouse-producer.ts` attributes them to a system principal deliberately
@@ -253,6 +295,11 @@ export function derivableActor(actor: string): DerivedActor | null {
   if (actor.startsWith(USER_PREFIX)) {
     const userId = actor.slice(USER_PREFIX.length);
     return userId === "" ? null : { kind: "atlas-user", userId };
+  }
+  // The shape production actually writes. Checked FIRST because it is the only
+  // one that has ever appeared in a stored row.
+  if (actor.startsWith(SYSTEM_PREFIX) && actor.length > SYSTEM_PREFIX.length) {
+    return { kind: "machine" };
   }
   const separator = actor.indexOf(":");
   if (separator <= 0) return null;
@@ -453,7 +500,7 @@ export async function loadActorIdentities(
     }),
     derivedUsers.size === 0
       ? Promise.resolve<readonly unknown[]>([])
-      : readRows(db, LOAD_DERIVED_ATLAS_USERS_SQL, [[...new Set(derivedUsers.values())]], {
+      : readRows(db, LOAD_DERIVED_ATLAS_USERS_SQL, [workspaceId, [...new Set(derivedUsers.values())]], {
           workspaceId,
           requestId,
           actors: derivedUsers.size,
@@ -773,7 +820,7 @@ const CAPTURE_BATCH_SIZE = 200;
  * The caller must hand over DISTINCT actors. Two rows with the same key in one
  * statement is a Postgres error (`ON CONFLICT DO UPDATE command cannot affect
  * row a second time`), not a silent last-writer-wins — which is the safe
- * direction, and {@link AUTHORING_PRINCIPALS_SQL}'s `SELECT DISTINCT`
+ * direction, and `AUTHORING_PRINCIPALS_SQL` (`audience/identity-capture.ts`)'s `SELECT DISTINCT`
  * guarantees it upstream.
  */
 export async function captureActorIdentities(

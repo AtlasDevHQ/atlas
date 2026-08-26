@@ -78,6 +78,12 @@ export function formatDate(value: unknown): string | null {
  * they have been told who did this when they have not. The three states are
  * ADR-0036 T5's: `atlas` reads live, `directory` is a dated snapshot and says
  * so, `opaque` means Atlas cannot name them and says THAT.
+ *
+ * ⚠️ A FOURTH state renders here as of #5454: `machine`. It is not a person who
+ * cannot be named — it is a positive statement that no person was involved, so
+ * it returns `null` like `opaque` but for the opposite reason, and the caller
+ * must not print it as an unnamed human. Kept as an explicit arm rather than
+ * riding the `default` so a fifth state still falls through loudly.
  */
 function actorName(identity: unknown): string | null {
   const row = identity != null && typeof identity === "object"
@@ -95,6 +101,10 @@ function actorName(identity: unknown): string | null {
       // account, so the name is a snapshot that may since have changed.
       return at ? `${name} (as of ${at})` : name;
     }
+    // No person produced this. `null` here means "nobody to name", not
+    // "somebody we cannot name" — see the header.
+    case "machine":
+      return null;
     case "opaque":
       return null;
     default:

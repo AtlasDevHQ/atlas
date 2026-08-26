@@ -25,6 +25,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  MACHINE_IDENTITY,
   BRAIN_ACTOR_IDENTITY_STATES,
   CAPTURE_ACTOR_IDENTITY_SQL,
   ERASE_ACTOR_IDENTITY_SQL,
@@ -405,6 +406,19 @@ describe("derivableActor — #5454", () => {
 
   it("calls a warehouse-class handle a machine, by CLASS and not by producer name", () => {
     // The literal in prod today…
+    // ⚠️ The BARE principal, which is what `warehouse-producer.ts` actually
+    // stamps -- `reconcile.ts` short-circuits on an explicit principal before
+    // composing a `${source}:` prefix. Asserting the composed form here is what
+    // let a dead arm ship green: `system` is not an episode source, so the
+    // class test answered `null` and every real machine claim rendered opaque.
+    expect(derivableActor(WAREHOUSE_PRODUCER_PRINCIPAL)).toEqual({ kind: "machine" });
+    // Every other system principal in the tree is a machine too.
+    expect(derivableActor("system:brain-extraction")).toEqual({ kind: "machine" });
+    expect(derivableActor("system:scheduler")).toEqual({ kind: "machine" });
+    // `system:` alone names nothing and must not claim to.
+    expect(derivableActor("system:")).toBeNull();
+    // The composed form still resolves, for a handle that really was built
+    // from an episode source.
     expect(derivableActor(`${WAREHOUSE_SOURCE}:${WAREHOUSE_PRODUCER_PRINCIPAL}`)).toEqual({
       kind: "machine",
     });
@@ -520,7 +534,7 @@ describe("loadActorIdentities — the derived answers (#5454)", () => {
     const db = readerFor([]);
     const actor = `${WAREHOUSE_SOURCE}:${WAREHOUSE_PRODUCER_PRINCIPAL}`;
     const out = await loadActorIdentities(db, WS, [actor]);
-    expect(out.get(actor)).toEqual({ state: "machine" });
+    expect(out.get(actor)).toEqual(MACHINE_IDENTITY);
     expect(db.calls).toHaveLength(0);
   });
 
@@ -532,7 +546,7 @@ describe("loadActorIdentities — the derived answers (#5454)", () => {
     };
     const machine = `${WAREHOUSE_SOURCE}:${WAREHOUSE_PRODUCER_PRINCIPAL}`;
     const out = await loadActorIdentities(db, WS, [machine, "slack:U1"]);
-    expect(out.get(machine)).toEqual({ state: "machine" });
+    expect(out.get(machine)).toEqual(MACHINE_IDENTITY);
     expect(identityFor(out, "slack:U1")).toEqual(OPAQUE_IDENTITY);
   });
 
@@ -549,10 +563,16 @@ describe("loadActorIdentities — the derived answers (#5454)", () => {
     expect(withCorrection.calls).toHaveLength(2);
     // Deduplicated on both sides, and the `user:` read is keyed by the BARE id
     // — it is a `"user"` read, not a handle read.
+    //
+    // ⚠️ BOTH reads carry the workspace. The derived read did not until #5454's
+    // review: Better-Auth's `"user"` is global, and `admin-migrate.ts` binds an
+    // imported bundle's `provenance.actor` verbatim, so an unscoped read would
+    // hand a foreign person's name and email to any reader entitled to `actor`
+    // here. The workspace argument IS the fix; asserting it is what keeps it.
     expect(withCorrection.calls.map((c) => c.params)).toEqual(
       expect.arrayContaining([
         [WS, ["slack:U1", "user:user-a"]],
-        [["user-a"]],
+        [WS, ["user-a"]],
       ]),
     );
   });

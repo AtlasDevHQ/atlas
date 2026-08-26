@@ -47,6 +47,59 @@ check deny 'bun run test:api' 'so does the api script'
 check deny 'bun run --filter @atlas/api test' 'and the filtered form'
 check deny 'bun test --no-isolate --changed=origin/main' 'no-isolate is refused even when scoped'
 
+# ⚠️ THE LAUNDERING CASE, 2026-08-26. The allow-list asked "does ANY argument
+# look like a test file", not "are they ALL", so one named file waved through
+# any number of directory globs beside it. This exact shape ran five times in
+# one session at 32 workers a go and took the box down; the guard never fired.
+check deny 'bun test --parallel src/app/admin/brain/__tests__/ src/ui/components/admin/__tests__/coverage-statement.test.ts' 'a named file does not launder a directory glob'
+check deny 'bun test --parallel src/ui/components/admin/brain-coverage/' 'a bare directory glob is a full-worker run'
+check deny 'bun test --parallel packages/api/src/lib/brain/__tests__/' 'the 102-file directory from the last recurrence'
+check allow 'bun test src/a.test.ts src/b.test.ts' 'several named files are still one worker each'
+check allow 'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'an explicit small worker cap is the sanctioned escape hatch'
+
+# --- found by an independent spec review, 2026-08-26 -------------------------
+# Each of these was ALLOW against the first draft of the quantifier fix.
+# ⚠️ REAL paths. The first draft of these used `src/lib/zzz/` and `src/**/`,
+# neither of which exists from the repo root -- so the globs stayed literal,
+# the case arm caught them, and both passed WITHOUT the glob rule working at
+# all. Delete the rule and they still passed. Against a path that matches,
+# bash expands before the loop sees it, which is what `set -f` now prevents.
+# 108 files as of 2026-08-26.
+check deny 'bun test --parallel packages/api/src/lib/brain/__tests__/*.test.ts' 'a glob matching 108 REAL files is not a named file'
+check deny 'bun test --parallel packages/api/src/lib/*/__tests__/*.test.ts' 'a two-level real glob, 618 files'
+check deny 'bun test --parallel src/f{1..500}.test.ts' 'brace expansion carries no glob metachar and still becomes 500 files'
+check deny 'bun test --parallel=8' 'a worker cap with NO target is still the whole suite'
+check deny 'bun test --parallel=6' 'even at the sanctioned 6, no target means everything'
+check deny 'bun test --parallel=32 packages/api/src/lib/brain/__tests__/' 'a cap that is the default spelled longhand is not a cap'
+# The shape a human had to stop by hand: the variable across an UNBOUNDED run.
+check deny 'TEST_DATABASE_URL=postgres://x bun test --parallel --changed=origin/main' 'the variable across the changed graph -- 874 files today'
+check deny 'TEST_DATABASE_URL=postgres://x bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'a cap does not make a directory of pg suites safe'
+check allow 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'the memory own number, with a target'
+
+# --- redirections are not arguments (found by USING the guard, 2026-08-26) ---
+# The all-positionals-must-be-files rule counted `2>&1` as a non-file argument,
+# so the single most common shape in the whole local loop was denied.
+check allow 'bun test src/a.test.ts 2>&1' 'stderr redirect'
+check allow 'bun test src/a.test.ts > out.log' 'stdout to a file, target skipped'
+check allow 'bun test src/a.test.ts 2>/dev/null' 'attached redirect'
+check allow 'cd packages/api && bun test src/a.test.ts 2>&1 | tail -8' 'the real everyday shape'
+check deny 'bun test --parallel src/lib/ 2>&1' 'a redirect does not launder a directory either'
+
+# --- found by an adversarial review of the fix, 2026-08-26 ------------------
+check deny 'export TEST_DATABASE_URL=postgres://x && bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'an exported env var survives segment splitting'
+# ⚠️ ...but a SINGLE named pg suite with the variable set is the sanctioned
+# shape, and the hook's own deny text instructs it. An earlier ordering denied
+# that instruction verbatim — caught by trying to follow it.
+check allow 'TEST_DATABASE_URL=postgres://x bun test packages/api/src/lib/brain/__tests__/condition-2-attribution-pg.test.ts' 'one named pg suite is what the deny text tells you to run'
+check allow 'cd packages/api && TEST_DATABASE_URL=postgres://x bun test src/a-pg.test.ts 2>&1' 'the same, as actually typed'
+check deny 'bun test --parallel=6 --parallel=64 packages/api/src/lib/brain/__tests__/' 'the MAX cap wins, not the first one grep finds'
+
+# The over-scrub regression: apostrophes in prose on separate lines must not
+# pair across the newline and delete the invocation between them.
+check deny 'echo "it is fine"
+bun test --parallel
+echo "that is all"' 'a bare parallel run between two echoes still denies'
+
 # --- invocations that must be allowed ---------------------------------------
 check allow 'bun test --parallel --changed=origin/main' 'the sanctioned pre-flight'
 check allow 'bun test packages/web/src/a.test.ts' 'a single named file'
@@ -58,6 +111,25 @@ check allow 'bun run lint' 'an unrelated script'
 check allow "git commit -m 'docs: never use bun test --parallel bare'" 'a commit message naming it'
 check allow 'echo "bun test --parallel"' 'an echo naming it'
 check allow "grep -rn 'bun test' docs/" 'a grep for it'
+# ⚠️ 2026-08-26: the third time this guard blocked its own fix. A -m body that
+# spans lines is the everyday shape, and the scrubber was line-oriented.
+# ⚠️ A multi-line `-m` body quoting the command is DENIED, and that is the
+# decision rather than a defect.
+#
+# Making it pass needs the scrubber to let a quoted span cross newlines, which
+# was tried (\x01 join) and made the guard strictly worse: two apostrophes on
+# separate lines then paired across the newline and deleted the invocation
+# between them, turning a DENY on main into an ALLOW. Over-scrubbing is a false
+# ALLOW; that is the failure that takes the box down. This one is a false DENY,
+# which costs a rephrase.
+#
+# The sanctioned way to write such a message is `git commit -F -` with a
+# heredoc, which the heredoc pass handles and the next case pins.
+check deny 'git commit -m "fix: a guard
+
+  bun test --parallel packages/api/src/lib/brain/__tests__/
+
+was going straight past it"' 'a multi-line -m body FAILS CLOSED, by choice'
 check allow 'cat > /tmp/x.md <<EOF
 Run bun test --parallel here.
 EOF' 'a heredoc documenting it'

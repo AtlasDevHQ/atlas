@@ -116,23 +116,13 @@ Drop the flag: \`bun test --parallel --changed=origin/main\`"
   # The project memory: "especially not with `TEST_DATABASE_URL` set". That run
   # points the real-Postgres suites at a live database, and the crash takes the
   # container down with the box -- destroying the database the run needed.
-  # ⚠️ The WHOLE command, not "$seg". Segments split on `&&`, so
-  # `export TEST_DATABASE_URL=x && bun test …` put the assignment in a different
-  # segment while bun still inherited it. Known limit either way: a var already
-  # exported in the parent shell, or sitting in `.env`, is invisible here.
-  if printf '%s' "$cmd" | grep -qE 'TEST_DATABASE_URL='; then
-    deny "BLOCKED: \`bun test\` with TEST_DATABASE_URL set turns on ~89 real-Postgres suites at once. The project memory names this shape specifically as the one that had to be stopped by hand.
-
-Run a single pg suite directly if you need one:
-  bun test path/to/one-pg.test.ts
-
-Remote CI runs these against a dedicated Postgres service -- that is the gate."
-  fi
-
   args="$(printf '%s' "$seg" | sed -E 's/.*\bbun[[:space:]]+test\b//')"
 
-  # --changed=<ref> bounds the run to the branch's source graph.
-  if printf '%s' "$args" | grep -qE -- '--changed(=|[[:space:]])'; then
+  # --changed=<ref> bounds the run to the branch's source graph -- but only when
+  # TEST_DATABASE_URL is absent. That graph was 874 files on a types-package
+  # change today, which is whole-suite in every way that matters to the box.
+  if printf '%s' "$args" | grep -qE -- '--changed(=|[[:space:]])' \
+     && ! printf '%s' "$cmd" | grep -qE 'TEST_DATABASE_URL='; then
     continue
   fi
 
@@ -180,21 +170,6 @@ Remote CI runs these against a dedicated Postgres service -- that is the gate."
   done
   set +f
 
-  # The sanctioned escape hatch, and it is TWO conditions, not one.
-  #
-  # The memory says: "If a full local run is ever genuinely necessary, ask
-  # first, and cap the workers (`bun test --parallel=6`)." A hook cannot ask, so
-  # it enforces the half it can -- and requires an explicit TARGET, because
-  # `--parallel=8` with no target is the whole 1,131-file suite wearing a cap.
-  #
-  # 6, not 8: 6 is the only number the record names. 8 was invented here and
-  # nothing measures it.
-  # The MAX of every occurrence. `head -1` let `--parallel=6 --parallel=64`
-  # through on the safe one while bun (last-wins) ran 64.
-  cap="$(printf '%s' "$args" | grep -oE -- '--parallel=[0-9]+' | cut -d= -f2 | sort -n | tail -1)"
-  if [ -n "$cap" ] && [ "$cap" -le 6 ] 2>/dev/null && [ "$positional_count" -gt 0 ]; then
-    continue
-  fi
 
   # ---------------------------------------------------------------------
   # Named files are fine -- one file, one worker. But EVERY positional must
@@ -212,6 +187,48 @@ Remote CI runs these against a dedicated Postgres service -- that is the gate."
   # the whole hole, which is why the fix is a quantifier and not a new rule.
   # ---------------------------------------------------------------------
   if [ "$positional_count" -gt 0 ] && [ "$nonfile_count" -eq 0 ]; then
+    continue
+  fi
+
+  # TEST_DATABASE_URL, checked HERE and not earlier.
+  #
+  # ⚠️ Ordering is the whole point. A single named pg suite WITH the variable set
+  # is exactly what the project memory sanctions — "Run a single pg suite
+  # directly if you need one" — and it is what this hook's own deny text tells
+  # you to do. An earlier draft ran this check before the named-file allowance
+  # and so denied that instruction verbatim, which was caught by trying to
+  # follow it. What is dangerous is the variable across an UNBOUNDED run: it
+  # turns on every real-Postgres suite at once, and the crash takes the
+  # container down with the box, destroying the database the run needed.
+  #
+  # Matched against the whole command rather than "$seg", because segments split
+  # on `&&` and `export X=1 && bun test …` would otherwise put the assignment
+  # out of view while bun still inherited it. Known limit either way: a variable
+  # already exported in the parent shell, or sitting in `.env`, is invisible.
+  if printf '%s' "$cmd" | grep -qE 'TEST_DATABASE_URL='; then
+    deny "BLOCKED: TEST_DATABASE_URL is set on a run that is not bounded to named files. That turns on every real-Postgres suite at once, and when the box goes down it takes the container with it — destroying the database the run needed.
+
+Bound it to the suite you actually want:
+  TEST_DATABASE_URL=... bun test path/to/one-pg.test.ts
+
+Remote CI runs these against a dedicated Postgres service -- that is the gate."
+  fi
+
+
+
+  # The sanctioned escape hatch, and it is TWO conditions, not one.
+  #
+  # The memory says: "If a full local run is ever genuinely necessary, ask
+  # first, and cap the workers (`bun test --parallel=6`)." A hook cannot ask, so
+  # it enforces the half it can -- and requires an explicit TARGET, because
+  # `--parallel=8` with no target is the whole 1,131-file suite wearing a cap.
+  #
+  # 6, not 8: 6 is the only number the record names. 8 was invented here and
+  # nothing measures it.
+  # The MAX of every occurrence. `head -1` let `--parallel=6 --parallel=64`
+  # through on the safe one while bun (last-wins) ran 64.
+  cap="$(printf '%s' "$args" | grep -oE -- '--parallel=[0-9]+' | cut -d= -f2 | sort -n | tail -1)"
+  if [ -n "$cap" ] && [ "$cap" -le 6 ] 2>/dev/null && [ "$positional_count" -gt 0 ]; then
     continue
   fi
 

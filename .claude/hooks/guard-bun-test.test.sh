@@ -71,7 +71,9 @@ check deny 'bun test --parallel src/f{1..500}.test.ts' 'brace expansion carries 
 check deny 'bun test --parallel=8' 'a worker cap with NO target is still the whole suite'
 check deny 'bun test --parallel=6' 'even at the sanctioned 6, no target means everything'
 check deny 'bun test --parallel=32 packages/api/src/lib/brain/__tests__/' 'a cap that is the default spelled longhand is not a cap'
-check deny 'TEST_DATABASE_URL=postgres://x bun test --parallel=4 src/a.test.ts' 'the shape a human had to stop by hand'
+# The shape a human had to stop by hand: the variable across an UNBOUNDED run.
+check deny 'TEST_DATABASE_URL=postgres://x bun test --parallel --changed=origin/main' 'the variable across the changed graph -- 874 files today'
+check deny 'TEST_DATABASE_URL=postgres://x bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'a cap does not make a directory of pg suites safe'
 check allow 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'the memory own number, with a target'
 
 # --- redirections are not arguments (found by USING the guard, 2026-08-26) ---
@@ -85,6 +87,11 @@ check deny 'bun test --parallel src/lib/ 2>&1' 'a redirect does not launder a di
 
 # --- found by an adversarial review of the fix, 2026-08-26 ------------------
 check deny 'export TEST_DATABASE_URL=postgres://x && bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'an exported env var survives segment splitting'
+# ⚠️ ...but a SINGLE named pg suite with the variable set is the sanctioned
+# shape, and the hook's own deny text instructs it. An earlier ordering denied
+# that instruction verbatim — caught by trying to follow it.
+check allow 'TEST_DATABASE_URL=postgres://x bun test packages/api/src/lib/brain/__tests__/condition-2-attribution-pg.test.ts' 'one named pg suite is what the deny text tells you to run'
+check allow 'cd packages/api && TEST_DATABASE_URL=postgres://x bun test src/a-pg.test.ts 2>&1' 'the same, as actually typed'
 check deny 'bun test --parallel=6 --parallel=64 packages/api/src/lib/brain/__tests__/' 'the MAX cap wins, not the first one grep finds'
 
 # The over-scrub regression: apostrophes in prose on separate lines must not

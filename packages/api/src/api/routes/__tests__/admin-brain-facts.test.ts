@@ -33,6 +33,7 @@ import type {
   CorrectionRefusalReason,
 } from "@atlas/api/lib/brain/correction";
 import type {
+  TensionForecastOutcome,
   TensionSweepContention,
   TensionSweepOutcome,
 } from "@atlas/api/lib/brain/tension-sweep";
@@ -351,6 +352,10 @@ let sweepOutcome: TensionSweepOutcome = {
 };
 /** Set to make the sweep seam THROW — the arm the double could not reach. */
 let sweepThrows: Error | null = null;
+
+/** The forecast's seam, kept separate from the sweep's for the same reason. */
+let forecastCalls: { workspaceId: string; request: unknown }[] = [];
+let forecastOutcome: TensionForecastOutcome = { kind: "forecast", wouldMint: 0, truncated: false };
 /**
  * SENTINEL cap values, deliberately not the shipped ones.
  *
@@ -379,6 +384,17 @@ void mock.module("@atlas/api/lib/brain/tension-sweep", () => ({
     typeof err === "object" && err !== null && "code" in err ? (err as { code?: string }).code : undefined,
   pgWhere: (err: unknown) =>
     typeof err === "object" && err !== null && "where" in err ? (err as { where?: string }).where : undefined,
+  TENSION_FORECAST_SQL: "SELECT count(*)",
+  FORECAST_MAX_CONCURRENT: 2,
+  forecastContentionMessage: (reason: string) =>
+    reason === "forecast-busy"
+      ? "This server is already running the maximum number of tension forecasts at once. Nothing was read and nothing was changed. Wait a moment and ask again."
+      : CONTENTION_PROSE[reason as TensionSweepContention] +
+        " Nothing was changed. Retry in a few seconds.",
+  forecastTensionEdges: async (workspaceId: string, request: unknown) => {
+    forecastCalls.push({ workspaceId, request });
+    return forecastOutcome;
+  },
   sweepTensionEdges: async (workspaceId: string) => {
     sweepCalls.push(workspaceId);
     if (sweepThrows !== null) throw sweepThrows;
@@ -468,6 +484,8 @@ beforeEach(() => {
   sweepCalls = [];
   sweepOutcome = { kind: "swept", report: { minted: 3, truncated: false } };
   sweepThrows = null;
+  forecastCalls = [];
+  forecastOutcome = { kind: "forecast", wouldMint: 0, truncated: false };
   AUTH_MODE = "managed";
   oversightCalls = 0;
   oversightCtx = undefined;
@@ -1477,6 +1495,219 @@ describe("POST /tension-sweep (#5029)", () => {
     expect(text, "a claim id reached the wire on a workspace-wide response").not.toContain(
       "fact-a",
     );
+  });
+});
+
+describe("POST /tension-forecast (#5450)", () => {
+  const forecast = (body: unknown = {}) =>
+    adminBrainFacts.request("/tension-forecast", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  /** A press that omits the header, which is what a bare `fetch(url, {body})` sends. */
+  const forecastWithoutJsonHeader = (body: unknown) =>
+    adminBrainFacts.request("/tension-forecast", {
+      method: "POST",
+      headers: { "content-type": "text/plain;charset=UTF-8" },
+      body: JSON.stringify(body),
+    });
+
+  it("asks about the ACTIVE org as it stands for an empty body", async () => {
+    forecastOutcome = { kind: "forecast", wouldMint: 6, truncated: false };
+    const res = await forecast();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ kind: "forecast", wouldMint: 6, truncated: false });
+    // The workspace AND the request shape. A bare press must reach the seam as
+    // `as-curated` — routing it as an `if-approved` with an empty surface would
+    // answer `unkeyable-surface` for the commonest call there is.
+    expect(forecastCalls).toEqual([
+      { workspaceId: CURRENT_ORG, request: { kind: "as-curated" } },
+    ]);
+  });
+
+  it("passes the counterfactual SURFACE through verbatim", async () => {
+    // Verbatim, not normalized here: the key derivation belongs to the seam,
+    // which is the only place that can keep it in step with the statement's own
+    // `identityKey`. A route that pre-normalized would be a second spelling.
+    forecastOutcome = { kind: "forecast", wouldMint: 12, truncated: true };
+    const res = await forecast({ predicateSurface: "  Plan Tier  " });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ kind: "forecast", wouldMint: 12, truncated: true });
+    expect(forecastCalls).toEqual([
+      {
+        workspaceId: CURRENT_ORG,
+        request: { kind: "if-approved", predicateSurface: "  Plan Tier  " },
+      },
+    ]);
+  });
+
+  it("REFUSES a counterfactual sent without a JSON content-type rather than silently dropping it", async () => {
+    // The defect this endpoint's body is `required: true` for. Under
+    // `required: false`, `@hono/zod-openapi` skips parsing when the
+    // content-type is not JSON and hands the handler `{}` - so the surface was
+    // discarded, the route answered the `as-curated` question, and returned 200
+    // with the CURRENT number. An approver asking "what would approving `plan
+    // tier` mint?" read `0` as a licence to approve a question nobody asked.
+    //
+    // `fetch(url, {method:"POST", body: JSON.stringify(...)})` with no explicit
+    // header sends exactly this content-type, so it is the DEFAULT way to get
+    // this wrong, not an exotic one.
+    forecastOutcome = { kind: "forecast", wouldMint: 0, truncated: false };
+    const res = await forecastWithoutJsonHeader({ predicateSurface: "plan tier" });
+
+    expect(
+      res.status,
+      "a counterfactual sent without a JSON content-type was answered instead of refused - the surface was dropped and the reply describes a different question",
+    ).toBe(415);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("unsupported_media_type");
+    // The message must say what to send, because the caller's mistake is
+    // invisible from their side: they DID send the field.
+    expect(body.message).toContain("application/json");
+    expect(
+      forecastCalls,
+      "the seam was asked a question the caller did not ask",
+    ).toEqual([]);
+  });
+
+  it("refuses a press with no body and no content-type, rather than defaulting it", async () => {
+    // The same guard from the other side. Defaulting a bodiless press to
+    // `as-curated` would be a defensible product choice on its own - but it is
+    // indistinguishable at this layer from the dropped-counterfactual case
+    // above, because BOTH arrive as `{}` with no content-type. One safe rule
+    // covers both: no JSON content-type, no answer.
+    const res = await adminBrainFacts.request("/tension-forecast", { method: "POST" });
+
+    expect(res.status).toBe(415);
+    expect(forecastCalls).toEqual([]);
+  });
+
+  it("accepts `application/json` WITH a charset parameter", async () => {
+    // The negative control for the guard's regex. `application/json;
+    // charset=utf-8` is what several HTTP clients send by default, and a regex
+    // anchored at the end would refuse every one of them - turning a correctness
+    // fix into an outage for well-behaved callers.
+    forecastOutcome = { kind: "forecast", wouldMint: 5, truncated: false };
+    const res = await adminBrainFacts.request("/tension-forecast", {
+      method: "POST",
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ predicateSurface: "region" }),
+    });
+
+    expect(res.status, "a legitimate charset-qualified JSON body was refused").toBe(200);
+    expect(forecastCalls).toEqual([
+      { workspaceId: CURRENT_ORG, request: { kind: "if-approved", predicateSurface: "region" } },
+    ]);
+  });
+
+  it("puts the unkeyable-surface arm on the wire as its own kind, never as a zero", async () => {
+    // The response schema is a discriminated union precisely so this cannot
+    // arrive as `wouldMint: 0`, which an approver reads as "this is free".
+    forecastOutcome = { kind: "unkeyable-surface" };
+    const res = await forecast({ predicateSurface: "___" });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ kind: "unkeyable-surface" });
+    expect(body).not.toHaveProperty("wouldMint");
+  });
+
+  it("writes NOTHING to the audit log — the deliberate asymmetry with the sweep", async () => {
+    // `/tension-sweep` audits every run including a zero. This must not: it is
+    // a read meant to be pressed repeatedly before a decision, and a row per
+    // press buries the sweep's own rows under the log of people thinking.
+    forecastOutcome = { kind: "forecast", wouldMint: 3, truncated: false };
+    await forecast();
+    await forecast({ predicateSurface: "region" });
+
+    expect(auditRows).toHaveLength(0);
+    expect(forecastCalls).toHaveLength(2);
+  });
+
+  it("renders BOTH caps into its published description rather than spelling them", async () => {
+    const doc = adminBrainFacts.getOpenAPIDocument({
+      openapi: "3.0.0",
+      info: { title: "t", version: "1" },
+    });
+    const description = (
+      doc.paths?.["/tension-forecast"] as { post?: { description?: string } } | undefined
+    )?.post?.description;
+
+    expect(description, "the forecast route is not in the generated document").toBeDefined();
+    expect(description).toContain(`at most ${SENTINEL_EDGE_CAP} edges per fact`);
+    expect(description).toContain(`at most ${SENTINEL_RUN_CAP} per run`);
+    expect([SENTINEL_EDGE_CAP, SENTINEL_RUN_CAP]).not.toContain(10);
+    expect([SENTINEL_EDGE_CAP, SENTINEL_RUN_CAP]).not.toContain(1000);
+  });
+
+  it("409s on contention and passes the seam's prose through", async () => {
+    forecastOutcome = { kind: "contended", reason: "conflicting-lock" };
+    const res = await forecast();
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; message: string; requestId: string };
+    expect(body.error).toBe("conflicting-lock");
+    expect(body.message).toContain("Nothing was changed");
+    expect(body.requestId).toBe("test-req");
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it("403s a reader below the owner/admin bar, and never reaches the seam", async () => {
+    // The SAME bar as the sweep, and this is the assertion that stops it being
+    // quietly lowered on the grounds that "it only returns a number". The number
+    // is workspace-wide on a router where every other read is grant-scoped.
+    memberRoleResult = "member";
+    const res = await forecast();
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("forbidden");
+    expect(body.message).toContain("member");
+    expect(body.message).toContain("owner or admin");
+    // ...and it must describe THIS operation. Reusing the sweep's denial told a
+    // member who pressed Preview that they were refused an "autonomous writer of
+    // advisory contradiction edges over every live fact", on an endpoint whose
+    // published description promises it writes nothing - which sends the reader
+    // to ask for the wrong permission.
+    expect(body.message).toContain("Forecasting");
+    expect(
+      body.message,
+      "the forecast's denial describes a WRITE - it is the sweep's message reused",
+    ).not.toContain("autonomous writer");
+    expect(body.message).toContain("writes nothing");
+    expect(
+      forecastCalls,
+      "the forecast ran for a reader who may not run the sweep it prices",
+    ).toEqual([]);
+  });
+
+  it("409s a `forecast-busy` refusal with a message that says nothing was read", async () => {
+    // The arm the sweep does not have. Its remedy is "wait and retry", which is
+    // neither of the SQLSTATE arms' remedies, and it is the one contention
+    // message allowed to name a cause - the server counted.
+    forecastOutcome = { kind: "contended", reason: "forecast-busy" };
+    const res = await forecast();
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("forecast-busy");
+    expect(body.message).toContain("Nothing was read and nothing was changed");
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it("403s a reader whose identity could not be resolved at all", async () => {
+    AUTH_USER = undefined;
+    const res = await forecast();
+
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { message: string }).message).toContain(
+      "resolved reader identity",
+    );
+    expect(forecastCalls).toEqual([]);
   });
 });
 

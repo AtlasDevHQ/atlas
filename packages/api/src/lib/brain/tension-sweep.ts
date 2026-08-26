@@ -155,7 +155,12 @@ import { subjectNotDifferentSql } from "@atlas/api/lib/brain/subject-cmp";
 // leaves a reviewer unable to tell which statement is right (#5438).
 import { exactSlotFirstSql, tensionReachSql } from "@atlas/api/lib/brain/segmentation";
 import { cardinalitySingleSql } from "@atlas/api/lib/brain/cardinality";
-import { isLockTimeout } from "@atlas/api/lib/brain/identity";
+import { identityKey, isLockTimeout } from "@atlas/api/lib/brain/identity";
+import type { Exact } from "@atlas/api/lib/type-utils";
+import type {
+  BrainFactTensionForecastRequest,
+  BrainFactTensionForecastResponse,
+} from "@useatlas/types";
 import {
   RECONCILE_LOCK_NAMESPACE,
   RECONCILE_LOCK_SQL,
@@ -280,6 +285,28 @@ const TENSION_SWEEP_LOCK_TIMEOUT_SQL = `SET LOCAL lock_timeout = '5s'`;
 const TENSION_SWEEP_STATEMENT_TIMEOUT_SQL = `SET LOCAL statement_timeout = '30s'`;
 
 /**
+ * The FORECAST's statement bound - deliberately far tighter than the sweep's.
+ *
+ * Same scan, different tolerance, and the tolerance follows from what the caller
+ * is doing rather than from what the statement costs. The sweep's 30s is
+ * justified in its own docstring by *"this being a human-triggered one-off
+ * rather than a fiber tick, [which] is why the tolerance for a slow honest
+ * answer is higher"*. A forecast is the opposite: it is rendered beside a
+ * decision, possibly several at once, and an answer that takes half a minute has
+ * already failed as a preview whether or not it eventually arrives.
+ *
+ * It is also the second half of {@link FORECAST_MAX_CONCURRENT}'s argument. The
+ * permit caps HOW MANY connections this endpoint can hold; this caps HOW LONG it
+ * can hold one. Either alone leaves the pool reachable - two permits held for
+ * 30s each is most of a five-connection pool for most of a minute.
+ *
+ * WARNING: Not shared with the sweep, and must not be "unified" with it. They
+ * are two different numbers because they answer to two different callers, and
+ * collapsing them silently gives one of the two the other's tolerance.
+ */
+const TENSION_FORECAST_STATEMENT_TIMEOUT_SQL = `SET LOCAL statement_timeout = '5s'`;
+
+/**
  * The whole sweep, as one statement.
  *
  * ## Reading it
@@ -330,7 +357,32 @@ const TENSION_SWEEP_STATEMENT_TIMEOUT_SQL = `SET LOCAL statement_timeout = '30s'
  * existence guard, and the INSERT's own column), so a widened bind list has to
  * renumber all three. `$2` is the per-fact cap, `$3` the run cap.
  */
-export const TENSION_SWEEP_SQL = `
+/**
+ * "What pairs are in tension, and which of them do not already carry an edge" —
+ * the whole scan, spelled ONCE and parameterized at the CARDINALITY GATE alone.
+ *
+ * ## Why a builder rather than two statements
+ *
+ * The module header's standing rule is that a second spelling of "what is in
+ * tension" is how two readers of this corpus drift into flagging different
+ * pairs, *"and a reviewer has no way to tell which one is right"*. That rule was
+ * written about the SWEEP against the INGEST path, which cannot share a
+ * statement — one scans a workspace, the other scans one claim's rivals — so it
+ * had to be enforced by shared expression builders and a test.
+ *
+ * {@link TENSION_FORECAST_SQL} is the case where the sharing CAN be total: the
+ * forecast asks the sweep's exact question and declines to write the answer, so
+ * every arm, every `ORDER BY`, both caps and the freshness guard are the same
+ * TEXT rather than the same intent. A forecast that drifted from the sweep is
+ * strictly worse than no forecast — it is a number an approver acts on that the
+ * button then contradicts.
+ *
+ * ⚠️ `cardinalityGate` is INTERPOLATED. Callers pass an expression this module
+ * builds, never anything reaching it from a request; the counterfactual travels
+ * as a BIND (`$4`), which is what keeps a predicate surface out of the SQL text.
+ */
+function tensionCandidateCteSql(cardinalityGate: string): string {
+  return `
   WITH candidate AS (
     SELECT a.id AS newer, rival.id AS older
       FROM brain_facts a
@@ -364,7 +416,7 @@ export const TENSION_SWEEP_SQL = `
      WHERE a.workspace_id = $1
        AND a.invalidated_at IS NULL
        AND a.valid_to IS NULL
-       AND ${cardinalitySingleSql("a")}
+       AND ${cardinalityGate}
   ),
   fresh AS (
     SELECT c.newer, c.older
@@ -377,10 +429,80 @@ export const TENSION_SWEEP_SQL = `
             OR (e.from_fact_id = c.older AND e.to_fact_id = c.newer)))
      ORDER BY c.newer, c.older
      LIMIT $3
-  )
+  )`;
+}
+
+export const TENSION_SWEEP_SQL = `${tensionCandidateCteSql(cardinalitySingleSql("a"))}
   INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
   SELECT $1, 'in-tension-with', f.newer, f.older FROM fresh f
   RETURNING 1 AS minted`;
+
+/**
+ * The cardinality gate with ONE predicate key added to it, hypothetically.
+ *
+ * `cardinalityFlipExpr`'s shape in `vocabulary-preview.ts`, and deliberately the
+ * same one: that module already answers *"what would approving this predicate
+ * supersede?"* by adding the key to the gate rather than by writing the row, and
+ * this answers the other half of the same question — *"what would it FLAG?"*
+ *
+ * ⚠️ `$4` is bound to NULL when the caller asks about the workspace as it stands
+ * TODAY, and that is what makes one statement serve both questions. `a.predicate_key
+ * = NULL` is NULL, never TRUE, so the disjunction collapses to the stored
+ * `EXISTS` exactly — the same three-valued reasoning `cardinalityUnflipExpr`
+ * spells out for its own `IS DISTINCT FROM`.
+ *
+ * ⚠️ That NULL is the BIND's, not the column's, and an earlier draft of this
+ * paragraph confused the two — it went on to reason about "a row whose
+ * `predicate_key` is itself NULL", which this module's own header says is
+ * unrepresentable: all three key columns have been `NOT NULL` since migration
+ * 0194. The conclusion was unaffected (such a row would be excluded either way),
+ * but two docstrings in one file disagreeing about what the schema admits is
+ * worse than the hedge was worth, and in this module the docstrings ARE the
+ * design record. `cardinalityUnflipExpr` still needs its `IS DISTINCT FROM`
+ * because it reads a column the PREVIEW can leave null through an alias
+ * counterfactual; nothing here does.
+ *
+ * ⚠️ Two statements — one with the disjunct, one without — was the first cut and
+ * is the drift this file spent a builder to prevent: the "today" spelling is the
+ * one nobody edits, so it is the one that goes stale.
+ */
+const TENSION_FORECAST_GATE = `(a.predicate_key = $4 OR ${cardinalitySingleSql("a")})`;
+
+/**
+ * The sweep's question, asked WITHOUT writing the answer (#5450).
+ *
+ * ## Why this exists as shipped code rather than as a query on an issue
+ *
+ * #5425 forecast the first sweep's reach by hand — the sweep's CTEs pasted into
+ * `psql` with the gate replaced by `TRUE` — and #5450 then made that scan a
+ * standing precondition: *"before approving any of `plan tier` / `name` /
+ * `region` / `is active`, run the read-only candidate scan and report the count
+ * it would mint."* A precondition discharged by pasting a copy of a statement
+ * this module owns is the second spelling the header forbids, wearing an
+ * operator's clothes — and the copy is not version-controlled, so it goes stale
+ * against the very arm it is meant to price.
+ *
+ * ## What the number means, and the one thing it is not
+ *
+ * `would_mint` is what {@link TENSION_SWEEP_SQL} would return as `minted` if it
+ * ran in the same instant, under the same two caps — the per-fact fan-out and
+ * the run cap — so a forecast and the press that follows it are the same
+ * arithmetic. It is NOT a count of pairs in tension: a pair that already carries
+ * an edge is excluded by `fresh` in both statements, because both answer *"what
+ * would this press ADD?"*
+ *
+ * ⚠️ It is a FORECAST, not a promise. Nothing is locked (see
+ * {@link forecastTensionEdges}), so an ingest pass between the read and the
+ * press moves the number. The gap is the same one any preview carries and is
+ * disclosed rather than closed: closing it would mean holding this workspace's
+ * reconcile lock across a human's decision.
+ *
+ * ⚠️ `$4` is the counterfactual predicate key and is bound at ONE site; `$1`
+ * still reaches TWO here rather than the sweep's three, because there is no
+ * INSERT column to scope. A widened bind list has to renumber both.
+ */
+export const TENSION_FORECAST_SQL = `${tensionCandidateCteSql(TENSION_FORECAST_GATE)}
+  SELECT count(*)::int AS would_mint FROM fresh`;
 
 /** What one invocation did. */
 export interface TensionSweepReport {
@@ -563,6 +685,28 @@ export type TensionSweepOutcome =
  */
 export function contentionMessage(reason: TensionSweepContention): string {
   return CONTENTION_MESSAGE[reason];
+}
+
+/**
+ * The refusal an operator reads for a FORECAST, over all of its arms.
+ *
+ * Delegates to {@link contentionMessage} for the arms it shares, so the two
+ * endpoints cannot describe the same SQLSTATE differently, and owns the one arm
+ * the sweep does not have.
+ *
+ * WARNING: this message NAMES A CAUSE, which every message in
+ * `CONTENTION_MESSAGE` is forbidden from doing. The prohibition there is about
+ * SQLSTATEs, which carry no cause - `tension-sweep.test.ts` greps for the
+ * defeated phrasings precisely because three rounds of asserting one were wrong.
+ * This arm is not derived from a SQLSTATE at all: the server counted its own
+ * in-flight scans, so the cause is established rather than guessed, and hedging
+ * it would be a false modesty that costs the operator the one actionable
+ * sentence available.
+ */
+export function forecastContentionMessage(reason: TensionForecastContention): string {
+  return reason === "forecast-busy"
+    ? "This server is already running the maximum number of tension forecasts at once, so this one was refused rather than queued - a queued forecast would hold a database connection too. Nothing was read and nothing was changed. Wait a moment and ask again; if it persists, something is calling this endpoint in a loop."
+    : contentionMessage(reason);
 }
 
 const CONTENTION_MESSAGE = {
@@ -836,6 +980,364 @@ export async function sweepTensionEdges(
       : "brain tension sweep: nothing to mint — either the corpus has converged, or no predicate in this workspace is APPROVED `single` (a pending proposal does not arm the sweep)",
   );
   return { kind: "swept", report };
+}
+
+// ---------------------------------------------------------------------------
+// The forecast — the sweep's question, without the sweep's write (#5450)
+// ---------------------------------------------------------------------------
+
+/**
+ * What {@link forecastTensionEdges} was asked.
+ *
+ * Takes the SURFACE, never the key — `BlastRadiusRequest`'s `cardinality-flip`
+ * arm makes the same choice for the same reason, and states it: the key is
+ * derived here and never travels back out, because a request type that accepted
+ * one would be the seam through which a key reaches a route body
+ * (ADR-0037 §6, `keys-not-on-the-wire.test.ts`).
+ */
+export type TensionForecastRequest =
+  /**
+   * The workspace exactly as it stands. `wouldMint` is what pressing the sweep
+   * right now would return as `minted`.
+   */
+  | { readonly kind: "as-curated" }
+  /**
+   * …and additionally treating `predicateSurface`'s canonical predicate as
+   * approved `single`.
+   *
+   * ⚠️ The counterfactual is ADDITIVE and does not model a REMOVAL. Un-curating
+   * a predicate mints nothing by construction — the sweep only ever adds edges —
+   * so the question "what would un-approving this un-mint?" has the answer zero
+   * and is not asked here. `vocabulary-preview.ts` needs both directions because
+   * supersession's counterfactual is genuinely two-sided; this one is not.
+   */
+  | { readonly kind: "if-approved"; readonly predicateSurface: string };
+
+/**
+ * The bounds a FORECAST can hit — the sweep's three, minus the one it cannot.
+ *
+ * `reconcile-lock` is excluded because this transaction never takes namespace
+ * 4771 (see {@link forecastTensionEdges}), and an arm a caller is invited to
+ * handle for a refusal that cannot occur is a branch nothing will ever exercise
+ * and everything will keep copying. Derived by `Exclude` rather than re-listed,
+ * so a fourth sweep bound joins this union automatically and has to be
+ * considered rather than silently omitted.
+ */
+export type TensionForecastContention =
+  | Exclude<TensionSweepContention, "reconcile-lock">
+  /**
+   * Too many forecasts are already in flight IN THIS PROCESS — see
+   * {@link FORECAST_MAX_CONCURRENT}.
+   *
+   * Its own arm rather than reusing `unfinished`, on the rule
+   * {@link TensionSweepContention} states: three bounds, three remedies, and a
+   * shared refusal can only state the one its author had in mind. This one's
+   * remedy is *wait a moment and ask again* and its cause IS established — the
+   * server counted — which is the opposite of every SQLSTATE-derived arm beside
+   * it, all of which are forbidden from naming a cause.
+   */
+  | "forecast-busy";
+
+/**
+ * How many forecasts may hold a pooled connection AT ONCE, per process.
+ *
+ * ## The sweep is self-limiting and this is not, which is the whole reason
+ *
+ * `sweepTensionEdges` can only ever have one 30s statement in flight per
+ * workspace, because it holds advisory namespace 4771 and bounds the
+ * acquisition at 5s: a burst of presses queues and then refuses. The forecast
+ * deliberately takes no lock ({@link forecastTensionEdges} argues why), writes
+ * no audit row, and its own route invites being *"run repeatedly and idly before
+ * a decision"*. Nothing was left to bound it.
+ *
+ * MEASURED against the shape rather than assumed: the internal pool is `max: 5`
+ * (`lib/db/internal.ts`), and the candidate walk is explicitly the unbounded
+ * half — `TENSION_SWEEP_STATEMENT_TIMEOUT_SQL`'s own docstring warns about
+ * *"holding one of five internal-pool connections"*. So five concurrent
+ * forecasts hold the ENTIRE pool for the length of their scans, starving auth,
+ * settings and audit reads for the whole process. That is not hypothetical
+ * traffic: a vocabulary pane that prices each pending predicate on render has
+ * four to ask about on the very workspace #5450 measured, and a stale second tab
+ * makes five.
+ *
+ * ## Why a process-local counter is the RIGHT instrument here
+ *
+ * The resource being protected is per-PROCESS — one pool, one `max: 5` — so a
+ * process-local bound is exactly scoped to it. A distributed limiter would be
+ * strictly worse: more machinery, a second failure mode, and no closer fit.
+ *
+ * ⚠️ It is NOT an advisory lock, and `pg_try_advisory_xact_lock` was the first
+ * cut. That refuses the 2nd, 3rd and 4th of a legitimate four-predicate render
+ * — turning a pane that asks four honest questions into three errors — because
+ * a per-workspace lock cannot tell a burst from a duplicate. A COUNT admits
+ * concurrency up to the point where it costs someone else, which is the actual
+ * property wanted.
+ *
+ * Two rather than five, so a forecast storm can never take the last connection:
+ * three stay free for the rest of the process no matter how hard this endpoint
+ * is pressed.
+ */
+export const FORECAST_MAX_CONCURRENT = 2;
+
+/**
+ * In-flight forecasts in this process.
+ *
+ * Module-level mutable state, which this subsystem otherwise avoids — justified
+ * because the thing being counted IS process-global (the pool), so a counter
+ * scoped any tighter would not bound it. Incremented and decremented around the
+ * transaction in a `try`/`finally`, so a throw cannot leak a permit; a leaked
+ * permit is worse than the exhaustion it guards, because it never recovers.
+ */
+let forecastsInFlight = 0;
+
+/** Test seam: in-flight count, for asserting the permit is always returned. */
+export function _forecastsInFlight(): number {
+  return forecastsInFlight;
+}
+
+/** What one forecast answered. */
+export type TensionForecastOutcome =
+  | {
+      readonly kind: "forecast";
+      /**
+       * Edges a sweep in this same instant would WRITE — the number
+       * {@link TensionSweepReport.minted} would carry, under both the same caps.
+       *
+       * Named `wouldMint` rather than `minted` deliberately: the two records
+       * are otherwise field-identical, and a log line, a metric or a UI string
+       * that reads one as the other reports a write that never happened.
+       */
+      readonly wouldMint: number;
+      /** The run cap bit — {@link TensionSweepReport.truncated}'s meaning exactly. */
+      readonly truncated: boolean;
+    }
+  /**
+   * The requested surface norms away to nothing (`-`, `___`, `  `), so it
+   * occupies no slot and can arm nothing.
+   *
+   * ⚠️ Its own arm rather than a `wouldMint: 0`, and the distinction is the one
+   * `StructurallyEmptyReason.unkeyable-surface` was added to
+   * `vocabulary-preview.ts` to make after its absence shipped as a defect there:
+   * *"a request that was never computable rendered as"* a confident zero. A
+   * forecast is read as a licence to approve, so a zero that means **"we could
+   * not ask your question"** and a zero that means **"approving this mints
+   * nothing"** must not be the same value.
+   */
+  | { readonly kind: "unkeyable-surface" }
+  | { readonly kind: "contended"; readonly reason: TensionForecastContention };
+
+/**
+ * ⚠️ Compile-time lock: this outcome's two ANSWERING arms and the wire response
+ * are the SAME TYPE.
+ *
+ * `BlastRadius`' pin, for the reason its docstring records at length — the wire
+ * type and the engine type here are hand-written twins, not aliases, and the
+ * drift is silent in BOTH directions: a field the engine grows is one no client
+ * can read and that `z.strictObject` then rejects on the way out, and a field
+ * the wire grows is one this module never populates and the schema then demands.
+ * That module measured it: a field added to a literal arm compiled COMPLETELY
+ * CLEAN and 500'd every request.
+ *
+ * `contended` is excluded because it is not a 200 — the route maps it to a 409
+ * whose body is `ErrorSchema`, so it has no counterpart on this response and
+ * including it would make the pin unsatisfiable rather than strict.
+ *
+ * ⚠️ Stated at the UNION rather than at one arm, which is the correction
+ * `BlastRadius`' pin needed: pinning only the numeric arm leaves `kind` and the
+ * whole `unkeyable-surface` member unreached, and those are exactly the fields a
+ * discriminated union is carrying the weight with.
+ */
+const _forecastMatchesTheWire: Exact<
+  Exclude<TensionForecastOutcome, { kind: "contended" }>,
+  BrainFactTensionForecastResponse
+> = true;
+void _forecastMatchesTheWire;
+
+/**
+ * ⚠️ …and the same pin on the REQUEST, which has the opposite failure mode.
+ *
+ * The wire carries an optional `predicateSurface` and this module takes a
+ * discriminated union, so they are deliberately NOT the same type — the route is
+ * the translation. What must hold is that every surface the wire can express is
+ * one this union has an arm for: `undefined` → `as-curated`, a string →
+ * `if-approved`. Asserted by mapping the wire type through the translation the
+ * route performs, so a third wire field (a `position`, a workspace override)
+ * fails HERE rather than being silently dropped in the handler.
+ */
+const _forecastRequestIsTotal: Exact<
+  keyof BrainFactTensionForecastRequest,
+  "predicateSurface"
+> = true;
+void _forecastRequestIsTotal;
+
+/**
+ * How many advisory edges a sweep would mint — asked without minting them
+ * (#5450, and the precondition #5425 discharged by hand).
+ *
+ * ## Read-only, and it does NOT take the reconcile lock
+ *
+ * {@link sweepTensionEdges} takes namespace 4771 because its `NOT EXISTS`
+ * freshness guard has to be sound against a concurrent writer of the same
+ * edges. This statement writes nothing, so there is no guard to make sound —
+ * and taking the lock would be actively wrong in two ways. It would queue a
+ * human's *read* behind an ingest pass, and, worse, it would hold this
+ * workspace's reconcile lock for the duration of a preview whose whole purpose
+ * is to be run repeatedly and idly before a decision.
+ *
+ * The price is that the number is a FORECAST rather than a promise: an ingest
+ * pass or a correction landing between the read and the press moves it. That is
+ * disclosed on {@link TENSION_FORECAST_SQL} rather than closed, because closing
+ * it means holding a lock across a human's deliberation.
+ *
+ * ## The statement bounds ARE kept, both of them
+ *
+ * The candidate scan is the same unbounded walk over every live fact that
+ * `TENSION_SWEEP_STATEMENT_TIMEOUT_SQL` exists to bound — the cap sits on
+ * `fresh`, which is the part this statement replaces with a `count(*)`, so the
+ * expensive half is untouched. And `lock_timeout` still earns its place: a
+ * plain `SELECT` takes `AccessShareLock`, which conflicts with the
+ * `AccessExclusiveLock` a migration or an index rebuild holds, so a forecast run
+ * during maintenance refuses in 5s rather than sitting for 30.
+ *
+ * @throws on any database failure that is not one of those two bounds — a
+ *   forecast that failed and answered zero is indistinguishable from a corpus
+ *   with nothing to mint, which is the reading that would license the approval.
+ */
+export async function forecastTensionEdges(
+  workspaceId: string,
+  request: TensionForecastRequest,
+  deps: TensionSweepDeps = {},
+): Promise<TensionForecastOutcome> {
+  // BEFORE the transaction. An unkeyable surface is a property of the request,
+  // not of the corpus, so checking it here keeps a pooled connection out of the
+  // one case that provably cannot need one.
+  let counterfactualKey: string | null = null;
+  if (request.kind === "if-approved") {
+    counterfactualKey = identityKey(request.predicateSurface);
+    if (counterfactualKey === null) return { kind: "unkeyable-surface" };
+  }
+
+  // BEFORE the pool is touched, and refused rather than queued - a queued
+  // preview still ends up holding a connection, just later, which is the thing
+  // being prevented. See {@link FORECAST_MAX_CONCURRENT}.
+  if (forecastsInFlight >= FORECAST_MAX_CONCURRENT) {
+    log.warn(
+      { workspaceId, inFlight: forecastsInFlight, cap: FORECAST_MAX_CONCURRENT },
+      "brain tension forecast: refused - this process already has the maximum number of forecast scans holding pooled connections",
+    );
+    return { kind: "contended", reason: "forecast-busy" };
+  }
+  forecastsInFlight += 1;
+  try {
+    return await runForecast(workspaceId, counterfactualKey, request, deps);
+  } finally {
+    // `finally`, so neither a throw nor an early return can leak a permit. A
+    // leaked one never recovers: the endpoint would refuse forever with a
+    // message telling the operator to wait.
+    forecastsInFlight -= 1;
+  }
+}
+
+/** {@link forecastTensionEdges}' body, once the permit is held. */
+async function runForecast(
+  workspaceId: string,
+  counterfactualKey: string | null,
+  request: TensionForecastRequest,
+  deps: TensionSweepDeps,
+): Promise<TensionForecastOutcome> {
+  const withTransaction = deps.withTransaction ?? withBrainTransaction;
+  const outcome = await withTransaction<
+    | { readonly kind: "forecast"; readonly wouldMint: number }
+    | { readonly kind: "contended"; readonly reason: TensionForecastContention }
+  >(async (tx) => {
+    await tx.query(TENSION_SWEEP_LOCK_TIMEOUT_SQL);
+    await tx.query(TENSION_FORECAST_STATEMENT_TIMEOUT_SQL);
+    try {
+      const { rows } = await tx.query(TENSION_FORECAST_SQL, [
+        workspaceId,
+        TENSION_EDGE_CAP,
+        TENSION_SWEEP_RUN_CAP,
+        counterfactualKey,
+      ]);
+      // `count(*)` over a CTE always returns exactly one row, so a missing one
+      // means the driver or a test double is not answering this statement —
+      // which must not read as a converged corpus. Narrowed on the VALUE rather
+      // than cast, on `readPredicateCardinality`'s posture: nothing in the
+      // executor's type stops `{ rows: [{}] }` reaching here.
+      const raw: unknown = (rows as readonly Record<string, unknown>[])[0]?.["would_mint"];
+      // ⚠️ The STRING arm is not defensive padding and the `null`/`undefined`
+      // rejection is not either — both were failing tests. `count(*)::int` is an
+      // int4 the driver parses to a number, but the cast is one edit from being
+      // dropped, and bare `count(*)` is int8, which `pg` hands back as a STRING
+      // to protect precision; that edit must be a passing test, not a 500.
+      // In the other direction, a bare `Number(raw)` coerces `null` to **0** —
+      // so a NULL, or a row that does not carry the column at all, would arrive
+      // as a confident "approving this mints nothing", which is the one reading
+      // this whole outcome type exists to keep unrepresentable.
+      const wouldMint =
+        typeof raw === "number"
+          ? raw
+          : typeof raw === "string" && raw.trim() !== ""
+            ? Number(raw)
+            : Number.NaN;
+      if (!Number.isInteger(wouldMint) || wouldMint < 0) {
+        throw new Error(
+          `brain tension forecast: the count statement answered ${String(raw)}, which is not a row count`,
+        );
+      }
+      return { kind: "forecast", wouldMint };
+    } catch (err: unknown) {
+      // The sweep's arms, in the sweep's order, minus the acquisition it never
+      // makes. `57014` FIRST for the reason it is first there: a cancel and a
+      // time-bound expiry share the SQLSTATE and only the `where` field
+      // separates a lock wait from a statement that was simply running.
+      if (isStatementTimeout(err)) {
+        log.warn(
+          { workspaceId, code: pgCode(err), where: pgWhere(err), err: errorMessage(err) },
+          "brain tension forecast: the candidate scan did not finish (57014 — a time-bound expiry or a cancel; Postgres does not distinguish them, so read `err` for which)",
+        );
+        return { kind: "contended", reason: "unfinished" };
+      }
+      if (isLockTimeout(err)) {
+        log.warn(
+          { workspaceId, code: pgCode(err), where: pgWhere(err), err: errorMessage(err) },
+          "brain tension forecast: timed out taking a read lock on this workspace's facts — most often a migration or an index build; the SQLSTATE does not say which",
+        );
+        return { kind: "contended", reason: "conflicting-lock" };
+      }
+      throw err;
+    }
+  }).catch((err: unknown) => {
+    // Re-thrown rather than degraded to a zero, and the stake is higher than it
+    // is for the sweep: the sweep's degraded zero would be read as "nothing to
+    // do", where a forecast's would be read as "approving this is free".
+    log.error(
+      { workspaceId, code: pgCode(err), err: errorMessage(err) },
+      "brain tension forecast: the read failed — no number was produced and nothing was written",
+    );
+    throw err;
+  });
+
+  if (outcome.kind === "contended") return { kind: "contended", reason: outcome.reason };
+
+  // The SAME derivation the sweep's report uses, so a forecast and the press
+  // that follows it cannot disagree about the flag. Constructed through
+  // `tensionSweepReport` rather than re-deriving `>= RUN_CAP` here — that
+  // function's docstring says a second truncation source has one place to be
+  // taught, and this is the second reader it was written for.
+  const { minted, truncated } = tensionSweepReport(outcome.wouldMint);
+  log.info(
+    {
+      workspaceId,
+      wouldMint: minted,
+      truncated,
+      counterfactual: request.kind === "if-approved",
+      perFactCap: TENSION_EDGE_CAP,
+      runCap: TENSION_SWEEP_RUN_CAP,
+    },
+    "brain tension forecast: counted the advisory edges a sweep would mint — nothing was written",
+  );
+  return { kind: "forecast", wouldMint: minted, truncated };
 }
 
 /**

@@ -27223,6 +27223,233 @@
         "operationId": "postAdminBrainFactsTensionSweep"
       }
     },
+    "/api/v1/admin/brain-facts/tension-forecast": {
+      "post": {
+        "tags": [
+          "Admin — Brain Facts"
+        ],
+        "summary": "Count the tension edges a sweep would mint, without minting them",
+        "description": "Answers `/tension-sweep`'s question and writes nothing (#5450). `wouldMint` is the number that endpoint would return as `minted` if it ran in this same instant, under the same two caps — the same statement, with the INSERT replaced by a count. Send `predicateSurface` to ask the COUNTERFACTUAL: *what would a sweep mint if I also approved this predicate `single`?* Nothing is proposed, approved, or recorded — the hypothesis lives for the length of one statement, and the answer is what an approver needs BEFORE arming a predicate, because an `in-tension-with` edge that turns out spurious is one a reviewer must then dismiss by hand. Omit it to ask about the workspace exactly as it stands. ⚠️ A FORECAST, not a promise. This takes no lock — deliberately, so a preview cannot block this workspace's ingest for as long as a human takes to decide — so an ingest pass, a correction, or another sweep landing before you press moves the number. ⚠️ `wouldMint` is not a count of pairs in tension. A pair that already carries an edge is excluded, because both this and the sweep answer *what would this ADD?* And a `0` does not identify a cause: a converged corpus, a workspace with no live facts, and a workspace that has approved no predicate `single` all answer `0` — which is why the counterfactual exists. ⚠️ A JSON body is REQUIRED, even to ask about the workspace as it stands - send `{}`. It is not optional, because an optional JSON body that arrives without an `application/json` content-type is silently discarded rather than rejected, and a discarded `predicateSurface` would be answered with the CURRENT number as though the counterfactual had been asked. The response is a DISCRIMINATED UNION. `kind: \"unkeyable-surface\"` is returned when the surface you asked about normalizes away to nothing, and it is deliberately not a `wouldMint` of `0`: *we could not ask your question* and *approving this mints nothing* are opposite advice. Bounded by the same two caps the sweep applies — at most 10 edges per fact, at most 1000 per run — so `truncated` here means what it means there. Needs the owner or admin entitlement, re-resolved against this workspace rather than read off the session, on exactly the bar `/tension-sweep` applies: this reads workspace-wide state that no per-claim grant scopes, and it is the decision aid for an act at that bar.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "predicateSurface": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The forecast ran and nothing was written. `kind: \"forecast\"` carries `wouldMint` and `truncated`; `kind: \"unkeyable-surface\"` means the predicate surface asked about occupies no slot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "forecast"
+                          ]
+                        },
+                        "wouldMint": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "truncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "wouldMint",
+                        "truncated"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "unkeyable-surface"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — bad filter value or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — the forecast reads workspace-wide state and is the decision aid for arming an autonomous writer of `brain_edges`, so it takes the same owner/admin bar as the sweep itself (ADR-0037 §6), re-resolved against the workspace being read rather than read off the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The forecast could not run, and `error` names WHICH bound it hit. `forecast-busy` — this server is already running the maximum number of forecasts at once and refused rather than queued, since a queued forecast holds a database connection too; wait a moment and retry, and if it persists something is calling this endpoint in a loop. `unfinished` — the candidate scan did not complete, which is either a time-bound expiry or a cancellation, and Postgres does not distinguish them; retry once and escalate if it repeats. `conflicting-lock` — a conflicting lock on this workspace's facts, most often a migration or an index build (this statement takes no lock of its own); retry in a few seconds. `reconcile-lock` is NOT among them: unlike the sweep, this never takes the reconcile lock. Nothing was read to a partial answer and nothing was written in either case",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request carried no `application/json` content-type. Refused rather than defaulted, and the reason is specific to this endpoint: a body sent under any other content-type is discarded by the framework before the handler runs, so a `predicateSurface` would vanish and the reply would answer the DEFAULT question with a number the caller reads as an answer to theirs. `fetch(url, {method:\"POST\", body})` with no explicit header sends `text/plain` and lands here — set the header and resend",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainFactsTensionForecast"
+      }
+    },
     "/api/v1/admin/brain-facts/actor-identity/erase": {
       "post": {
         "tags": [

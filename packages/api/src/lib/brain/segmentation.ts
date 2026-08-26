@@ -148,6 +148,61 @@
  *   - The edge is advisory and idempotent, and `loadTensionClusters` surfaces it
  *     with both provenances, so a reviewer sees what it joined and why.
  *
+ * ## …and then MEASURED, twice, in us prod (#5450)
+ *
+ * The paragraph above was written before the arm had run against a real corpus.
+ * It has now, and the prediction held — the observed false pairs are exactly the
+ * shape it names, *a subject carrying several `single`-cardinality predicates*.
+ *
+ * **2026-08-25**, the post-anchor-arm candidate scan over all 34 facts in the
+ * workspace, run read-only with the cardinality gate lifted: three candidate
+ * pairs corpus-wide, **all anchor-only, one of three a true contradiction**. The
+ * two false ones were a price beside a discount flag (`business tier`) and a
+ * raise target beside a post-money valuation (`series a`).
+ *
+ * **2026-08-26**, the same scan, 35 facts (29 live): **two candidate pairs, both
+ * already carrying an edge, and nothing fresh left to mint.** The `business
+ * tier` false pair had evaporated on its own — the `is priced at` arm stopped
+ * being live — and the `series a` one had been MINTED. What minted it is the
+ * finding:
+ *
+ * ⚠️ **The false `series a` edge was written by the CORRECTION path, with no
+ * cardinality entry anywhere in the loop.** `correction.ts` hard-codes
+ * `predicateCardinality: "single"` on the claim a correction authors, and its
+ * comment argues that correctly — since #5027 the field gates `in-tension-with`
+ * and nothing else, so the verb may decide it. But that decision predates this
+ * module: with a predicate arm, a correction's tension scan reached its own
+ * slot; with the anchor arm, it reaches every live claim sharing its subject's
+ * prefix. `has target raise of` has no row in `brain_predicate_cardinality` at
+ * all, and the edge exists. So the reach of this arm is **not** bounded by
+ * approved-predicate coverage on the correction lane — only on the sweep lane.
+ * Filed separately rather than fixed here; the trade may well still be right,
+ * but it should be re-made knowingly.
+ *
+ * ⚠️ **One-of-three, and then one-of-two, on a corpus of 35 facts in ONE
+ * workspace with two producers, is NOT a precision rate and does not
+ * generalize.** It is evidence of exactly one thing: the predicted cost is real
+ * and lands where this header predicted it. Nothing here licenses a number for a
+ * corpus of any other size or shape.
+ *
+ * ## Asking the question before paying the cost
+ *
+ * Both measurements above were taken by pasting `TENSION_SWEEP_SQL`'s CTEs into
+ * `psql` with the gate replaced by `TRUE` — a second spelling of this rule,
+ * living on an issue, drifting from the day it was written.
+ * `tension-sweep.ts`'s `forecastTensionEdges` is that scan as shipped code — a
+ * plain reference rather than a `{@link}`, because this module must not import
+ * from the statement that imports it. It runs the sweep's
+ * own statement with the INSERT replaced by a count, and takes a counterfactual
+ * predicate, so *"how many edges would approving `plan tier` mint?"* is a
+ * request rather than a hand-written query. Measured through it on 2026-08-26,
+ * the answer for all four of that workspace's pending warehouse predicates was
+ * **zero** — the warehouse producer writes one episode per run and one row per
+ * `(subject, predicate)` slot, so the anchor arm's different-episode requirement
+ * and the exact-slot arm both come up empty. The bound named above ("the
+ * different-episode arm removes the largest false class outright") is doing more
+ * work in practice than it reads like.
+ *
  * ## The anchor is a PREFIX test, and that is not a similarity rule
  *
  * {@link subjectAnchorSql} admits two subject keys when one is a whole-token

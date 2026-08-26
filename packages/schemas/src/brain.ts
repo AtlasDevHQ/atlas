@@ -69,6 +69,8 @@ import type {
   BrainFactProvenanceView,
   BrainFactRetractResponse,
   BrainFactReviewStatus,
+  BrainFactTensionForecastRequest,
+  BrainFactTensionForecastResponse,
   BrainFactTensionSweepResponse,
   BrainFactTensionView,
   BrainFactWillSupersede,
@@ -599,6 +601,37 @@ export const BrainFactTensionSweepResponseSchema = z.strictObject({
   minted: z.number().int().nonnegative(),
   truncated: z.boolean(),
 }) satisfies z.ZodType<BrainFactTensionSweepResponse, unknown>;
+
+/**
+ * Longest predicate surface a forecast will accept.
+ *
+ * The same bound the correction verbs put on an SPO column: this is a
+ * predicate, not a document, and an unbounded string reaching `lexicalNorm` is
+ * a request-shaped way to spend a pooled connection's CPU.
+ */
+export const BRAIN_TENSION_FORECAST_SURFACE_MAX_CHARS = 2_000;
+
+export const BrainFactTensionForecastRequestSchema = z.strictObject({
+  predicateSurface: z.string().min(1).max(BRAIN_TENSION_FORECAST_SURFACE_MAX_CHARS).optional(),
+}) satisfies z.ZodType<BrainFactTensionForecastRequest, unknown>;
+
+/**
+ * ⚠️ A `discriminatedUnion`, not a record with a nullable count — see
+ * `BrainFactTensionForecastResponse`. `z.strictObject` on BOTH arms for
+ * `BrainFactTensionSweepResponseSchema`'s reason, and the obvious next thing a
+ * producer would attach here is the PAIRS it counted: that is a workspace-wide
+ * projection of claims on a router where every other read is scoped to the
+ * caller's own grants, and strict makes attaching it a parse failure at the ACL
+ * boundary rather than a disclosure in a browser.
+ */
+export const BrainFactTensionForecastResponseSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("forecast"),
+    wouldMint: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+  }),
+  z.strictObject({ kind: z.literal("unkeyable-surface") }),
+]) satisfies z.ZodType<BrainFactTensionForecastResponse, unknown>;
 
 // ---------------------------------------------------------------------------
 // Correction verbs — `correct_fact` (#4915)

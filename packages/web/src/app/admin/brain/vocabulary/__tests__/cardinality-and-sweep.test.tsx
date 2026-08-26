@@ -583,4 +583,48 @@ describe("the tension sweep is triggerable and never over-claims", () => {
     await waitFor(() => expect(within(sweepCard()).getByText(/did not complete/)).toBeTruthy());
     expect(within(sweepCard()).queryByText(/minted 3 advisory tension edges/)).toBeNull();
   });
+
+  test("a 403 renders the route's own entitlement refusal, and the control still works", async () => {
+    // The acceptance criterion covers BOTH operations, and the sweep's bar is the
+    // stricter-sounding one: it is an autonomous writer of `brain_edges` and
+    // re-resolves owner/admin against the workspace being swept rather than
+    // reading it off the session. So this page cannot know the answer before
+    // asking, which is why the button is not hidden on a guess — an admin of
+    // another workspace reads the refusal instead of finding a dead control.
+    sweepResponse = {
+      body: {
+        error: "not-entitled",
+        message:
+          "The tension sweep needs the owner or admin entitlement in this workspace, re-resolved against the workspace being swept.",
+        requestId: "req-11",
+      },
+      status: 403,
+    };
+    renderPage();
+    fireEvent.click(sweepButton());
+    await waitFor(() =>
+      expect(within(sweepCard()).getByText(/owner or admin entitlement/)).toBeTruthy(),
+    );
+    // NOT a broken control: still live, so a reader who gains the entitlement can
+    // retry without reloading.
+    expect(sweepButton().disabled).toBe(false);
+    // ⚠️ And a refusal is not a run. Nothing here may read as a sweep that found
+    // nothing — the failure this whole panel is built to refuse, arrived at from
+    // the one direction that never reached the corpus at all.
+    expect(within(sweepCard()).queryByText(/does not identify a cause/)).toBeNull();
+    expect(within(sweepCard()).queryByText(/The sweep ran/)).toBeNull();
+  });
+
+  test("a 2xx with no parsed body is not reported as a zero", async () => {
+    // A proxy can return a 2xx claiming JSON with a body that does not parse.
+    // `sweepOutcome({minted: 0})` would then attribute a number to a run that
+    // never reported one — a fabricated all-clear.
+    sweepResponse = { body: null, status: 204 };
+    renderPage();
+    fireEvent.click(sweepButton());
+    await waitFor(() =>
+      expect(within(sweepCard()).getByText(/returned no report/)).toBeTruthy(),
+    );
+    expect(within(sweepCard()).queryByText(/minted no new tension edges/)).toBeNull();
+  });
 });

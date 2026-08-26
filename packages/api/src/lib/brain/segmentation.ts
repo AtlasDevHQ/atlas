@@ -185,6 +185,29 @@
  * and lands where this header predicted it. Nothing here licenses a number for a
  * corpus of any other size or shape.
  *
+ * ## What bounds the spike, stated as the correction it is
+ *
+ * The PRD warns that the first sweep after this arm *"mints anchor-only
+ * advisory edges across ALL of history at once"*, which reads as a HISTORY
+ * problem. It is not. `TENSION_SWEEP_SQL` gates every candidate on
+ * `cardinalitySingleSql`, which needs an entry that is `single` **and**
+ * `status = 'approved'` — so the sweep's blast radius is **approved-predicate
+ * coverage, not the corpus**. A workspace that has curated nothing sweeps
+ * nothing, however long its history.
+ *
+ * The four entries that would widen it on the measured workspace, named rather
+ * than counted, because "the four pending ones" is not something a future
+ * reader can act on: **`plan tier`**, **`name`**, **`region`** and
+ * **`is active`** — all `single`, all `pending`, all proposed by `warehouse:v1`.
+ * Approving any of them arms the sweep for every subject carrying that
+ * predicate. (Measured 2026-08-26: on this corpus that is zero edges, for the
+ * structural reason given below — but the bound is the curation, and the zero
+ * is a property of this workspace's shape rather than of the gate.)
+ *
+ * ⚠️ **That bound holds for the SWEEP lane only.** The correction lane has no
+ * coverage bound at all — see the `⚠️` above — so "approved-predicate coverage"
+ * corrects the PRD without being the whole story.
+ *
  * ## Asking the question before paying the cost
  *
  * Both measurements above were taken by pasting `TENSION_SWEEP_SQL`'s CTEs into

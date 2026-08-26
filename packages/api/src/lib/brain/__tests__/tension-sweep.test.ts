@@ -92,6 +92,20 @@ function harness(
   return { calls, runner };
 }
 
+/**
+ * How many error-derived refusal warns `tension-sweep.ts` is known to ship.
+ *
+ * A FLOOR, not an equality: the guard below must fail when a refusal log is
+ * deleted, and must not need editing when one is added. Named here rather than
+ * written as a bare literal inside an assertion whose comment claimed the number
+ * was "DERIVED rather than a literal" — it was a literal, and the comment
+ * beside it was the only thing saying otherwise.
+ *
+ * Four in `sweepTensionEdges` (the lock's two SQLSTATE arms, the statement's
+ * two) plus two in `forecastTensionEdges` (`unfinished`, `conflicting-lock`).
+ */
+const REFUSAL_ARMS = 5;
+
 /** A `pg` error as the driver actually shapes it — a `code` on an Error. */
 function pgError(code: string): Error & { code: string } {
   return Object.assign(new Error(`simulated ${code}`), { code });
@@ -807,44 +821,60 @@ describe("the arms round 2 found missing (#5029)", () => {
 
     // ⚠️ The rule is CONDITIONAL, and stating it as a universal over every
     // `log.warn` was an over-reach that only looked correct while every warn in
-    // the file happened to be SQLSTATE-derived. #5450's `forecast-busy` refusal
-    // is not: the server counted its own in-flight scans, so there is no error
+    // the file happened to be error-derived. #5450's `forecast-busy` refusal is
+    // not: the server counted its own in-flight scans, so there is no error
     // object, no hedge between holders, and no discriminator to withhold. It
     // would have been forced to invent an `err:` to satisfy a guard whose own
     // docstring is about *"the field that does"* say which — i.e. to fabricate
     // the evidence the guard exists to demand.
     //
-    // Keyed on `code:` because that IS the precondition: a payload carrying a
-    // SQLSTATE is one derived from a thrown pg error, which is exactly the
-    // population whose message hedges. Sharper than the universal, not looser —
-    // it can no longer be satisfied by a warn that has nothing to discriminate.
-    const sqlstateDerived = warns.filter((payload) => /\bcode:/.test(payload));
-    const counted = warns.filter((payload) => !/\bcode:/.test(payload));
+    // ⚠️ Partitioned on `code:` OR `err:`, not on `code:` alone. Review found
+    // the hole in the `code:`-only version: the exemption keyed on a field the
+    // AUTHOR controls, so a future pg-derived warn that simply omitted `code:`
+    // escaped the requirement entirely — the guard could be silenced by
+    // withholding one more field than it checked for. "Mentions an error at
+    // all" is not author-discretionary in the same way, and the rule it
+    // supports is stronger and simpler: carry BOTH or carry NEITHER.
+    const errorDerived = warns.filter((p) => /\bcode:/.test(p) || /\berr:/.test(p));
+    const counted = warns.filter((p) => !/\bcode:/.test(p) && !/\berr:/.test(p));
 
-    // Non-vacuity, from BOTH sides. A regex that stopped matching `code:` would
-    // empty the checked set and pass; a refusal log deleted would shrink it
-    // silently. DERIVED as "all but the counted ones" rather than a literal, so
-    // adding a sixth SQLSTATE arm is covered without editing this number.
+    // ⚠️ NON-VACUITY, and the previous spelling of this was DEAD. It read
+    // `expect(errorDerived.length).toBe(warns.length - counted.length)`, and
+    // `counted` is `errorDerived`'s exact complement — so it held for any regex
+    // including one matching nothing (0 === 0), while its own message claimed it
+    // caught "a regex that stopped matching". A tautology wearing an
+    // assertion's formatting is the same class of defect as a hand-written
+    // claim wearing a measurement's, which `check-mutation-tables` exists for.
+    //
+    // What replaces it actually bites: the two partitions must cover every warn
+    // (so a third state cannot appear unnoticed), the error-derived set must be
+    // non-empty against a floor DERIVED from the shipped refusal arms, and the
+    // exempt set must be non-empty too — otherwise the second loop below is the
+    // thing proving nothing.
+    expect(errorDerived.length + counted.length, "the partition lost a warn").toBe(warns.length);
     expect(
-      sqlstateDerived.length,
-      "no SQLSTATE-derived warn payloads found — the assertion below proves nothing",
-    ).toBe(warns.length - counted.length);
-    expect(sqlstateDerived.length).toBeGreaterThanOrEqual(5);
+      errorDerived.length,
+      "no error-derived warn payloads found — the `err:` loop below proves nothing",
+    ).toBeGreaterThanOrEqual(REFUSAL_ARMS);
+    expect(
+      counted.length,
+      "no counted-refusal warn found — the exemption arm below proves nothing, and `forecast-busy` is the warn it was written for",
+    ).toBeGreaterThan(0);
 
-    for (const [i, payload] of sqlstateDerived.entries()) {
+    for (const [i, payload] of errorDerived.entries()) {
       expect(
-        /\berr:/.test(payload),
-        `refusal log ${i} omits \`err\`, so the only field that discriminates its hedged holders never reaches the operator it tells to read the logs:\n${payload.slice(0, 200)}`,
+        /\berr:/.test(payload) && /\bcode:/.test(payload),
+        `refusal log ${i} carries one of \`code\`/\`err\` and not the other, so the operator it tells to read the logs gets half the discriminator:\n${payload.slice(0, 200)}`,
       ).toBe(true);
     }
 
-    // …and the exempted ones must genuinely have nothing to say. A warn with no
-    // SQLSTATE must also make no claim that a log field would settle — otherwise
-    // it is the original defect wearing the exemption.
+    // …and the exempted ones must genuinely have nothing to say. A warn that
+    // names no error must also make no claim that a log field would settle —
+    // otherwise it is the original defect wearing the exemption.
     for (const payload of counted) {
       expect(
-        /does not say which|the SQLSTATE/.test(payload),
-        `a warn with no \`code:\` still hedges like a SQLSTATE-derived one, so it is claiming a discriminator it does not carry:\n${payload.slice(0, 200)}`,
+        /does not say which|the SQLSTATE|Postgres does not distinguish/.test(payload),
+        `a warn naming no error still hedges like an error-derived one, so it is claiming a discriminator it does not carry:\n${payload.slice(0, 200)}`,
       ).toBe(false);
     }
   });

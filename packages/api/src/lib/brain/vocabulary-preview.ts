@@ -655,13 +655,23 @@ function cardinalityFlipExpr(predicateKeyParam: number): CollisionExprs {
  * rather than one key added, because every OTHER curated predicate in the
  * workspace must keep answering the stored lookup.
  *
- * `IS DISTINCT FROM`, not `<>`. `predicate_key` is nullable on disk (a surface
- * that norms away — `identityKey`'s ⚠️, permanent and legal), and `NULL <> $k`
- * is NULL, which would make the whole conjunct NULL and drop the row through the
- * three-valued hole rather than excluding it on the merits. A NULL-keyed row
- * never matched the stored `EXISTS` either, so the two spellings agree on the
- * OUTCOME here — but only by coincidence, and the coincidence is exactly what
- * stops holding when someone edits the stored gate.
+ * `IS DISTINCT FROM`, not `<>`.
+ *
+ * ⚠️ **The reason is the EXPRESSION this builder substitutes, not the column.**
+ * An earlier version of this paragraph said `predicate_key` "is nullable on
+ * disk", which contradicts the schema: migration
+ * `0194_brain_fact_slot_keys_not_null.sql` made all three slot key columns
+ * `NOT NULL`, and `tension-sweep.ts`'s header says so in as many words. Two
+ * docstrings in one subsystem disagreeing about what the schema admits is worth
+ * less than either, and review caught this one.
+ *
+ * What IS nullable is the counterfactual key this module binds: a preview asks
+ * about a surface the caller typed, `identityKey` answers `null` for one that
+ * norms away (permanent and legal), and an alias counterfactual re-points the
+ * expression at a value that may be absent. `NULL <> $k` is NULL, which would
+ * make the whole conjunct NULL and drop the row through the three-valued hole
+ * rather than excluding it on the merits. `IS DISTINCT FROM` excludes it on the
+ * merits.
  */
 function cardinalityUnflipExpr(predicateKeyParam: number): CollisionExprs {
   return {

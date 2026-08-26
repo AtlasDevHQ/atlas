@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.20",
+    title: "A Human Name on the Claim",
+    date: "2026-08-25",
+    summary:
+      "Every authoritative claim in the Atlas already carried who said it \u2014 as an opaque vendor handle like `slack:U0AQW6KF2EM`, which names nobody. This release resolves that handle to a person, and is explicit about the cases where it cannot. The obvious fix was rejected on a measurement: Atlas users are a small subset of any chat workspace, so a resolved-account column would have named the minority and left everyone else exactly where they started.",
+    highlights: [
+      "A claim now renders the name of the person who made it. The handle resolves through a live join to their Atlas account, so renaming a user reaches every surface immediately \u2014 nothing is snapshotted where a live join exists, because a snapshot goes stale with no way to re-derive it",
+      "Someone with no Atlas account is still named. Their name is captured from the source\u2019s own directory as a dated snapshot, and dated on purpose so a stale name reads as stale rather than being asserted as current. For a person who has left both the chat tool and the company, this is the only record that will ever name them",
+      "\u201cCannot name this person\u201d is recorded as a positive answer, not an absence. Three explicit states replace a nullable field, because \u201cnot resolved yet\u201d and \u201cresolved, and this person has no account\u201d are different facts \u2014 one is fixed by the next cycle, the other never will be, and an operator is owed the difference even though a reader is not",
+      "Only people whose words are already in the record get an entry. Capture is bounded to principals who authored an ingested episode, so this is not a copy of your directory \u2014 it is the name of someone who already spoke into the Atlas. Nothing can query these rows to find a person; they are readable only as the rendering of a specific claim, under that claim\u2019s existing attribution gate",
+      "A captured name can be erased, and the erasure holds. Clearing one returns the claim to unnamed and leaves a durable marker, so the next background cycle does not quietly re-capture it \u2014 an erasure a scheduled job can undo is not an erasure",
+      "The entry confers nothing. A name here is a display pointer and never an access-control input: what a person can see is still decided by the audience membership it has always been decided by",
+    ],
+  },
+  {
     version: "v0.2.19",
     title: "Recognizing the Disagreement",
     date: "2026-08-25",

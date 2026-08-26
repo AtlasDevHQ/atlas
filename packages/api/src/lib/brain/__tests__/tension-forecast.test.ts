@@ -8,8 +8,14 @@
  *   - **the two statements are the same scan.** A forecast that drifted from the
  *     sweep is worse than no forecast — it is a number an approver acts on that
  *     the button then contradicts. Asserted TEXTUALLY, because that is the only
- *     form of the claim a unit test can settle; `tension-forecast-pg.test.ts`
- *     settles the behavioural half against a real corpus.
+ *     form of the claim a unit test can settle; the behavioural half is settled
+ *     against a real corpus by the `the forecast counts exactly what the sweep
+ *     then mints` block in `tension-sweep-pg.test.ts` - THAT file, not a
+ *     `tension-forecast-pg.test.ts`, which does not exist. (It was named here
+ *     before the pg cases were written, and they landed beside the sweep's so
+ *     the equivalence assertion could reuse its fixtures. A docstring pointing
+ *     at a file nobody wrote is the failure this subsystem's own header warns
+ *     about, and review caught it.)
  *   - **it writes nothing.** The whole licence. A `count(*)` that grew an
  *     `INSERT` would pass every arithmetic test here.
  *   - **it does NOT take the reconcile lock**, which is the one place it
@@ -24,7 +30,9 @@
  *     happens to agree today.
  */
 
-import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { beforeEach, describe, expect, it } from "bun:test";
 import {
   RECONCILE_LOCK_SQL,
   TENSION_EDGE_CAP,
@@ -37,10 +45,28 @@ import {
   TENSION_SWEEP_RUN_CAP,
   TENSION_SWEEP_SQL,
   _forecastsInFlight,
+  _forecastsQueued,
+  _resetForecastPermits,
   contentionMessage,
   forecastContentionMessage,
   forecastTensionEdges,
+  type TensionForecastContention,
 } from "@atlas/api/lib/brain/tension-sweep";
+
+/**
+ * Compile-time half of "the forecast cannot report `reconcile-lock`".
+ *
+ * `Extract` is empty exactly when the arm is absent, so widening
+ * `TensionForecastContention` back to the sweep's union — the refactor the
+ * runtime test cannot see — stops this file compiling.
+ */
+type _ForecastExcludesReconcileLock =
+  Extract<TensionForecastContention, "reconcile-lock"> extends never ? true : never;
+const _forecastExcludesReconcileLock: _ForecastExcludesReconcileLock = true;
+void _forecastExcludesReconcileLock;
+
+/** Repo root, from this file at `packages/api/src/lib/brain/__tests__/`. */
+const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..", "..", "..");
 
 interface Call {
   readonly sql: string;
@@ -310,62 +336,115 @@ describe("the forecast's arithmetic is the SWEEP's (#5450)", () => {
 });
 
 describe("the forecast's concurrency permit (#5450)", () => {
-  it("refuses past the cap rather than queueing, and never touches the pool", async () => {
-    // The sweep is self-limiting - one 30s statement per workspace, because it
-    // holds namespace 4771. The forecast holds no lock by design, so nothing
-    // bounded it: the internal pool is `max: 5`, the candidate walk is the
-    // unbounded half, and a vocabulary pane pricing four pending predicates plus
-    // one stale tab is five concurrent scans holding the whole pool.
-    //
-    // Driven by a runner that never settles, so the permits are genuinely held
-    // for the duration rather than released between awaits.
-    let release: (() => void) | undefined;
+  // ⚠️ EVERY test here shares one module-level counter, so isolation is a
+  // `beforeEach`, not an end-of-test assertion. Review found the original had
+  // only the latter: a failure before a release left the permits held and every
+  // later `it` in the FILE answered `forecast-busy` — a check that tells you the
+  // leak happened, after it has already poisoned the run.
+  beforeEach(() => {
+    _resetForecastPermits();
+  });
+
+  /**
+   * A runner whose statement blocks until released, plus an explicit signal for
+   * when each call has actually reached the statement.
+   *
+   * ⚠️ The signal replaces `await Promise.resolve()` ×2, which review flagged:
+   * that is a microtask-COUNT assumption, and one added `await` anywhere inside
+   * `forecastTensionEdges` makes it silently stop waiting long enough — the
+   * assertions after it would then be measuring a permit nobody had taken yet.
+   */
+  function blockingRunner() {
+    const calls: string[] = [];
+    let release!: () => void;
     const blocked = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const calls: string[] = [];
-    const hangingRunner = async <T,>(fn: (tx: ReconcileExecutor) => Promise<T>): Promise<T> =>
+    let reached = 0;
+    const reachedOne: (() => void)[] = [];
+    const runner = async <T,>(fn: (tx: ReconcileExecutor) => Promise<T>): Promise<T> =>
       fn({
         query: async (sql: string) => {
           calls.push(sql);
-          if (sql === TENSION_FORECAST_SQL) await blocked;
+          if (sql === TENSION_FORECAST_SQL) {
+            reached += 1;
+            reachedOne.splice(0).forEach((r) => r());
+            await blocked;
+          }
           return { rows: [{ would_mint: 0 }] };
         },
       });
+    /** Resolves once `n` calls have reached the blocking statement. */
+    const untilReached = async (n: number): Promise<void> => {
+      while (reached < n) await new Promise<void>((r) => reachedOne.push(r));
+    };
+    return { calls, runner, release: () => release(), untilReached };
+  }
 
-    const inflight = Array.from({ length: FORECAST_MAX_CONCURRENT }, () =>
-      forecastTensionEdges("ws-1", { kind: "as-curated" }, { withTransaction: hangingRunner }),
+  it("QUEUES over the cap and answers every caller, holding at most the cap", async () => {
+    // ⚠️ The behaviour this asserts is a CORRECTION. The first cut refused past
+    // the cap, which contradicted `FORECAST_MAX_CONCURRENT`'s own docstring:
+    // that paragraph rejects an advisory lock because it "refuses the 2nd, 3rd
+    // and 4th of a legitimate four-predicate render", and then a cap of two
+    // refused the 3rd and 4th of exactly that render. #5447's cardinality pane
+    // ships that render, so the four-wide burst is the real traffic.
+    const { calls, runner, release, untilReached } = blockingRunner();
+
+    const burst = Array.from({ length: FORECAST_MAX_CONCURRENT + 2 }, () =>
+      forecastTensionEdges("ws-1", { kind: "as-curated" }, { withTransaction: runner }),
     );
-    // Let the permits be taken and the statements reach the block.
-    await Promise.resolve();
-    await Promise.resolve();
+
+    // Exactly the cap runs; the rest wait. Asserted on the SIGNAL rather than on
+    // a microtask count.
+    await untilReached(FORECAST_MAX_CONCURRENT);
+    expect(_forecastsInFlight()).toBe(FORECAST_MAX_CONCURRENT);
+    expect(
+      calls.filter((c) => c === TENSION_FORECAST_SQL).length,
+      "more scans reached the pool than the cap admits",
+    ).toBe(FORECAST_MAX_CONCURRENT);
+    expect(_forecastsQueued(), "the excess did not queue").toBe(2);
+
+    release();
+    const results = await Promise.all(burst);
+
+    // EVERY caller got an answer — none was turned away.
+    expect(results).toHaveLength(FORECAST_MAX_CONCURRENT + 2);
+    for (const r of results) {
+      expect(r).toEqual({ kind: "forecast", wouldMint: 0, truncated: false });
+    }
+    // …and the permits and the queue both came back.
+    expect(_forecastsInFlight()).toBe(0);
+    expect(_forecastsQueued()).toBe(0);
+  });
+
+  it("refuses `forecast-busy` when the WAIT expires, without touching the pool", async () => {
+    // The bounded half. An unbounded queue turns a stuck scan into an unbounded
+    // backlog of held HTTP requests — the failure this endpoint is designed
+    // against, moved up one layer. Driven through the `queueWaitMs` seam, since
+    // the shipped bound is ten seconds and a suite that sat for it is how a
+    // bound ends up asserted by nobody.
+    const { calls, runner, release, untilReached } = blockingRunner();
+    const held = Array.from({ length: FORECAST_MAX_CONCURRENT }, () =>
+      forecastTensionEdges("ws-1", { kind: "as-curated" }, { withTransaction: runner }),
+    );
+    await untilReached(FORECAST_MAX_CONCURRENT);
+    const scansBefore = calls.length;
 
     const overflow = await forecastTensionEdges(
       "ws-1",
       { kind: "as-curated" },
-      { withTransaction: hangingRunner },
+      { withTransaction: runner, queueWaitMs: 10 },
     );
-    expect(
-      overflow,
-      "a forecast past the cap was admitted - the pool is reachable by pressing this endpoint",
-    ).toEqual({ kind: "contended", reason: "forecast-busy" });
-    // Refused BEFORE the pool: the overflow call must not have issued a single
-    // statement, or it took a connection on its way to being refused.
-    const statementsBefore = calls.length;
+    expect(overflow).toEqual({ kind: "contended", reason: "forecast-busy" });
+    // Refused BEFORE the pool: an expired waiter must not have issued a single
+    // statement, or it took a connection on its way to giving up.
+    expect(calls.length, "the refused forecast still ran statements").toBe(scansBefore);
+    // …and it left no entry behind in the queue.
+    expect(_forecastsQueued(), "an expired waiter stayed in the queue").toBe(0);
 
-    release?.();
-    await Promise.all(inflight);
-    expect(calls.length, "the refused forecast still ran statements").toBe(statementsBefore);
-
-    // ...and the permits came back, so the next caller is admitted.
+    release();
+    await Promise.all(held);
     expect(_forecastsInFlight()).toBe(0);
-    expect(
-      (await forecastTensionEdges(
-        "ws-1",
-        { kind: "as-curated" },
-        { withTransaction: harness({ wouldMint: 4 }).runner },
-      )),
-    ).toEqual({ kind: "forecast", wouldMint: 4, truncated: false });
   });
 
   it("returns the permit when the scan THROWS", async () => {
@@ -393,12 +472,27 @@ describe("the forecast's concurrency permit (#5450)", () => {
     expect(_forecastsInFlight()).toBe(0);
   });
 
-  it("leaves room in the pool - the cap is below it, not equal to it", () => {
-    // Two rather than five, so a forecast storm can never take the last
-    // connection. Asserted so a later "why not use the whole pool?" is a failing
-    // test rather than a silent change.
-    expect(FORECAST_MAX_CONCURRENT).toBeLessThan(5);
+  it("leaves room in the pool - the cap is below the pool's own max", () => {
+    // ⚠️ The pool max is READ FROM `internal.ts`, not written as a literal here.
+    // Review found the first version hard-coded `5`: resizing the pool would
+    // leave this passing while the cap it justifies no longer left anything
+    // free, which is the assertion agreeing with a stale copy of the fact it is
+    // about. `internal.ts` exports no constant for it (the value is a literal at
+    // three pool sites), so this reads the source — the lexical shape the
+    // sibling guards in `tension-sweep.test.ts` already use for the same reason.
+    const internal = readFileSync(
+      join(REPO_ROOT, "packages/api/src/lib/db/internal.ts"),
+      "utf8",
+    );
+    const maxima = [...internal.matchAll(/\bmax:\s*(\d+)/g)].map((m) => Number(m[1]));
+    expect(maxima.length, "no pool `max:` found — this assertion is vacuous").toBeGreaterThan(0);
+    const poolMax = Math.min(...maxima);
+
     expect(FORECAST_MAX_CONCURRENT).toBeGreaterThan(0);
+    expect(
+      FORECAST_MAX_CONCURRENT,
+      `the forecast cap (${FORECAST_MAX_CONCURRENT}) can take every connection of a pool sized ${poolMax} — nothing is left for auth, settings or audit reads`,
+    ).toBeLessThan(poolMax);
   });
 });
 
@@ -463,7 +557,7 @@ describe("the forecast's contention arms (#5450)", () => {
     // modesty that costs the operator the only actionable sentence available.
     const busy = forecastContentionMessage("forecast-busy");
     expect(busy).toContain("Nothing was read and nothing was changed");
-    expect(busy).toContain("Wait a moment");
+    expect(busy).toContain("Ask again in a moment");
     // ...and it still delegates for the arms it shares, so the two endpoints
     // cannot describe one SQLSTATE two ways.
     expect(forecastContentionMessage("unfinished")).toBe(contentionMessage("unfinished"));
@@ -473,10 +567,25 @@ describe("the forecast's contention arms (#5450)", () => {
   });
 
   it("cannot report `reconcile-lock` — the arm it structurally does not have", () => {
-    // A compile-time claim made executable: `TensionForecastContention` excludes
-    // the arm, so this is really a pin on the type surviving a refactor that
-    // widens it back to the sweep's union.
-    const reasons: readonly string[] = ["unfinished", "conflicting-lock"];
-    expect(reasons).not.toContain("reconcile-lock");
+    // ⚠️ This test used to assert a hand-written literal about ITSELF:
+    // `const reasons = ["unfinished","conflicting-lock"]; expect(reasons).not.toContain("reconcile-lock")`.
+    // That is true of the array on the line above it and says nothing about
+    // `TensionForecastContention`, while its comment called it "a compile-time
+    // claim made executable". Review named it vacuous, correctly.
+    //
+    // What replaces it reaches the real types. `_forecastExcludesReconcileLock`
+    // below fails to COMPILE if the forecast union ever regains the arm, and the
+    // runtime half proves the exclusion is meaningful — the sweep's own message
+    // table must still HAVE the arm, or excluding it from the forecast is a
+    // statement about an arm nobody has.
+    expect(
+      contentionMessage("reconcile-lock"),
+      "the sweep no longer has a `reconcile-lock` arm, so the forecast excluding it asserts nothing",
+    ).toContain("reconcile lock");
+    // …and the forecast's own message function has no branch that can produce
+    // it: every reason it accepts is one of the two it declares.
+    for (const reason of ["unfinished", "conflicting-lock"] as const) {
+      expect(forecastContentionMessage(reason)).toBe(contentionMessage(reason));
+    }
   });
 });

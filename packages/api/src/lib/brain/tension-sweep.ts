@@ -705,7 +705,7 @@ export function contentionMessage(reason: TensionSweepContention): string {
  */
 export function forecastContentionMessage(reason: TensionForecastContention): string {
   return reason === "forecast-busy"
-    ? "This server is already running the maximum number of tension forecasts at once, so this one was refused rather than queued - a queued forecast would hold a database connection too. Nothing was read and nothing was changed. Wait a moment and ask again; if it persists, something is calling this endpoint in a loop."
+    ? "This server was at its tension-forecast concurrency limit for the whole wait, so this request gave up its place in the queue rather than holding an HTTP request open indefinitely. Nothing was read and nothing was changed. Ask again in a moment; if it persists, something is calling this endpoint in a loop."
     : contentionMessage(reason);
 }
 
@@ -747,6 +747,16 @@ const CONTENTION_MESSAGE = {
 export interface TensionSweepDeps {
   /** Defaults to a transaction on the internal pool. */
   readonly withTransaction?: ReconcileTransactionRunner;
+  /**
+   * Forecast only: how long to wait for a concurrency permit before refusing.
+   * Defaults to {@link FORECAST_QUEUE_WAIT_MS}.
+   *
+   * A test seam in the shape `dashboard-screenshot.ts` uses for the same
+   * property (`_setRenderConcurrency`): the queue's EXPIRY arm is otherwise
+   * only reachable by making a suite sit for the real ten seconds, which is how
+   * a bound ends up asserted by nobody.
+   */
+  readonly queueWaitMs?: number;
 }
 
 /**
@@ -1052,7 +1062,7 @@ export type TensionForecastContention =
  *
  * MEASURED against the shape rather than assumed: the internal pool is `max: 5`
  * (`lib/db/internal.ts`), and the candidate walk is explicitly the unbounded
- * half — `TENSION_SWEEP_STATEMENT_TIMEOUT_SQL`'s own docstring warns about
+ * half - `TENSION_SWEEP_STATEMENT_TIMEOUT_SQL`'s own docstring warns about
  * *"holding one of five internal-pool connections"*. So five concurrent
  * forecasts hold the ENTIRE pool for the length of their scans, starving auth,
  * settings and audit reads for the whole process. That is not hypothetical
@@ -1062,16 +1072,31 @@ export type TensionForecastContention =
  *
  * ## Why a process-local counter is the RIGHT instrument here
  *
- * The resource being protected is per-PROCESS — one pool, one `max: 5` — so a
+ * The resource being protected is per-PROCESS - one pool, one `max: 5` - so a
  * process-local bound is exactly scoped to it. A distributed limiter would be
  * strictly worse: more machinery, a second failure mode, and no closer fit.
  *
- * ⚠️ It is NOT an advisory lock, and `pg_try_advisory_xact_lock` was the first
- * cut. That refuses the 2nd, 3rd and 4th of a legitimate four-predicate render
- * — turning a pane that asks four honest questions into three errors — because
- * a per-workspace lock cannot tell a burst from a duplicate. A COUNT admits
- * concurrency up to the point where it costs someone else, which is the actual
- * property wanted.
+ * ## ⚠️ It QUEUES over the cap; it does not refuse at it. That is a CORRECTION
+ *
+ * The first cut refused anything past the cap, and it was self-contradicting in
+ * a way review caught: this docstring rejected `pg_try_advisory_xact_lock`
+ * because it *"refuses the 2nd, 3rd and 4th of a legitimate four-predicate
+ * render - turning a pane that asks four honest questions into three errors"*,
+ * and then set a cap of two, which refuses the 3rd and 4th of exactly that
+ * render. The same defect, one smaller, stated and then committed in the same
+ * paragraph. The pane in question is not hypothetical any more: #5447's
+ * cardinality surface ships it.
+ *
+ * The argument that produced it - *"a queued preview still ends up holding a
+ * connection, just later"* - is FALSE on the axis that matters. The pool bound
+ * is about CONCURRENT holders, which the permit enforces whether the excess
+ * waits or is turned away. Waiting costs latency; refusing costs an answer.
+ *
+ * So the excess waits, FIFO, and that is also what the in-repo precedent does:
+ * `dashboard-screenshot.ts`'s render semaphore caps concurrency at 3 and
+ * queues, with the same *"excess requests QUEUE (FIFO) and run as permits free
+ * up, rather than being rejected"* note. Under this shape a four-predicate
+ * render gets four answers, holding at most two connections at a time.
  *
  * Two rather than five, so a forecast storm can never take the last connection:
  * three stay free for the rest of the process no matter how hard this endpoint
@@ -1080,19 +1105,105 @@ export type TensionForecastContention =
 export const FORECAST_MAX_CONCURRENT = 2;
 
 /**
- * In-flight forecasts in this process.
+ * How long a queued forecast waits for a permit before giving up.
  *
- * Module-level mutable state, which this subsystem otherwise avoids — justified
+ * ⚠️ The queue is BOUNDED, and the bound is what keeps `forecast-busy` a
+ * reachable, meaningful outcome rather than dead code. An unbounded queue turns
+ * a stuck scan into an unbounded backlog of held HTTP requests - the failure
+ * this endpoint's whole design is trying to avoid, moved up one layer.
+ *
+ * Sized at twice {@link TENSION_FORECAST_STATEMENT_TIMEOUT_SQL}'s 5s, so a
+ * waiter outlives the scan ahead of it (which cannot exceed 5s and then
+ * releases) but not two of them. A caller that waits longer than that is behind
+ * a queue deeper than the endpoint is meant to serve, and an honest refusal is
+ * better than a request that eventually answers about a corpus that has moved.
+ */
+export const FORECAST_QUEUE_WAIT_MS = 10_000;
+
+/**
+ * In-flight forecasts in this process, and who is waiting for a permit.
+ *
+ * Module-level mutable state, which this subsystem otherwise avoids - justified
  * because the thing being counted IS process-global (the pool), so a counter
- * scoped any tighter would not bound it. Incremented and decremented around the
- * transaction in a `try`/`finally`, so a throw cannot leak a permit; a leaked
- * permit is worse than the exhaustion it guards, because it never recovers.
+ * scoped any tighter would not bound it. `lib/dashboard-screenshot.ts` holds the
+ * same shape for the same reason, down to the `_renderInFlight()` probe.
+ *
+ * Released in a `finally`, so a throw cannot leak a permit; a leaked permit is
+ * worse than the exhaustion it guards, because it never recovers.
  */
 let forecastsInFlight = 0;
+const forecastWaiters: (() => void)[] = [];
+
+/**
+ * Take a permit, waiting up to {@link FORECAST_QUEUE_WAIT_MS} for one.
+ *
+ * `false` means the wait expired - the caller must NOT run and must not
+ * release. Every path that resolves `true` has already incremented, so the
+ * increment and the grant cannot be separated by an `await` and double-spent.
+ */
+async function acquireForecastPermit(waitMs: number): Promise<boolean> {
+  if (forecastsInFlight < FORECAST_MAX_CONCURRENT) {
+    forecastsInFlight += 1;
+    return true;
+  }
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const grant = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Incremented HERE rather than by the releaser, so the invariant
+      // "in-flight never exceeds the cap" is maintained by whoever is about to
+      // run, and an expired waiter that races a release cannot leave the count
+      // raised with nobody holding it.
+      forecastsInFlight += 1;
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const at = forecastWaiters.indexOf(grant);
+      if (at >= 0) forecastWaiters.splice(at, 1);
+      resolve(false);
+    }, waitMs);
+    // `unref` where the runtime has it: a pending forecast wait must never be
+    // the thing keeping a process alive at shutdown.
+    (timer as unknown as { unref?: () => void }).unref?.();
+    forecastWaiters.push(grant);
+  });
+}
+
+/** Give the permit back, handing it straight to the longest waiter if any. */
+function releaseForecastPermit(): void {
+  forecastsInFlight -= 1;
+  forecastWaiters.shift()?.();
+}
 
 /** Test seam: in-flight count, for asserting the permit is always returned. */
 export function _forecastsInFlight(): number {
   return forecastsInFlight;
+}
+
+/** Test seam: queued waiters, so a leaked queue entry is visible too. */
+export function _forecastsQueued(): number {
+  return forecastWaiters.length;
+}
+
+/**
+ * Test seam: drop all permits and waiters.
+ *
+ * ⚠️ Exists because its absence was a review finding: the permit tests shared
+ * one module-level counter with no reset, so a failure before a release left
+ * every later test in the file answering `forecast-busy`. An end-of-test
+ * assertion that the count is zero is a CHECK, not isolation - it tells you
+ * the leak happened, after it has already poisoned the run.
+ *
+ * Waiters are resolved `false` rather than dropped on the floor, so a reset
+ * cannot strand a pending promise.
+ */
+export function _resetForecastPermits(): void {
+  forecastsInFlight = 0;
+  while (forecastWaiters.length > 0) forecastWaiters.shift();
 }
 
 /** What one forecast answered. */
@@ -1217,24 +1328,25 @@ export async function forecastTensionEdges(
     if (counterfactualKey === null) return { kind: "unkeyable-surface" };
   }
 
-  // BEFORE the pool is touched, and refused rather than queued - a queued
-  // preview still ends up holding a connection, just later, which is the thing
-  // being prevented. See {@link FORECAST_MAX_CONCURRENT}.
-  if (forecastsInFlight >= FORECAST_MAX_CONCURRENT) {
+  // BEFORE the pool is touched. Over the cap this WAITS rather than refusing -
+  // see {@link FORECAST_MAX_CONCURRENT}, which records why the refusing version
+  // contradicted its own stated requirement.
+  const granted = await acquireForecastPermit(deps.queueWaitMs ?? FORECAST_QUEUE_WAIT_MS);
+  if (!granted) {
     log.warn(
-      { workspaceId, inFlight: forecastsInFlight, cap: FORECAST_MAX_CONCURRENT },
-      "brain tension forecast: refused - this process already has the maximum number of forecast scans holding pooled connections",
+      { workspaceId, inFlight: forecastsInFlight, cap: FORECAST_MAX_CONCURRENT, queued: forecastWaiters.length },
+      "brain tension forecast: gave up waiting for a permit - this process has been at its forecast concurrency cap for the whole wait",
     );
     return { kind: "contended", reason: "forecast-busy" };
   }
-  forecastsInFlight += 1;
   try {
     return await runForecast(workspaceId, counterfactualKey, request, deps);
   } finally {
     // `finally`, so neither a throw nor an early return can leak a permit. A
     // leaked one never recovers: the endpoint would refuse forever with a
-    // message telling the operator to wait.
-    forecastsInFlight -= 1;
+    // message telling the operator to wait. The release hands the permit
+    // straight to the longest waiter, so a queued caller does not re-poll.
+    releaseForecastPermit();
   }
 }
 

@@ -63,9 +63,15 @@ import { MARK_ORDER, PLATE_QUAD_RENDERS } from "../plate-model";
  * The vocabulary a demonstration was run against.
  *
  * ⚠️ **Do not edit this to make the suite green.** Editing it is the act of
- * saying "the demonstration is stale", so it comes with an obligation: re-run the
- * demonstration and update the issue that records it. Changing the literal
- * without re-running is how a stale finding becomes an invisible one.
+ * saying "the demonstration is stale", so it comes with an obligation: re-run
+ * **#5473** and record the new answers there. Changing the literal without
+ * re-running is how a stale finding becomes an invisible one.
+ *
+ * The demonstration this list is the subject of:
+ * https://github.com/AtlasDevHQ/atlas/issues/5473 — *demonstrate condition 3 on
+ * the coverage page — an admin reads the plate cold*. Until it has been run there
+ * is no finding to invalidate, and this gate is holding a place rather than
+ * guarding one; that is the intended state, not a gap.
  */
 const DEMONSTRATED = {
   marks: [

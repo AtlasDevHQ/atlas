@@ -804,11 +804,48 @@ describe("the arms round 2 found missing (#5029)", () => {
       warns.length,
       `the payload matcher found ${warns.length} of ${warnCalls} log.warn calls — a warn whose payload it cannot see is a warn it cannot check`,
     ).toBe(warnCalls);
-    for (const [i, payload] of warns.entries()) {
+
+    // ⚠️ The rule is CONDITIONAL, and stating it as a universal over every
+    // `log.warn` was an over-reach that only looked correct while every warn in
+    // the file happened to be SQLSTATE-derived. #5450's `forecast-busy` refusal
+    // is not: the server counted its own in-flight scans, so there is no error
+    // object, no hedge between holders, and no discriminator to withhold. It
+    // would have been forced to invent an `err:` to satisfy a guard whose own
+    // docstring is about *"the field that does"* say which — i.e. to fabricate
+    // the evidence the guard exists to demand.
+    //
+    // Keyed on `code:` because that IS the precondition: a payload carrying a
+    // SQLSTATE is one derived from a thrown pg error, which is exactly the
+    // population whose message hedges. Sharper than the universal, not looser —
+    // it can no longer be satisfied by a warn that has nothing to discriminate.
+    const sqlstateDerived = warns.filter((payload) => /\bcode:/.test(payload));
+    const counted = warns.filter((payload) => !/\bcode:/.test(payload));
+
+    // Non-vacuity, from BOTH sides. A regex that stopped matching `code:` would
+    // empty the checked set and pass; a refusal log deleted would shrink it
+    // silently. DERIVED as "all but the counted ones" rather than a literal, so
+    // adding a sixth SQLSTATE arm is covered without editing this number.
+    expect(
+      sqlstateDerived.length,
+      "no SQLSTATE-derived warn payloads found — the assertion below proves nothing",
+    ).toBe(warns.length - counted.length);
+    expect(sqlstateDerived.length).toBeGreaterThanOrEqual(5);
+
+    for (const [i, payload] of sqlstateDerived.entries()) {
       expect(
         /\berr:/.test(payload),
         `refusal log ${i} omits \`err\`, so the only field that discriminates its hedged holders never reaches the operator it tells to read the logs:\n${payload.slice(0, 200)}`,
       ).toBe(true);
+    }
+
+    // …and the exempted ones must genuinely have nothing to say. A warn with no
+    // SQLSTATE must also make no claim that a log field would settle — otherwise
+    // it is the original defect wearing the exemption.
+    for (const payload of counted) {
+      expect(
+        /does not say which|the SQLSTATE/.test(payload),
+        `a warn with no \`code:\` still hedges like a SQLSTATE-derived one, so it is claiming a discriminator it does not carry:\n${payload.slice(0, 200)}`,
+      ).toBe(false);
     }
   });
 });

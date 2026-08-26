@@ -132,6 +132,8 @@ import {
   TENSION_EDGE_CAP,
   TENSION_SWEEP_RUN_CAP,
   contentionMessage,
+  forecastContentionMessage,
+  forecastTensionEdges,
   sweepTensionEdges,
 } from "@atlas/api/lib/brain/tension-sweep";
 import { eraseActorIdentity } from "@atlas/api/lib/brain/actor-identity";
@@ -144,6 +146,8 @@ import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type {
   AuthMode,
   BrainActorIdentityEraseResponse,
+  BrainFactTensionForecastRequest,
+  BrainFactTensionForecastResponse,
   BrainFactTensionSweepResponse,
 } from "@useatlas/types";
 import {
@@ -156,6 +160,8 @@ import {
   BrainFactOversightSchema,
   BrainFactRetirableListResponseSchema,
   BrainFactRetractResponseSchema,
+  BrainFactTensionForecastRequestSchema,
+  BrainFactTensionForecastResponseSchema,
   BrainFactTensionSweepResponseSchema,
   isBrainFactStatusFilter,
 } from "@useatlas/schemas";
@@ -490,6 +496,85 @@ const tensionSweepRoute = createRoute({
     409: {
       description:
         "The sweep could not run, and `error` is one of three values naming WHICH bound it hit. `reconcile-lock` — another operation holds this workspace's reconcile lock, either an ingest pass or a sweep already running (the two cannot overlap, since both write these edges); retry in a few seconds. `conflicting-lock` — a conflicting lock on this workspace's facts, most often a concurrent publish or correction (the sweep deliberately does not queue behind either) and less often a migration or an index build; retry in a few seconds, and check for maintenance if it persists. `unfinished` — the statement did not complete, which is either a time-bound expiry or a cancellation, and Postgres does not distinguish them; retry once and escalate to an operator if it repeats. Every value names what is KNOWN rather than a cause the server could not establish, because none of these SQLSTATEs carries one. Nothing was changed in any of the three",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+/**
+ * Hono's own JSON content-type test, restated where this router can enforce it.
+ *
+ * ⚠️ A COPY, deliberately, and the duplication is the lesser evil. The original
+ * is `jsonRegex` in `hono/dist/validator/validator.js` — not exported, and
+ * reaching into a dependency's internals to import it would break on a patch
+ * release. The property that matters is that this is no NARROWER than Hono's: a
+ * body Hono would parse must not be refused here. Anchored and case-insensitive,
+ * matching the `application/<suffix+>json` shape, and deliberately not anchored
+ * at the END so `application/json; charset=utf-8` passes both.
+ */
+const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json/i;
+
+const tensionForecastRoute = createRoute({
+  method: "post",
+  path: "/tension-forecast",
+  tags: ["Admin — Brain Facts"],
+  summary: "Count the tension edges a sweep would mint, without minting them",
+  description:
+    "Answers `/tension-sweep`'s question and writes nothing (#5450). `wouldMint` is the number that endpoint would return as `minted` if it ran in this same instant, under the same two caps — the same statement, with the INSERT replaced by a count. " +
+    "Send `predicateSurface` to ask the COUNTERFACTUAL: *what would a sweep mint if I also approved this predicate `single`?* Nothing is proposed, approved, or recorded — the hypothesis lives for the length of one statement, and the answer is what an approver needs BEFORE arming a predicate, because an `in-tension-with` edge that turns out spurious is one a reviewer must then dismiss by hand. Omit it to ask about the workspace exactly as it stands. " +
+    "⚠️ A FORECAST, not a promise. This takes no lock — deliberately, so a preview cannot block this workspace's ingest for as long as a human takes to decide — so an ingest pass, a correction, or another sweep landing before you press moves the number. " +
+    "⚠️ `wouldMint` is not a count of pairs in tension. A pair that already carries an edge is excluded, because both this and the sweep answer *what would this ADD?* And a `0` does not identify a cause: a converged corpus, a workspace with no live facts, and a workspace that has approved no predicate `single` all answer `0` — which is why the counterfactual exists. " +
+    "\u26a0\ufe0f A JSON body is REQUIRED, even to ask about the workspace as it stands - send `{}`. It is not optional, because an optional JSON body that arrives without an `application/json` content-type is silently discarded rather than rejected, and a discarded `predicateSurface` would be answered with the CURRENT number as though the counterfactual had been asked. " +
+    "The response is a DISCRIMINATED UNION. `kind: \"unkeyable-surface\"` is returned when the surface you asked about normalizes away to nothing, and it is deliberately not a `wouldMint` of `0`: *we could not ask your question* and *approving this mints nothing* are opposite advice. " +
+    `Bounded by the same two caps the sweep applies — at most ${TENSION_EDGE_CAP} edges per fact, at most ${TENSION_SWEEP_RUN_CAP} per run — so \`truncated\` here means what it means there. ` +
+    "Needs the owner or admin entitlement, re-resolved against this workspace rather than read off the session, on exactly the bar `/tension-sweep` applies: this reads workspace-wide state that no per-claim grant scopes, and it is the decision aid for an act at that bar.",
+  request: {
+    body: {
+      content: { "application/json": { schema: BrainFactTensionForecastRequestSchema } },
+      // REQUIRED, and this is a correctness fix rather than a strictness
+      // preference. Under `required: false`, `@hono/zod-openapi` (1.5.1,
+      // `dist/index.mjs:118-128`) installs a middleware that checks the
+      // `content-type` header and, when it is absent or not JSON, calls
+      // `addValidatedData("json", {})` and SKIPS PARSING THE BODY. So
+      // `fetch(url, {method:"POST", body: JSON.stringify({predicateSurface:"plan tier"})})`
+      // - which sends `text/plain;charset=UTF-8` - had its counterfactual
+      // silently discarded, fell through to the `as-curated` branch, and
+      // answered 200 with the CURRENT number.
+      //
+      // That is this endpoint's worst possible failure: an approver asking
+      // "what would approving `plan tier` mint?" is told `0` for a question
+      // that was never asked, and reads it as a licence to approve. It is the
+      // same confident-zero the `unkeyable-surface` arm exists to prevent,
+      // arriving through the one path that had no arm for it.
+      //
+      // Required, the validator always runs, and a missing or wrong
+      // content-type is a 400 naming the problem. The cost is that the
+      // "as the workspace stands" question must be asked as `{}` rather than as
+      // an empty body - a documented two characters, paid once, in exchange for
+      // a wrong answer becoming unrepresentable.
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "The forecast ran and nothing was written. `kind: \"forecast\"` carries `wouldMint` and `truncated`; `kind: \"unkeyable-surface\"` means the predicate surface asked about occupies no slot",
+      content: { "application/json": { schema: BrainFactTensionForecastResponseSchema } },
+    },
+    ...commonResponses,
+    403: {
+      description:
+        "Forbidden — the forecast reads workspace-wide state and is the decision aid for arming an autonomous writer of `brain_edges`, so it takes the same owner/admin bar as the sweep itself (ADR-0037 §6), re-resolved against the workspace being read rather than read off the session",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    415: {
+      description:
+        "The request carried no `application/json` content-type. Refused rather than defaulted, and the reason is specific to this endpoint: a body sent under any other content-type is discarded by the framework before the handler runs, so a `predicateSurface` would vanish and the reply would answer the DEFAULT question with a number the caller reads as an answer to theirs. `fetch(url, {method:\"POST\", body})` with no explicit header sends `text/plain` and lands here — set the header and resend",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description:
+        "The forecast could not run, and `error` names WHICH bound it hit. `forecast-busy` \u2014 this server is already running the maximum number of forecasts at once and refused rather than queued, since a queued forecast holds a database connection too; wait a moment and retry, and if it persists something is calling this endpoint in a loop. `unfinished` — the candidate scan did not complete, which is either a time-bound expiry or a cancellation, and Postgres does not distinguish them; retry once and escalate if it repeats. `conflicting-lock` — a conflicting lock on this workspace's facts, most often a migration or an index build (this statement takes no lock of its own); retry in a few seconds. `reconcile-lock` is NOT among them: unlike the sweep, this never takes the reconcile lock. Nothing was read to a partial answer and nothing was written in either case",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -1033,6 +1118,126 @@ adminBrainFacts.openapi(tensionSweepRoute, async (c) => {
   );
 });
 
+adminBrainFacts.openapi(tensionForecastRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const ctx = yield* reviewerContext(mode, user, orgId, requestId);
+
+      // The SAME bar as `/tension-sweep`, and reusing `sweepTarget` rather than
+      // re-deriving it is the point that helper's docstring makes: the value the
+      // entitlement was checked against IS the value the read runs on.
+      //
+      // ⚠️ The bar is not lowered because this is a read, and the temptation to
+      // lower it is real — "it only returns a number". That number is
+      // workspace-wide on a router where every other read is scoped to the
+      // caller's own grants, and it is the decision aid for an act at the higher
+      // bar. A reader who may not fire the sweep may not price it either; a
+      // lower bar here would be a way around the higher one, which is the
+      // sentence the sweep's own handler already carries.
+      const target = sweepTarget(ctx);
+      if (target === null) {
+        log.warn(
+          { workspaceId: orgId, origin: ctx.origin, role: ctx.role, requestId },
+          "Brain tension forecast refused — the reader does not clear the owner/admin bar",
+        );
+        return c.json(
+          { error: "forbidden", message: forecastDenialMessage(ctx), requestId },
+          403,
+        );
+      }
+
+      // ⚠️ THE CONTENT-TYPE IS CHECKED BY HAND, because no layer beneath this
+      // one will do it and the failure is silent in the worst possible
+      // direction.
+      //
+      // MEASURED, not assumed. `hono/dist/validator/validator.js:13`: for
+      // target `json`, if the content-type is absent or does not match
+      // `application/…json`, the validator `break`s with `value = {}` and NEVER
+      // PARSES THE BODY. `@hono/zod-openapi@1.5.1` then validates that `{}`
+      // against this schema, which accepts it because `predicateSurface` is
+      // optional. `required: true` does not change this — it selects which
+      // middleware is installed, and both of them discard a body whose
+      // content-type is wrong.
+      //
+      // So `fetch(url, {method:"POST", body: JSON.stringify({predicateSurface:"plan tier"})})`
+      // — which sends `text/plain;charset=UTF-8`, and is the DEFAULT way to
+      // call this — had its counterfactual dropped, fell through to the
+      // `as-curated` branch, and was answered 200 with the CURRENT number. An
+      // approver asking *"what would approving `plan tier` mint?"* reads that
+      // `0` as a licence to approve, for a question that was never asked. It is
+      // the same confident zero the `unkeyable-surface` arm exists to prevent,
+      // reaching the caller through the one path that had no arm for it.
+      //
+      // Refused rather than guessed. There is no safe default: treating a
+      // non-JSON body as `as-curated` is exactly the wrong answer, and ignoring
+      // the body while claiming to have read it is worse.
+      const contentType = c.req.header("content-type");
+      if (contentType === undefined || !JSON_CONTENT_TYPE.test(contentType)) {
+        return c.json(
+          {
+            error: "unsupported_media_type",
+            message:
+              "This endpoint needs a JSON body with an `application/json` content-type — send `{}` to ask about the workspace as it stands. It is refused rather than defaulted because a body sent under any other content-type is discarded before this handler runs, and answering the default question would report a number for a counterfactual nobody asked.",
+            requestId,
+          },
+          415,
+        );
+      }
+
+      // Past the guard the validator has genuinely parsed and accepted the body,
+      // so this is the schema's output type and never `undefined`.
+      // `predicateSurface` is what stays optional: present asks the
+      // counterfactual, absent asks about the workspace as it stands.
+      const body: BrainFactTensionForecastRequest = c.req.valid("json");
+      const surface = body.predicateSurface;
+
+      const outcome = yield* Effect.tryPromise({
+        try: () =>
+          forecastTensionEdges(
+            target,
+            surface === undefined
+              ? { kind: "as-curated" }
+              : { kind: "if-approved", predicateSurface: surface },
+          ),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      if (outcome.kind === "contended") {
+        // 409, and the discriminant travels in `error` for the reason the sweep's
+        // handler spells out: `ErrorSchema` declares `error` and drops unknown
+        // keys, so a separate `reason` field would be documented, sent, and
+        // stripped before any conforming client could branch on it.
+        return c.json(
+          { error: outcome.reason, message: forecastContentionMessage(outcome.reason), requestId },
+          409,
+        );
+      }
+
+      // ⚠️ NO `logAdminAction` row, and the asymmetry with `/tension-sweep` is
+      // deliberate rather than an omission. That route audits because it WRITES
+      // `brain_edges` workspace-wide and an auditor must be able to ask who
+      // minted an edge. This reads, changes nothing, and is meant to be run
+      // repeatedly and idly before a decision — a row per press would bury the
+      // sweep's own rows in the log of people thinking about it. The server-side
+      // record is `forecastTensionEdges`' unconditional `log.info`, which is the
+      // right altitude for a read.
+      return c.json(
+        checked(
+          BrainFactTensionForecastResponseSchema,
+          outcome satisfies BrainFactTensionForecastResponse,
+        ),
+        200,
+      );
+    }),
+    { label: "forecast brain fact tension edges" },
+  );
+});
+
 /**
  * ADR-0037 §6's owner/admin bar — returning the WORKSPACE to sweep, or `null`.
  *
@@ -1080,6 +1285,32 @@ function sweepDenialMessage(ctx: BrainPrincipalContext): string {
         "contradiction edges over every live fact in the workspace, and it is the operation that " +
         "makes an approved `single` cardinality entry reach rows that already exist."
     : `Sweeping for tension edges needs a resolved reader identity; this one is "${ctx.origin}".`;
+}
+
+/**
+ * Why a reader may not FORECAST - {@link sweepDenialMessage}, minus the write.
+ *
+ * WARNING: its own function rather than reusing the sweep's, and the reuse was a
+ * real defect rather than a tidiness question. That message says the operation
+ * "is an autonomous writer of advisory contradiction edges over every live fact
+ * in the workspace" - so a member who pressed *Preview* was told they had been
+ * denied a workspace-wide WRITE they never attempted, on an endpoint whose
+ * published description promises it "writes nothing". A denial that misdescribes
+ * what was refused is worse than a terse one: it sends the reader to ask for the
+ * wrong permission.
+ *
+ * The BAR is identical and deliberately so - the sentence explaining why is what
+ * differs, because here the argument is about disclosure rather than about
+ * mutation.
+ */
+function forecastDenialMessage(ctx: BrainPrincipalContext): string {
+  return ctx.origin === "authenticated"
+    ? `Forecasting tension edges needs the owner or admin entitlement; this reader is ` +
+        `"${ctx.role ?? "no org role"}". The forecast writes nothing, but it counts across ` +
+        "every live fact in the workspace, where every other read on this router is scoped to " +
+        "the caller's own grants - and it is the decision aid for arming the sweep, so a reader " +
+        "who may not run that may not price it either."
+    : `Forecasting tension edges needs a resolved reader identity; this one is "${ctx.origin}".`;
 }
 
 /**

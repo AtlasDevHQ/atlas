@@ -80,7 +80,9 @@ import {
   TENSION_SWEEP_RUN_CAP,
   TENSION_SWEEP_SQL,
   contentionMessage,
+  forecastTensionEdges,
   sweepTensionEdges,
+  type TensionForecastRequest,
 } from "@atlas/api/lib/brain/tension-sweep";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -244,6 +246,20 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
     );
     if (outcome.kind !== "swept") throw new Error("unreachable");
     return outcome.report;
+  }
+
+  /** `forecastTensionEdges`, narrowed the way {@link sweep} narrows its own. */
+  async function forecast(
+    workspaceId: string,
+    request: TensionForecastRequest = { kind: "as-curated" },
+  ): Promise<{ wouldMint: number; truncated: boolean }> {
+    const outcome = await forecastTensionEdges(workspaceId, request);
+    expect(
+      outcome.kind,
+      "the forecast did not answer with a count — no assertion below is meaningful",
+    ).toBe("forecast");
+    if (outcome.kind !== "forecast") throw new Error("unreachable");
+    return { wouldMint: outcome.wouldMint, truncated: outcome.truncated };
   }
 
   const T0 = "2026-01-01T00:00:00Z";
@@ -1419,4 +1435,278 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
       PG_TEST_TIMEOUT_MS,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // The forecast (#5450)
+  // -------------------------------------------------------------------------
+
+  describe("the forecast counts exactly what the sweep then mints", () => {
+    it(
+      "predicts the sweep's own number, and reads zero once the sweep has run",
+      async () => {
+        // THE property. Everything else about the forecast is a wiring detail;
+        // this is the claim an approver acts on, and it is the one a shared SQL
+        // builder is supposed to make unbreakable. Asserted by running both
+        // against one corpus rather than by comparing two statements' text —
+        // `tension-forecast.test.ts` owns the textual half, and text equality
+        // would not catch a bind list that differed.
+        const ws = "ws-5029-forecast-equivalence";
+        const ep = await seedEpisode(ws, "forecast-equivalence");
+        await seedFact(
+          ws,
+          ep,
+          { subject: "business tier", predicate: "priced at", object: "499 USD" },
+          { ingestedAt: T0 },
+        );
+        await seedFact(
+          ws,
+          ep,
+          { subject: "business tier", predicate: "priced at", object: "599 USD" },
+          { ingestedAt: T1 },
+        );
+        await seedFact(
+          ws,
+          ep,
+          { subject: "business tier", predicate: "priced at", object: "699 USD" },
+          { ingestedAt: T2 },
+        );
+        await curate(ws, "priced at", "single");
+
+        const predicted = await forecast(ws);
+        // Non-vacuity: a forecast of zero would make the equality below hold for
+        // a statement that counts nothing at all.
+        expect(
+          predicted.wouldMint,
+          "the forecast predicted nothing — the equality below is vacuous",
+        ).toBeGreaterThan(0);
+        expect(predicted.truncated).toBe(false);
+
+        const report = await sweep(ws);
+        expect(
+          report.minted,
+          "the forecast and the sweep disagreed — an approver was shown a number the button then contradicted",
+        ).toBe(predicted.wouldMint);
+        expect(report.truncated).toBe(predicted.truncated);
+
+        // …and the corpus has converged, so the same question now answers zero.
+        // This is the arm that fails for an implementation that counts PAIRS IN
+        // TENSION rather than pairs a press would ADD.
+        expect(await forecast(ws)).toEqual({ wouldMint: 0, truncated: false });
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "writes nothing at all — not an edge, not a fact row",
+      async () => {
+        // The licence, and the reason the route needs no audit row. A forecast
+        // that minted would be indistinguishable from a sweep to everything
+        // except this assertion.
+        const ws = "ws-5029-forecast-readonly";
+        const ep = await seedEpisode(ws, "forecast-readonly");
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "led by", object: "alice" },
+          { ingestedAt: T0 },
+        );
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "led by", object: "bob" },
+          { ingestedAt: T1 },
+        );
+        await curate(ws, "led by", "single");
+
+        const before = await pool.query(
+          `SELECT to_jsonb(f) - 'fts' AS row FROM brain_facts f WHERE workspace_id = $1 ORDER BY id`,
+          [ws],
+        );
+
+        expect((await forecast(ws)).wouldMint).toBe(1);
+        // Twice, because an idempotence bug that wrote on the FIRST call only
+        // would still leave the second call's snapshot matching the first's.
+        expect((await forecast(ws)).wouldMint).toBe(1);
+
+        expect(await edgePairs(ws), "the forecast minted an edge").toEqual([]);
+        const after = await pool.query(
+          `SELECT to_jsonb(f) - 'fts' AS row FROM brain_facts f WHERE workspace_id = $1 ORDER BY id`,
+          [ws],
+        );
+        expect(after.rows).toEqual(before.rows);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "prices an UNCURATED predicate before anybody approves it — the #5450 question",
+      async () => {
+        // The whole reason this exists. #5450 records two spurious pairs sitting
+        // in prod "one cardinality approval away from minting an edge a reviewer
+        // must dismiss", and #5425 discharged that question by pasting the
+        // sweep's CTEs into psql with the gate replaced. This is that question,
+        // asked through the shipped statement.
+        const ws = "ws-5029-forecast-counterfactual";
+        const ep = await seedEpisode(ws, "forecast-counterfactual");
+        await seedFact(
+          ws,
+          ep,
+          { subject: "business tier", predicate: "plan tier", object: "trial" },
+          { ingestedAt: T0 },
+        );
+        await seedFact(
+          ws,
+          ep,
+          { subject: "business tier", predicate: "plan tier", object: "business" },
+          { ingestedAt: T1 },
+        );
+
+        // Nothing curated: the sweep is structurally incapable of minting, and
+        // the forecast says so.
+        expect(await forecast(ws)).toEqual({ wouldMint: 0, truncated: false });
+
+        // …but approving it would mint one, and the approver can now know that
+        // BEFORE approving.
+        const counterfactual = await forecast(ws, {
+          kind: "if-approved",
+          predicateSurface: "Plan Tier",
+        });
+        expect(
+          counterfactual.wouldMint,
+          "the counterfactual answered the same as the stored gate — `$4` is not reaching the scan",
+        ).toBe(1);
+        expect(await edgePairs(ws), "the counterfactual minted an edge").toEqual([]);
+
+        // And the prediction is exact: curating for real and sweeping mints that
+        // number, not merely a positive one.
+        await curate(ws, "plan tier", "single");
+        expect((await sweep(ws)).minted).toBe(counterfactual.wouldMint);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "ADDS the hypothetical predicate to the gate rather than replacing it",
+      async () => {
+        // The arm that catches a gate spelled `a.predicate_key = $4` instead of
+        // `a.predicate_key = $4 OR <stored>`. Such a build passes every
+        // assertion above — the counterfactual test curates nothing, so there is
+        // no stored entry for a replacement to lose.
+        const ws = "ws-5029-forecast-additive-gate";
+        const ep = await seedEpisode(ws, "forecast-additive-gate");
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "led by", object: "alice" },
+          { ingestedAt: T0 },
+        );
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "led by", object: "bob" },
+          { ingestedAt: T1 },
+        );
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "plan tier", object: "trial" },
+          { ingestedAt: T0 },
+        );
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "plan tier", object: "business" },
+          { ingestedAt: T1 },
+        );
+        await curate(ws, "led by", "single");
+
+        const stored = await forecast(ws);
+        expect(stored.wouldMint, "the stored gate reached nothing — the sum below is vacuous").toBe(
+          1,
+        );
+
+        const both = await forecast(ws, { kind: "if-approved", predicateSurface: "plan tier" });
+        expect(
+          both.wouldMint,
+          "approving a second predicate did not ADD to the count — the counterfactual replaced the stored gate, so the forecast under-reports for every workspace that has curated anything",
+        ).toBe(2);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "answers the counterfactual for a predicate whose entry is merely PENDING",
+      async () => {
+        // The commonest real case, and the one #5450 is written about: prod held
+        // four warehouse-proposed `single` entries, all `pending`, and a pending
+        // proposal arms nothing. "What happens when I approve this?" is exactly
+        // the question the pending queue puts in front of a human.
+        const ws = "ws-5029-forecast-pending";
+        const ep = await seedEpisode(ws, "forecast-pending");
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "region", object: "us" },
+          { ingestedAt: T0 },
+        );
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "region", object: "eu" },
+          { ingestedAt: T1 },
+        );
+        const proposal = await proposePredicateCardinality(pool, ws, {
+          predicateKey: slotKey("region", identityAlias),
+          cardinality: "single",
+          proposedBy: "warehouse:v1",
+          sourceClass: "warehouse_structural",
+        });
+        expect(proposal.ok, "the pending proposal failed — the assertions below are vacuous").toBe(
+          true,
+        );
+
+        // Pending arms nothing…
+        expect(await forecast(ws)).toEqual({ wouldMint: 0, truncated: false });
+        // …and approving it would arm exactly one pair.
+        expect(
+          (await forecast(ws, { kind: "if-approved", predicateSurface: "region" })).wouldMint,
+        ).toBe(1);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "refuses an unkeyable surface rather than answering the stored gate's number",
+      async () => {
+        // A surface that norms away would otherwise bind a key nothing matches,
+        // collapse to the stored gate, and answer with the CURRENT number — a
+        // reading of "approving this changes nothing" that is true by accident
+        // and false in general.
+        const ws = "ws-5029-forecast-unkeyable";
+        const ep = await seedEpisode(ws, "forecast-unkeyable");
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "led by", object: "alice" },
+          { ingestedAt: T0 },
+        );
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "led by", object: "bob" },
+          { ingestedAt: T1 },
+        );
+        await curate(ws, "led by", "single");
+        // The stored gate reaches one pair, which is the number a collapsed
+        // counterfactual would wrongly report.
+        expect((await forecast(ws)).wouldMint).toBe(1);
+
+        expect(
+          await forecastTensionEdges(ws, { kind: "if-approved", predicateSurface: "___" }),
+        ).toEqual({ kind: "unkeyable-surface" });
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+  });
+
 });

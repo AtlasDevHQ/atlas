@@ -17,6 +17,10 @@
 #
 # Also refused: `bun test` with TEST_DATABASE_URL set -- the project memory
 # names that shape specifically as the one a human stopped by hand.
+# ⚠️ `-e` is deliberately ABSENT. Two spots depend on a non-zero exit being
+# survivable: `[ "$cap" -le 6 ]` is expected to fail on a malformed cap, and a
+# `grep | tail` pipeline can SIGPIPE, which `pipefail` reports non-zero. Adding
+# `-e` turns this into a hook that exits before it can deny — failing OPEN.
 set -uo pipefail
 
 cmd="$(jq -r '.tool_input.command // empty' 2>/dev/null)" || exit 0
@@ -65,20 +69,21 @@ scrubbed="$(printf '%s\n' "$cmd" | awk '
 
 # A mention inside quotes is an argument or a message, never the command word.
 #
-# ⚠️ Joined onto ONE line first, because a quoted span routinely crosses
-# newlines -- `git commit -m "<multi-line body>"` is the everyday case, and
-# sed is line-oriented, so the per-line version below scrubbed nothing on it.
-# That is not hypothetical: this guard blocked the commit that introduced it,
-# then the patch that fixed that, and then (2026-08-26) the patch that closed
-# the directory-laundering hole -- three times, same cause, each time on a
-# multi-line -m body quoting the very command it matches.
+# ⚠️ PER LINE, deliberately. A previous commit joined every line with \x01 first
+# so a quoted span could cross newlines — which fixed multi-line `git commit -m`
+# bodies and BROKE the guard: two apostrophes on different lines then paired
+# across the newline and deleted everything between them.
 #
-# \x01 is the join sentinel; `[^"]*` crosses it freely, which is the point.
-scrubbed="$(printf '%s' "$scrubbed" \
-  | awk '{ printf "%s\001", $0 }' \
-  | sed -E "s/'[^']*'/ /g" \
-  | sed -E 's/"[^"]*"/ /g' \
-  | tr '\001' '\n')"
+#     echo "it's fine"
+#     bun test --parallel        <- scrubbed away entirely; ALLOW
+#     echo "that's all"
+#
+# That is a false ALLOW, and a false ALLOW is what takes the box down. A false
+# DENY costs a rephrase. So this scrubs line by line and fails closed, and a
+# multi-line commit body quoting the command is written with `git commit -F -`
+# and a heredoc, which the heredoc pass above already handles.
+scrubbed="$(printf '%s' "$scrubbed" | sed -E "s/'[^']*'/ /g")"
+scrubbed="$(printf '%s' "$scrubbed" | sed -E 's/"[^"]*"/ /g')"
 
 # Split the compound command into segments so `cd x && bun test` is seen.
 segments="$(printf '%s' "$scrubbed" | sed -E 's/(\&\&|\|\||[;|]|\n)/\n/g')"
@@ -111,7 +116,11 @@ Drop the flag: \`bun test --parallel --changed=origin/main\`"
   # The project memory: "especially not with `TEST_DATABASE_URL` set". That run
   # points the real-Postgres suites at a live database, and the crash takes the
   # container down with the box -- destroying the database the run needed.
-  if printf '%s' "$seg" | grep -qE 'TEST_DATABASE_URL='; then
+  # ⚠️ The WHOLE command, not "$seg". Segments split on `&&`, so
+  # `export TEST_DATABASE_URL=x && bun test …` put the assignment in a different
+  # segment while bun still inherited it. Known limit either way: a var already
+  # exported in the parent shell, or sitting in `.env`, is invisible here.
+  if printf '%s' "$cmd" | grep -qE 'TEST_DATABASE_URL='; then
     deny "BLOCKED: \`bun test\` with TEST_DATABASE_URL set turns on ~89 real-Postgres suites at once. The project memory names this shape specifically as the one that had to be stopped by hand.
 
 Run a single pg suite directly if you need one:
@@ -134,9 +143,16 @@ Remote CI runs these against a dedicated Postgres service -- that is the gate."
   # `.test.ts`, and bash expands it to N files when bun runs. Matching on the
   # suffix alone let a whole directory through under a filename -- the same
   # laundering shape as the quantifier hole, one character away.
+  # ⚠️ `set -f` IS THE GLOB FIX. `for tok in $args` is unquoted, so without it
+  # bash pathname-expands before the `case` arm ever sees a `*` — a glob that
+  # MATCHES real files arrives as literal filenames, every one ending
+  # `.test.ts`, and waltzes through. The arm below only ever fired on globs that
+  # matched NOTHING, which is why its first two falsifiers used paths that do
+  # not exist and passed for the wrong reason.
   positional_count=0
   nonfile_count=0
   skip_next=0
+  set -f
   for tok in $args; do
     # A redirection TARGET (`out.log` in `> out.log`) is not an argument to bun.
     if [ "$skip_next" = "1" ]; then skip_next=0; continue; fi
@@ -155,11 +171,14 @@ Remote CI runs these against a dedicated Postgres service -- that is the gate."
     esac
     positional_count=$((positional_count + 1))
     case "$tok" in
-      *'*'*|*'?'*|*'['*) nonfile_count=$((nonfile_count + 1)) ;;
+      # `{` catches brace expansion, which carries no glob metacharacter at all:
+      # `src/f{1..500}.test.ts` reads as one filename and becomes 500 files.
+      *'*'*|*'?'*|*'['*|*'{'*) nonfile_count=$((nonfile_count + 1)) ;;
       *.test.ts|*.test.tsx) ;;
       *) nonfile_count=$((nonfile_count + 1)) ;;
     esac
   done
+  set +f
 
   # The sanctioned escape hatch, and it is TWO conditions, not one.
   #
@@ -170,7 +189,9 @@ Remote CI runs these against a dedicated Postgres service -- that is the gate."
   #
   # 6, not 8: 6 is the only number the record names. 8 was invented here and
   # nothing measures it.
-  cap="$(printf '%s' "$args" | grep -oE -- '--parallel=[0-9]+' | head -1 | cut -d= -f2)"
+  # The MAX of every occurrence. `head -1` let `--parallel=6 --parallel=64`
+  # through on the safe one while bun (last-wins) ran 64.
+  cap="$(printf '%s' "$args" | grep -oE -- '--parallel=[0-9]+' | cut -d= -f2 | sort -n | tail -1)"
   if [ -n "$cap" ] && [ "$cap" -le 6 ] 2>/dev/null && [ "$positional_count" -gt 0 ]; then
     continue
   fi

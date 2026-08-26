@@ -59,8 +59,15 @@ check allow 'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'an ex
 
 # --- found by an independent spec review, 2026-08-26 -------------------------
 # Each of these was ALLOW against the first draft of the quantifier fix.
-check deny 'bun test --parallel src/lib/zzz/*.test.ts' 'a GLOB is one token ending in .test.ts and expands to N files'
-check deny 'bun test --parallel src/**/*.test.ts' 'a recursive glob is the same laundering, worse'
+# ⚠️ REAL paths. The first draft of these used `src/lib/zzz/` and `src/**/`,
+# neither of which exists from the repo root -- so the globs stayed literal,
+# the case arm caught them, and both passed WITHOUT the glob rule working at
+# all. Delete the rule and they still passed. Against a path that matches,
+# bash expands before the loop sees it, which is what `set -f` now prevents.
+# 108 files as of 2026-08-26.
+check deny 'bun test --parallel packages/api/src/lib/brain/__tests__/*.test.ts' 'a glob matching 108 REAL files is not a named file'
+check deny 'bun test --parallel packages/api/src/lib/*/__tests__/*.test.ts' 'a two-level real glob, 618 files'
+check deny 'bun test --parallel src/f{1..500}.test.ts' 'brace expansion carries no glob metachar and still becomes 500 files'
 check deny 'bun test --parallel=8' 'a worker cap with NO target is still the whole suite'
 check deny 'bun test --parallel=6' 'even at the sanctioned 6, no target means everything'
 check deny 'bun test --parallel=32 packages/api/src/lib/brain/__tests__/' 'a cap that is the default spelled longhand is not a cap'
@@ -76,6 +83,16 @@ check allow 'bun test src/a.test.ts 2>/dev/null' 'attached redirect'
 check allow 'cd packages/api && bun test src/a.test.ts 2>&1 | tail -8' 'the real everyday shape'
 check deny 'bun test --parallel src/lib/ 2>&1' 'a redirect does not launder a directory either'
 
+# --- found by an adversarial review of the fix, 2026-08-26 ------------------
+check deny 'export TEST_DATABASE_URL=postgres://x && bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'an exported env var survives segment splitting'
+check deny 'bun test --parallel=6 --parallel=64 packages/api/src/lib/brain/__tests__/' 'the MAX cap wins, not the first one grep finds'
+
+# The over-scrub regression: apostrophes in prose on separate lines must not
+# pair across the newline and delete the invocation between them.
+check deny 'echo "it is fine"
+bun test --parallel
+echo "that is all"' 'a bare parallel run between two echoes still denies'
+
 # --- invocations that must be allowed ---------------------------------------
 check allow 'bun test --parallel --changed=origin/main' 'the sanctioned pre-flight'
 check allow 'bun test packages/web/src/a.test.ts' 'a single named file'
@@ -89,16 +106,23 @@ check allow 'echo "bun test --parallel"' 'an echo naming it'
 check allow "grep -rn 'bun test' docs/" 'a grep for it'
 # ⚠️ 2026-08-26: the third time this guard blocked its own fix. A -m body that
 # spans lines is the everyday shape, and the scrubber was line-oriented.
-# The quoted command here is a BARE directory glob, denied by every version of
-# this guard. So the case can only pass if the scrubber actually recognised the
-# multi-line body as data -- it cannot pass by accident through the quantifier
-# hole, which is how an earlier draft of this case passed against the very
-# guard it was meant to falsify.
-check allow 'git commit -m "fix: a guard
+# ⚠️ A multi-line `-m` body quoting the command is DENIED, and that is the
+# decision rather than a defect.
+#
+# Making it pass needs the scrubber to let a quoted span cross newlines, which
+# was tried (\x01 join) and made the guard strictly worse: two apostrophes on
+# separate lines then paired across the newline and deleted the invocation
+# between them, turning a DENY on main into an ALLOW. Over-scrubbing is a false
+# ALLOW; that is the failure that takes the box down. This one is a false DENY,
+# which costs a rephrase.
+#
+# The sanctioned way to write such a message is `git commit -F -` with a
+# heredoc, which the heredoc pass handles and the next case pins.
+check deny 'git commit -m "fix: a guard
 
   bun test --parallel packages/api/src/lib/brain/__tests__/
 
-was going straight past it"' 'a MULTI-LINE commit body quoting the command'
+was going straight past it"' 'a multi-line -m body FAILS CLOSED, by choice'
 check allow 'cat > /tmp/x.md <<EOF
 Run bun test --parallel here.
 EOF' 'a heredoc documenting it'

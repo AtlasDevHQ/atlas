@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.22",
+    title: "The Past, Read Back",
+    date: "2026-08-26",
+    summary:
+      "The last release gave a reviewer a way to correct a claim and keep the old answer readable. This one is the other half: that history now reaches the person who asked the question. Until this release nothing anywhere read a superseded answer back to anyone — the record could have accumulated a perfectly legible history for months and answered nobody. Also: the two operations that decide which claims can contradict each other finally have a UI, and you can ask what one of those decisions will cost before you make it.",
+    highlights: [
+      "An answer that changed says so, in the answer. Ask an ordinary question whose answer has been corrected and you are told, in the reply, that it changed, what it said before, and who changed it — with no admin access, no separate page, and without having to know that history is something you can ask for. It rides the normal answer, so it reaches the embeddable widget and every chat platform on the same terms as the web app",
+      "A withdrawn claim stays withdrawn. Something withdrawn as never-true is not shown as history and is not even counted — otherwise the surface built to show the past would quietly undo an erasure. A previous answer that exists but is not yours to see is reported as existing, without its content, so the count stays honest either way",
+      "Only a person who actually made a change is named. Some replacements happen as part of routine processing rather than by anyone’s decision; those name nobody rather than crediting whoever the newer claim happened to come from. “Who made this claim” and “who changed this claim” are different questions, and only the second one is answered here",
+      "Curating how claims are matched no longer needs a console. Deciding that a question has exactly one answer — and re-checking the record after that decision — were both possible only by hand-writing a request. Both now have a page, and the decision shows how many existing claims it will affect before you commit to it",
+      "You can ask what a decision will cost before you pay it. Marking a question as single-answer changes which past claims are flagged as contradicting each other, retroactively. A new preview answers “how many would this flag?” without changing anything, so the trade is made with a number rather than a guess",
+      "The correction options read as sentences again. They had been rendering as two narrow columns — every word correct, and unreadable",
+    ],
+  },
+  {
     version: "v0.2.21",
     title: "Correcting the Past, Visibly",
     date: "2026-08-26",

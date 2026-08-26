@@ -136,9 +136,22 @@ Remote CI runs these against a dedicated Postgres service -- that is the gate."
   # laundering shape as the quantifier hole, one character away.
   positional_count=0
   nonfile_count=0
+  skip_next=0
   for tok in $args; do
+    # A redirection TARGET (`out.log` in `> out.log`) is not an argument to bun.
+    if [ "$skip_next" = "1" ]; then skip_next=0; continue; fi
     case "$tok" in
       -*) continue ;;
+      # ⚠️ Redirections are not positionals. `bun test one.test.ts 2>&1` is the
+      # most common shape there is, and counting `2>&1` as a non-file argument
+      # denied it -- a gate that cries wolf on the everyday case is one people
+      # route around, which is the failure mode this whole guard exists inside.
+      *'>'*|*'<'*|'&'*)
+        case "$tok" in
+          *'>'|*'<') skip_next=1 ;;
+        esac
+        continue
+        ;;
     esac
     positional_count=$((positional_count + 1))
     case "$tok" in

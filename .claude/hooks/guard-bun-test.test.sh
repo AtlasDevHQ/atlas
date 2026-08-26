@@ -67,6 +67,15 @@ check deny 'bun test --parallel=32 packages/api/src/lib/brain/__tests__/' 'a cap
 check deny 'TEST_DATABASE_URL=postgres://x bun test --parallel=4 src/a.test.ts' 'the shape a human had to stop by hand'
 check allow 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'the memory own number, with a target'
 
+# --- redirections are not arguments (found by USING the guard, 2026-08-26) ---
+# The all-positionals-must-be-files rule counted `2>&1` as a non-file argument,
+# so the single most common shape in the whole local loop was denied.
+check allow 'bun test src/a.test.ts 2>&1' 'stderr redirect'
+check allow 'bun test src/a.test.ts > out.log' 'stdout to a file, target skipped'
+check allow 'bun test src/a.test.ts 2>/dev/null' 'attached redirect'
+check allow 'cd packages/api && bun test src/a.test.ts 2>&1 | tail -8' 'the real everyday shape'
+check deny 'bun test --parallel src/lib/ 2>&1' 'a redirect does not launder a directory either'
+
 # --- invocations that must be allowed ---------------------------------------
 check allow 'bun test --parallel --changed=origin/main' 'the sanctioned pre-flight'
 check allow 'bun test packages/web/src/a.test.ts' 'a single named file'

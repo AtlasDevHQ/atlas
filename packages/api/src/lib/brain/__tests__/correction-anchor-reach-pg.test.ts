@@ -27,7 +27,12 @@
  * lane owns is the BIND (`$10 = false` leaves `correction.ts`); what this file
  * owns is what the database does with it.
  *
- * ## The four cases, and why all four are needed
+ * ## The four properties, across three cases, and why each is needed
+ *
+ * Three `it` blocks, not four: the second property (an uncurated predicate
+ * still corrects, and the slot arm still fires) is asserted inside the first,
+ * because both are statements about the same single correction and splitting
+ * them would run the same fixture twice to assert two halves of one outcome.
  *
  * A single "no edge appeared" assertion is satisfiable by a broken fixture, an
  * empty corpus, or a scan that stopped running. So:

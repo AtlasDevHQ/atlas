@@ -2155,6 +2155,23 @@ async function applySupersede(
           // `has target raise of` carrying no row in `brain_predicate_cardinality`
           // at all — the exact false shape `segmentation.ts` names in advance.
           //
+          // ## What happens to `e78de65d` — the edge that already exists
+          //
+          // **It stays, untouched, until after ~2026-09-01, and is then
+          // dismissed through the review surface like any other advisory edge.**
+          //
+          // Not a punt. It sits on `series a`, which is the subject
+          // #5425's condition-4 clock is running on — the demonstration that a
+          // disagreement survives a week with nobody intervening. Deleting or
+          // invalidating it now is a write to exactly the rows being observed,
+          // and it costs another week to restart. The hazard decides the timing.
+          //
+          // And nothing about it needs undoing urgently: an `in-tension-with`
+          // edge is ADVISORY. Nothing is merged, superseded or ranked because of
+          // it; its whole cost is one reviewer's glance. The lane that minted it
+          // can no longer mint another, which is what this change is for —
+          // cleaning up the one instance is a separate, human, post-clock act.
+          //
           // The trade was re-made at the arm's current width and came out the
           // other way for the ANCHOR arm only. What survives is the advisory
           // argument (a wrong flag still costs a reviewer a glance) and the

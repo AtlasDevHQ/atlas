@@ -103,6 +103,30 @@ const _markOrderCovers: _MarkOrderCovers = true;
 void _markOrderCovers;
 
 /**
+ * Every way a quad can be drawn — the second half of the vocabulary a reader has
+ * to learn, beside {@link MARK_ORDER}.
+ *
+ * A runtime list rather than only a union, because the thing that needs guarding
+ * is a RUNTIME fact: how many distinct things a person looking at this sheet must
+ * hold in their head. A type alone cannot be counted by a test.
+ *
+ * @see ./__tests__/reader-vocabulary.test.ts — the gate that reddens when this changes
+ */
+export const PLATE_QUAD_RENDERS = [
+  "soundings",
+  "unsurveyed",
+  "off-survey",
+  "undrawable",
+] as const;
+
+/** Compile error if a quad render joins the union without joining the list above. */
+type _QuadRendersCover = [
+  Exclude<PlateQuad["render"], (typeof PLATE_QUAD_RENDERS)[number]>,
+] extends [never]
+  ? true
+  : never;
+
+/**
  * One run of like marks in a quad.
  *
  * {@link units} is the real count and {@link marks} is what gets drawn. They are
@@ -206,6 +230,9 @@ export type PlateQuad =
   | PlateQuadBlank
   | PlateQuadOffSurvey
   | PlateQuadUndrawable;
+
+const _quadRendersCover: _QuadRendersCover = true;
+void _quadRendersCover;
 
 /** The whole sheet, ready to draw. */
 export interface PlateSheet {

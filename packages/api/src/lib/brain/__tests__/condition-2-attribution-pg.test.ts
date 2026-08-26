@@ -30,6 +30,28 @@
  *    so both arms here are unexercised in prod and a test is the only
  *    instrument for either.
  *
+ *    §2 grew a second half at #5454, and it is the half the original missed.
+ *    Attributing the claim is not naming the person: the handle is
+ *    `user:<atlasUserId>`, and until #5454 it rendered *"cannot name this
+ *    person"* — about the most directly resolvable identifier in the system.
+ *    §2c walks the `supersedes` edge to answer the RETIRED side's question, and
+ *    §2d covers the machine actor. Prod has no supersede-with-a-rendering to
+ *    read (the first one ever ran on 2026-08-26, before this arm shipped), so
+ *    these are again the only instrument.
+ *
+ *    ## §2/§2c/§2d — mutations verified red (2026-08-26)
+ *
+ *      1. `actor-identity.ts`: `derivableActor`'s `atlas-user` arm returns
+ *         `null`. Red on §2 and §2c — the pre-#5454 behaviour, and the two
+ *         assertions that exist to refuse it.
+ *      2. `actor-identity.ts`: `derivableActor` never returns `machine`. Red on
+ *         §2d only, which is the control §2d's own `slack:U-nobody` row makes:
+ *         an absent row still means `opaque` for everyone else.
+ *      3. `correction.ts`: `sourcePrincipal` becomes `` `human:${ctx.userId}` ``
+ *         — the handle a capture-based fix would have keyed. Red on §2 and §2c,
+ *         which is the byte-identity pin doing its job: the stored payload is
+ *         compared as TEXT, and the actor it must hold is named.
+ *
  *    ⚠️ Coverage bound: `pin` is tested by NEITHER instrument. It shares
  *    `applyVouch` with `re-authority` — same statement, same marker shape, only
  *    the key differs (`pinned` vs `reAuthority`) — so §2b covers the mechanism
@@ -73,6 +95,13 @@ import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal"
 import { withRequestContext } from "@atlas/api/lib/logger";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 import { correctFact } from "@atlas/api/lib/brain/correction";
+import {
+  identityFor,
+  loadActorIdentities,
+  type ActorIdentityReader,
+} from "@atlas/api/lib/brain/actor-identity";
+import { WAREHOUSE_PRODUCER_PRINCIPAL } from "@atlas/api/lib/brain/warehouse-producer";
+import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import {
   RECONCILE_BLOCK_REASONS,
   reconcileFacts,
@@ -148,6 +177,19 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
       await bootstrap.end();
     }
     await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+    // Better Auth's `"user"`, stubbed to exactly the shape the identity read
+    // joins (#5454). The auth migrations are skipped above, so without this the
+    // `user:<id>` resolution has no relation to read and would degrade to
+    // `opaque` — which is the OLD behaviour, and a test that asserted the fix
+    // against a missing table would be asserting nothing.
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS "user" (id TEXT PRIMARY KEY, name TEXT, email TEXT NOT NULL)`,
+    );
+    await pool.query(
+      `INSERT INTO "user" (id, name, email) VALUES ($1, 'Ada Lovelace', $2)
+       ON CONFLICT (id) DO NOTHING`,
+      [ACTOR_ID, ACTOR_EMAIL],
+    );
     _resetPool(pool);
   }, PG_TEST_TIMEOUT_MS);
 
@@ -219,6 +261,21 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
         },
       }),
     );
+
+  /**
+   * The identity read's handle, over the raw pool (#5454).
+   *
+   * Deliberately the SAME pool the sections seed through, so the resolution
+   * runs against rows this file actually wrote — the point of asking a database
+   * rather than a double is that the table's emptiness is a fact and not a
+   * fixture.
+   */
+  const identityReader: ActorIdentityReader = {
+    query: async (sql, params) => {
+      const res = await pool.query(sql, params as unknown[]);
+      return { rows: res.rows as readonly unknown[], rowCount: res.rowCount };
+    },
+  };
 
   /**
    * The one read every section makes — the condition's own question, asked of
@@ -450,6 +507,14 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
         throw new Error("§2: supersede returned no replacement id");
       }
 
+      // The stored payload, captured BEFORE anything reads it — AC3's baseline.
+      const { rows: provRows } = await pool.query<{ p: string }>(
+        `SELECT provenance::text AS p FROM brain_facts WHERE id = $1::uuid`,
+        [replacementId],
+      );
+      const provenanceBefore = provRows[0]?.p;
+      if (provenanceBefore === undefined) throw new Error("§2: replacement has no provenance");
+
       const attribution = await attributionOf(WS, replacementId);
       // A PERSON, and an ATLAS one — `user:<id>` rather than a vendor handle,
       // because the correction path knows the authenticated user and
@@ -482,6 +547,183 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
       expect(audit[0]?.actor_id).toBe(ACTOR_ID);
       expect(audit[0]?.actor_email).toBe(ACTOR_EMAIL);
       expect(audit[0]?.action_type).toBe("brain_fact.correct");
+
+      // ── #5454: the handle above is not enough; NAME the person ──────────
+      //
+      // The comment two blocks up used to end *"`provenance.actor` holds an
+      // opaque id"*, and it was right about the payload and wrong about what
+      // Atlas can do with it. #5440's census then measured the consequence: a
+      // correction-minted claim rendered "cannot name this person" about the
+      // most directly resolvable identifier in the system.
+      //
+      // ⚠️ This assertion is the one that would have caught it, and it runs
+      // against a `brain_actor_identity` that is EMPTY — checked below, because
+      // a name that arrived from a captured row would be testing a different
+      // mechanism than the one that ships.
+      const identities = await loadActorIdentities(identityReader, WS, [
+        attribution.actor ?? "",
+      ]);
+      expect(identityFor(identities, attribution.actor)).toEqual({
+        state: "atlas",
+        userId: ACTOR_ID,
+        name: "Ada Lovelace",
+        email: ACTOR_EMAIL,
+      });
+      const { rows: identityRows } = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM brain_actor_identity WHERE workspace_id = $1`,
+        [WS],
+      );
+      expect(identityRows[0]?.n).toBe("0");
+
+      // …and the LIVE half, which is what makes this the `atlas` state rather
+      // than a snapshot wearing its name: rename the account, re-read, no
+      // re-ingest and no capture pass in between.
+      await pool.query(`UPDATE "user" SET name = 'Ada Byron' WHERE id = $1`, [ACTOR_ID]);
+      const renamed = await loadActorIdentities(identityReader, WS, [attribution.actor ?? ""]);
+      expect(identityFor(renamed, attribution.actor)).toMatchObject({ name: "Ada Byron" });
+      await pool.query(`UPDATE "user" SET name = 'Ada Lovelace' WHERE id = $1`, [ACTOR_ID]);
+
+      // AC3 — `provenance.actor` is byte-identical across the whole thing.
+      // Compared as stored TEXT, not as a parsed object: an object compare
+      // passes on a payload whose key order changed, and ADR-0037 §5's promise
+      // is verbatim.
+      const { rows: stored } = await pool.query<{ p: string }>(
+        `SELECT provenance::text AS p FROM brain_facts WHERE id = $1::uuid`,
+        [replacementId],
+      );
+      expect(stored[0]?.p).toBe(provenanceBefore);
+      expect(JSON.parse(provenanceBefore).actor).toBe(`user:${ACTOR_ID}`);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "§2c correction: the superseded row names who RETIRED it, through the supersedes edge",
+    async () => {
+      // The retitled #5454: a superseded claim records who authored it and not
+      // who retired it, *"recoverable only by joining `admin_action_log` on
+      // `target_id`"* — a per-org purgeable table whose workspace-purge scrub
+      // replaces `target_id` with a sentinel.
+      //
+      // ⚠️ That "only" does not hold, and this is the instrument for it. The
+      // retirement is recorded in `brain_edges` as `supersedes` (new → old),
+      // and the SUCCESSOR's `provenance.actor` names the human who made it —
+      // both in `brain_*` tables that travel on the region bundle and are not
+      // the audit log. What was missing was never the record; it was the NAME,
+      // and #5440's rendering is what made its absence say something false.
+      //
+      // So the retired row's question is answered by walking the edge the
+      // correction already writes, and `history.ts` (#5461) is the read that
+      // walks it for a person. This pins the two halves that make that walk
+      // produce a name.
+      const episodeId = await seedEpisode({
+        workspaceId: WS,
+        source: "slack",
+        sourceId: "C-cond2/retire-target",
+        sourceActor: "U-alice",
+      });
+      const { rows: seeded } = await pool.query<{ id: string }>(
+        `INSERT INTO brain_facts
+           (workspace_id, subject, predicate, object, source_episode_id, provenance,
+            status, visible_to, subject_key, predicate_key, object_key)
+         VALUES ($1, 'Payroll', 'is owned by', 'Ana', $2, $3::jsonb, 'published', ARRAY['org'],
+                 'payroll', 'is owned by', 'ana')
+         RETURNING id::text AS id`,
+        [
+          WS,
+          episodeId,
+          JSON.stringify({
+            source: "slack",
+            sourceId: "C-cond2/retire-target",
+            episodeId,
+            actor: "slack:U-alice",
+            producer: "extraction:v1",
+            occurredAt: "2026-08-03T14:48:30.625Z",
+          }),
+        ],
+      );
+      const retiredId = seeded[0]?.id;
+      if (retiredId === undefined) throw new Error("§2c: seed fact insert returned no id");
+
+      await asRequest("req-cond2-retire", () =>
+        correctFact(
+          {
+            vocabulary: identityVocabulary,
+            ctx: reviewer(),
+            factId: retiredId,
+            verb: "supersede",
+            reason: "Ana left",
+            replacement: { object: "Bo" },
+          },
+          { withTransaction: poolTx },
+        ),
+      );
+
+      // The retired row, and the two facts about it that are true TODAY: it is
+      // closed, and its own actor is still its original author. Nothing on the
+      // row says who retired it, and this test does not pretend otherwise.
+      const retired = await attributionOf(WS, retiredId);
+      expect(retired.actor).toBe("slack:U-alice");
+      const { rows: closed } = await pool.query<{ valid_to: Date | null }>(
+        `SELECT valid_to FROM brain_facts WHERE id = $1::uuid`,
+        [retiredId],
+      );
+      expect(closed[0]?.valid_to).not.toBeNull();
+
+      // The edge is the record, and it is in `brain_edges` — not the audit log.
+      const { rows: successors } = await pool.query<{ from_fact_id: string }>(
+        `SELECT from_fact_id::text AS from_fact_id
+           FROM brain_edges
+          WHERE workspace_id = $1 AND edge_type = 'supersedes' AND to_fact_id = $2::uuid`,
+        [WS, retiredId],
+      );
+      expect(successors).toHaveLength(1);
+      const successorId = successors[0]?.from_fact_id;
+      if (successorId === undefined) throw new Error("§2c: supersedes edge returned no successor");
+
+      // …and walking it produces a PERSON. This is the assertion that fails
+      // without #5454: before it, the successor's `user:<id>` actor rendered
+      // "cannot name this person", so the walk ended at a handle and condition
+      // 5's *"see who changed it"* had no answer on the one lane built for it.
+      const successor = await attributionOf(WS, successorId);
+      expect(successor.actor).toBe(`user:${ACTOR_ID}`);
+      const identities = await loadActorIdentities(identityReader, WS, [successor.actor ?? ""]);
+      expect(identityFor(identities, successor.actor)).toMatchObject({
+        state: "atlas",
+        userId: ACTOR_ID,
+        email: ACTOR_EMAIL,
+      });
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "§2d a warehouse producer is a MACHINE, not an unnameable person",
+    async () => {
+      // #5440's Finding 2. `warehouse:system:warehouse-producer` has no
+      // captured row, so it rendered `opaque` — a positive assertion that Atlas
+      // looked for a person and could not name one. There is no person, and a
+      // reader could not tell this from an author whose capture has not run.
+      //
+      // Against a real database because the claim is about what happens when
+      // the TABLE HAS NOTHING TO SAY: an in-memory double asserting an empty
+      // fixture proves only that the fixture was empty.
+      const actor = `${WAREHOUSE_SOURCE}:${WAREHOUSE_PRODUCER_PRINCIPAL}`;
+      const identities = await loadActorIdentities(identityReader, WS, [actor, "slack:U-nobody"]);
+      expect(identityFor(identities, actor)).toEqual({ state: "machine" });
+      // The control, in the same call: an ordinary handle with no row is still
+      // `opaque`, so the new arm is a DISTINCTION and not a blanket rewrite of
+      // what an absent row means.
+      expect(identityFor(identities, "slack:U-nobody")).toEqual({
+        state: "opaque",
+        erased: false,
+      });
+      // Nothing was written to reach either answer.
+      const { rows } = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM brain_actor_identity WHERE workspace_id = $1`,
+        [WS],
+      );
+      expect(rows[0]?.n).toBe("0");
     },
     PG_TEST_TIMEOUT_MS,
   );

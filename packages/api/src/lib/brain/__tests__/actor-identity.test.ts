@@ -17,6 +17,10 @@
  *   4. **Erasure HOLDS against the capture writer.** An erasure a background
  *      cycle can undo is not an erasure, and that property lives in one `WHERE`
  *      clause — which is exactly the kind of thing a refactor drops.
+ *
+ * #5454 adds two more, at the bottom of this file: a handle that CARRIES its own
+ * answer must not be sent to the table and told `opaque`, and the stored
+ * vocabulary must not quietly grow the rendered one's fourth arm.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -25,14 +29,18 @@ import {
   CAPTURE_ACTOR_IDENTITY_SQL,
   ERASE_ACTOR_IDENTITY_SQL,
   LOAD_ACTOR_IDENTITIES_SQL,
+  LOAD_DERIVED_ATLAS_USERS_SQL,
   NO_ACTOR_IDENTITIES,
   OPAQUE_IDENTITY,
   actorsIn,
+  derivableActor,
   identityFor,
   loadActorIdentities,
   provenanceActor,
   type ActorIdentityReader,
 } from "@atlas/api/lib/brain/actor-identity";
+import { EPISODE_SOURCES, WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
+import { WAREHOUSE_PRODUCER_PRINCIPAL } from "@atlas/api/lib/brain/warehouse-producer";
 
 const WS = "ws-actor-identity";
 
@@ -47,6 +55,22 @@ function readerFor(rows: readonly Record<string, unknown>[]): ActorIdentityReade
       calls.push({ sql, params: params ?? [] });
       return { rows };
     },
+  };
+}
+
+/**
+ * A reader that answers PER STATEMENT (#5454).
+ *
+ * The read is two statements now, and keying the double on the SQL rather than
+ * on call order is what stops these tests asserting their own script: a change
+ * that stopped issuing one of them, or issued them in the other order, still
+ * gets the right rows here and fails on the ANSWER instead.
+ */
+function readerBySql(
+  rowsBySql: Record<string, readonly Record<string, unknown>[]>,
+): ActorIdentityReader {
+  return {
+    query: async (sql) => ({ rows: rowsBySql[sql] ?? [] }),
   };
 }
 
@@ -326,6 +350,240 @@ describe("the stored vocabulary", () => {
     // Mirrors `ck_brain_actor_identity_state`. A fourth member here without a
     // matching CHECK is a value the database refuses; a fourth in the CHECK
     // without one here is a row every reader degrades to `opaque`.
+    //
+    // ⚠️ `machine` is deliberately NOT here (#5454). It is a RENDERED state
+    // derived from the handle, and adding it to this list would be a claim that
+    // the CHECK admits it — which it does not, and must not: a stored `machine`
+    // row would be a persisted assertion about a handle that already carries
+    // the answer.
     expect([...BRAIN_ACTOR_IDENTITY_STATES]).toEqual(["atlas", "directory", "opaque"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5454 — the two handles that carry their own answer
+// ---------------------------------------------------------------------------
+
+/**
+ * `derivableActor` — the handles the stored table must not be asked about.
+ *
+ * ## Mutations verified red (2026-08-26)
+ *
+ *   1. `derivableActor`: `actor.startsWith(USER_PREFIX)` → `actor.startsWith("human:")`
+ *      — the handle a CAPTURE-based fix would have keyed. Red on "reads a
+ *      `user:<id>` handle as the Atlas account it names".
+ *   2. `derivableActor`: `=== WAREHOUSE_CLASS` → `!== WAREHOUSE_CLASS`. Red on
+ *      "calls a warehouse-class handle a machine" and on "leaves every other
+ *      handle to the stored table".
+ *   3. `derivableActor`: `userId === "" ? null : …` → always the `atlas-user`
+ *      arm. Red on "refuses a bare `user:` prefix".
+ *   4. `loadActorIdentities`: drop the `if (out.has(actor)) continue;` guard.
+ *      Red on "lets a STORED row win over the `user:` derivation".
+ *   5. `loadActorIdentities`: let a `machine` handle fall through into `wanted`
+ *      instead of `continue`. Red on "answers a machine WITHOUT asking the
+ *      database anything".
+ *   6. `sources.ts`: add a `user` member to `EPISODE_SOURCE_SPECS`. Red on "has
+ *      no episode source spelled `user`" — the collision that would make arm 1
+ *      name the wrong person rather than fail.
+ */
+describe("derivableActor — #5454", () => {
+  it("reads a `user:<id>` handle as the Atlas account it names", () => {
+    // The correction lane. `correctFact` writes `user:${ctx.userId}`, and the
+    // payload after the colon IS a `"user".id` — the most directly resolvable
+    // identifier in the record, which the surface used to call unnameable.
+    expect(derivableActor("user:3AaGbeai")).toEqual({ kind: "atlas-user", userId: "3AaGbeai" });
+    // An id may hold anything non-empty: Better Auth ids have no shape this
+    // module is entitled to assume, which is `parsePrincipal`'s own posture.
+    expect(derivableActor("user:a:b")).toEqual({ kind: "atlas-user", userId: "a:b" });
+  });
+
+  it("refuses a bare `user:` prefix", () => {
+    // Nothing to join on, so `opaque` is the honest answer — and a null here is
+    // what produces it.
+    expect(derivableActor("user:")).toBeNull();
+  });
+
+  it("calls a warehouse-class handle a machine, by CLASS and not by producer name", () => {
+    // The literal in prod today…
+    expect(derivableActor(`${WAREHOUSE_SOURCE}:${WAREHOUSE_PRODUCER_PRINCIPAL}`)).toEqual({
+      kind: "machine",
+    });
+    // …and a producer that does not exist yet. Matching the constant above
+    // would leave the NEXT warehouse producer rendering as an unnameable
+    // person, which is the shape of the defect rather than an instance of it.
+    expect(derivableActor(`${WAREHOUSE_SOURCE}:system:some-future-producer`)).toEqual({
+      kind: "machine",
+    });
+  });
+
+  it("leaves every other handle to the stored table", () => {
+    for (const handle of [
+      "slack:U0AQW6KF2EM",
+      "zoom:abc",
+      "outlook:someone@corp.test",
+      // `human:` is the EPISODE's composed handle on the correction lane. No
+      // fact carries it — `correctFact` passes `user:<id>` as the explicit
+      // principal — so answering it would answer a question nothing asks.
+      "human:3AaGbeai",
+      // The unauthenticated-local arm: a human with no id to resolve. That
+      // deployment declared it has no ids to record, so "cannot name this
+      // person" is TRUE here and this is the one lane left alone deliberately.
+      "human:local-operator",
+      // Outside this deployment's vocabulary — a region import restores
+      // `source` verbatim, and declining to claim a class it cannot see is the
+      // posture the correction gate already takes.
+      "notasource:system:whatever",
+      "nocolon",
+      ":leading",
+      "",
+    ]) {
+      expect(derivableActor(handle)).toBeNull();
+    }
+  });
+
+  it("has no episode source spelled `user`, which is what makes the prefix unambiguous", () => {
+    // ⚠️ The day one is added, `derivableActor` starts naming the WRONG person
+    // for every claim from that source rather than failing — a composed
+    // `user:<vendorId>` handle would take the correction lane's arm.
+    expect(EPISODE_SOURCES).not.toContain("user" as (typeof EPISODE_SOURCES)[number]);
+  });
+});
+
+describe("loadActorIdentities — the derived answers (#5454)", () => {
+  it('names the correcting human from "user" with NO stored row', async () => {
+    // The acceptance criterion at the unit seam: `brain_actor_identity` answers
+    // nothing, and the claim still names a person.
+    const db = readerBySql({
+      [LOAD_ACTOR_IDENTITIES_SQL]: [],
+      [LOAD_DERIVED_ATLAS_USERS_SQL]: [
+        { id: "user-corrector", name: "Matt Sywualk", email: "matt@useatlas.dev" },
+      ],
+    });
+    const out = await loadActorIdentities(db, WS, ["user:user-corrector"]);
+    expect(out.get("user:user-corrector")).toEqual({
+      state: "atlas",
+      userId: "user-corrector",
+      name: "Matt Sywualk",
+      email: "matt@useatlas.dev",
+    });
+    // The SAME state a captured pointer produces, from the SAME relation — one
+    // answer reached with one indirection fewer, not a fourth arm.
+    expect(LOAD_DERIVED_ATLAS_USERS_SQL).toContain('FROM "user" u');
+  });
+
+  it("degrades a `user:` handle whose account is gone to opaque", async () => {
+    // Deleting an account is not a licence to assert a name Atlas can no longer
+    // stand behind, and rendering the id as if it were a person is exactly what
+    // `opaque` exists against — the same degradation a dangling stored pointer
+    // takes.
+    const db = readerBySql({
+      [LOAD_ACTOR_IDENTITIES_SQL]: [],
+      [LOAD_DERIVED_ATLAS_USERS_SQL]: [],
+    });
+    const out = await loadActorIdentities(db, WS, ["user:user-gone"]);
+    expect(out.get("user:user-gone")).toEqual({ state: "opaque", erased: false });
+  });
+
+  it("lets a STORED row win over the `user:` derivation", async () => {
+    // Precedence, and it is the erasure guarantee generalised: a stored row is
+    // a deliberate act with an erasure path attached, so wherever one exists it
+    // is authoritative and the derivation only fills a gap. Nothing writes
+    // `user:` rows today; this is what keeps the ordering true if anything ever
+    // does.
+    const db = readerBySql({
+      [LOAD_ACTOR_IDENTITIES_SQL]: [
+        {
+          actor: "user:user-corrector",
+          state: "opaque",
+          user_id: null,
+          display_name: null,
+          real_name: null,
+          email: null,
+          snapshot_at: null,
+          erased_at: new Date("2026-05-06T00:00:00.000Z"),
+          user_name: null,
+          user_email: null,
+        },
+      ],
+      [LOAD_DERIVED_ATLAS_USERS_SQL]: [
+        { id: "user-corrector", name: "Matt Sywualk", email: "matt@useatlas.dev" },
+      ],
+    });
+    const out = await loadActorIdentities(db, WS, ["user:user-corrector"]);
+    expect(out.get("user:user-corrector")).toEqual({ state: "opaque", erased: true });
+  });
+
+  it("answers a machine WITHOUT asking the database anything", async () => {
+    // Machine-ness is a property of the handle, so it needs no row — which is
+    // why it holds on a deployment whose capture cycle has never run, and why
+    // the handle is not sent to either statement.
+    const db = readerFor([]);
+    const actor = `${WAREHOUSE_SOURCE}:${WAREHOUSE_PRODUCER_PRINCIPAL}`;
+    const out = await loadActorIdentities(db, WS, [actor]);
+    expect(out.get(actor)).toEqual({ state: "machine" });
+    expect(db.calls).toHaveLength(0);
+  });
+
+  it("still answers a machine when the identity read FAILS", async () => {
+    // The one answer that survives the degrade-to-opaque catch, and it survives
+    // for free rather than by special pleading: it never needed a row.
+    const db: ActorIdentityReader = {
+      query: () => Promise.reject(new Error('relation "user" does not exist')),
+    };
+    const machine = `${WAREHOUSE_SOURCE}:${WAREHOUSE_PRODUCER_PRINCIPAL}`;
+    const out = await loadActorIdentities(db, WS, [machine, "slack:U1"]);
+    expect(out.get(machine)).toEqual({ state: "machine" });
+    expect(identityFor(out, "slack:U1")).toEqual(OPAQUE_IDENTITY);
+  });
+
+  it("keeps a connector-only page at ONE query, and issues the second only for `user:` handles", async () => {
+    // The hot-path property. A page of ordinary claims costs exactly what it
+    // cost before #5454; the second statement is the price of a page that
+    // actually carries a correction.
+    const connectorOnly = readerFor([]);
+    await loadActorIdentities(connectorOnly, WS, ["slack:U1", "slack:U2"]);
+    expect(connectorOnly.calls).toHaveLength(1);
+
+    const withCorrection = readerFor([]);
+    await loadActorIdentities(withCorrection, WS, ["slack:U1", "user:user-a", "user:user-a"]);
+    expect(withCorrection.calls).toHaveLength(2);
+    // Deduplicated on both sides, and the `user:` read is keyed by the BARE id
+    // — it is a `"user"` read, not a handle read.
+    expect(withCorrection.calls.map((c) => c.params)).toEqual(
+      expect.arrayContaining([
+        [WS, ["slack:U1", "user:user-a"]],
+        [["user-a"]],
+      ]),
+    );
+  });
+
+  it("keeps the two reads independent when only ONE of them fails", async () => {
+    // A `Promise.all` over rejecting promises would lose whichever answer DID
+    // come back, which is why each read degrades to `[]` on its own rather than
+    // throwing into the other's join.
+    const db: ActorIdentityReader = {
+      query: (sql) =>
+        sql === LOAD_DERIVED_ATLAS_USERS_SQL
+          ? Promise.reject(new Error('relation "user" does not exist'))
+          : Promise.resolve({
+              rows: [
+                {
+                  actor: "slack:U1",
+                  state: "directory",
+                  user_id: null,
+                  display_name: "dana",
+                  real_name: null,
+                  email: null,
+                  snapshot_at: new Date("2026-04-05T00:00:00.000Z"),
+                  erased_at: null,
+                  user_name: null,
+                  user_email: null,
+                },
+              ],
+            }),
+    };
+    const out = await loadActorIdentities(db, WS, ["slack:U1", "user:user-a"]);
+    expect(out.get("slack:U1")).toMatchObject({ state: "directory", displayName: "dana" });
+    expect(identityFor(out, "user:user-a")).toEqual(OPAQUE_IDENTITY);
   });
 });

@@ -252,7 +252,8 @@ export function isBrainFactStatusFilter(value: unknown): value is BrainFactStatu
  */
 /**
  * WHO the claim's `actor` handle is, in the three states ADR-0036 T5's
- * `Amendment (2026-08-25, #5440)` settles on.
+ * `Amendment (2026-08-25, #5440)` settles on plus the `machine` arm
+ * `Amendment (2026-08-26, #5454)` adds.
  *
  * Discriminated on `state` for the same reason `visible` discriminates the
  * arms above: the three carry genuinely different payloads, and a flat object
@@ -281,6 +282,13 @@ export const BrainActorIdentityViewSchema = z.discriminatedUnion("state", [
     realName: z.string().nullable(),
     email: z.string().nullable(),
     snapshotAt: z.string(),
+  }),
+  // No fields at all, and `strictObject` is what enforces it. A machine has no
+  // display name, no snapshot and no erasure question - WHAT produced the claim
+  // is already on the wire beside this, verbatim, in `actor`. A future field
+  // here would be a second, worse spelling of that handle (#5454).
+  z.strictObject({
+    state: z.literal("machine"),
   }),
   z.strictObject({
     state: z.literal("opaque"),

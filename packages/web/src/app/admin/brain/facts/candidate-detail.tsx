@@ -82,7 +82,7 @@ function AttributionRestricted() {
 /**
  * WHO the vendor handle is — finish condition 2's human name (#5440).
  *
- * Three states, rendered as three genuinely different sentences, because the
+ * Four states, rendered as four genuinely different sentences, because the
  * whole reason the wire carries a discriminated union rather than a nullable
  * name is that they are different facts about the world:
  *
@@ -91,6 +91,10 @@ function AttributionRestricted() {
  *   - `directory` — a DATED snapshot from the source's directory, and the date
  *     is rendered beside the name rather than in a tooltip. A stale name has to
  *     be legible AS STALE; a name presented bare is a name asserted as current.
+ *   - `machine` — there is no person (#5454). A warehouse producer read the
+ *     customer's own tables; nobody asserted anything. Rendering it as `opaque`
+ *     told a reviewer Atlas had looked for a person and failed, which sent them
+ *     to check a capture cycle that was never going to name anybody.
  *   - `opaque` — an explicit "cannot name this person". NOT a blank, and not a
  *     silent fallback to the handle: an em-dash here would read as "nobody
  *     asserted this claim", which is false, and the handle is exactly what
@@ -126,6 +130,18 @@ function ActorIdentity({ identity }: { identity: BrainActorIdentityView }) {
           {"· from the source directory, as of "}
           <RelativeTimestamp iso={identity.snapshotAt} />
         </span>
+      </span>
+    );
+  }
+
+  if (identity.state === "machine") {
+    // No name and no date, because neither exists — and deliberately NOT the
+    // "cannot name this person" copy below, which asserts there is somebody to
+    // name. The handle rendered above says which machine.
+    return (
+      <span className="flex flex-wrap items-baseline gap-x-1.5 text-muted-foreground">
+        <span className="font-medium">No person — a machine produced this</span>
+        <span className="text-[11px]">{"· read from your warehouse on a schedule"}</span>
       </span>
     );
   }

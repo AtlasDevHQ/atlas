@@ -121,7 +121,7 @@ describe("CorrectionDialog", () => {
     });
     fireEvent.click(getByText("Save new value"));
 
-    expect(submitted).toEqual({ kind: "changed", object: "10M", since: null, reason: null });
+    expect(submitted).toEqual({ kind: "changed", object: "10M", since: null });
   });
 
   test("the copy never names a correction verb", () => {

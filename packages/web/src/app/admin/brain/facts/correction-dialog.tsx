@@ -95,9 +95,7 @@ export function CorrectionDialog({
   function submit() {
     if (!target) return;
     onSubmit(
-      kind === "changed"
-        ? { kind: "changed", object, since: since || null, reason: null }
-        : { kind: "never-true", reason: null },
+      kind === "changed" ? { kind: "changed", object, since: since || null } : { kind: "never-true" },
     );
   }
 

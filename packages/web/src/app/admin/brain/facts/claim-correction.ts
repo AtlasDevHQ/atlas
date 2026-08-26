@@ -52,17 +52,21 @@ import type { BrainFactCorrectRequest } from "@/ui/lib/admin-schemas";
 /**
  * What the human says happened to the claim, in their terms.
  *
- * `reason` is free text recorded verbatim in the immutable correction episode.
+ * ⚠️ No `reason` field, deliberately. `POST /correct` accepts one and the
+ * correction episode records it verbatim, but nothing in #5426 asked for a
+ * rationale and no surface collects one — a parameter every caller passes as
+ * null is worse than either wiring an input or leaving the seam clean. Whether
+ * a correction should REQUIRE a stated reason is a real question, and it wants
+ * deciding rather than pre-answering with an unused field.
  */
 export type CorrectionIntent =
-  | { readonly kind: "never-true"; readonly reason: string | null }
+  | { readonly kind: "never-true" }
   | {
       readonly kind: "changed";
       /** The corrected value. Subject and predicate are inherited from the target. */
       readonly object: string;
       /** `YYYY-MM-DD` from a date input, or null to let the API stamp the correction time. */
       readonly since: string | null;
-      readonly reason: string | null;
     };
 
 /**
@@ -98,13 +102,8 @@ export function canSupersede(
  * it and the request is simply not made.
  */
 export function correctionBody(intent: CorrectionIntent): CorrectionBodyResult {
-  const reason = intent.reason?.trim();
-  // Omitted rather than sent empty: the episode body records this verbatim, and
-  // a blank string is a rationale that reads as if one were given.
-  const withReason = reason ? { reason } : {};
-
   if (intent.kind === "never-true") {
-    return { ok: true, body: { verb: "retract", ...withReason } };
+    return { ok: true, body: { verb: "retract" } };
   }
 
   const object = intent.object.trim();
@@ -113,7 +112,7 @@ export function correctionBody(intent: CorrectionIntent): CorrectionBodyResult {
   }
 
   if (intent.since === null) {
-    return { ok: true, body: { verb: "supersede", replacement: { object }, ...withReason } };
+    return { ok: true, body: { verb: "supersede", replacement: { object } } };
   }
 
   const validFrom = instantFromDateInput(intent.since);
@@ -124,10 +123,7 @@ export function correctionBody(intent: CorrectionIntent): CorrectionBodyResult {
     };
   }
 
-  return {
-    ok: true,
-    body: { verb: "supersede", replacement: { object, validFrom }, ...withReason },
-  };
+  return { ok: true, body: { verb: "supersede", replacement: { object, validFrom } } };
 }
 
 /**

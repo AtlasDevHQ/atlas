@@ -48,7 +48,7 @@ describe("canSupersede", () => {
 
 describe("correctionBody", () => {
   test("`never-true` becomes the retract verb and carries no replacement", () => {
-    const result = correctionBody({ kind: "never-true", reason: null });
+    const result = correctionBody({ kind: "never-true" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.body.verb).toBe("retract");
@@ -56,7 +56,7 @@ describe("correctionBody", () => {
   });
 
   test("`changed` becomes the supersede verb carrying the corrected object", () => {
-    const result = correctionBody({ kind: "changed", object: "8M", since: null, reason: null });
+    const result = correctionBody({ kind: "changed", object: "8M", since: null });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.body.verb).toBe("supersede");
@@ -64,7 +64,7 @@ describe("correctionBody", () => {
   });
 
   test("a corrected object is trimmed before it reaches the wire", () => {
-    const result = correctionBody({ kind: "changed", object: "  8M  ", since: null, reason: null });
+    const result = correctionBody({ kind: "changed", object: "  8M  ", since: null });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.body.replacement?.object).toBe("8M");
@@ -74,14 +74,14 @@ describe("correctionBody", () => {
     // `z.string().min(1)` on the API would 400 on this. Refusing here means the
     // human is told what is wrong with their text instead of reading a wire
     // error, and matches the repo's prefer-errors-over-silent-fallbacks rule.
-    const result = correctionBody({ kind: "changed", object: "   ", since: null, reason: null });
+    const result = correctionBody({ kind: "changed", object: "   ", since: null });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.problem).toContain("new value");
   });
 
   test("omitting `since` omits `validFrom`, so the API stamps the correction time", () => {
-    const result = correctionBody({ kind: "changed", object: "8M", since: null, reason: null });
+    const result = correctionBody({ kind: "changed", object: "8M", since: null });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.body.replacement).not.toHaveProperty("validFrom");
@@ -96,7 +96,6 @@ describe("correctionBody", () => {
       kind: "changed",
       object: "8M",
       since: "2026-08-01",
-      reason: null,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -108,29 +107,9 @@ describe("correctionBody", () => {
       kind: "changed",
       object: "8M",
       since: "not-a-date",
-      reason: null,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.problem).toContain("date");
-  });
-
-  test("a reason rides along on either verb", () => {
-    const retract = correctionBody({ kind: "never-true", reason: "duplicate of #12" });
-    const supersede = correctionBody({
-      kind: "changed",
-      object: "8M",
-      since: null,
-      reason: "raise was revised",
-    });
-    expect(retract.ok && retract.body.reason).toBe("duplicate of #12");
-    expect(supersede.ok && supersede.body.reason).toBe("raise was revised");
-  });
-
-  test("a blank reason is omitted rather than sent as an empty string", () => {
-    const result = correctionBody({ kind: "never-true", reason: "   " });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.body).not.toHaveProperty("reason");
   });
 });

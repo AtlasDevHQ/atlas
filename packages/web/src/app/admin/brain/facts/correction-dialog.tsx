@@ -136,7 +136,11 @@ export function CorrectionDialog({
           >
             <div className="flex gap-3">
               <RadioGroupItem value="never-true" id="correction-never-true" className="mt-1" />
-              <Label htmlFor="correction-never-true" className="font-normal leading-snug">
+              {/* `block`, because shadcn's Label base is `flex items-center gap-2` —
+                  left as flex, the bold lead and its explanation become two flex
+                  ITEMS and render as two narrow columns rather than one sentence
+                  (seen in prod on v0.2.21). */}
+              <Label htmlFor="correction-never-true" className="block font-normal leading-snug">
                 <span className="font-medium">It shouldn&rsquo;t be here.</span>{" "}
                 <span className="text-muted-foreground">
                   It was never true, or it should not have been published. Atlas stops answering
@@ -147,7 +151,7 @@ export function CorrectionDialog({
 
             <div className="flex gap-3">
               <RadioGroupItem value="changed" id="correction-changed" className="mt-1" />
-              <Label htmlFor="correction-changed" className="font-normal leading-snug">
+              <Label htmlFor="correction-changed" className="block font-normal leading-snug">
                 <span className="font-medium">It was true — it changed.</span>{" "}
                 <span className="text-muted-foreground">
                   Atlas answers with the new value, and can still say what it used to be and who

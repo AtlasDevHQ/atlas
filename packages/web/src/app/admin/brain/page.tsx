@@ -8,6 +8,7 @@ import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { AvailabilityArm, CoverageStatement } from "@/ui/components/admin/brain-coverage/arms";
+import { CoveragePlate } from "@/ui/components/admin/brain-coverage/plate";
 import { hiddenBacklogSentence } from "@/ui/components/admin/brain-coverage/statement";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { BrainCoverageClientSchema, BrainSlackScopeVitalsSchema } from "@/ui/lib/admin-schemas";
@@ -169,7 +170,16 @@ function CoverageSurface({ coverage }: { coverage: BrainCoverage | null }) {
 
   return (
     <div className="space-y-6" data-testid="coverage-surface">
+      {/* Statement, then plate, then arms — and the order is a decision.
+          ADR-0041 § No single number puts the composed statement at the TOP of
+          the page ("a paragraph, not a KPI"), so the plate cannot displace it.
+          The plate sits directly beneath as the glance, and each of its quads is
+          an anchor into the class card below it — the "one interaction away" of
+          #5422's AC3. The arms are not replaced: the three freshness
+          renderings, the four no-count arms, the credential-relative captions
+          and the `as of` dates are claims, and a picture cannot make a claim. */}
       <CoverageStatement coverage={coverage} />
+      <CoveragePlate coverage={coverage} />
       <AvailabilityArm coverage={coverage} />
       <AuthorityArm coverage={coverage} />
     </div>

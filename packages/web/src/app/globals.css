@@ -244,3 +244,65 @@
   html { color-scheme: light; }
   body { background: white; color: #18181b; }
 }
+
+/* ---------------------------------------------------------------------------
+ * The Coverage Plate (#5422, ADR-0041) — `ui/components/admin/brain-coverage/plate.tsx`.
+ *
+ * An ORDINAL ramp on the brand hue (158), not a categorical palette: the three
+ * steps encode how deep a survey unit sits in the perimeter, so the order is the
+ * meaning and a reader must see it in the lightness. Validated with the dataviz
+ * `--ordinal` checks against the CARD surface each mode actually draws on
+ * (#ffffff light, oklch(0.205 0.014 158) dark): monotone L, adjacent ΔL >= 0.06,
+ * light end >= 2:1, single hue — all pass in both modes.
+ *
+ * ⚠️ Forest, not the mockup's teal. `docs/design/coverage-plate-mockup.html` is
+ * authoritative on the visual ARGUMENT (quads, soundings, hatched ground drawn
+ * rather than omitted, the torn edge) and explicitly not on its strings; its hue
+ * is the one thing that cannot come across, because ADR-0023 §4 commits this
+ * product to forest "never teal". The ramp structure is the mockup's; the hue is
+ * this product's, re-stepped and revalidated rather than eyeballed.
+ *
+ * ⚠️ `--plate-stale` is `--destructive` on purpose. `arms.tsx` already renders
+ * the stale verdict in `text-destructive`, and one state wearing two colours on
+ * one page is the defect this whole surface exists to avoid. It is the only
+ * reserved colour on the sheet and it never encodes anything but that state.
+ *
+ * `--plate-hatch` is deliberately louder than the mockup's (1.99:1 light /
+ * 1.95:1 dark against the card, versus ~1.35:1 there). Unsurveyed ground being
+ * VISIBLE is the design's central claim, and #5375's pass condition is an
+ * untrained reader seeing it without being told to look. */
+:root {
+    --plate-surveyed: #00592e;
+    --plate-inscope: #458461;
+    --plate-visible: #7eab90;
+    --plate-stale: var(--destructive);
+    --plate-hatch: #b1bab4;
+    --plate-rule: #d2dad5;
+    --plate-ground: transparent;
+    --plate-ink: var(--foreground);
+    --plate-ink-soft: var(--muted-foreground);
+}
+
+.dark {
+    --plate-surveyed: #79d4a1;
+    --plate-inscope: #54a679;
+    --plate-visible: #397856;
+    --plate-hatch: #424a45;
+    --plate-rule: #2d3530;
+}
+
+/* A quad is a link into its own class card — the "one interaction away" AC3
+ * names. The hit target is the whole quadrangle, which is far larger than the
+ * 24px floor, and focus is visible because keyboard reaches the same cards. */
+.plate-quad {
+    cursor: pointer;
+}
+.plate-quad:hover > path,
+.plate-quad:hover > rect {
+    stroke: var(--plate-surveyed);
+    stroke-width: 2;
+}
+.plate-quad:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+}

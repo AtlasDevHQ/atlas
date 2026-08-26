@@ -2,5 +2,20 @@
   "includeCoAuthoredBy": false,
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-bun-test.sh\"",
+            "timeout": 5,
+            "statusMessage": "Checking test invocation"
+          }
+        ]
+      }
+    ]
   }
 }

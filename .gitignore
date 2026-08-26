@@ -17,6 +17,7 @@ tsconfig.tsbuildinfo
 !.claude/research/
 !.claude/skills/
 !.claude/rules/
+!.claude/hooks/
 /semantic/
 .expert-cache/
 # Local CI wrapper logs (scripts/ci-local.sh)

@@ -1,0 +1,849 @@
+<!--
+  The Company Atlas — Coverage Plate · CONCEPT MOCKUP
+  ===================================================
+  Authored 2026-08-07. Committed to the repo 2026-08-26 (#5422).
+
+  ⚠️  NOT SHIPPED, NOT BUILT. Every number in this file is illustrative.
+      It is a design, not a spec of behaviour, and it is not wired to any
+      real `BrainCoverage` payload.
+
+  WHY THIS FILE IS IN THE REPO AT ALL
+  -----------------------------------
+  This design has been lost twice — it was a concept mockup attached to a
+  milestone (#5212→#5216) that closed on the other half of its scope, and
+  it had no row anywhere to survive in. #5422 gave it a row; the row still
+  pointed only at a private artifact URL, so the design's durability still
+  rested on one link. This is the copy that does not depend on that link.
+
+  Source artifact: https://claude.ai/code/artifact/f96569b9-f723-4964-941f-9c2187e44e78
+  Issue:           https://github.com/AtlasDevHQ/atlas/issues/5422
+  Content rules:   docs/adr/0041-the-coverage-surface-counts-what-it-can-see.md
+  Its test:        https://github.com/AtlasDevHQ/atlas/issues/5375 (condition 3)
+
+  HOW TO READ IT
+  --------------
+  Open it in a browser. It is self-contained — hand-rolled HTML/CSS/SVG with
+  no chart library and no external requests — and it carries a full two-theme
+  token set, so it renders in light and dark.
+
+  ⚠️  The prose summary on #5422 is NOT a substitute for reading this. The
+      issue says so itself.
+
+  WHAT IS AUTHORITATIVE HERE, AND WHAT IS NOT
+  -------------------------------------------
+  Authoritative: the visual argument — quads and soundings, the five states,
+  unsurveyed ground DRAWN rather than omitted, the Day one / Month six
+  edition toggle, and the fade rule.
+
+  NOT authoritative: every count, label string and date. Those come from
+  `lib/brain/coverage.ts` at build time, under ADR-0041's rules — which this
+  mockup predates and does not encode. Where the two disagree, the ADR wins.
+
+  This file is the artifact's authored source, with the publishing host's
+  <!doctype>/<head> wrapper stripped. Republish it via the Artifact tool
+  against the URL above rather than creating a second artifact.
+-->
+
+<title>The Company Atlas — Coverage Plate</title>
+
+<style>
+:root {
+  --ground:      #EDF0F0;
+  --sheet:       #F6F8F8;
+  --ink:         #16363B;
+  --ink-soft:    #4A6A6E;
+  --ink-faint:   #8AA2A5;
+  --rule:        #C6D3D4;
+  --rule-soft:   #DCE5E5;
+  --surveyed:    #1B6B73;
+  --attested:    #6FA3A8;
+  --record:      #B4CDD0;
+  --caution:     #C4246E;
+  --caution-dim: #E9C3D5;
+  --unsurveyed:  #CFD9DA;
+
+  --f-display: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --f-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-data: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --sp: clamp(1rem, 2.2vw, 1.85rem);
+  --maxw: 1180px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0E1719;
+    --sheet:       #142125;
+    --ink:         #DCE7E7;
+    --ink-soft:    #9DB4B7;
+    --ink-faint:   #64807F;
+    --rule:        #2A3E42;
+    --rule-soft:   #1E2E32;
+    --surveyed:    #4FC6C9;
+    --attested:    #3D8489;
+    --record:      #2C5257;
+    --caution:     #F2599B;
+    --caution-dim: #55253C;
+    --unsurveyed:  #263639;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground:      #0E1719;
+  --sheet:       #142125;
+  --ink:         #DCE7E7;
+  --ink-soft:    #9DB4B7;
+  --ink-faint:   #64807F;
+  --rule:        #2A3E42;
+  --rule-soft:   #1E2E32;
+  --surveyed:    #4FC6C9;
+  --attested:    #3D8489;
+  --record:      #2C5257;
+  --caution:     #F2599B;
+  --caution-dim: #55253C;
+  --unsurveyed:  #263639;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--f-ui);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: var(--sp);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--sp) * 1.4);
+}
+
+/* ---------- cartouche ---------- */
+
+.cartouche {
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  padding: calc(var(--sp) * 1.05);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp);
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.cartouche-main { flex: 1 1 24rem; min-width: 0; }
+
+.eyebrow {
+  font-family: var(--f-ui);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 0.7rem;
+}
+
+h1 {
+  font-family: var(--f-display);
+  font-weight: 400;
+  font-size: clamp(1.7rem, 4vw, 2.5rem);
+  letter-spacing: 0.055em;
+  line-height: 1.12;
+  margin: 0 0 0.75rem;
+  text-wrap: balance;
+}
+
+.statement {
+  font-family: var(--f-display);
+  font-size: clamp(0.98rem, 1.5vw, 1.1rem);
+  line-height: 1.6;
+  color: var(--ink-soft);
+  margin: 0;
+  max-width: 46ch;
+}
+.statement b { color: var(--ink); font-weight: 700; }
+.statement .unk { font-style: italic; }
+
+/* edition stamp / state toggle */
+
+.stamp {
+  border: 1px solid var(--rule);
+  padding: 0.7rem 0.8rem 0.75rem;
+  flex: 0 0 auto;
+}
+.stamp-label {
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+.seg { display: flex; }
+.seg button {
+  font-family: var(--f-ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 0.42rem 0.75rem;
+  background: transparent;
+  border: 1px solid var(--rule);
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+.seg button + button { border-left: 0; }
+.seg button:hover { background: var(--ground); color: var(--ink); }
+.seg button[aria-pressed="true"] {
+  background: var(--surveyed);
+  border-color: var(--surveyed);
+  color: var(--sheet);
+}
+.seg button:focus-visible { outline: 2px solid var(--caution); outline-offset: 2px; }
+
+/* ---------- plate ---------- */
+
+.plate-frame {
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+}
+
+.plate-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.2rem;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0.85rem calc(var(--sp) * 0.85);
+  border-bottom: 1px solid var(--rule);
+}
+.plate-title {
+  font-family: var(--f-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+.plate-scale {
+  font-family: var(--f-data);
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.plate-body { padding: calc(var(--sp) * 0.85); overflow-x: auto; }
+#plate { display: block; width: 100%; height: auto; min-width: 560px; }
+
+/* quad interactions */
+.quad-hit { cursor: pointer; }
+.quad-hit:focus-visible { outline: 2px solid var(--caution); outline-offset: 1px; }
+
+/* ---------- inspector ---------- */
+
+.inspector {
+  border-top: 1px solid var(--rule);
+  padding: calc(var(--sp) * 0.8) calc(var(--sp) * 0.85);
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: var(--sp);
+  min-height: 8.5rem;
+  align-items: start;
+}
+@media (max-width: 720px) { .inspector { grid-template-columns: 1fr; } }
+
+.insp-name {
+  font-family: var(--f-display);
+  font-size: 1.28rem;
+  letter-spacing: 0.02em;
+  margin: 0 0 0.15rem;
+}
+.insp-name.italic { font-style: italic; color: var(--ink-soft); }
+.insp-domain {
+  font-size: 10.5px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+.insp-note {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  max-width: 52ch;
+}
+.insp-note em { color: var(--ink); font-style: italic; }
+
+.tierbars { display: flex; flex-direction: column; gap: 0.55rem; }
+.tierrow {
+  display: grid;
+  grid-template-columns: 7.6rem 1fr 2.4rem;
+  align-items: center;
+  gap: 0.7rem;
+  font-size: 11.5px;
+}
+.tierrow .nm { letter-spacing: 0.09em; text-transform: uppercase; font-weight: 600; color: var(--ink-soft); }
+.tierrow .track { height: 7px; background: var(--rule-soft); position: relative; overflow: hidden; }
+.tierrow .fill { position: absolute; inset: 0 auto 0 0; width: 0; transition: width 420ms cubic-bezier(.25,.8,.3,1); }
+.tierrow .val { font-family: var(--f-data); font-variant-numeric: tabular-nums; text-align: right; color: var(--ink); }
+
+.f-surveyed { background: var(--surveyed); }
+.f-attested { background: var(--attested); }
+.f-record   { background: var(--record); }
+
+.flags { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.9rem; }
+.flag {
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding: 0.24rem 0.5rem;
+  border: 1px solid var(--rule);
+  color: var(--ink-soft);
+}
+.flag.caution { border-color: var(--caution); color: var(--caution); }
+
+/* ---------- register: legend + notes ---------- */
+
+.register {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: var(--sp);
+}
+@media (max-width: 820px) { .register { grid-template-columns: 1fr; } }
+
+.panel {
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  padding: calc(var(--sp) * 0.85);
+}
+.panel h2 {
+  font-family: var(--f-display);
+  font-size: 0.85rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  font-weight: 400;
+  margin: 0 0 1rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.legend { display: flex; flex-direction: column; gap: 0.85rem; }
+.leg { display: grid; grid-template-columns: 2.6rem 1fr; gap: 0.85rem; align-items: start; }
+.leg svg { display: block; margin-top: 0.15rem; }
+.leg-t { font-size: 12.5px; font-weight: 700; letter-spacing: 0.02em; }
+.leg-t.italic { font-style: italic; font-weight: 400; color: var(--ink-soft); }
+.leg-d { font-size: 12px; color: var(--ink-soft); line-height: 1.45; }
+
+.notes { display: flex; flex-direction: column; gap: 0.9rem; margin: 0; padding: 0; list-style: none; }
+.notes li {
+  display: grid;
+  grid-template-columns: 1.9rem 1fr;
+  gap: 0.7rem;
+  font-size: 12.8px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.notes .n {
+  font-family: var(--f-data);
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+  padding-top: 0.1rem;
+}
+.notes b { color: var(--ink); font-weight: 700; }
+.notes .warn { color: var(--caution); font-weight: 700; }
+.notes i { font-style: italic; }
+
+/* ---------- footer argument ---------- */
+
+.argument {
+  border-top: 1px solid var(--rule);
+  padding-top: calc(var(--sp) * 0.9);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--sp);
+}
+.arg h3 {
+  font-size: 10.5px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 0.5rem;
+  font-weight: 700;
+}
+.arg p { margin: 0; font-size: 12.8px; line-height: 1.55; color: var(--ink-soft); max-width: 40ch; }
+.arg p b { color: var(--ink); }
+
+.colophon {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  border-top: 1px solid var(--rule-soft);
+  padding-top: 0.9rem;
+  line-height: 1.5;
+}
+.colophon b { color: var(--ink-soft); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="cartouche">
+    <div class="cartouche-main">
+      <p class="eyebrow">Company Atlas · Sheet 1 of 1 · Coverage</p>
+      <h1>The Coverage Plate</h1>
+      <p class="statement" id="statement"></p>
+    </div>
+    <div class="stamp">
+      <div class="stamp-label">Edition</div>
+      <div class="seg" role="group" aria-label="Survey edition">
+        <button type="button" id="btn-day1" aria-pressed="false">Day one</button>
+        <button type="button" id="btn-m6" aria-pressed="true">Month six</button>
+      </div>
+    </div>
+  </header>
+
+  <section class="plate-frame">
+    <div class="plate-head">
+      <div class="plate-title">Quadrangle index &amp; soundings</div>
+      <div class="plate-scale" id="scale-note"></div>
+    </div>
+    <div class="plate-body">
+      <svg id="plate" viewBox="0 0 1000 452" role="img" aria-label="Quadrangle index showing surveyed, partly surveyed and unsurveyed subjects of the company"></svg>
+    </div>
+
+    <div class="inspector" id="inspector">
+      <div>
+        <h2 class="insp-name" id="i-name">Pricing &amp; Plans</h2>
+        <div class="insp-domain" id="i-domain">Revenue</div>
+        <p class="insp-note" id="i-note"></p>
+        <div class="flags" id="i-flags"></div>
+      </div>
+      <div class="tierbars" id="i-bars">
+        <div class="tierrow">
+          <span class="nm">Surveyed</span>
+          <span class="track"><span class="fill f-surveyed" id="bar-s"></span></span>
+          <span class="val" id="val-s">0</span>
+        </div>
+        <div class="tierrow">
+          <span class="nm">Attested</span>
+          <span class="track"><span class="fill f-attested" id="bar-a"></span></span>
+          <span class="val" id="val-a">0</span>
+        </div>
+        <div class="tierrow">
+          <span class="nm">On record</span>
+          <span class="track"><span class="fill f-record" id="bar-r"></span></span>
+          <span class="val" id="val-r">0</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="register">
+    <div class="panel">
+      <h2>Legend</h2>
+      <div class="legend">
+        <div class="leg">
+          <svg width="34" height="16" aria-hidden="true">
+            <circle cx="6" cy="8" r="3.1" fill="var(--surveyed)"></circle>
+            <circle cx="17" cy="8" r="3.1" fill="var(--surveyed)"></circle>
+            <circle cx="28" cy="8" r="3.1" fill="var(--surveyed)"></circle>
+          </svg>
+          <div>
+            <div class="leg-t">Surveyed</div>
+            <div class="leg-d">Drawn from the company's own data. True by construction — the answer re-reads the live rows, so it cannot go stale between readings.</div>
+          </div>
+        </div>
+        <div class="leg">
+          <svg width="34" height="16" aria-hidden="true">
+            <circle cx="6" cy="8" r="3.1" fill="var(--attested)"></circle>
+            <circle cx="17" cy="8" r="3.1" fill="var(--attested)"></circle>
+            <circle cx="28" cy="8" r="3.1" fill="var(--attested)"></circle>
+          </svg>
+          <div>
+            <div class="leg-t">Attested</div>
+            <div class="leg-d">Extracted from something someone wrote, then approved. A named colleague stood behind it and is on the record.</div>
+          </div>
+        </div>
+        <div class="leg">
+          <svg width="34" height="16" aria-hidden="true">
+            <circle cx="6" cy="8" r="3.1" fill="none" stroke="var(--record)" stroke-width="1.3"></circle>
+            <circle cx="17" cy="8" r="3.1" fill="none" stroke="var(--record)" stroke-width="1.3"></circle>
+            <circle cx="28" cy="8" r="3.1" fill="none" stroke="var(--record)" stroke-width="1.3"></circle>
+          </svg>
+          <div>
+            <div class="leg-t">On the record</div>
+            <div class="leg-d">Raw source material, unedited. Not a claim about what is true — what was actually said. Testimony, not fact.</div>
+          </div>
+        </div>
+        <div class="leg">
+          <svg width="34" height="16" aria-hidden="true">
+            <rect x="1" y="2" width="32" height="12" fill="none" stroke="var(--caution)" stroke-width="1.4" stroke-dasharray="3 2.4"></rect>
+          </svg>
+          <div>
+            <div class="leg-t">In dispute</div>
+            <div class="leg-d">Two claims contradict and both stand, attributed. Atlas has not picked, and will not.</div>
+          </div>
+        </div>
+        <div class="leg">
+          <svg width="34" height="16" aria-hidden="true">
+            <defs>
+              <pattern id="lg-h" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <line x1="0" y1="0" x2="0" y2="5" stroke="var(--unsurveyed)" stroke-width="1.5"></line>
+              </pattern>
+            </defs>
+            <rect x="1" y="2" width="32" height="12" fill="url(#lg-h)" stroke="var(--rule)" stroke-width="1"></rect>
+          </svg>
+          <div>
+            <div class="leg-t italic">Unsurveyed</div>
+            <div class="leg-d">No source connected, or nothing extracted yet. Drawn rather than omitted. Set in italic throughout, after the chart convention.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Notes</h2>
+      <ul class="notes" id="notes"></ul>
+    </div>
+  </section>
+
+  <section class="argument">
+    <div class="arg">
+      <h3>Why not a graph</h3>
+      <p>A force-directed graph renders <b>topology</b>, which nobody asks about, and becomes a hairball at scale. Coverage is the thesis, so the plate renders <b>area surveyed</b> — and draws the unsurveyed ground instead of omitting it.</p>
+    </div>
+    <div class="arg">
+      <h3>The empty state is the pitch</h3>
+      <p>Every rival demo opens on a dense, impressive graph. Switch to <b>Day one</b>: three lit quads and a mostly blank sheet. That is honest, it is interesting, and it is <b>true with ten facts</b> — which is what a real first week looks like.</p>
+    </div>
+    <div class="arg">
+      <h3>Fade is the moat</h3>
+      <p>Attested soundings dim as they age until something re-corroborates them. Surveyed soundings never fade, because they re-read live data. <b>One visual rule states the whole competitive argument</b> without a line of copy.</p>
+    </div>
+  </section>
+
+  <p class="colophon">
+    <b>Concept mockup — not shipped, not built.</b> Every number is illustrative. This is the surface behind finish condition 6 in
+    <b>docs/prd/company-atlas.md</b>: <i>“an admin looks at one page and states what Atlas knows, how much of the company it covers,
+    and what it does not know — and every part of that statement is correct.”</i> Design references: USGS quadrangle index diagrams
+    (which sheets are mapped), admiralty chart soundings (authority as an accumulation of individually dated measurements),
+    and the magenta cautionary overprint.
+  </p>
+</div>
+
+<script>
+"use strict";
+
+/* ---- deterministic PRNG so soundings never reshuffle between renders ---- */
+function rng(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s ^= s << 13; s >>>= 0;
+    s ^= s >> 17;
+    s ^= s << 5;  s >>>= 0;
+    return s / 4294967296;
+  };
+}
+
+/* ---- the survey record ----
+   grid: 6 columns x 3 rows of quadrangles, grouped into domains.
+   counts are [surveyed, attested, onRecord] per edition.            */
+
+const QUADS = [
+  { id:"pricing",   name:"Pricing & Plans",   domain:"Revenue",    col:0, row:0,
+    m6:[41,26,9], d1:[0,4,6], disputed:2, stale:0,
+    note:"Two claims disagree on the Business tier monthly price. Both stand, attributed, until someone resolves them." },
+  { id:"pipeline",  name:"Pipeline",          domain:"Revenue",    col:1, row:0,
+    m6:[88,7,3],  d1:[0,0,0], disputed:0, stale:0,
+    note:"Almost entirely surveyed — this quad reads the warehouse directly, so it cannot go stale between readings." },
+  { id:"renewals",  name:"Renewals",          domain:"Revenue",    col:2, row:0,
+    m6:[54,12,4], d1:[0,0,0], disputed:0, stale:3,
+    note:"Three attested claims have gone six weeks without corroboration and are dimming. Nothing has been demoted." },
+  { id:"roadmap",   name:"Roadmap",           domain:"Product",    col:3, row:0,
+    m6:[0,34,21], d1:[0,6,4], disputed:1, stale:8,
+    note:"No warehouse source exists for intent, so this quad is attested-only by nature. Expect it to stay that way." },
+  { id:"incidents", name:"Incidents",         domain:"Product",    col:4, row:0,
+    m6:[0,19,44], d1:[0,0,0], disputed:0, stale:0,
+    note:"Heavy raw record, thin on approved claims — 44 episodes sit unreviewed behind 19 attested facts." },
+  { id:"security",  name:"Security Posture",  domain:"Product",    col:5, row:0,
+    m6:[0,0,0],   d1:[0,0,0], disputed:0, stale:0, unsurveyed:true,
+    note:"No source connected. Policy documents live in a wiki nobody has pointed Atlas at." },
+
+  { id:"accounts",  name:"Accounts",          domain:"Customers",  col:0, row:1,
+    m6:[126,9,2], d1:[0,0,0], disputed:0, stale:0,
+    note:"The densest quad on the sheet. Every sounding here re-reads a live row." },
+  { id:"support",   name:"Support Themes",    domain:"Customers",  col:1, row:1,
+    m6:[0,28,63], d1:[0,0,0], disputed:0, stale:4,
+    note:"Extraction is keeping pace with intake, but the review queue is the constraint, not the pipeline." },
+  { id:"churn",     name:"Churn Reasons",     domain:"Customers",  col:2, row:1,
+    m6:[12,17,9], d1:[0,0,0], disputed:3, stale:2,
+    note:"The most contested quad. Data and recollection disagree three times about why accounts left." },
+  { id:"headcount", name:"Headcount",         domain:"People",     col:3, row:1,
+    m6:[37,4,1],  d1:[0,0,0], disputed:0, stale:0,
+    note:"Surveyed from the HR system of record. Atlas surveys it; it never becomes the place the fact lives." },
+  { id:"hiring",    name:"Hiring",            domain:"People",     col:4, row:1,
+    m6:[0,22,18], d1:[0,2,3], disputed:1, stale:6,
+    note:"Six claims here predate the last two reorgs and are dimming accordingly." },
+  { id:"policies",  name:"Policies",          domain:"People",     col:5, row:1,
+    m6:[0,11,7],  d1:[0,0,0], disputed:0, stale:9,
+    note:"Almost every claim in this quad is stale. Policy changes rarely get restated in chat." },
+
+  { id:"infra",     name:"Infrastructure",    domain:"Operations", col:0, row:2,
+    m6:[0,24,31], d1:[0,0,0], disputed:0, stale:1,
+    note:"Drawn almost entirely from incident threads and deploy chatter." },
+  { id:"runbooks",  name:"Runbooks",          domain:"Operations", col:1, row:2,
+    m6:[0,9,14],  d1:[0,0,0], disputed:0, stale:5,
+    note:"Thin. Procedural knowledge resists the claim shape — it belongs to the query-pattern class, not here." },
+  { id:"vendors",   name:"Vendors",           domain:"Operations", col:2, row:2,
+    m6:[0,0,0],   d1:[0,0,0], disputed:0, stale:0, unsurveyed:true,
+    note:"No source connected. Contracts sit in a drive Atlas has not been given." },
+  { id:"legal",     name:"Legal & Compliance",domain:"Operations", col:3, row:2,
+    m6:[0,0,0],   d1:[0,0,0], disputed:0, stale:0, unsurveyed:true,
+    note:"Deliberately unsurveyed. The audience grant for this material has not been decided." },
+  { id:"finance",   name:"Finance",           domain:"Operations", col:4, row:2,
+    m6:[63,3,1],  d1:[0,0,0], disputed:0, stale:0,
+    note:"Surveyed from the warehouse. No extracted claim has ever been approved in this quad." },
+  { id:"partners",  name:"Partners",          domain:"Operations", col:5, row:2,
+    m6:[0,0,0],   d1:[0,0,0], disputed:0, stale:0, unsurveyed:true,
+    note:"No source connected, and no one has asked a question about it yet." }
+];
+
+const NOTES = {
+  m6: [
+    ['1','Four quadrangles are <b>unsurveyed</b>: <i>Security Posture</i>, <i>Vendors</i>, <i>Legal &amp; Compliance</i> and <i>Partners</i>. Three want a source connected; one is waiting on an audience decision.'],
+    ['2','<span class="warn">Seven claims are in dispute</span> across three quadrangles. None has been arbitrated, and none will be without a person.'],
+    ['3','<b>38 claims are dimming</b> for want of recent corroboration. Nothing has been demoted — staleness surfaces, it never decides.'],
+    ['4','<i>Incidents</i> and <i>Support Themes</i> hold <b>107 episodes behind 47 approved claims</b>. The review gate is the constraint, not extraction.'],
+    ['5','Every sounding on this sheet carries a source, a date, and — where attested — the name of the colleague who approved it.']
+  ],
+  d1: [
+    ['1','<b>Fifteen of eighteen quadrangles are unsurveyed.</b> One source has been connected for four days and one channel has been read.'],
+    ['2','No warehouse source is connected yet, so <b>nothing on this sheet is Surveyed</b>. Every sounding here is testimony or an approved claim.'],
+    ['3','<b>12 claims await review.</b> Until a person approves them they are on the record, not attested, and no answer will lean on them.'],
+    ['4','This is what a first week looks like. The sheet is mostly blank <i>and correct</i> — an unsurveyed quad is drawn, never omitted.'],
+    ['5','Connecting a second source is the fastest way to change this page.']
+  ]
+};
+
+let EDITION = "m6";
+let selected = "pricing";
+
+const SVGNS = "http://www.w3.org/2000/svg";
+const plate = document.getElementById("plate");
+
+const COLS = 6, ROWS = 3;
+const PAD_L = 4, PAD_T = 26, GAP = 9;
+const QW = (1000 - PAD_L * 2 - GAP * (COLS - 1)) / COLS;
+const QH = 122;
+
+function el(n, attrs) {
+  const e = document.createElementNS(SVGNS, n);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+function counts(q) { return q[EDITION] || [0, 0, 0]; }
+function total(q) { const c = counts(q); return c[0] + c[1] + c[2]; }
+
+function drawPlate() {
+  while (plate.firstChild) plate.removeChild(plate.firstChild);
+
+  const defs = el("defs");
+  const pat = el("pattern", { id:"hatch", width:"6", height:"6",
+    patternUnits:"userSpaceOnUse", patternTransform:"rotate(45)" });
+  pat.appendChild(el("line", { x1:"0", y1:"0", x2:"0", y2:"6",
+    stroke:"var(--unsurveyed)", "stroke-width":"1.6" }));
+  defs.appendChild(pat);
+  plate.appendChild(defs);
+
+  // domain band labels along the top of each row-group
+  const domainSeen = {};
+  QUADS.forEach(function (q) {
+    const x = PAD_L + q.col * (QW + GAP);
+    const y = PAD_T + q.row * (QH + GAP + 20);
+    const key = q.domain + ":" + q.row;
+    if (!domainSeen[key]) {
+      domainSeen[key] = true;
+      const lbl = el("text", { x: String(x + 1), y: String(y - 8),
+        fill:"var(--ink-faint)", "font-size":"9.5",
+        "font-family":"var(--f-ui)", "font-weight":"700",
+        "letter-spacing":"1.6" });
+      lbl.textContent = q.domain.toUpperCase();
+      plate.appendChild(lbl);
+    }
+  });
+
+  QUADS.forEach(function (q) {
+    const x = PAD_L + q.col * (QW + GAP);
+    const y = PAD_T + q.row * (QH + GAP + 20);
+    const c = counts(q);
+    const n = c[0] + c[1] + c[2];
+    const blank = n === 0;
+
+    const g = el("g", { class:"quad-hit", tabindex:"0", role:"button",
+      "aria-label": q.name + ", " + (blank ? "unsurveyed" : n + " claims") });
+
+    g.appendChild(el("rect", { x:String(x), y:String(y),
+      width:String(QW), height:String(QH),
+      fill: blank ? "url(#hatch)" : "var(--ground)",
+      stroke: q.id === selected ? "var(--ink)" : "var(--rule)",
+      "stroke-width": q.id === selected ? "1.9" : "1" }));
+
+    if (!blank) {
+      // soundings: one mark per claim, deterministic scatter, tier-coloured
+      const r = rng(q.id.split("").reduce(function (a, ch) {
+        return (a * 31 + ch.charCodeAt(0)) >>> 0;
+      }, 7));
+      const marks = [];
+      for (let i = 0; i < c[0]; i++) marks.push("s");
+      for (let i = 0; i < c[1]; i++) marks.push("a");
+      for (let i = 0; i < c[2]; i++) marks.push("r");
+      // interleave so tiers read as mixed ground rather than banded
+      marks.sort(function () { return r() - 0.5; });
+
+      let staleLeft = q.stale || 0;
+      marks.forEach(function (t) {
+        const px = x + 9 + r() * (QW - 18);
+        const py = y + 11 + r() * (QH - 22);
+        const dim = t === "a" && staleLeft > 0;
+        if (dim) staleLeft--;
+        if (t === "r") {
+          g.appendChild(el("circle", { cx:px.toFixed(1), cy:py.toFixed(1), r:"2.5",
+            fill:"none", stroke:"var(--record)", "stroke-width":"1.2" }));
+        } else {
+          g.appendChild(el("circle", { cx:px.toFixed(1), cy:py.toFixed(1), r:"2.7",
+            fill: t === "s" ? "var(--surveyed)" : "var(--attested)",
+            opacity: dim ? "0.34" : "1" }));
+        }
+      });
+    }
+
+    // dispute overprint — the only magenta on the sheet
+    if (q.disputed && !blank) {
+      g.appendChild(el("rect", { x:String(x + 3), y:String(y + 3),
+        width:String(QW - 6), height:String(QH - 6),
+        fill:"none", stroke:"var(--caution)", "stroke-width":"1.5",
+        "stroke-dasharray":"4 3" }));
+      const bx = x + QW - 20, by = y + QH - 8;
+      const badge = el("text", { x:String(bx), y:String(by),
+        fill:"var(--caution)", "font-size":"10.5",
+        "font-family":"var(--f-data)", "font-weight":"700",
+        "text-anchor":"end" });
+      badge.textContent = "⚠ " + q.disputed;
+      g.appendChild(badge);
+    }
+
+    // quad name — italic when unsurveyed, after the chart convention
+    const nm = el("text", { x:String(x + 1), y:String(y + QH + 13),
+      fill: blank ? "var(--ink-faint)" : "var(--ink)",
+      "font-size":"11", "font-family":"var(--f-ui)",
+      "font-weight": blank ? "400" : "600",
+      "font-style": blank ? "italic" : "normal" });
+    nm.textContent = q.name;
+    g.appendChild(nm);
+
+    const cnt = el("text", { x:String(x + QW), y:String(y + QH + 13),
+      fill:"var(--ink-faint)", "font-size":"10",
+      "font-family":"var(--f-data)", "text-anchor":"end" });
+    cnt.textContent = blank ? "—" : String(n);
+    g.appendChild(cnt);
+
+    function pick() { selected = q.id; drawPlate(); paintInspector(); }
+    g.addEventListener("click", pick);
+    g.addEventListener("mouseenter", function () {
+      selected = q.id; drawPlate(); paintInspector();
+    });
+    g.addEventListener("focus", pick);
+    g.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(); }
+    });
+
+    plate.appendChild(g);
+  });
+}
+
+function paintInspector() {
+  const q = QUADS.find(function (x) { return x.id === selected; });
+  const c = counts(q);
+  const n = c[0] + c[1] + c[2];
+  const blank = n === 0;
+
+  const nameEl = document.getElementById("i-name");
+  nameEl.textContent = q.name;
+  nameEl.className = "insp-name" + (blank ? " italic" : "");
+  document.getElementById("i-domain").textContent = q.domain;
+  document.getElementById("i-note").innerHTML = blank && !q.unsurveyed
+    ? "Nothing surveyed here in this edition. " + q.note
+    : q.note;
+
+  const max = Math.max(1, Math.max.apply(null, QUADS.map(total)));
+  [["s", 0], ["a", 1], ["r", 2]].forEach(function (p) {
+    document.getElementById("bar-" + p[0]).style.width =
+      (c[p[1]] / max * 100).toFixed(1) + "%";
+    document.getElementById("val-" + p[0]).textContent = c[p[1]];
+  });
+
+  const flags = [];
+  if (q.unsurveyed) flags.push(['<span class="flag">No source connected</span>']);
+  if (q.disputed && !blank) flags.push(['<span class="flag caution">' + q.disputed + ' in dispute</span>']);
+  if (q.stale && !blank) flags.push(['<span class="flag">' + q.stale + ' dimming</span>']);
+  if (c[0] > 0 && c[0] >= c[1] + c[2]) flags.push(['<span class="flag">Warehouse-backed</span>']);
+  if (c[2] > c[1] && c[2] > 0) flags.push(['<span class="flag">Review queue is the constraint</span>']);
+  document.getElementById("i-flags").innerHTML = flags.join("");
+}
+
+function paintChrome() {
+  const surveyedQuads = QUADS.filter(function (q) { return total(q) > 0; });
+  const unsurveyed = QUADS.length - surveyedQuads.length;
+  const claims = QUADS.reduce(function (a, q) { return a + total(q); }, 0);
+  const disputes = QUADS.reduce(function (a, q) {
+    return a + (total(q) > 0 ? (q.disputed || 0) : 0);
+  }, 0);
+  const domains = new Set(surveyedQuads.map(function (q) { return q.domain; })).size;
+
+  document.getElementById("statement").innerHTML =
+    "Surveyed <b>" + surveyedQuads.length + " of " + QUADS.length + "</b> subjects across <b>" +
+    domains + " of 5</b> domains, on <b>" + claims.toLocaleString() +
+    "</b> claims. <span class=\"unk\">" + unsurveyed +
+    " subjects are unsurveyed</span>, and <b>" + disputes +
+    "</b> claims are in dispute.";
+
+  document.getElementById("scale-note").textContent =
+    EDITION === "m6"
+      ? "1 mark = 1 claim · 18 quadrangles · edition of 12 Feb"
+      : "1 mark = 1 claim · 18 quadrangles · edition of 4 days in";
+
+  const list = document.getElementById("notes");
+  list.innerHTML = NOTES[EDITION].map(function (r) {
+    return '<li><span class="n">' + r[0] + '</span><span>' + r[1] + "</span></li>";
+  }).join("");
+
+  document.getElementById("btn-m6").setAttribute("aria-pressed", String(EDITION === "m6"));
+  document.getElementById("btn-day1").setAttribute("aria-pressed", String(EDITION === "d1"));
+}
+
+function setEdition(e) {
+  EDITION = e;
+  if (total(QUADS.find(function (q) { return q.id === selected; })) === 0) {
+    const first = QUADS.find(function (q) { return total(q) > 0; });
+    if (first) selected = first.id;
+  }
+  drawPlate(); paintInspector(); paintChrome();
+}
+
+document.getElementById("btn-m6").addEventListener("click", function () { setEdition("m6"); });
+document.getElementById("btn-day1").addEventListener("click", function () { setEdition("d1"); });
+
+drawPlate();
+paintInspector();
+paintChrome();
+</script>

@@ -1426,6 +1426,140 @@ export interface BrainSearchTensionWithheld {
  */
 export type BrainSearchTensionView = BrainFactTensionVisible | BrainSearchTensionWithheld;
 
+
+/**
+ * How this claim's predecessor came to be retired — the "who changed it" half
+ * of PRD finish condition 5 (#5461).
+ *
+ * A union rather than a nullable actor, for {@link BrainActorIdentityView}'s
+ * own reason: a nullable field collapses two different facts into one `null`.
+ * Here the two facts are *a human deliberately corrected this* and *the publish
+ * gate retired the old claim when a newer one was promoted* — and they are not
+ * cosmetic variants of each other.
+ *
+ * ⚠️ Discriminated on the REPLACEMENT's `provenance.producer`, never on its
+ * `actor`. A supersession is written by two producers (`correction.ts`, and the
+ * publish gate at `content-mode/adapters/brain-facts.ts`), and on the gate path
+ * the replacement's `actor` is whichever principal the NEWER claim was
+ * extracted from — someone who never touched the old claim and may not know it
+ * existed. Reading `actor` uniformly renders "changed by @someone" against a
+ * person who changed nothing, which is the same error as reading
+ * `provenance.actor` (who MADE this claim) as who CHANGED it — the finding
+ * #5426 recorded on 2026-08-25, one layer up.
+ */
+export interface BrainFactChangeByCorrection {
+  readonly kind: "correction";
+  /**
+   * The correcting principal, verbatim — `user:<id>` for the web dialog
+   * (#5458). `null` when #4836 withholds the replacement's attribution from
+   * this reader: they still learn the claim CHANGED, and not by whom.
+   */
+  readonly actor: string | null;
+  /** Who that handle is (#5440). `null` whenever {@link actor} is. */
+  readonly actorIdentity: BrainActorIdentityView | null;
+  /** When the supersession was RECORDED — the `supersedes` edge's own stamp. */
+  readonly at: string | null;
+}
+
+/**
+ * The publish gate retired the predecessor when a newer claim was promoted into
+ * the same slot (#4912). Deliberately names NOBODY — see the warning on
+ * {@link BrainFactChangeByCorrection}.
+ */
+export interface BrainFactChangeByPromotion {
+  readonly kind: "promotion";
+  /** When the supersession was RECORDED — the `supersedes` edge's own stamp. */
+  readonly at: string | null;
+}
+
+export type BrainFactChangeAgent = BrainFactChangeByCorrection | BrainFactChangeByPromotion;
+
+/**
+ * The previous answer, when this reader is entitled to it.
+ *
+ * `subject` and `predicate` are deliberately ABSENT. A supersession inherits
+ * the target's slot verbatim (`inheritedSlot`, `correction.ts:2113`), so they
+ * cannot differ from the live claim's — carrying them would invite a surface to
+ * render them side by side and imply they could.
+ */
+export interface BrainFactPriorVersionVisible {
+  readonly visible: true;
+  readonly factId: string;
+  /** What the answer used to be. */
+  readonly object: string;
+  readonly validFrom: string | null;
+  /** When it stopped being true — the stamp the superseding verb wrote. */
+  readonly validTo: string | null;
+}
+
+/**
+ * The previous answer exists and this reader may not read it.
+ *
+ * Carries nothing, for {@link BrainFactAttributionWithheld}'s reason: every
+ * field of a prior answer is content. Reported rather than omitted, following
+ * {@link BrainSearchTensionWithheld} — an omitted entry reads as "this never
+ * changed", which is the worse untruth on a surface whose whole job is to say
+ * that it did.
+ */
+export interface BrainFactPriorVersionWithheld {
+  readonly visible: false;
+}
+
+export type BrainFactPriorVersion =
+  | BrainFactPriorVersionVisible
+  | BrainFactPriorVersionWithheld;
+
+/**
+ * What this claim replaced — PRD finish condition 5's "can see the previous
+ * answer, and who changed it and when" (#5461).
+ *
+ * ## The one guardrail whose failure is a disclosure incident
+ *
+ * ⚠️ A RETRACTED predecessor never appears here — not as {@link prior}, not as
+ * a {@link priorCount} of 1, not under `asOf`. `retract` stamps
+ * `invalidated_at` and hiding history is what the verb is FOR; it is also the
+ * GDPR-erasure path (#4916), which is why `invalidated_at IS NULL` survives in
+ * BOTH branches of the temporal read (`lib/brain/search.ts`). A count that
+ * moved when a claim was erased would re-disclose its existence, so the
+ * lineage walk stops at a tombstone rather than counting through it.
+ *
+ * ## Why the count is not ACL-gated and the content is
+ *
+ * {@link priorCount} counts every non-retracted ancestor, entitled or not, and
+ * {@link prior} degrades to the withheld arm. That split is
+ * {@link BrainSearchTensionWithheld}'s, deliberately: existence and count are
+ * disclosed, content is not.
+ */
+export interface BrainFactHistoryView {
+  /**
+   * The immediate predecessor — the most recently retired one where a claim
+   * retired several at once (a slot collision retires every rival in the same
+   * transaction). `null` if and only if this claim replaced nothing.
+   */
+  readonly prior: BrainFactPriorVersion | null;
+  /**
+   * How many earlier versions this claim's lineage holds, walking `supersedes`
+   * back through non-retracted ancestors. `0` exactly when {@link prior} is
+   * `null` — the state of all but one row in production today, and it must
+   * stay silent.
+   *
+   * Greater than 1 means the answer changed more than once. Only the immediate
+   * predecessor is carried; the rest are a NUMBER rather than a silent
+   * truncation, which is the difference between "it changed twice" and "it
+   * changed once".
+   */
+  readonly priorCount: number;
+  /** `null` if and only if {@link prior} is `null`. */
+  readonly changedBy: BrainFactChangeAgent | null;
+  /**
+   * The lineage walk hit its depth bound, so {@link priorCount} is a floor
+   * rather than a total. Never silent for the same reason `tensions` reports
+   * truncation: an undercount here reads as a shorter history than the record
+   * holds.
+   */
+  readonly truncated: boolean;
+}
+
 /** tier-2 — a reviewed claim. Authoritative for its class; yields to the warehouse. */
 export interface BrainFactResult {
   readonly tier: "fact";
@@ -1457,6 +1591,12 @@ export interface BrainFactResult {
    */
   readonly decay: BrainFactDecayView;
   readonly tensions: readonly BrainSearchTensionView[];
+  /**
+   * What this claim replaced, if anything (#5461, PRD finish condition 5).
+   * `{ prior: null, priorCount: 0, changedBy: null, truncated: false }` for a
+   * claim that never changed.
+   */
+  readonly history: BrainFactHistoryView;
 }
 
 /** tier-3 — raw source content. Source-of-truth for what was said, never for what is true. */
@@ -1735,6 +1875,69 @@ export interface BrainFactTensionSweepResponse {
    */
   readonly truncated: boolean;
 }
+
+/**
+ * The `POST /api/v1/admin/brain-facts/tension-forecast` request body (#5450).
+ *
+ * `predicateSurface` is optional, and its presence is the whole discriminator:
+ * absent asks *"what would pressing sweep do right now?"*, present asks *"...and
+ * what would it do if I ALSO approved this predicate `single`?"*
+ *
+ * ⚠️ A SURFACE, never a key. The key is derived server-side and never travels
+ * back out — ADR-0037 §6, and the same choice the vocabulary preview's
+ * cardinality arm makes for the same reason: a request type that accepted a key
+ * is the seam through which one reaches a route body.
+ */
+export interface BrainFactTensionForecastRequest {
+  /**
+   * The predicate to treat as approved `single` for this question only. Nothing
+   * is written, proposed, or approved — the counterfactual lives for the length
+   * of one statement.
+   */
+  readonly predicateSurface?: string;
+}
+
+/**
+ * What a forecast answered (#5450).
+ *
+ * A DISCRIMINATED UNION rather than a record with a nullable count, on
+ * `BrainVocabularyBlastRadius`' thesis and for the defect that taught it: the
+ * numbers must not EXIST on the branch where they are meaningless, because a
+ * renderer that reads them in the wrong order emits a confident false
+ * all-clear. Here that all-clear is *"approving this predicate mints nothing"*,
+ * which is a licence to approve.
+ */
+export type BrainFactTensionForecastResponse =
+  | {
+      readonly kind: "forecast";
+      /**
+       * Advisory `in-tension-with` edges a sweep run in this same instant would
+       * write — `BrainFactTensionSweepResponse.minted`'s number, under both the
+       * same caps, for a press that has not happened.
+       *
+       * ⚠️ NOT a count of pairs in tension. A pair that already carries an edge
+       * is excluded, because both statements answer *"what would this ADD?"*
+       *
+       * ⚠️ A forecast, not a promise. Nothing is locked while you decide, so an
+       * ingest pass or a correction landing before you press moves the number.
+       */
+      readonly wouldMint: number;
+      /**
+       * The per-RUN bound bit — `BrainFactTensionSweepResponse.truncated`'s
+       * meaning exactly, including both of its ⚠️s.
+       */
+      readonly truncated: boolean;
+    }
+  /**
+   * The `predicateSurface` asked about norms away to nothing (`-`, `___`, a run
+   * of spaces), so it occupies no slot and can arm nothing.
+   *
+   * ⚠️ Deliberately NOT `wouldMint: 0`. A zero meaning *"we could not ask your
+   * question"* and a zero meaning *"approving this mints nothing"* are opposite
+   * advice, and collapsing them is the defect `BrainVocabularyBlastRadius`
+   * carries a whole member to avoid.
+   */
+  | { readonly kind: "unkeyable-surface" };
 
 /**
  * The four correction verbs (#4915, ADR-0036 §Temporal, conflict &

@@ -164,6 +164,11 @@ import {
 } from "@atlas/api/lib/brain/actor-identity";
 import { attributionDecision } from "@atlas/api/lib/brain/attribution";
 import { loadTensionClusters } from "@atlas/api/lib/brain/tensions";
+import {
+  loadFactLineage,
+  toHistoryView,
+  type FactLineage,
+} from "@atlas/api/lib/brain/history";
 import { notAnObservationSql } from "@atlas/api/lib/brain/observation";
 import { computeDecaySignal, LAST_OBSERVED_AT_SELECT } from "@atlas/api/lib/brain/staleness";
 import { fuseRankedLists, type RankedList } from "@atlas/api/lib/brain/fusion";
@@ -218,6 +223,16 @@ export const EPISODE_BODY_MAX_CHARS = 4_000;
  * Both caps feed the shared `loadTensionClusters` (`lib/brain/tensions.ts`).
  */
 export const TENSION_FANOUT_CAP = 200;
+
+/**
+ * Most `supersedes` lineage rows resolved per fused page (#5461).
+ *
+ * An order of magnitude below {@link TENSION_FANOUT_CAP} on purpose: a
+ * conflict cluster fans out across every rival a claim ever had, while a
+ * lineage is one chain per fact and the deepest in production is a single hop.
+ * A page that needs more than this has a shape worth seeing in the log.
+ */
+export const LINEAGE_FANOUT_CAP = 20;
 
 /**
  * The database handle this module needs.
@@ -693,6 +708,14 @@ function toFactResult(
   ctx: BrainPrincipalContext,
   tensions: readonly BrainSearchTensionView[],
   identities: BrainActorIdentityLookup,
+  /**
+   * What this claim replaced, and whether the page's lineage read was complete
+   * (#5461). Taken as a pair because the truncation is a property of the PAGE
+   * while the entry is a property of the ROW, and a row with no entry on a
+   * truncated page is "we may not have looked far enough", not "nothing
+   * changed".
+   */
+  lineage: { entry: FactLineage | undefined; truncated: boolean },
   requestId?: string,
 ): BrainFactResult {
   const workspaceId = ctx.workspaceId;
@@ -709,6 +732,12 @@ function toFactResult(
       "brain search: `last_observed_at` absent from the row — the fact query no longer selects the decay anchor; reporting age unknown",
     );
   }
+  const provenance = projectProvenance(
+    row.provenance,
+    row.source_episode_id,
+    attribution,
+    identities,
+  );
   return {
     tier: "fact",
     trustTier: 2,
@@ -721,12 +750,7 @@ function toFactResult(
     validTo: iso(row.valid_to),
     ingestedAt: iso(row.ingested_at),
     snippet: str(row.snippet),
-    provenance: projectProvenance(
-      row.provenance,
-      row.source_episode_id,
-      attribution,
-      identities,
-    ),
+    provenance,
     corroborationCount: count(row.corroboration_count, "corroboration_count", workspaceId),
     decay: computeDecaySignal(
       {
@@ -737,6 +761,10 @@ function toFactResult(
       attribution,
     ),
     tensions,
+    // The projected provenance, never the raw payload: `changedBy` inherits
+    // this row's own attribution decision (#4836) rather than making a second
+    // one. See `toHistoryView`.
+    history: toHistoryView(lineage.entry, provenance, lineage.truncated),
   };
 }
 
@@ -1067,10 +1095,22 @@ export async function searchBrainCore(
     return false;
   });
   const factIds = facts.map((r) => r.id);
-  const [tensions, factIdentities] = await Promise.all([
+  const [tensions, lineage, factIdentities] = await Promise.all([
     wantFacts
       ? loadTensions(db, factIds, ctx, requestId)
       : Promise.resolve({ views: new Map<string, BrainSearchTensionView[]>(), truncated: false }),
+    // What each claim REPLACED (#5461, PRD finish condition 5). Beside the
+    // tension walk rather than after it: both are per-page reads keyed on the
+    // same ids, and sequencing them would add a round trip to every fused read
+    // for a field that is empty on all but one row in production today.
+    wantFacts
+      ? loadFactLineage(db, factIds, {
+          ctx,
+          cap: LINEAGE_FANOUT_CAP,
+          log,
+          requestId,
+        })
+      : Promise.resolve({ lineage: new Map<string, FactLineage>(), truncated: false }),
     // The NAME behind each claim's `actor` handle (#5440). One query for the
     // page. This is the path an end user reaches, so it is the one where an
     // opaque vendor handle actually fails finish condition 2 — and the one
@@ -1102,7 +1142,14 @@ export async function searchBrainCore(
         "brain search: fact `visible_to` did not decode as an array — the grant could not be inspected",
       );
     }
-    return toFactResult(row, ctx, tensions.views.get(row.id) ?? [], factIdentities, requestId);
+    return toFactResult(
+      row,
+      ctx,
+      tensions.views.get(row.id) ?? [],
+      factIdentities,
+      { entry: lineage.lineage.get(row.id), truncated: lineage.truncated },
+      requestId,
+    );
   });
 
   const episodeResults: BrainEpisodeResult[] = [];

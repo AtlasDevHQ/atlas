@@ -176,6 +176,21 @@ The `"default"` datasource is used when the agent's `executeSQL` tool is called 
 
 ---
 
+## Datasource Expectation
+
+By default, a deployment with no process-level analytics datasource degrades `/health` — a box that simply forgot `ATLAS_DATASOURCE_URL` should look unhealthy. When a deployment *intentionally* has none (a multi-tenant SaaS region where every connection is per-workspace, or a knowledge-only self-host), declare that so `/health` reports the `datasource` component as `disabled` without degrading the rollup:
+
+```typescript
+// atlas.config.ts — this deployment deliberately has no process-level datasource
+export default defineConfig({
+  datasourceExpected: false,
+});
+```
+
+Resolution precedence (#4854, `packages/api/src/lib/db/datasource-expectation.ts`): the `ATLAS_DATASOURCE_EXPECTED` env var overrides per-service; then the config-file `datasourceExpected` field; then the default of "expected". An unrecognized env value warns and resolves to "expected" *without* consulting the config file. `ATLAS_DEMO_DATA=true` outranks all of these — demo mode always expects its datasource.
+
+---
+
 ## Semantic Layer Path
 
 Override the default semantic layer directory:
@@ -1063,6 +1078,7 @@ export default defineConfig({
 | `auth` | `"auto" \| "none" \| "api-key" \| "managed" \| "byot"` | `"auto"` | Authentication mode |
 | `semanticLayer` | `string` | `"./semantic"` | Path to semantic layer directory (relative to project root) |
 | `maxTotalConnections` | `number` | `100` | Max total pool slots across all datasources |
+| `datasourceExpected` | `boolean` | — (treated as expected) | Whether this deployment expects a process-level analytics datasource (#4854). Set `false` on a deployment that intentionally has none (per-workspace connections, knowledge-only) so `/health` reports the datasource component as `disabled` instead of degrading. Omitted means expected. Overridden per-service by `ATLAS_DATASOURCE_EXPECTED` ([details](#datasource-expectation)) |
 | `plugins` | `unknown[]` | — | Plugin instances to register at boot |
 | `actions` | `ActionsConfig` | — | Action framework configuration |
 | `rls` | `RLSConfig` | — | Row-Level Security policies |

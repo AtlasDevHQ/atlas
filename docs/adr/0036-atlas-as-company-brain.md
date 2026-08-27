@@ -135,7 +135,7 @@ The committed scope is the **brain**. The AI-employee / work layer (named role-a
 
 - **`executeSQL` unchanged** — tier-1 authoritative warehouse stays its own deterministic tool, never folded into a fuzzy query.
 - **`searchBrain`** (evolves `searchKnowledge`) — one fused read over the three fuzzy stores (reviewed facts · KB docs · raw episodes), **every result trust-tier + provenance labeled.** Mechanics: query-expand → dense embeddings + sparse FTS fused via RRF → typed-edge graph → optional rerank; staged so embeddings+RRF is the bounded add over today's FTS+1-hop-graph, with **FTS-only graceful degradation when no embedding provider is configured** (a self-host requirement — flagged to T8). Default reads **as-of-now** (superseded/tombstoned hidden); optional `asOf` is a bi-temporal point read using *that version's frozen ACL grant snapshot*; `in-tension-with` surfaces a conflict cluster, never a winner. It applies T5's fail-closed push-down ACL predicate. Two committed edge behaviors: a best-match episode not yet extracted (`extracted_at IS NULL`) is still returned, tagged **`tier: raw-episode, extraction: pending`** with its stable source-id — T6's extraction-lag window degrades to a labeled raw answer, never a blocked read; and warehouse-backed coarse entities carry a **resolver** that resolves identity/label live, while **quantitative current-state stays `executeSQL`** — `searchBrain` never silently runs metric SQL.
-- **`proposeFact`** — the only agent write, explicit/logged/draft-only, an entry point onto T6's reconcile stage via T9's write-back path.
+- **`proposeFact`** — the only agent write that **asserts a net-new claim**, explicit/logged/draft-only, an entry point onto T6's reconcile stage via T9's write-back path. ⚠️ **This bullet read *"the only agent write"*, and that has been false since [#4915](https://github.com/AtlasDevHQ/atlas/issues/4915)** shipped `correct_fact` onto the same reconcile stage. See §T9's amendment of 2026-08-27 ([#5468](https://github.com/AtlasDevHQ/atlas/issues/5468)) for the two-verb split and why the two do not collapse.
 
 Routing is **agent-side, not a hidden classifier**, so the tier line stays visible to the user.
 
@@ -150,6 +150,38 @@ Locked lines (all in `packages/api`, AGPL):
 - **Composition adds no new gating mechanism:** new `Context.Tag`s on the existing `enterprise-layer.ts` seam, whose Noop defaults **degrade graceful-to-core** (never fail-loud). The sole fail-closed exception is the core security predicate — which is not /ee.
 
 ## Write-back / self-improvement loop (T9)
+
+> **Amendment (2026-08-27, [#5468](https://github.com/AtlasDevHQ/atlas/issues/5468) — the M6 kickoff grill) — `proposeFact` is a SECOND agent write, not the only one, and the "third writer" seat below is already occupied.**
+>
+> The grill's first job was an inventory rather than a design, and it found this section partly decided by code written for another reason. Three things a reader needs *before* reading the five locks:
+>
+> **`proposeFact` does not exist.** Zero hits across `packages/`. The verb §T7 names has never been built.
+>
+> **The third writer this section describes already shipped, under a different verb.** `lib/tools/correct-fact.ts` is a registered agent tool (`lib/agent.ts`, `routes/chat.ts`, `chat-plugin/resume-turn.ts`) and `lib/brain/correction.ts` enters the fact graph through `reconcileFacts` — the exact entry-point-agnostic seam this section says write-back reuses. It arrived as [#4915](https://github.com/AtlasDevHQ/atlas/issues/4915)'s correction verbs, in lock 5's neighbourhood rather than as part of M6. There are exactly **three** writers onto `reconcileFacts` today: `extract.ts`, `warehouse-producer.ts`, `correction.ts`.
+>
+> **The decision: `proposeFact` is a new verb BESIDE `correct_fact`.** Both readings were defensible — the other was that `correct_fact` *is* the agent write and this ADR's naming needs retiring. This is the one taken, because the verbs differ on all three axes that matter:
+>
+> | | `correct_fact` (shipped) | `proposeFact` (unbuilt) |
+> |---|---|---|
+> | **Target** | all four verbs presuppose an existing tier-2 fact | asserts a net-new claim; no target |
+> | **Exit** | publishes **immediately** | **draft-only**, exits through the review gate |
+> | **Gate** | owner/admin authority | any explicit act — the review gate is the substitute |
+>
+> The authority gate and the review gate are **substitutes for one another**, which is why collapsing the verbs fails in *both* directions: routing proposals through `correct_fact` locks them to owner/admin and kills the compounding loop, which needs an ordinary user's testimony; routing corrections through `proposeFact` lets a non-admin publish immediately, which breaks lock 1 outright.
+>
+> **A consequence worth stating: lock 1's exit half is currently decided by default, on shipped code, in the opposite direction.** `correct_fact` takes effect immediately with no review gate. That is defensible — its authority gate is the substitute — but nobody decided it *as* write-back policy, and this section is where the next reader will look for it.
+>
+> **Lock by lock, against shipped code:**
+>
+> | Lock | Status | Arrived through |
+> |---|---|---|
+> | **1 · Trigger** | **partly** — enter ✅ (owner/admin authority plus an explicit human statement), exit ❌ (immediate publish, no review gate). The "no silent autonomous publish" half is intact: no autonomous fact-graph publisher exists | `correct-fact.ts` → `correction.ts` → `reconcileFacts` |
+> | **2 · Durable-memory bridge** | **unbuilt, and cleanly so** — zero brain references in `durable-session.ts`, `durable-state.ts`, `agent-compaction.ts`. ADR-0020's boundary is untouched, so there is nothing here to un-decide | — |
+> | **3 · Provenance** | **partly** — lazy materialization, the `derives-from` edge, and a grant seed that is never a silent `[org]` all ship already. But the episode is a *correction* record, not a *session*, and its seed is the target fact's `grantTokens` — which a net-new proposal has no equivalent of | `correction.ts` (`CORRECTION_EPISODE_INSERT_SQL`, `DERIVES_FROM_EDGE_SQL`) |
+> | **4 · `learn/` distinct class** | **held by construction** — fifteen modules in `lib/learn/`, zero references to `brain_facts`, `reconcileFacts` or `lib/brain/` | — |
+> | **5 · Corroboration** | **satisfied** for the dedupe (entry-point-agnostic and key-based, so any new writer inherits it verbatim) and for self-echo idempotence (`INSERT_PROVENANCE_EDGE_SQL`'s `WHERE NOT EXISTS`, sound under the enclosing advisory lock). **Distinct-*source* weighting is the residue** — the guard is per (fact, episode) pair, so two episodes from one actor are still two edges | `reconcile.ts` (T6) |
+>
+> **One finding sharpens lock 3 rather than contradicting it.** `correction.ts` draws a distinction this section does not: `retract`/`supersede` write `derives-from`, because there the episode *refutes* the claim, while `re-authority`/`pin` write `provenance`, because there the human really is vouching. Lock 3 names only `derives-from`. A `proposeFact` proposal is a vouch, so it wants the `provenance` edge — the one that feeds the distinct-source count lock 5 depends on.
 
 **A new entry point onto T6's entry-point-agnostic reconcile stage — not new machinery.** Write-back is the third writer (beside connector episodes and warehouse-derived facts) onto the same pipeline, gated by the same core review gate. Five locks:
 

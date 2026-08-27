@@ -11,9 +11,11 @@
 #      matching on the literal `bun test` text alone would miss it.
 #
 # Always allowed: NAMED test files (every positional must be one -- a glob is
-# not, it expands at run time), `--changed=<ref>` (the sanctioned pre-flight),
-# and `--parallel=N` for N <= 6 WITH an explicit target. Remote CI on the PR is
-# the real gate.
+# not, it expands at run time) and `--changed=<ref>` (the sanctioned pre-flight).
+#
+# `--parallel=N` for N <= 6 WITH an explicit target is NOT allowed outright: it
+# returns `ask`, so the human decides, and it DENIES in any session where `ask`
+# has not been shown to reach one. Remote CI on the PR is the real gate.
 #
 # Also refused: `bun test` with TEST_DATABASE_URL set -- the project memory
 # names that shape specifically as the one a human stopped by hand.
@@ -23,14 +25,40 @@
 # `-e` turns this into a hook that exits before it can deny — failing OPEN.
 set -uo pipefail
 
-cmd="$(jq -r '.tool_input.command // empty' 2>/dev/null)" || exit 0
+input="$(cat)"
+cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)" || exit 0
 [ -n "$cmd" ] || exit 0
+
+# The permission mode this session is running in. PreToolUse carries it as a
+# common input field -- MEASURED on 2026-08-26 by dumping the hook's stdin, not
+# assumed: {"permission_mode":"bypassPermissions", ...}. It decides whether an
+# `ask` from this hook can actually reach a human; see the escape hatch below.
+mode="$(printf '%s' "$input" | jq -r '.permission_mode // empty' 2>/dev/null)"
 
 deny() {
   jq -nc --arg r "$1" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
+      permissionDecisionReason: $r
+    }
+  }'
+  exit 0
+}
+
+# `ask` routes to the user's own permission prompt instead of deciding for them.
+# Verified against the hooks reference: `permissionDecision` takes
+# allow/deny/ask/defer, and `"ask"` prompts the user to confirm.
+#
+# ⚠️ The reason string is written FOR THE HUMAN, not for Claude. The reference is
+# explicit that for `"allow"` and `"ask"` the reason is "shown to the user but
+# not Claude" (only a `"deny"` reason reaches Claude). So this text has to stand
+# on its own in a prompt, and a rejected ask teaches the model nothing.
+ask() {
+  jq -nc --arg r "$1" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "ask",
       permissionDecisionReason: $r
     }
   }'
@@ -219,9 +247,14 @@ Remote CI runs these against a dedicated Postgres service -- that is the gate."
   # The sanctioned escape hatch, and it is TWO conditions, not one.
   #
   # The memory says: "If a full local run is ever genuinely necessary, ask
-  # first, and cap the workers (`bun test --parallel=6`)." A hook cannot ask, so
-  # it enforces the half it can -- and requires an explicit TARGET, because
-  # `--parallel=8` with no target is the whole 1,131-file suite wearing a cap.
+  # first, and cap the workers (`bun test --parallel=6`)." Until 2026-08-26 this
+  # hook enforced only the cap and converted "ask first" into a standing grant:
+  # it opened the hatch itself, silently, every time. A rule written as two
+  # conditions shipped as one, and `--parallel=6 packages/` -- the whole
+  # monorepo -- sat inside its letter.
+  #
+  # It now returns `ask`, which routes to the human's own permission prompt.
+  # That is the "ask first" half, enforced rather than assumed.
   #
   # 6, not 8: 6 is the only number the record names. 8 was invented here and
   # nothing measures it.
@@ -229,7 +262,57 @@ Remote CI runs these against a dedicated Postgres service -- that is the gate."
   # through on the safe one while bun (last-wins) ran 64.
   cap="$(printf '%s' "$args" | grep -oE -- '--parallel=[0-9]+' | cut -d= -f2 | sort -n | tail -1)"
   if [ -n "$cap" ] && [ "$cap" -le 6 ] 2>/dev/null && [ "$positional_count" -gt 0 ]; then
-    continue
+    # ⚠️ `ask` IS NOT UNIVERSALLY A PROMPT, and that is the whole reason this is
+    # an allowlist rather than a plain `ask`.
+    #
+    # MEASURED 2026-08-26, in this repo, in a live session: with
+    # `permission_mode: "bypassPermissions"`, a PreToolUse hook returning `ask`
+    # did NOT prompt -- the command ran, with no notice and no log line. Under
+    # bypass, `ask` IS `allow`. A control hook returning `deny` on a sibling
+    # sentinel blocked in the same session, so the hook was loaded and firing;
+    # it is `ask` specifically that the mode swallows.
+    #
+    # That is the exact failure this guard exists to prevent, wearing a gate's
+    # clothes -- and every one of the three recurrences happened in an agent
+    # session, which is where bypass is used. So the modes are ALLOWLISTED and
+    # an unrecognised or absent mode DENIES. A mode this hook has not been shown
+    # to prompt in is a mode where the hatch does not open.
+    #
+    # Listed on the reference's word, not on a measurement (this box only ever
+    # runs bypass, so they could not be measured here): `default` and
+    # `acceptEdits` prompt for Bash anyway, and `auto` is called out explicitly
+    # -- a hook's `ask` "forces a permission prompt in auto mode: the classifier
+    # can still deny the tool call, but it can't approve the call silently".
+    # `plan`, `dontAsk` and headless are left OUT deliberately: nothing states
+    # they prompt, and the cost of being wrong is one-directional.
+    #
+    # Worth stating plainly, because it bounds the risk of the whole change:
+    # this is MONOTONIC. Every shape that was ALLOW here is now ASK or DENY, and
+    # nothing that denied before is reachable as an allow. If `ask` turned out to
+    # be silently permissive in a listed mode too, the hatch would be exactly as
+    # permissive as it was yesterday -- never more.
+    case "$mode" in
+      default|acceptEdits|auto)
+        ask "A capped breadth run: --parallel=$cap over $positional_count target(s).
+
+The project memory allows this ONLY after asking -- \"if a full local run is ever genuinely necessary, ask first, and cap the workers\". The cap is honoured; this prompt is the other half.
+
+Worth checking before you approve:
+  - Is anything else already running? Three agents at --parallel=6 is 18 workers, and each command is individually legal. That is the shape that took the box down on 2026-08-26.
+  - Would --changed=origin/main, or a few named files, answer the same question?
+
+Remote CI on the PR is the real gate." ;;
+      *)
+        deny "BLOCKED: the capped-breadth hatch needs a human, and this session cannot show one a prompt.
+
+permission_mode is \"${mode:-<absent>}\". Measured 2026-08-26: under bypassPermissions a hook's \`ask\` does not prompt -- the command simply runs -- so the hatch would be granting itself, which is what it did until today.
+
+Scope it instead:
+  bun test --parallel --changed=origin/main    # branch's source graph
+  bun test path/to/one.test.ts                 # single file (repeat for several)
+
+If breadth is genuinely necessary, say so in the session and let a human run it, or run it outside this session. Remote CI on the PR is the gate." ;;
+    esac
   fi
 
   if printf '%s' "$args" | grep -qE -- '--parallel'; then

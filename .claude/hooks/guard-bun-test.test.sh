@@ -13,20 +13,43 @@ HOOK="$(dirname "${BASH_SOURCE[0]}")/guard-bun-test.sh"
 pass=0
 fail=0
 
-# verdict <command> -> "deny" | "allow"
+# verdict <command> [permission_mode] -> "deny" | "ask" | "allow"
+#
+# ⚠️ THREE-WAY, and it has to be. This read `deny` vs "anything else" until
+# 2026-08-26, when the hook gained an `ask` decision. A two-way reading scores
+# every `ask` as `allow`, which makes "the hatch asked" and "the hatch granted
+# itself" the SAME observation -- and granting itself is the defect this change
+# exists to fix.
+#
+# Mutation, applied and observed: collapse the case back to
+# `deny -> deny; * -> allow` and five cases redden immediately (`wanted ask, got
+# allow`), because `ask` becomes a verdict this function can never return. That
+# is the intended behaviour -- the collapse cannot pass quietly.
+#
+# The residual risk it does NOT cover, stated because a check that oversells
+# itself is this file's own failure mode: collapsing the verdict AND rewriting
+# those cases back to `check allow` would go green again. Nothing here can catch
+# a simultaneous edit to both sides. What is pinned is that the verdict alone
+# cannot be narrowed silently.
+#
+# The mode is threaded through because the hook allowlists the modes in which
+# `ask` actually reaches a human; the default here is `default`, the ordinary
+# interactive one.
 verdict() {
   local out
-  out="$(jq -nc --arg c "$1" '{tool_input:{command:$c}}' | bash "$HOOK")"
-  if printf '%s' "$out" | grep -q '"permissionDecision":"deny"'; then
-    printf 'deny'
-  else
-    printf 'allow'
-  fi
+  out="$(jq -nc --arg c "$1" --arg m "${2-default}" \
+    '{tool_input:{command:$c}} + (if $m == "" then {} else {permission_mode:$m} end)' \
+    | bash "$HOOK")"
+  case "$out" in
+    *'"permissionDecision":"deny"'*) printf 'deny' ;;
+    *'"permissionDecision":"ask"'*)  printf 'ask' ;;
+    *) printf 'allow' ;;
+  esac
 }
 
 check() {
-  local want="$1" cmd="$2" label="$3" got
-  got="$(verdict "$cmd")"
+  local want="$1" cmd="$2" label="$3" mode="${4-default}" got
+  got="$(verdict "$cmd" "$mode")"
   if [ "$got" = "$want" ]; then
     pass=$((pass + 1))
     printf '  ok   %s\n' "$label"
@@ -55,7 +78,7 @@ check deny 'bun test --parallel src/app/admin/brain/__tests__/ src/ui/components
 check deny 'bun test --parallel src/ui/components/admin/brain-coverage/' 'a bare directory glob is a full-worker run'
 check deny 'bun test --parallel packages/api/src/lib/brain/__tests__/' 'the 102-file directory from the last recurrence'
 check allow 'bun test src/a.test.ts src/b.test.ts' 'several named files are still one worker each'
-check allow 'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'an explicit small worker cap is the sanctioned escape hatch'
+check ask 'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'an explicit small worker cap ASKS -- it is not granted outright'
 
 # --- found by an independent spec review, 2026-08-26 -------------------------
 # Each of these was ALLOW against the first draft of the quantifier fix.
@@ -74,7 +97,7 @@ check deny 'bun test --parallel=32 packages/api/src/lib/brain/__tests__/' 'a cap
 # The shape a human had to stop by hand: the variable across an UNBOUNDED run.
 check deny 'TEST_DATABASE_URL=postgres://x bun test --parallel --changed=origin/main' 'the variable across the changed graph -- 874 files today'
 check deny 'TEST_DATABASE_URL=postgres://x bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'a cap does not make a directory of pg suites safe'
-check allow 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'the memory own number, with a target'
+check ask 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'the memory own number, with a target -- still asks'
 
 # --- redirections are not arguments (found by USING the guard, 2026-08-26) ---
 # The all-positionals-must-be-files rule counted `2>&1` as a non-file argument,
@@ -136,6 +159,52 @@ EOF' 'a heredoc documenting it'
 check allow "python3 - <<'PY'
 s = 'bun test --parallel'
 PY" 'a quoted heredoc containing it'
+
+# --- the escape hatch is TWO conditions, not one (2026-08-26) ---------------
+# The memory states it as: "If a full local run is ever genuinely necessary,
+# ask first, and cap the workers (`bun test --parallel=6`)." The hook enforced
+# only the cap and converted "ask first" into a standing self-grant. These
+# cases pin the other half.
+#
+# Every case in this block was observed FAILING against the pre-change hook
+# (`git show main:.claude/hooks/guard-bun-test.sh`), which returned nothing at
+# all on these shapes and so scored `allow` against a wanted `ask`/`deny`.
+
+# The shape that motivated the change: inside the memory's letter -- capped at
+# 6, with an explicit target -- and it is the ENTIRE MONOREPO. ALLOW yesterday.
+check ask   'bun test --parallel=6 packages/' 'the whole monorepo at the sanctioned cap is exactly what should stop to ask'
+check deny  'bun test --parallel=6 packages/' 'and under bypass, where ask does not prompt, it denies instead' bypassPermissions
+
+# ⚠️ MEASURED, not assumed. In a live session on 2026-08-26 with
+# permission_mode=bypassPermissions, a PreToolUse hook returning `ask` did NOT
+# prompt -- the command ran silently. A `deny` control on a sibling sentinel
+# blocked in the same session, so the hook was loaded; bypass swallows `ask`
+# specifically. Hence: allowlist the modes, deny everything else.
+check ask   'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'auto mode: a hook ask forces a prompt the classifier cannot silently approve' auto
+check ask   'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'acceptEdits still prompts for Bash' acceptEdits
+check deny  'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'bypassPermissions cannot show a prompt, so the hatch stays shut' bypassPermissions
+check deny  'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'dontAsk is not on the allowlist -- unlisted means shut' dontAsk
+check deny  'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'plan is not on the allowlist either' plan
+check deny  'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'an UNKNOWN mode fails closed, not open' some-future-mode
+# The field is a common input field, not a guaranteed one. Absent == unknown.
+check deny  'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'no permission_mode at all fails closed' ''
+
+# The hatch is a hatch, not a hole: everything that denied before still denies,
+# in every mode. A cap with no target is still the whole suite.
+check deny  'bun test --parallel=6' 'no target still denies even in a mode that can ask'
+check deny  'bun test --parallel' 'and a bare parallel run is never a hatch candidate'
+check deny  'TEST_DATABASE_URL=postgres://x bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'the pg variable still wins over the hatch, before the ask'
+check allow 'bun test --parallel --changed=origin/main' 'the sanctioned pre-flight is untouched by the hatch change'
+check allow 'bun test packages/web/src/a.test.ts' 'and so is a single named file'
+
+# ⚠️ 6 IS THE NUMBER THE RECORD NAMES, and nothing pinned it until now.
+# Mutation: change the hook's `[ "$cap" -le 6 ]` to `-le 7` and this case is the
+# ONLY one that reddens. Before it existed, that mutation SURVIVED the whole
+# suite -- 41 green with the cap silently raised. (`--parallel=32 <dir>` only
+# catches a raise past 32; `--parallel=8` denies for having no target, not for
+# the cap.) An invented cap of 8 is precisely the mistake this guard's own
+# history records, so the boundary is now load-bearing.
+check deny  'bun test --parallel=7 packages/api/src/lib/brain/__tests__/' 'one over the record number is not the record number'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

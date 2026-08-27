@@ -4,7 +4,7 @@ import { getToolArgs, getToolResult, isToolComplete } from "../../lib/helpers";
 import { LoadingCard } from "./loading-card";
 import { ResultCardBase, ResultCardErrorBoundary } from "./result-card-base";
 import { TierBadge } from "./tier-badge";
-import { formatDate, str, stripHeadlineMarkup, toRows, type ResultLine } from "../../lib/brain-rows";
+import { str, toRows } from "../../lib/brain-rows";
 
 /**
  * The `searchBrain` result card (#5451) — the first non-admin surface anywhere

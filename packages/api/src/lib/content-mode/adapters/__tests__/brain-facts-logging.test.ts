@@ -365,8 +365,9 @@ describe("promoteBrainFacts — grant widening is stated out loud (#4823)", () =
     expect(report.widened).toHaveLength(25);
 
     const line = infos().find((c) => c.message.includes("widened grants"));
+    expect(line).toBeDefined();
     expect(line?.payload).toMatchObject({ widenedCount: 25, sampleTruncated: true });
-    expect((line?.payload as { widened: unknown[] }).widened).toHaveLength(20);
+    expect((line!.payload as { widened: unknown[] }).widened).toHaveLength(20);
   });
 
   it("reports a malformed token in an EVIDENCE episode's grant, attributed to the EPISODE", async () => {

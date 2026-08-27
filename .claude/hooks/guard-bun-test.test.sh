@@ -13,20 +13,43 @@ HOOK="$(dirname "${BASH_SOURCE[0]}")/guard-bun-test.sh"
 pass=0
 fail=0
 
-# verdict <command> -> "deny" | "allow"
+# verdict <command> [permission_mode] -> "deny" | "ask" | "allow"
+#
+# ⚠️ THREE-WAY, and it has to be. This read `deny` vs "anything else" until
+# 2026-08-26, when the hook gained an `ask` decision. A two-way reading scores
+# every `ask` as `allow`, which makes "the hatch asked" and "the hatch granted
+# itself" the SAME observation -- and granting itself is the defect this change
+# exists to fix.
+#
+# Mutation, applied and observed: collapse the case back to
+# `deny -> deny; * -> allow` and five cases redden immediately (`wanted ask, got
+# allow`), because `ask` becomes a verdict this function can never return. That
+# is the intended behaviour -- the collapse cannot pass quietly.
+#
+# The residual risk it does NOT cover, stated because a check that oversells
+# itself is this file's own failure mode: collapsing the verdict AND rewriting
+# those cases back to `check allow` would go green again. Nothing here can catch
+# a simultaneous edit to both sides. What is pinned is that the verdict alone
+# cannot be narrowed silently.
+#
+# The mode is threaded through because the hook allowlists the modes in which
+# `ask` actually reaches a human; the default here is `default`, the ordinary
+# interactive one.
 verdict() {
   local out
-  out="$(jq -nc --arg c "$1" '{tool_input:{command:$c}}' | bash "$HOOK")"
-  if printf '%s' "$out" | grep -q '"permissionDecision":"deny"'; then
-    printf 'deny'
-  else
-    printf 'allow'
-  fi
+  out="$(jq -nc --arg c "$1" --arg m "${2-default}" \
+    '{tool_input:{command:$c}} + (if $m == "" then {} else {permission_mode:$m} end)' \
+    | bash "$HOOK")"
+  case "$out" in
+    *'"permissionDecision":"deny"'*) printf 'deny' ;;
+    *'"permissionDecision":"ask"'*)  printf 'ask' ;;
+    *) printf 'allow' ;;
+  esac
 }
 
 check() {
-  local want="$1" cmd="$2" label="$3" got
-  got="$(verdict "$cmd")"
+  local want="$1" cmd="$2" label="$3" mode="${4-default}" got
+  got="$(verdict "$cmd" "$mode")"
   if [ "$got" = "$want" ]; then
     pass=$((pass + 1))
     printf '  ok   %s\n' "$label"
@@ -55,7 +78,7 @@ check deny 'bun test --parallel src/app/admin/brain/__tests__/ src/ui/components
 check deny 'bun test --parallel src/ui/components/admin/brain-coverage/' 'a bare directory glob is a full-worker run'
 check deny 'bun test --parallel packages/api/src/lib/brain/__tests__/' 'the 102-file directory from the last recurrence'
 check allow 'bun test src/a.test.ts src/b.test.ts' 'several named files are still one worker each'
-check allow 'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'an explicit small worker cap is the sanctioned escape hatch'
+check ask 'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'an explicit small worker cap ASKS -- it is not granted outright'
 
 # --- found by an independent spec review, 2026-08-26 -------------------------
 # Each of these was ALLOW against the first draft of the quantifier fix.
@@ -74,7 +97,7 @@ check deny 'bun test --parallel=32 packages/api/src/lib/brain/__tests__/' 'a cap
 # The shape a human had to stop by hand: the variable across an UNBOUNDED run.
 check deny 'TEST_DATABASE_URL=postgres://x bun test --parallel --changed=origin/main' 'the variable across the changed graph -- 874 files today'
 check deny 'TEST_DATABASE_URL=postgres://x bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'a cap does not make a directory of pg suites safe'
-check allow 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'the memory own number, with a target'
+check ask 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'the memory own number, with a target -- still asks'
 
 # --- redirections are not arguments (found by USING the guard, 2026-08-26) ---
 # The all-positionals-must-be-files rule counted `2>&1` as a non-file argument,
@@ -136,6 +159,194 @@ EOF' 'a heredoc documenting it'
 check allow "python3 - <<'PY'
 s = 'bun test --parallel'
 PY" 'a quoted heredoc containing it'
+
+# --- the escape hatch is TWO conditions, not one (2026-08-26) ---------------
+# The memory states it as: "If a full local run is ever genuinely necessary,
+# ask first, and cap the workers (`bun test --parallel=6`)." The hook enforced
+# only the cap and converted "ask first" into a standing self-grant. These
+# cases pin the other half.
+#
+# Every case in this block was observed FAILING against the pre-change hook
+# (`git show main:.claude/hooks/guard-bun-test.sh`), which returned nothing at
+# all on these shapes and so scored `allow` against a wanted `ask`/`deny`.
+
+# The shape that motivated the change: inside the memory's letter -- capped at
+# 6, with an explicit target -- and it is the ENTIRE MONOREPO. ALLOW yesterday.
+check ask   'bun test --parallel=6 packages/' 'the whole monorepo at the sanctioned cap is exactly what should stop to ask'
+check deny  'bun test --parallel=6 packages/' 'and under bypass, where ask does not prompt, it denies instead' bypassPermissions
+
+# ⚠️ MEASURED, not assumed. In a live session on 2026-08-26 with
+# permission_mode=bypassPermissions, a PreToolUse hook returning `ask` did NOT
+# prompt -- the command ran silently. A `deny` control on a sibling sentinel
+# blocked in the same session, so the hook was loaded; bypass swallows `ask`
+# specifically. Hence: allowlist the modes, deny everything else.
+check ask   'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'auto mode: a hook ask forces a prompt the classifier cannot silently approve' auto
+check ask   'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'acceptEdits still prompts for Bash' acceptEdits
+check deny  'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'bypassPermissions cannot show a prompt, so the hatch stays shut' bypassPermissions
+check deny  'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'dontAsk is not on the allowlist -- unlisted means shut' dontAsk
+check deny  'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'plan is not on the allowlist either' plan
+check deny  'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'an UNKNOWN mode fails closed, not open' some-future-mode
+# The field is a common input field, not a guaranteed one. Absent == unknown.
+check deny  'bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'no permission_mode at all fails closed' ''
+
+# The hatch is a hatch, not a hole: everything that denied before still denies,
+# in every mode. A cap with no target is still the whole suite.
+check deny  'bun test --parallel=6' 'no target still denies even in a mode that can ask'
+check deny  'bun test --parallel' 'and a bare parallel run is never a hatch candidate'
+check deny  'TEST_DATABASE_URL=postgres://x bun test --parallel=4 packages/api/src/lib/brain/__tests__/' 'the pg variable still wins over the hatch, before the ask'
+check allow 'bun test --parallel --changed=origin/main' 'the sanctioned pre-flight is untouched by the hatch change'
+check allow 'bun test packages/web/src/a.test.ts' 'and so is a single named file'
+
+# ⚠️ 6 IS THE NUMBER THE RECORD NAMES, and nothing pinned it until now.
+# Mutation: change the hook's `[ "$cap" -le 6 ]` to `-le 7` and this case is the
+# ONLY one that reddens. Before it existed, that mutation SURVIVED the whole
+# suite -- 41 green with the cap silently raised. (`--parallel=32 <dir>` only
+# catches a raise past 32; `--parallel=8` denies for having no target, not for
+# the cap.) An invented cap of 8 is precisely the mistake this guard's own
+# history records, so the boundary is now load-bearing.
+check deny  'bun test --parallel=7 packages/api/src/lib/brain/__tests__/' 'one over the record number is not the record number'
+
+# --- THE FLEET CEILING (2026-08-26) -----------------------------------------
+# The per-command rules are stateless. Three agents each at a legal
+# `--parallel=6` is 18 workers, every command individually allowed -- the shape
+# that actually took the box down. These cases drive the REAL counter against
+# REAL processes; nothing here is faked with an injected count, because the
+# counter's predicate is the part most likely to be wrong.
+#
+# Budget is driven by ATLAS_GUARD_WORKER_BUDGET so the boundary can be crossed
+# with two or three processes instead of twelve. Spawning twelve to test a guard
+# that exists to stop the box being overloaded would be its own joke.
+#
+# Mutations applied to the hook and observed, 2026-08-26:
+#   drop `[ "$comm" = "bun" ]`          -> 1 red  (the self-match case)
+#   `if false` on the ceiling            -> 4 red
+#   charge every run 1, ignore the cap   -> 1 red
+#   default budget 12 -> 5               -> 3 red
+#   spawner produces no real workers     -> 1 red, LOUD: the suite refuses to run
+#                                           the dependent cases rather than pass
+#                                           them on an empty box
+#
+# ⚠️ The first of those SURVIVED on the first attempt, and the case was the
+# problem, not the rule -- see the fixture note further down. It is recorded
+# here because "the mutation reddened it" is the only evidence any of these
+# cases are worth their line, and one of them had none.
+
+SPAWNED=""
+cleanup_spawned() {
+  # shellcheck disable=SC2086
+  [ -n "$SPAWNED" ] && kill $SPAWNED 2>/dev/null
+  SPAWNED=""
+}
+trap cleanup_spawned EXIT
+
+# count as the HOOK counts: comm == bun AND the cmdline carries the worker flag.
+countable() {
+  local n=0 p comm
+  for p in /proc/[0-9]*; do
+    [ -r "$p/comm" ] || continue
+    read -r comm < "$p/comm" 2>/dev/null || continue
+    [ "$comm" = "bun" ] || continue
+    tr '\0' ' ' < "$p/cmdline" 2>/dev/null | grep -q -- '--test-worker' && n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
+# spawn_bun_workers <n> -- real bun processes carrying the flag, and it BLOCKS
+# until the counter can actually see them.
+#
+# ⚠️ This wait is not politeness, it is the difference between a falsifier and a
+# decoration. If a spawn silently failed, the live count would be 0 and the
+# ALLOW case below would go green while proving nothing -- the precise shape
+# that put two dead-path cases into this file's history. So the count is
+# asserted before any case runs, and a shortfall is a FAIL, not a shrug.
+spawn_bun_workers() {
+  local want="$1" i tries=0
+  for i in $(seq 1 "$want"); do
+    bun -e 'await Bun.sleep(30000)' '--test-worker' >/dev/null 2>&1 &
+    SPAWNED="$SPAWNED $!"
+  done
+  while [ "$(countable)" -lt "$want" ]; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 100 ]; then
+      printf '  FAIL could not spawn %d countable workers (saw %s) -- fleet cases below would prove nothing\n' \
+        "$want" "$(countable)"
+      fail=$((fail + 1))
+      return 1
+    fi
+    sleep 0.1
+  done
+  return 0
+}
+
+# check_fleet <want> <budget> <cmd> <label>
+check_fleet() {
+  local want="$1" bud="$2" cmd="$3" label="$4" out got
+  out="$(jq -nc --arg c "$cmd" '{tool_input:{command:$c},permission_mode:"default"}' \
+    | ATLAS_GUARD_WORKER_BUDGET="$bud" bash "$HOOK")"
+  case "$out" in
+    *'"permissionDecision":"deny"'*) got=deny ;;
+    *'"permissionDecision":"ask"'*)  got=ask ;;
+    *) got=allow ;;
+  esac
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s -- wanted %s, got %s\n' "$label" "$want" "$got"
+  fi
+}
+
+if spawn_bun_workers 2; then
+  printf '  (%s live bun workers)\n' "$(countable)"
+
+  # The ceiling sits ABOVE every allowance -- that is the whole design. Each of
+  # these shapes is unconditionally permitted by the per-command rules.
+  check_fleet deny 2 'bun test packages/web/src/a.test.ts' 'a single named file cannot add to an already-full box'
+  check_fleet deny 2 'bun test --parallel --changed=origin/main' 'nor can the sanctioned pre-flight -- --changed does not skip the ceiling'
+  check_fleet deny 2 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'nor the capped hatch, which never reaches the ask'
+  # ...and it must not fire when there is room. 2 live + 1 = 3, budget 3.
+  check_fleet allow 3 'bun test packages/web/src/a.test.ts' 'but with room to spare it stays out of the way'
+fi
+cleanup_spawned
+
+# Predicted cost, with nothing running at all: --parallel=6 is charged 6, not 1.
+check_fleet deny 4 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'a capped run is charged its CAP up front, on an idle box'
+check_fleet ask  6 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'and exactly fits a budget of 6'
+
+# ⚠️ THE SELF-MATCH CASE. The counter's predicate is `comm == "bun"`, not "the
+# command line mentions --test-worker", and this is why: the Bash tool wraps
+# every command in `bash -c '<command text>'`, so a cmdline-TEXT scan counts the
+# shell running the check. During design, a `pkill -f` on that pattern killed
+# this session's own shell (exit 144).
+#
+# A `bash` process carrying the flag in its argv must count ZERO. With a budget
+# of 1, a one-worker run fits only if it counts zero.
+#
+# Mutation: drop the `[ "$comm" = "bun" ] || continue` line from the hook and
+# this case reddens (the shell counts, 1 + 1 > 1, deny).
+# ⚠️ `bash -c 'sleep 30' '--test-worker'` DOES NOT WORK as this fixture, and it
+# sat here green and inert until a mutation exposed it. bash execs a lone simple
+# command in place, so that process becomes comm=`sleep`, cmdline=`[sleep 30]` --
+# the flag is GONE and the case passed without the rule under test doing
+# anything. Deleting the `comm` predicate left it green. A second command
+# defeats the exec optimisation and the argv survives:
+#   comm=bash  cmdline=[bash -c sleep 30; : --test-worker]
+# Verified by reading /proc/<pid>/comm and /proc/<pid>/cmdline for both forms.
+bash -c 'sleep 30; :' '--test-worker' >/dev/null 2>&1 &
+SPAWNED="$SPAWNED $!"
+# and assert the fixture is what it claims to be, before relying on it.
+sleep 0.3
+if ! tr '\0' ' ' < "/proc/$!/cmdline" 2>/dev/null | grep -q -- '--test-worker'; then
+  printf '  FAIL self-match fixture does not carry the flag -- the case below would prove nothing\n'
+  fail=$((fail + 1))
+fi
+check_fleet allow 1 'bun test packages/web/src/a.test.ts' 'a SHELL that merely mentions the worker flag is not a worker'
+cleanup_spawned
+
+# The default budget is Matt's number, not a measurement, and it is 12. Nothing
+# can pin a policy number to a fact -- what IS pinned is that it is not tiny:
+# with nothing running, the sanctioned cap of 6 must still reach the ask.
+# Mutation: default budget 12 -> 5 and this reddens.
+check ask 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'the default budget leaves room for one capped run'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

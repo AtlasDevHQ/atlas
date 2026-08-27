@@ -131,7 +131,9 @@ const mdComponents = {
 export const Markdown = memo(function Markdown({
   content,
   disallowImages = false,
-  dark,
+  // `dark` is accepted but deliberately not read here — see its doc comment on
+  // the type below. It stays in the type for callers; destructuring it only to
+  // ignore it is what the linter was pointing at.
 }: {
   content: string;
   /**

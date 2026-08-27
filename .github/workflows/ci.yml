@@ -461,6 +461,14 @@ jobs:
       - name: Test the docs-links gate itself (adversarial fixtures)
         run: bash scripts/__tests__/check-docs-links.test.sh
 
+      - name: Check REST endpoint removals are ledgered on the stability page (2026-08-27 audit)
+        # The gate diffs openapi.json's path set against the last v* release
+        # tag; the Actions clone is shallow and tag-less, so fetch tags first —
+        # otherwise the gate DECLINES (exit 3) rather than passing vacuously.
+        run: |
+          git fetch --tags --force --quiet origin
+          bun scripts/check-openapi-removals.ts
+
       - name: Check published Brain* contract snippets against their declarations (#5165)
         run: bun scripts/check-docs-brain-snippets.ts
 

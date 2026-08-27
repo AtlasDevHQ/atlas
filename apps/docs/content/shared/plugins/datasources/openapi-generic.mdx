@@ -59,6 +59,8 @@ The confirm flow only works on a chat surface that can actually render the banne
 
 The two refusals are ordered by who fixes them: `writes_disabled` means the operation isn't allowlisted (an admin fixes the datasource config); `write_confirmation_unavailable` means the operation is allowed but the surface can't confirm it (run it from the Atlas web app, or build a confirm card into your custom surface and send the header). The header is a capability declaration, not a security control — the confirm endpoint's server-side allowlist re-validation and single-use token are what enforce the human-in-the-loop step.
 
+## Side-effecting GETs
+
 Atlas classifies read vs write by HTTP method **as a default, not ground truth**. A GET or HEAD that actually mutates state (a "mutating RPC-over-GET", common in legacy / internal services) can be flagged side-effecting, and is then forced through the **same write allowlist + confirm path** as a POST — it must be allowlisted, and it stages for confirmation rather than running silently.
 
 There are two ways to flag one, and they combine (either is enough). The classification is **monotonic**: a flag can only ever *escalate* a read to a write, never downgrade a write method to a read.

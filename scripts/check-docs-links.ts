@@ -34,6 +34,13 @@
  * double-dash / `-1`-suffix cases are the real parity lock: they catch a
  * slugging divergence regardless of how the versions drift.
  *
+ * CROSS-AUDIENCE GATE (2026-08-27 audit): a self-hosted-tree page hard-linking
+ * a root path served only by content/docs silently switches the reader's
+ * audience — flagged unless the target is in CROSS_AUDIENCE_ALLOWED (each
+ * entry reviewed once, with a rationale) or the link goes through
+ * `<AudienceLink>`. The opposite direction is not gated: a "/self-hosted/..."
+ * URL announces the switch itself.
+ *
  * OUT OF SCOPE: external URLs (flaky — a separate audit concern), `href={...}`
  * JSX expressions and `[x](</path with spaces>)` angle-bracket destinations
  * (neither form exists in content today; not statically extracted), and
@@ -79,6 +86,39 @@ const NON_CONTENT_ROUTES = new Set([
   "/llms-full.txt",
   "/robots.txt",
   "/api/search",
+]);
+
+// ── cross-audience links out of the self-hosted tree (2026-08-27 audit) ──────
+//
+// A self-hosted-tree page linking a root path that only content/docs serves
+// silently walks the reader out of the /self-hosted tree into SaaS-audience
+// docs — the URL looks tree-local, so nothing signals the switch. The audit
+// found 26 of these had accumulated in one window; each target below was
+// reviewed once and is DELIBERATE. A new one fails this gate: either move the
+// target to content/shared (the fix when its content is audience-neutral —
+// `guides/embedding-widget` went that way), reword the sentence, or add the
+// target here with a rationale.
+//
+// The opposite direction (a docs-tree page linking "/self-hosted/...") is not
+// gated: there the URL itself announces the audience switch.
+//
+// Entries marked "shared-candidate" have audience-neutral SUBJECTS but their
+// content still speaks env-vars/CLI — move each to content/shared when it gets
+// an audience-branching pass, then delete its entry.
+const CROSS_AUDIENCE_ALLOWED = new Set([
+  "/getting-started/hosted", //          deliberate "prefer hosted?" pointer from quick-start
+  "/guides/actions", //                  shared-candidate: action framework works self-hosted
+  "/guides/billing-and-plans", //        deliberate contrast link from self-hosted-billing
+  "/guides/caching", //                  shared-candidate: cache cockpit exists self-hosted
+  "/guides/choosing-an-integration", //  shared-candidate: integration chooser is surface-neutral
+  "/guides/integrations", //             shared-candidate: integrations catalog applies self-hosted
+  "/guides/mcp", //                      shared-candidate: hosted + self-hosted already share the page via tabs
+  "/guides/signup", //                   deliberate contrast link from self-serve-signup
+  "/guides/slack", //                    shared-candidate: Slack works self-hosted (own app)
+  "/guides/social-providers", //         shared-candidate: Better Auth social login works self-hosted
+  "/guides/troubleshooting", //          shared-candidate: most steps apply self-hosted
+  "/platform-ops/encryption-key-rotation", // shared-candidate: ATLAS_ENCRYPTION_KEYS rotation applies self-hosted
+  "/security/row-level-security", //     shared-candidate: RLS is core, not SaaS
 ]);
 
 const repoRoot = resolve(import.meta.dir, "..");
@@ -333,6 +373,9 @@ interface FoundLink {
   readonly target: string;
   /** Mounts this occurrence renders on. */
   readonly audiences: readonly Audience[];
+  /** From an <AudienceLink> attribute — cross-audience by explicit construction,
+   * so exempt from the CROSS_AUDIENCE_ALLOWED gate. */
+  readonly fromAudienceLink?: boolean;
 }
 
 // Markdown link/image target: `](target)` or `](target "title")`.
@@ -442,9 +485,20 @@ function extractLinks(page: Page): FoundLink[] {
     for (const m of line.matchAll(AUDIENCE_LINK_TAG)) {
       const saasHref = audienceLinkAttr(m[1], "saas");
       const shHref = audienceLinkAttr(m[1], "selfHosted");
-      if (saasHref) links.push({ line: lineNo, target: saasHref, audiences: ["saas"] });
+      if (saasHref)
+        links.push({
+          line: lineNo,
+          target: saasHref,
+          audiences: ["saas"],
+          fromAudienceLink: true,
+        });
       if (shHref)
-        links.push({ line: lineNo, target: shHref, audiences: ["self-hosted"] });
+        links.push({
+          line: lineNo,
+          target: shHref,
+          audiences: ["self-hosted"],
+          fromAudienceLink: true,
+        });
     }
     // Mask the AudienceLink tags so their attrs aren't re-extracted below.
     const masked = line.replace(AUDIENCE_LINK_TAG, "<AudienceLink>");
@@ -545,7 +599,7 @@ function checkAnchor(
 
 for (const page of [...docsPages, ...sharedPages, ...selfHostedPages]) {
   for (const found of extractLinks(page)) {
-    const { target, line, audiences } = found;
+    const { target, line, audiences, fromAudienceLink } = found;
     if (target === "" || isExternal(target)) continue;
 
     const hashAt = target.indexOf("#");
@@ -570,6 +624,20 @@ for (const page of [...docsPages, ...sharedPages, ...selfHostedPages]) {
           page,
           line,
           `broken link "${target}" — no page at "${path}"`,
+          mount.audience,
+        );
+        continue;
+      }
+      if (
+        page.tree === "self-hosted" &&
+        targetPage.tree === "docs" &&
+        !fromAudienceLink &&
+        !CROSS_AUDIENCE_ALLOWED.has(path)
+      ) {
+        violation(
+          page,
+          line,
+          `cross-audience link "${target}" — a self-hosted page linking a SaaS-only root path silently switches the reader's audience. Move the target to content/shared, reword, or allowlist it in CROSS_AUDIENCE_ALLOWED (scripts/check-docs-links.ts) with a rationale`,
           mount.audience,
         );
         continue;

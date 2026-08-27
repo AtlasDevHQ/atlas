@@ -887,6 +887,33 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+  # ⚠️ READING A RED api-tests JOB (#5395)
+  #
+  # A preempted shard and a slow one look identical in the GitHub UI, and the
+  # distinction is the one everyone gets wrong first: the JOB conclusion is
+  # `failure` either way, but a preempted shard's TEST STEP conclusion is
+  # `cancelled` — usually with `The runner has received a shutdown signal` /
+  # `The operation was canceled` and zero `(fail)` lines. Check the step, not
+  # the job:
+  #
+  #   gh api repos/AtlasDevHQ/atlas/actions/runs/<run>/jobs \
+  #     --jq '.jobs[]|select(.name|startswith("api-tests"))|
+  #           "\(.name) job=\(.conclusion) \([.steps[]|select(.name|startswith("Test"))|.conclusion]|join(","))"'
+  #
+  # `cancelled` step  -> runner loss. Re-run; the suite is not the cause.
+  # `failure` step    -> a real failing assertion. Read the log.
+  #
+  # Deliberately NO `timeout-minutes` here: a cap would convert an ambiguous
+  # cancellation into a definite one and destroy exactly this signal.
+  #
+  # History: this ran at 11.8% of CI runs losing an api-tests job (14/119 runs,
+  # 9 of them outright runner loss, 11/14 concentrated on the long-pole shard
+  # 1/4). Regenerating test-timings.json (#5383, landed #5397) flattened the
+  # shard spread from 2.52x to ~1.2x, and the re-take over the following 166
+  # runs measured 3.0% (5 runs) with ZERO cancelled test steps — every survivor
+  # a genuine assertion failure. If this climbs again, compare the LONGEST
+  # shard, whichever number it now carries: a rebalance moves which files sit
+  # where, so the label is not stable across one.
   api-tests:
     name: api-tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest

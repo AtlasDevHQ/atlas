@@ -24,10 +24,11 @@
  *                expecting isolation on their own infrastructure.
  *
  * `tryCreateByocPythonBackend` (#3410) is the Python-tool counterpart with the
- * same tri-state contract, plus a capability gate: only providers in
- * `PYTHON_CAPABLE_PROVIDERS` can run Python (see that constant for why), and
- * an incapable provider is *not engaged* for Python — the tool falls through
- * to the operator chain while explore stays on the org's account. Python
+ * same tri-state contract, plus a capability gate: only providers whose
+ * runtime entry declares `createPython` can run Python (see
+ * `providerSupportsPython`), and an incapable provider is *not engaged* for
+ * Python — the tool falls through to the operator chain while explore stays
+ * on the org's account. Python
  * backends are per-request (python.ts builds a fresh one each call and
  * re-reads credentials), so unlike explore there is no cached backend to
  * drain on credential edits.
@@ -45,11 +46,20 @@ import {
   type SandboxProviderKey,
 } from "@useatlas/schemas";
 import type { ExploreBackend } from "@atlas/api/lib/tools/backends/types";
-import type { PythonBackend, PythonResult } from "@atlas/api/lib/tools/python";
+import type {
+  PythonBackend,
+  PythonResult,
+  RechartsChart,
+} from "@atlas/api/lib/tools/python";
 import type { PythonSandboxOptions } from "@atlas/api/lib/tools/python-sandbox";
 import type { VercelSandboxAccessOverride } from "@atlas/api/lib/tools/explore-sandbox";
 import type { SandboxNetworkPolicy } from "@atlas/api/lib/tools/backends/network-allowlist";
 import { redactedSecret } from "@atlas/api/lib/tools/backends/detect";
+import {
+  MAX_OUTPUT,
+  PYTHON_OUTPUT_TOO_LARGE_ERROR,
+} from "@atlas/api/lib/tools/backends/shared";
+import { PYTHON_FILE_TRANSPORT_WRAPPER } from "@atlas/api/lib/tools/python-wrapper";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   getSandboxCredentialByProvider,
@@ -127,9 +137,43 @@ export type ModuleLoader = (specifier: string) => Promise<unknown>;
 
 const dynamicImport: ModuleLoader = (specifier) => import(specifier);
 
+/**
+ * Structural mirrors of the `@useatlas/plugin-sdk` Python surface (#3414).
+ *
+ * Restated rather than imported for the same reason the SDK restates the host
+ * types: `@atlas/api` does not depend on the published plugin SDK, and a
+ * runtime that imported it would make an optional package a hard dependency of
+ * every deployment. The SDK is the contract's home — keep these in step with
+ * `PluginPythonOptions` / `PluginPythonBackend` there.
+ */
+type PluginSandboxNetworkPolicy =
+  | { readonly mode: "deny-all" }
+  | { readonly mode: "allow-all" }
+  | { readonly mode: "allowlist"; readonly hosts: readonly string[] };
+
+interface PluginPythonOptionsLike {
+  readonly wrapperSource: string;
+  readonly timeoutMs: number;
+  readonly maxOutputBytes: number;
+  readonly networkPolicy?: PluginSandboxNetworkPolicy;
+  readonly scrubErrorDetail?: (detail: string) => string;
+}
+
+interface PluginPythonBackendLike {
+  exec(
+    code: string,
+    data?: { columns: string[]; rows: unknown[][] },
+  ): Promise<unknown>;
+  close?(): Promise<void>;
+}
+
 interface SandboxPluginLike {
   sandbox: {
     create(semanticRoot: string): Promise<ExploreBackend> | ExploreBackend;
+    createPython?(
+      options: PluginPythonOptionsLike,
+    ): Promise<PluginPythonBackendLike> | PluginPythonBackendLike;
+    pythonEgressControl?: "enforced" | "unsupported";
   };
 }
 
@@ -157,12 +201,13 @@ interface ProviderRuntime {
    * Optional — the presence of this method IS the provider's Python
    * capability (`providerSupportsPython` derives from it), so adding Python
    * support for a provider is a single edit to its entry here and capability
-   * can never drift from implementation. Python needs more than the
-   * explore-shaped plugin exec surface (file upload, an interpreter, package
-   * install, the per-request egress allowlist #2927), which is why
-   * e2b/daytona/railway — whose backends come from sandbox plugins with an
-   * explore-only contract — don't carry it yet (plugin-SDK capability work
-   * split out of #3410).
+   * can never drift from implementation.
+   *
+   * vercel runs the in-tree backend directly; e2b and daytona reach the same
+   * wrapper through the plugin SDK's Python surface (#3414), threaded in by
+   * {@link pluginRuntime}. railway deliberately does NOT declare it — the
+   * plugin cannot block outbound traffic, which interacts with the allowlist
+   * semantics in a way that is its own decision (#3414, out of scope).
    */
   createPython?(
     options: ByocPythonOptions,
@@ -187,36 +232,259 @@ function vercelAccessOverride(
   };
 }
 
+/** Default Python execution timeout in ms — matches python-sandbox.ts. */
+const DEFAULT_PYTHON_TIMEOUT_MS = 30_000;
+
+/**
+ * The wall-clock budget a single plugin `exec` gets, read from the same
+ * `ATLAS_PYTHON_TIMEOUT` the in-tree backends honour. Passed down explicitly
+ * rather than left to each plugin's own default, so "timeout parity with the
+ * reference backend" (#4665) is a property of the host, not of three plugins
+ * agreeing by coincidence.
+ */
+function pythonTimeoutMs(): number {
+  return (
+    parseInt(process.env.ATLAS_PYTHON_TIMEOUT ?? String(DEFAULT_PYTHON_TIMEOUT_MS), 10) ||
+    DEFAULT_PYTHON_TIMEOUT_MS
+  );
+}
+
+/**
+ * Translate the host's `@vercel/sandbox`-shaped policy into the
+ * provider-neutral `{ mode, hosts }` the plugin contract speaks. Plugins must
+ * not have to parse a third-party SDK's type to learn which hosts they may
+ * reach.
+ *
+ * Fail-closed on anything unrecognised: an unknown shape becomes `deny-all`,
+ * never `allow-all`, preserving network-allowlist.ts's invariant across the
+ * boundary.
+ */
+function toPluginNetworkPolicy(
+  policy: SandboxNetworkPolicy | undefined,
+): PluginSandboxNetworkPolicy {
+  if (policy === "allow-all") return { mode: "allow-all" };
+  if (policy === "deny-all" || policy == null) return { mode: "deny-all" };
+  if (typeof policy === "object" && "allow" in policy) {
+    const hosts = Object.keys((policy as { allow?: Record<string, unknown> }).allow ?? {});
+    return hosts.length > 0 ? { mode: "allowlist", hosts } : { mode: "deny-all" };
+  }
+  log.warn(
+    { policy: typeof policy },
+    "Unrecognised sandbox network policy shape — passing deny-all to the plugin backend",
+  );
+  return { mode: "deny-all" };
+}
+
+/**
+ * Coerce whatever a plugin returned from `exec` into a `PythonResult`.
+ *
+ * Plugin backends are trust-the-author (the SDK says so), so the host does not
+ * take the shape on faith: a plugin that returns `undefined`, a string, or a
+ * `success: true` object with a non-string `output` would otherwise flow
+ * straight into the agent's tool output and into the UI's chart renderer. A
+ * malformed result becomes a failure result naming the plugin, which is
+ * diagnosable; it never becomes a silent success.
+ */
+function coercePluginPythonResult(raw: unknown, packageName: string): PythonResult {
+  if (raw == null || typeof raw !== "object" || !("success" in raw)) {
+    return {
+      success: false,
+      error: `${packageName} returned a malformed Python result (no "success" field) — this is a plugin defect, not a credentials problem.`,
+    };
+  }
+  const r = raw as Record<string, unknown>;
+  if (r.success !== true) {
+    return {
+      success: false,
+      error: typeof r.error === "string" && r.error ? r.error : `${packageName} Python execution failed.`,
+      ...(typeof r.output === "string" ? { output: r.output } : {}),
+    };
+  }
+  const charts = Array.isArray(r.charts)
+    ? r.charts.filter(
+        (c): c is { base64: string; mimeType: "image/png" } =>
+          c != null &&
+          typeof c === "object" &&
+          typeof (c as { base64?: unknown }).base64 === "string",
+      ).map((c) => ({ base64: c.base64, mimeType: "image/png" as const }))
+    : [];
+  return {
+    success: true,
+    ...(typeof r.output === "string" ? { output: r.output } : {}),
+    ...(r.table != null && typeof r.table === "object"
+      ? { table: r.table as { columns: string[]; rows: unknown[][] } }
+      : {}),
+    ...(charts.length > 0 ? { charts } : {}),
+    ...(Array.isArray(r.rechartsCharts)
+      ? { rechartsCharts: r.rechartsCharts as RechartsChart[] }
+      : {}),
+  };
+}
+
+/**
+ * Total bytes a result would cost the agent's context: the structured payload
+ * plus the base64 charts. The in-tree Vercel backend caps the same sum at
+ * MAX_OUTPUT; enforcing it here too is what makes the cap a property of the
+ * *tool seam* rather than of each plugin's diligence (#4665).
+ */
+function pythonResultBytes(result: PythonResult): number {
+  const charts = result.success ? (result.charts ?? []) : [];
+  const chartBytes = charts.reduce((n, c) => n + c.base64.length, 0);
+  const rest = JSON.stringify({ ...result, ...(result.success ? { charts: undefined } : {}) });
+  return rest.length + chartBytes;
+}
+
+/**
+ * Tear down a plugin Python backend without letting the teardown fail the call
+ * whose result is already in hand. Best-effort, but never silent: a provider
+ * that keeps failing to release sandboxes is running up the org's bill.
+ */
+async function closeQuietly(
+  backend: PluginPythonBackendLike,
+  packageName: string,
+): Promise<void> {
+  if (typeof backend.close !== "function") return;
+  try {
+    await backend.close();
+  } catch (err) {
+    log.warn(
+      { provider: packageName, err: err instanceof Error ? err.message : String(err) },
+      "Failed to release the BYOC Python sandbox after execution — it may linger on the org's provider account until the provider reaps it",
+    );
+  }
+}
+
 /** Build via a published `@useatlas/*` sandbox plugin factory. */
 function pluginRuntime(
   packageName: string,
   sdkModule: string,
   factoryExport: string,
   mapConfig: (creds: Record<string, unknown>) => Record<string, unknown>,
+  /**
+   * Whether this provider's plugin ships a Python surface (#4665).
+   *
+   * Declared here rather than derived from the loaded plugin because
+   * `providerSupportsPython` answers *before* any credential read or module
+   * load — and because deriving it from the installed package would mean an
+   * outdated plugin silently falls through to the operator chain, which is the
+   * exact residency leak this work removes. `SandboxProviderKey` is a closed
+   * union, so there is no third-party provider this could fail to reach; a
+   * table entry whose plugin turns out to lack the method fails closed with a
+   * message naming the upgrade.
+   */
+  shipsPython = false,
 ): ProviderRuntime {
-  return {
+  /**
+   * Load the package, build the plugin from the org's credentials, and check
+   * the shape. One site for both the explore and Python paths: an incompatible
+   * plugin version must be reported as a plugin-version problem on either, and
+   * a second copy of the guard is how those two messages drift apart.
+   */
+  async function buildPlugin(
+    credentials: Record<string, unknown>,
+    load: ModuleLoader,
+  ): Promise<SandboxPluginLike> {
+    const mod = (await load(packageName)) as Record<string, unknown>;
+    const factory = mod[factoryExport];
+    if (typeof factory !== "function") {
+      throw new Error(
+        `${packageName} does not export ${factoryExport}() — incompatible plugin version installed`,
+      );
+    }
+    const plugin = factory(mapConfig(credentials)) as SandboxPluginLike;
+    // Same guard one level deeper: a factory from an incompatible plugin
+    // version could return a differently-shaped object, and without this
+    // check the resulting TypeError would be misreported to the admin as
+    // a credentials problem.
+    if (typeof plugin?.sandbox?.create !== "function") {
+      throw new Error(
+        `${packageName}'s ${factoryExport}() returned a plugin without sandbox.create() — incompatible plugin version installed`,
+      );
+    }
+    return plugin;
+  }
+
+  const runtime: ProviderRuntime = {
     requiredModules: [packageName, sdkModule],
     async create(semanticRoot, credentials, load) {
-      const mod = (await load(packageName)) as Record<string, unknown>;
-      const factory = mod[factoryExport];
-      if (typeof factory !== "function") {
-        throw new Error(
-          `${packageName} does not export ${factoryExport}() — incompatible plugin version installed`,
-        );
-      }
-      const plugin = factory(mapConfig(credentials)) as SandboxPluginLike;
-      // Same guard one level deeper: a factory from an incompatible plugin
-      // version could return a differently-shaped object, and without this
-      // check the resulting TypeError would be misreported to the admin as
-      // a credentials problem.
-      if (typeof plugin?.sandbox?.create !== "function") {
-        throw new Error(
-          `${packageName}'s ${factoryExport}() returned a plugin without sandbox.create() — incompatible plugin version installed`,
-        );
-      }
+      const plugin = await buildPlugin(credentials, load);
       return await plugin.sandbox.create(semanticRoot);
     },
   };
+
+  if (!shipsPython) return runtime;
+
+  runtime.createPython = async (options, credentials, load) => {
+    const plugin = await buildPlugin(credentials, load);
+    if (typeof plugin.sandbox.createPython !== "function") {
+      // Capability is declared by this table, so an installed-but-older plugin
+      // package is the one way host and plugin can disagree. Fail closed and
+      // name the fix: falling through to the operator chain here is exactly
+      // the residency leak #4665 exists to close, so "upgrade the package" is
+      // a better outcome than "your Python quietly ran in iad1".
+      throw new Error(
+        `${packageName} does not implement sandbox.createPython() — upgrade ${packageName} to a version with Python support, or select a different sandbox provider`,
+      );
+    }
+
+    const networkPolicy = toPluginNetworkPolicy(options.networkPolicy);
+    // Read the PLUGIN's declaration, not a second copy of the answer kept here.
+    // The plugin is the only thing that knows whether it applied the policy, so
+    // a host-side table would be a claim about code it does not own — and the
+    // two would disagree the moment a provider gained real enforcement. Absent
+    // is treated as "unsupported": the honest default is to assume no bound.
+    const egressControl = plugin.sandbox.pythonEgressControl ?? "unsupported";
+    if (networkPolicy.mode !== "deny-all" && egressControl !== "enforced") {
+      // Said out loud on every request that asks for one. The alternative is a
+      // per-tenant egress bound the admin page implies is in force and that
+      // nothing applies.
+      log.warn(
+        { provider: packageName, mode: networkPolicy.mode },
+        "Provider does not enforce a Python sandbox egress policy — the requested REST allowlist is NOT applied on this provider (explore and Python still run on the org's own account)",
+      );
+    }
+
+    const backend = await plugin.sandbox.createPython({
+      wrapperSource: PYTHON_FILE_TRANSPORT_WRAPPER,
+      timeoutMs: pythonTimeoutMs(),
+      maxOutputBytes: MAX_OUTPUT,
+      networkPolicy,
+      scrubErrorDetail: (detail) => scrubCredentialValues(detail, credentials),
+    });
+    if (typeof backend?.exec !== "function") {
+      throw new Error(
+        `${packageName}'s sandbox.createPython() returned a backend without exec() — incompatible plugin version installed`,
+      );
+    }
+
+    return {
+      exec: async (code, data) => {
+        try {
+          const result = coercePluginPythonResult(
+            await backend.exec(code, data),
+            packageName,
+          );
+          // The cap belongs at the seam, not inside the plugin: the plugin is
+          // asked to stop early (maxOutputBytes) but is not trusted to.
+          if (pythonResultBytes(result) > MAX_OUTPUT) {
+            return { success: false, error: PYTHON_OUTPUT_TOO_LARGE_ERROR };
+          }
+          return result;
+        } finally {
+          // BYOC Python backends are built fresh per request (python.ts
+          // constructs one per call and re-reads credentials), and the tool
+          // execs exactly once — so nothing will ever reuse this sandbox. Left
+          // running it would sit on the ORG's account until the provider's own
+          // reaper got to it, which is their bill and their idle VM, not ours.
+          // The unused-reuse case is what makes closing here correct; the
+          // in-tree Vercel backend caches across calls and so does not.
+          void closeQuietly(backend, packageName);
+        }
+      },
+    };
+  };
+
+  return runtime;
 }
 
 const PROVIDER_RUNTIMES: Record<SandboxProviderKey, ProviderRuntime> = {
@@ -246,8 +514,8 @@ const PROVIDER_RUNTIMES: Record<SandboxProviderKey, ProviderRuntime> = {
         scrubErrorDetail: (detail) => scrubCredentialValues(detail, credentials),
       });
     },
-    // Python runs on the same in-tree @vercel/sandbox path as explore — see
-    // the interface doc for why only vercel carries this method today.
+    // Python runs on the same in-tree @vercel/sandbox path as explore; the
+    // plugin providers reach the same wrapper via pluginRuntime's Python arm.
     async createPython(options, credentials, load) {
       const mod = (await load("@atlas/api/lib/tools/python-sandbox")) as {
         createPythonSandboxBackend(options?: PythonSandboxOptions): PythonBackend;
@@ -259,9 +527,18 @@ const PROVIDER_RUNTIMES: Record<SandboxProviderKey, ProviderRuntime> = {
       });
     },
   },
-  e2b: pluginRuntime("@useatlas/e2b", "e2b", "e2bSandboxPlugin", (creds) => ({
-    apiKey: creds.apiKey,
-  })),
+  // Python (#4665): E2B runs the host's wrapper inside its Firecracker microVM
+  // on the ORG's E2B account. Whether the per-request egress allowlist is
+  // actually applied is the plugin's own declaration
+  // (`sandbox.pythonEgressControl`), read at construction — the host does not
+  // keep a second copy of that answer.
+  e2b: pluginRuntime(
+    "@useatlas/e2b",
+    "e2b",
+    "e2bSandboxPlugin",
+    (creds) => ({ apiKey: creds.apiKey }),
+    true,
+  ),
   daytona: pluginRuntime(
     "@useatlas/daytona",
     "@daytonaio/sdk",
@@ -271,7 +548,21 @@ const PROVIDER_RUNTIMES: Record<SandboxProviderKey, ProviderRuntime> = {
       ...(typeof creds.apiUrl === "string" && creds.apiUrl
         ? { apiUrl: creds.apiUrl }
         : {}),
+      // Optional passthrough, same shape as apiUrl: the connect form does not
+      // collect a region today, but a stored blob that carries one must reach
+      // the plugin — `target` is what makes a Daytona connection an EU/APAC
+      // answer rather than only an isolation one, and silently dropping it
+      // would place the org's sandbox in Daytona's default region while the
+      // admin believed otherwise.
+      ...(typeof creds.target === "string" && creds.target
+        ? { target: creds.target }
+        : {}),
     }),
+    // Python (#4665). What Daytona controls is placement — its `target` region
+    // selector is what makes a Daytona BYOC connection an EU/APAC residency
+    // answer for Python, which is the point of turning this on. Its egress
+    // posture is declared by the plugin itself, not asserted here.
+    true,
   ),
   // Both fields passed explicitly — the plugin's env-var fallback
   // (RAILWAY_API_TOKEN / RAILWAY_ENVIRONMENT_ID) must never fill in for an
@@ -549,12 +840,17 @@ export async function tryCreateByocBackend(
  * Whether a BYOC provider's selection covers the Python tool (#3410).
  * Derived from the runtime table — a provider supports Python exactly when
  * its `ProviderRuntime` declares `createPython`, so capability can never
- * drift from implementation (see the interface doc for why only vercel
- * carries it today). An unsupported provider is *not engaged* for Python:
- * the tool falls through to the operator chain (and the docs say so) rather
- * than failing closed — the org's explore isolation still applies, and
- * hard-erroring Python for every e2b/daytona/railway org would break the
- * tool with no recovery path the org controls.
+ * drift from implementation. vercel, e2b and daytona declare it; railway does
+ * not (#3414 left its egress question open).
+ *
+ * An unsupported provider is *not engaged* for Python: the tool falls through
+ * to the operator chain (and the docs say so) rather than failing closed —
+ * the org's explore isolation still applies, and hard-erroring Python for
+ * every railway org would break the tool with no recovery path the org
+ * controls. Note the asymmetry this creates once a provider DOES declare
+ * support: from that point a broken plugin, bad credentials or an outdated
+ * plugin package fail the request closed rather than falling through, which
+ * is the residency guarantee #4665 asked for.
  */
 export function providerSupportsPython(provider: SandboxProviderKey): boolean {
   return PROVIDER_RUNTIMES[provider].createPython !== undefined;

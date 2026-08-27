@@ -10,10 +10,13 @@
  *
  * The things that need a live database, each a claim the module makes in prose:
  *
- *   1. **Is corroboration really distinct EPISODES?** `COUNT(DISTINCT
- *      ed.to_episode_id)` is the difference between "three sources agree" and
- *      "one source was written three times", and it is the number a reviewer
- *      leans on hardest.
+ *   1. **Is corroboration really distinct SOURCES?** Since #5487 the unit is
+ *      the episode's authoring principal, not the episode — the difference
+ *      between "three sources agree" and "one source was written three times",
+ *      which is the number a reviewer leans on hardest and the one the column
+ *      header has always called "Sources". Both halves need a live database:
+ *      that a duplicate edge row does not inflate it, and that two episodes by
+ *      one author collapse to one.
  *   2. **Does the total survive paging past the end?** The empty-window
  *      re-count exists because `COUNT(*) OVER ()` cannot report on an empty
  *      window; only a real query proves the two agree.
@@ -127,14 +130,29 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     sourceId: string;
     body?: string;
     visibleTo?: readonly string[];
+    /**
+     * The authoring principal's vendor id, composed into `slack:<actor>` (#5487).
+     *
+     * Defaults to `U1` so every existing fixture keeps the actor it always had.
+     * Override it wherever a case needs two episodes to be two SOURCES rather
+     * than two episodes — since #5487 that is the difference the corroboration
+     * count reports.
+     */
+    sourceActor?: string;
     /** Defaults to the shared {@link WS}; override to seed an isolated workspace. */
     workspaceId?: string;
   }): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_episodes (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
-       VALUES ($1, 'slack', $2, 'U1', $3, now(), $4::text[])
+       VALUES ($1, 'slack', $2, $5, $3, now(), $4::text[])
        RETURNING id`,
-      [opts.workspaceId ?? WS, opts.sourceId, opts.body ?? "evidence", opts.visibleTo ?? ["org"]],
+      [
+        opts.workspaceId ?? WS,
+        opts.sourceId,
+        opts.body ?? "evidence",
+        opts.visibleTo ?? ["org"],
+        opts.sourceActor ?? "U1",
+      ],
     );
     return rows[0]!.id;
   }
@@ -193,14 +211,20 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // 1. Corroboration counts distinct EVIDENCE, not edge rows
+  // 1. Corroboration counts distinct SOURCES — not edge rows, not episodes
   // ══════════════════════════════════════════════════════════════════
 
   it(
-    "counts distinct provenance episodes, not edge rows",
+    "counts distinct sources, not edge rows",
     async () => {
-      const ep1 = await seedEpisode({ sourceId: "corr-1" });
-      const ep2 = await seedEpisode({ sourceId: "corr-2" });
+      // ⚠️ Re-pointed at #5487. The unit used to be the EPISODE, and both
+      // fixtures below were authored by the helper's default `U1` — so this
+      // case read `2` for what is one person speaking twice. The duplicate-edge
+      // half of the assertion is unchanged and still load-bearing; the actors
+      // are now distinct so the case still means "two independent pieces of
+      // evidence", which is what it was always for.
+      const ep1 = await seedEpisode({ sourceId: "corr-1", sourceActor: "U-alice" });
+      const ep2 = await seedEpisode({ sourceId: "corr-2", sourceActor: "U-bob" });
       const fact = await seedFact({ subject: "Corroborated", episodeId: ep1 });
 
       await edge("provenance", fact, ep1);
@@ -218,6 +242,31 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       });
       expect(page.candidates).toHaveLength(1);
       expect(page.candidates[0]!.corroborationCount).toBe(2);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "counts ONE source when one person is the author of two episodes (#5487)",
+    async () => {
+      // The self-echo half. Two separate episodes, two provenance edges, one
+      // voice — the reviewer must read `1`. Before #5487 this surface reported
+      // `2` under a column header that says "Sources".
+      const ep1 = await seedEpisode({ sourceId: "echo-1", sourceActor: "U-alice" });
+      const ep2 = await seedEpisode({ sourceId: "echo-2", sourceActor: "U-alice" });
+      const fact = await seedFact({ subject: "SelfEchoed", episodeId: ep1 });
+
+      await edge("provenance", fact, ep1);
+      await edge("provenance", fact, ep2);
+
+      const page = await loadFactCandidates(pool, {
+        ctx: reviewer(),
+        search: "SelfEchoed",
+        limit: 50,
+        offset: 0,
+      });
+      expect(page.candidates).toHaveLength(1);
+      expect(page.candidates[0]!.corroborationCount).toBe(1);
     },
     PG_TEST_TIMEOUT_MS,
   );

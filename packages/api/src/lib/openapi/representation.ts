@@ -126,6 +126,23 @@ export interface BuildRepresentationOptions {
    * Kept as the seam for when in-sandbox composition lands.
    */
   readonly pythonCompositionEnabled?: boolean;
+  /**
+   * Whether the chat surface this prompt is being built for can render the
+   * confirm-before-write banner (#5495). `false` swaps the header's
+   * writes-need-confirmation paragraph for one saying writes are unavailable
+   * here — otherwise the prompt promises a confirm flow that the tool will then
+   * refuse, which is the "told about a tool it cannot complete" the bug is
+   * about.
+   *
+   * **Defaults to `true`, and that asymmetry is deliberate.** This is PROMPT
+   * TEXT, not the gate; the enforcing default is closed
+   * (`createExecuteRestOperationTool`'s `writeConfirmationUi`). A wrong value
+   * here can only mis-describe, never permit — so the default preserves the
+   * existing prompt byte-for-byte for the callers that never opt out (tests
+   * today), while `agent.ts` — the one production caller — always passes the
+   * resolved value explicitly.
+   */
+  readonly writeConfirmationUi?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -207,13 +224,23 @@ function renderDatasourceHeader(
         `(more than one REST datasource is connected).`,
     );
   }
+  // #5495 — the write paragraph follows the surface. Emitting the confirm-flow
+  // text to a surface with no banner is what let the agent stage a write, tell
+  // the user to confirm, and stop with nothing to confirm against.
   out.push(
-    `**Reads run; writes need opt-in + confirmation.** GET operations execute and ` +
-      `return data. Write operations (POST/PATCH/PUT/DELETE) only run if the datasource's ` +
-      `admin has allowlisted them — a non-allowlisted write is rejected. An allowlisted ` +
-      `write does NOT run immediately: \`executeRestOperation\` returns \`needs_confirmation\`, ` +
-      `you tell the user exactly what it will do and stop, and the write fires only after ` +
-      `they confirm in the chat. Never claim a write happened until you see a confirmed result.`,
+    options.writeConfirmationUi === false
+      ? `**Reads run; writes are unavailable in this chat.** GET operations execute and ` +
+        `return data. This chat cannot show a confirm-before-write prompt, so ` +
+        `\`executeRestOperation\` refuses every write (POST/PATCH/PUT/DELETE, and any GET the ` +
+        `datasource flags as side-effecting) — nothing is ` +
+        `staged and nothing runs. Do not offer a write, do not ask the user to confirm one, and ` +
+        `never claim one happened; tell them plainly it can be run from the Atlas web app.`
+      : `**Reads run; writes need opt-in + confirmation.** GET operations execute and ` +
+        `return data. Write operations (POST/PATCH/PUT/DELETE) only run if the datasource's ` +
+        `admin has allowlisted them — a non-allowlisted write is rejected. An allowlisted ` +
+        `write does NOT run immediately: \`executeRestOperation\` returns \`needs_confirmation\`, ` +
+        `you tell the user exactly what it will do and stop, and the write fires only after ` +
+        `they confirm in the chat. Never claim a write happened until you see a confirmed result.`,
   );
   if (options.pythonCompositionEnabled) {
     out.push(

@@ -27,13 +27,22 @@ import { z } from "zod";
 import {
   createPlugin,
   collectSemanticFiles,
+  createFileTransportPythonBackend,
+  directoryEntryNames,
+  installPythonPackages,
+  isNotFoundSdkError,
   runHealthCheckWithTimeout,
+  shellQuote,
 } from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
   PluginExploreBackend,
   PluginExecResult,
   PluginHealthResult,
+  PluginPythonBackend,
+  PluginPythonOptions,
+  PythonSandboxRunResult,
+  PythonSandboxSession,
 } from "@useatlas/plugin-sdk";
 
 // ---------------------------------------------------------------------------
@@ -47,6 +56,15 @@ const E2BSandboxConfigSchema = z.object({
   template: z.string().optional(),
   /** Command timeout in seconds. */
   timeoutSec: z.number().int().positive().optional().default(30),
+  /**
+   * Packages installed into the sandbox before the first Python execution.
+   * Set to `[]` when the configured `template` already bakes them in — the
+   * install is the slowest part of a cold Python run.
+   */
+  pythonPackages: z
+    .array(z.string())
+    .optional()
+    .default(["pandas", "numpy", "matplotlib", "scipy", "scikit-learn", "statsmodels"]),
 });
 
 export type E2BSandboxConfig = z.infer<typeof E2BSandboxConfigSchema>;
@@ -104,6 +122,104 @@ async function createE2BSandbox(config: E2BSandboxConfig): Promise<any> {
     apiKey: config.apiKey,
     ...(config.template ? { template: config.template } : {}),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Python execution (#4665)
+// ---------------------------------------------------------------------------
+
+/** The sandbox directory Python executions are staged under. */
+const E2B_PYTHON_WORK_DIR = "/home/user/atlas-python";
+
+/**
+ * Adapt an E2B sandbox to the SDK's {@link PythonSandboxSession} primitives.
+ * The file-transport protocol itself (argv order, env vars, chart readback,
+ * output cap, timeout) lives in the SDK — this only maps four operations onto
+ * the E2B API.
+ */
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
+function e2bPythonSession(
+  sandbox: any,
+  log?: { warn(msg: string): void },
+): PythonSandboxSession {
+  return {
+    workDir: E2B_PYTHON_WORK_DIR,
+    async mkdir(path: string): Promise<void> {
+      await sandbox.files.makeDir(path);
+    },
+    async writeFile(path: string, content: string): Promise<void> {
+      await sandbox.files.write(path, content);
+    },
+    async run(
+      command: string,
+      args: string[],
+      env: Record<string, string>,
+      timeoutMs: number,
+    ): Promise<PythonSandboxRunResult> {
+      const line = [command, ...args].map(shellQuote).join(" ");
+      try {
+        const result = await sandbox.commands.run(line, {
+          cwd: E2B_PYTHON_WORK_DIR,
+          envs: env,
+          timeoutMs,
+        });
+        return {
+          stdout: result.stdout ?? "",
+          stderr: result.stderr ?? "",
+          exitCode: result.exitCode ?? 0,
+        };
+      } catch (err) {
+        // E2B throws on non-zero exit. That is an ordinary Python failure, not
+        // an infrastructure fault, and the wrapper's result file is usually
+        // already written — so report it as a completed run and let the shared
+        // backend decide from the result file, rather than tearing the sandbox
+        // down and losing the diagnosis.
+        const e = err as { exitCode?: number; stdout?: string; stderr?: string; message?: string };
+        if (typeof e?.exitCode === "number") {
+          return {
+            stdout: e.stdout ?? "",
+            stderr: e.stderr ?? e.message ?? "",
+            exitCode: e.exitCode,
+          };
+        }
+        throw err;
+      }
+    },
+    async readFile(path: string): Promise<Uint8Array | null> {
+      try {
+        const bytes = await sandbox.files.read(path, { format: "bytes" });
+        return bytes == null ? null : new Uint8Array(bytes);
+      } catch (err) {
+        // A missing result file is a normal outcome (the interpreter died
+        // before the wrapper wrote one) and the shared backend handles `null`;
+        // anything else is a real read failure and must propagate.
+        if (isNotFoundSdkError(err)) return null;
+        throw err;
+      }
+    },
+    async listDir(path: string): Promise<string[]> {
+      try {
+        const entries = await sandbox.files.list(path);
+        return directoryEntryNames(entries);
+      } catch (err) {
+        if (isNotFoundSdkError(err)) return [];
+        throw err;
+      }
+    },
+    async destroy(): Promise<void> {
+      try {
+        await sandbox.kill();
+      } catch (err) {
+        // Best-effort teardown: the sandbox is already being discarded and
+        // E2B reaps it on its own timeout, so a failure here must not mask the
+        // error that prompted the teardown — but it is still logged, because a
+        // provider that never reaps leaks the org's sandboxes silently.
+        (log ?? console).warn(
+          `[e2b-sandbox] Failed to kill Python sandbox: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +296,46 @@ export function buildE2BSandboxPlugin(
         };
       },
       priority: 90,
+
+      /**
+       * Python execution on the org's own E2B account (#4665).
+       *
+       * Built per request (the host re-reads credentials on every Python call),
+       * with the E2B sandbox itself created lazily on first `exec` by the
+       * shared backend. The wrapper — and with it the in-sandbox import guard —
+       * comes from the host in `options.wrapperSource`; this plugin supplies
+       * transport only.
+       */
+      async createPython(options: PluginPythonOptions): Promise<PluginPythonBackend> {
+        return createFileTransportPythonBackend(
+          options,
+          {
+            providerName: "E2B",
+            async createSession() {
+              const sandbox = await createE2BSandbox(config);
+              const session = e2bPythonSession(sandbox, log);
+              try {
+                await session.mkdir(E2B_PYTHON_WORK_DIR);
+                await installPythonPackages(session, config.pythonPackages, "E2B", log);
+              } catch (err) {
+                await session.destroy();
+                throw err;
+              }
+              return session;
+            },
+          },
+          log,
+        );
+      },
+
+      /**
+       * E2B exposes no per-sandbox host allowlist, so the host's per-request
+       * REST egress bound cannot be applied here — declared rather than
+       * implied by omission (#4665). E2B BYOC deployments run inside the
+       * customer's own VPC, where egress is the customer's to bound at the
+       * network layer.
+       */
+      pythonEgressControl: "unsupported",
     },
 
     security: {

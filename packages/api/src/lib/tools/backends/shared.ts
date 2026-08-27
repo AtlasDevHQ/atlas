@@ -11,6 +11,18 @@ import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
 /** Maximum bytes to read from stdout/stderr (1 MB). */
 export const MAX_OUTPUT = 1024 * 1024;
 
+/**
+ * The rejection message every Python backend uses when a result exceeds
+ * MAX_OUTPUT. One definition rather than a literal per backend with a comment
+ * claiming the literals match — the claim is what drifts.
+ *
+ * `@useatlas/plugin-sdk` keeps its own copy deliberately: it is a published
+ * package that must not depend on `@atlas/api`. The host re-checks the cap at
+ * its own seam, so the SDK's copy going stale changes a message, not a bound.
+ */
+export const PYTHON_OUTPUT_TOO_LARGE_ERROR =
+  "Python output exceeded 1 MB limit — reduce print() output or use _atlas_table for large results.";
+
 /** The notice appended to any output that was cut at the MAX_OUTPUT cap. */
 function truncationNotice(max = MAX_OUTPUT): string {
   return `\n[output truncated: exceeded ${Math.floor(max / (1024 * 1024))} MB limit]`;

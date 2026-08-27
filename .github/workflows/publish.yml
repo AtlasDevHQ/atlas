@@ -139,11 +139,13 @@ jobs:
       # Sandbox
       - name: Publish @useatlas/e2b
         if: startsWith(github.ref, 'refs/tags/e2b-v')
-        run: cd plugins/e2b && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
+        # Ordering guard: fails if a bumped @useatlas/* peer range isn't published yet
+        run: bun scripts/check-publishable-peers.ts plugins/e2b && cd plugins/e2b && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/daytona
         if: startsWith(github.ref, 'refs/tags/daytona-v')
-        run: cd plugins/daytona && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
+        # Ordering guard: fails if a bumped @useatlas/* peer range isn't published yet
+        run: bun scripts/check-publishable-peers.ts plugins/daytona && cd plugins/daytona && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/nsjail
         if: startsWith(github.ref, 'refs/tags/nsjail-v')

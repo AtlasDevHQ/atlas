@@ -56,6 +56,7 @@ import {
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
+import { corroborationCountSql } from "@atlas/api/lib/brain/actor-identity";
 import type { BrainFactTensionDirection } from "@useatlas/types";
 
 /** The database handle this module needs — see `BrainCandidateReader`. */
@@ -164,17 +165,19 @@ const COUNTERPART_COLUMNS = `f.id::text AS id,
          f.ingested_at`;
 
 /**
- * Corroboration = DISTINCT `provenance` edges, never a row count — the same
- * derivation as both owner queries, restated here because it aliases the
- * counterpart SELECT's own `f`.
+ * Corroboration = DISTINCT SOURCES behind the claim, never a row count and —
+ * since #5487 — never an edge count either.
+ *
+ * Re-observing a claim strengthens it by adding a `provenance` edge; it never
+ * duplicates the fact, so counting rows would report 1 forever. Counting the
+ * EDGES was the previous derivation and reported an inflated number: two
+ * messages from one person are two edges and one source. {@link
+ * corroborationCountSql} carries the definition of "distinct source", the
+ * three-way choice behind it, and why a machine principal is exempt; it is
+ * shared with `INSERT_PROVENANCE_EDGE_SQL`'s guard so the count and the edges
+ * cannot disagree.
  */
-const COUNTERPART_CORROBORATION = `(
-    SELECT COUNT(DISTINCT ed.to_episode_id)
-      FROM brain_edges ed
-     WHERE ed.workspace_id = f.workspace_id
-       AND ed.edge_type = 'provenance'
-       AND ed.from_fact_id = f.id
-  )::int`;
+const COUNTERPART_CORROBORATION = corroborationCountSql("f");
 
 interface TensionEdgeRow {
   readonly from_id: string | null;

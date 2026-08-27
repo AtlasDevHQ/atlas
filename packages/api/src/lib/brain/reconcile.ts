@@ -1085,6 +1085,40 @@ export const INSERT_FACT_SQL = `INSERT INTO brain_facts
  * claim's edge idempotent, so a repeated pass strengthens once and not twice;
  * the enclosing advisory lock is what makes the guard sound under concurrency.
  * `RETURNING id` is how the caller learns whether the edge was new.
+ *
+ * ## Why lock 5's *distinct source* rule is NOT enforced here (#5487)
+ *
+ * ADR-0036 §T9 lock 5: *"re-proposal strengthens (adds a provenance edge,
+ * **weighting** distinct sources so self-echo is idempotent), never duplicates;
+ * the distinct-source count is surfaced to the reviewer."*
+ *
+ * The obvious reading is that this guard should also refuse an episode whose
+ * AUTHOR already backs the claim — the same person saying the same thing on
+ * Monday and again on Friday. #5487 was written in that reading, and it is the
+ * wrong lever. Lock 5 says the edge IS added and the WEIGHTING is by source;
+ * suppressing the edge would not weight anything, it would destroy evidence —
+ * and a provenance edge is load-bearing three times over beyond the count:
+ *
+ * 1. **The decay anchor.** `staleness.ts`'s `LAST_OBSERVED_AT_SELECT` is a MAX
+ *    over the episodes on these edges. For `correction.ts`'s `re-authority` and
+ *    `pinned` verbs the anchor reset is the *only* observable effect the verb
+ *    has — the marker it writes has no reader — so a second attestation by the
+ *    same admin would write nothing, move nothing, and report success. #4939
+ *    refuses exactly that state by name: *"the verb would report an effect
+ *    nobody can observe."*
+ * 2. **Grant widening.** `promotion.ts`'s `widenGrantFromEvidence` unions the
+ *    grants of every episode on an edge. A claim restated by one person in a
+ *    wider channel would keep the narrower grant.
+ * 3. **The audit record.** The edge set is what says WHICH episodes back a
+ *    claim. "Two people" and "one person, twice" are different facts about the
+ *    world and both are worth being able to read back.
+ *
+ * So this statement is UNCHANGED, and lock 5's residue lives one layer up in
+ * `actor-identity.ts`'s `corroborationCountSql` — the number a reviewer reads,
+ * which is now a count of distinct SOURCES over exactly these edges. The edge set
+ * stays complete; the weighting stops double-counting a voice. Every writer of
+ * this statement (`extract.ts`, `warehouse-producer.ts`, `correction.ts`)
+ * therefore behaves precisely as it did.
  */
 export const INSERT_PROVENANCE_EDGE_SQL = `INSERT INTO brain_edges
          (workspace_id, edge_type, from_fact_id, to_episode_id)

@@ -68,7 +68,7 @@ void mock.module("@atlas/api/lib/durable-resume", () => ({
 // --- Latest-run-status probe (#3749) ---
 import type { LatestRunStatus } from "@atlas/api/lib/durable-session";
 import * as realDurableSession from "@atlas/api/lib/durable-session";
-import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "@atlas/api/lib/chat-surface";
+import { WRITE_CONFIRM_UI_HEADER } from "@atlas/api/lib/openapi/rest-write-confirm";
 const mockLoadLatestRunStatus: Mock<() => Promise<LatestRunStatus>> = mock(() =>
   Promise.resolve({ status: "running" as const, runId: "run-abc", parkedReason: null }),
 );
@@ -196,17 +196,18 @@ const { app } = await import("../index");
 const CONV_ID = "11111111-1111-4111-8111-111111111111";
 
 /**
- * `surface: "workspace"` sends the `x-atlas-surface` header the first-party web
- * app sends (#5496). It is what separates a web-app resume from an embeddable
- * widget resume — they hit the same route with the same body, and only the web
- * app renders the correction confirm card.
+ * `surface: "workspace"` sends the `x-atlas-write-confirm-ui` header the
+ * first-party web app sends. It is what separates a web-app resume from an
+ * embeddable-widget resume — they hit the same route with the same body, and
+ * only the web app renders the confirm cards. One header covers both the REST
+ * write banner (#5495) and the correction card (#5496).
  */
 function resumeRequest(opts: { surface?: "workspace" } = {}): Request {
   return new Request(`http://localhost/api/v1/chat/${CONV_ID}/resume`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(opts.surface ? { [ATLAS_SURFACE_HEADER]: ATLAS_WORKSPACE_SURFACE } : {}),
+      ...(opts.surface ? { [WRITE_CONFIRM_UI_HEADER]: "1" } : {}),
     },
   });
 }
@@ -326,7 +327,7 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     const names = Object.keys(arg.tools!.getAll());
     expect(
       names,
-      "a resume with no `x-atlas-surface: workspace` claim was offered correct_fact — the embeddable widget renders no confirm card, so it could stage a correction nobody can confirm (#5496)",
+      "a resume with no `x-atlas-write-confirm-ui` claim was offered correct_fact — the embeddable widget renders no confirm card, so it could stage a correction nobody can confirm (#5496)",
     ).not.toContain("correct_fact");
     // …and loses nothing else: dashboards and SQL are unaffected.
     expect(names).toContain("createDashboard");

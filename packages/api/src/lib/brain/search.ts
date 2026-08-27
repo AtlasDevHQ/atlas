@@ -159,6 +159,7 @@ import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context"
 import { projectProvenance } from "@atlas/api/lib/brain/candidates";
 import {
   actorsIn,
+  corroborationCountSql,
   loadActorIdentities,
   type BrainActorIdentityLookup,
 } from "@atlas/api/lib/brain/actor-identity";
@@ -449,17 +450,19 @@ function factStatus(value: unknown, rowId: string, workspaceId: string) {
 // ---------------------------------------------------------------------------
 
 /**
- * Corroboration = DISTINCT `provenance` edges (fact → episode), never a row
- * count. Re-observing a claim adds an edge; it never duplicates the fact, so a
- * row count would report 1 forever. Same derivation as the review surface.
+ * Corroboration = DISTINCT SOURCES behind the claim, never a row count and —
+ * since #5487 — never an edge count either.
+ *
+ * Re-observing a claim strengthens it by adding a `provenance` edge; it never
+ * duplicates the fact, so counting rows would report 1 forever. Counting the
+ * EDGES was the previous derivation and reported an inflated number: two
+ * messages from one person are two edges and one source. {@link
+ * corroborationCountSql} carries the definition of "distinct source", the
+ * three-way choice behind it, and why a machine principal is exempt; it is
+ * shared with `INSERT_PROVENANCE_EDGE_SQL`'s guard so the count and the edges
+ * cannot disagree.
  */
-const CORROBORATION_SELECT = `(
-    SELECT COUNT(DISTINCT ed.to_episode_id)
-      FROM brain_edges ed
-     WHERE ed.workspace_id = f.workspace_id
-       AND ed.edge_type = 'provenance'
-       AND ed.from_fact_id = f.id
-  )::int`;
+const CORROBORATION_SELECT = corroborationCountSql("f");
 
 const FACT_COLUMNS = `f.id::text AS id,
          f.subject,

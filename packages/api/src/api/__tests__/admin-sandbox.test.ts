@@ -170,6 +170,7 @@ interface StatusResponse {
     provider: string;
     isActive: boolean;
     needsReconnect: boolean;
+    pythonSupported: boolean;
   }>;
   providerRuntimeAvailability: Record<string, boolean>;
 }
@@ -208,6 +209,29 @@ beforeEach(() => {
 });
 
 // --- Tests ---
+
+describe("GET /api/v1/admin/sandbox/status — Python capability (#4665)", () => {
+  it("reports Python coverage per provider, from the runtime table", async () => {
+    // The card tells an admin which of the two tools their connection covers.
+    // Derived from the same table the Python tool consults — not a second list
+    // that can drift from it.
+    mockRuntimeAvailability = { vercel: true, e2b: true, daytona: true, railway: true };
+    mockCredentials = [
+      makeCredential("vercel"),
+      makeCredential("e2b"),
+      makeCredential("daytona"),
+      makeCredential("railway"),
+    ];
+
+    const status = await getStatus();
+
+    expect(
+      Object.fromEntries(
+        status.connectedProviders.map((p) => [p.provider, p.pythonSupported]),
+      ),
+    ).toEqual({ vercel: true, e2b: true, daytona: true, railway: false });
+  });
+});
 
 describe("GET /api/v1/admin/sandbox/status — vocabulary normalization", () => {
   it("legacy provider-key override 'e2b' resolves to the e2b-sandbox backend", async () => {

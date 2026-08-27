@@ -169,6 +169,11 @@ export function BoundChatDrawer({
     return new DefaultChatTransport({
       api: `${apiUrl}/api/v1/chat`,
       credentials: isCrossOrigin ? "include" : undefined,
+      // #5495 — the drawer renders through `AgentTurn` → `ToolPart`, which owns
+      // `RestWriteConfirmCard`, so this surface can complete a staged REST
+      // write and says so. Without the header the server gate (fail-closed)
+      // would offer the bound chat reads only.
+      headers: { "x-atlas-write-confirm-ui": "1" },
       body: () => {
         const body: Record<string, string> = {
           // #2363 — the route stamps this onto the conversation row on

@@ -131,33 +131,3 @@ export function describeCorrectionOutcome(response: CorrectFactConfirmResponse):
       return "The correction was applied.";
   }
 }
-
-// ---------------------------------------------------------------------------
-// The surface header (#5496)
-// ---------------------------------------------------------------------------
-
-/**
- * The header this app sends on every `/api/v1/chat` request to identify itself
- * as the workspace web app.
- *
- * `POST /api/v1/chat` serves this app AND the embeddable widget
- * (`@useatlas/react`) over one URL, with the same auth and the same body.
- * Nothing else separates them, and only this app renders the correction confirm
- * card above — so the server offers `correct_fact` only to a caller that sends
- * this. Absence is fail-closed.
- *
- * Mirrored, not imported, for the reason stated at the top of this file and in
- * `rest-operation-types.ts`: a new VALUE export in `@useatlas/types` does not
- * exist in the published package until a release is cut, and the scaffold smoke
- * test builds against npm — so it fails Scaffold CI at build time. The server
- * half is `packages/api/src/lib/chat-surface.ts`; these two literals must stay
- * identical.
- *
- * ⚠️ A capability hint, never a credential. It gets a correction STAGED and
- * nothing more; the write is gated server-side at
- * `POST /api/v1/brain-corrections/confirm`.
- */
-export const ATLAS_SURFACE_HEADER = "x-atlas-surface";
-
-/** This app's surface identity. Must equal the server's `ATLAS_WORKSPACE_SURFACE`. */
-export const ATLAS_WORKSPACE_SURFACE = "workspace";

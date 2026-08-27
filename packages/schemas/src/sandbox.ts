@@ -86,6 +86,20 @@ export const SandboxConnectedProviderSchema = z.object({
    * absent on responses from API versions predating the field.
    */
   needsReconnect: z.boolean().optional(),
+  /**
+   * True when selecting this provider routes the **Python** tool to the org's
+   * own account too, not just explore (#4665).
+   *
+   * Python capability is per-provider, and the difference is the one that
+   * matters for residency: `executePython` is the tool that ships raw
+   * query-result rows, so a provider chosen for region control that cannot run
+   * Python leaves the largest data exposure on the operator's chain. Reported
+   * here so the admin page can state which of the two tools a connection
+   * actually covers instead of implying both.
+   *
+   * Optional: absent on responses from API versions predating the field.
+   */
+  pythonSupported: z.boolean().optional(),
 });
 
 export type SandboxConnectedProvider = z.infer<typeof SandboxConnectedProviderSchema>;

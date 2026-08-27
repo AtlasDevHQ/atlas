@@ -132,6 +132,7 @@ describe("plugin shape", () => {
     const plugin = buildDaytonaSandboxPlugin({
       apiKey: "test-key",
       timeoutSec: 30,
+      pythonPackages: [],
     });
     const validated = definePlugin(plugin);
     expect(validated).toBe(plugin);

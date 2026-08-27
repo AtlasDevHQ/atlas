@@ -88,7 +88,9 @@ async function call(
   input: Record<string, unknown>,
   resolve: () => Promise<RestDatasource | null> = async () => datasource(),
 ): Promise<ExecuteRestOperationResult> {
-  const t = createExecuteRestOperationTool({ resolveDatasource: resolve });
+  // #5495 — these assert AUDIT behaviour for writes, so they stand on a surface
+  // that can confirm one. The fail-closed default is pinned in rest-operation.test.ts.
+  const t = createExecuteRestOperationTool({ resolveDatasource: resolve, writeConfirmationUi: true });
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub for a unit invocation
   return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
 }

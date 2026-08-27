@@ -1148,6 +1148,155 @@ export interface PluginExploreBackend {
   close?(): Promise<void>;
 }
 
+// ---------------------------------------------------------------------------
+// Sandbox plugin — Python execution surface (#3414)
+// ---------------------------------------------------------------------------
+
+/**
+ * Provider-neutral egress policy for a Python sandbox.
+ *
+ * Deliberately NOT a mirror of any provider SDK's policy type: it is the
+ * host's per-request REST datasource allowlist (#2927 layer 0) expressed as
+ * plain hosts, so every provider can bind to it with whatever primitive it
+ * has. A provider with no egress control ignores it — see
+ * {@link AtlasSandboxPlugin.sandbox.pythonEgressControl}, which is how that
+ * gap gets *declared* instead of silently assumed.
+ */
+export type PluginSandboxNetworkPolicy =
+  | { readonly mode: "deny-all" }
+  | { readonly mode: "allow-all" }
+  | { readonly mode: "allowlist"; readonly hosts: readonly string[] };
+
+/** A PNG chart produced by a Python run, base64-encoded. */
+export interface PluginPythonChart {
+  base64: string;
+  mimeType: "image/png";
+}
+
+/** A declarative (Recharts) chart spec produced by a Python run. */
+export interface PluginRechartsChart {
+  type: "line" | "bar" | "pie";
+  data: Record<string, unknown>[];
+  categoryKey: string;
+  valueKeys: string[];
+}
+
+/** The tabular payload handed to a Python run, and returned from one. */
+export interface PluginPythonData {
+  columns: string[];
+  rows: unknown[][];
+}
+
+/**
+ * Structural mirror of the host's `PythonResult` — plugins produce this
+ * without importing the API package, exactly as {@link PluginExploreBackend}
+ * mirrors the explore backend.
+ */
+export type PluginPythonResult =
+  | {
+      success: true;
+      output?: string;
+      table?: PluginPythonData;
+      charts?: PluginPythonChart[];
+      rechartsCharts?: PluginRechartsChart[];
+    }
+  | {
+      success: false;
+      error: string;
+      output?: string;
+    };
+
+/** Progress events a streaming Python backend may emit. */
+export type PluginPythonProgressEvent =
+  | { type: "stdout"; content: string }
+  | { type: "chart"; chart: PluginPythonChart }
+  | { type: "recharts"; chart: PluginRechartsChart };
+
+/**
+ * Per-request configuration the host hands to
+ * {@link AtlasSandboxPlugin.sandbox.createPython}. Every field is derived
+ * server-side — none of it comes from the agent's `code`.
+ */
+export interface PluginPythonOptions {
+  /**
+   * The Python wrapper script source to execute. **The host owns this**, and
+   * that is the point: the wrapper carries the in-sandbox AST import guard, so
+   * a plugin shipping its own copy would ship its own copy of a security
+   * control and the copies would drift. Run it as
+   *
+   *   `python3 <wrapper.py> <user_code.py> [<data.json>]`
+   *
+   * with {@link PLUGIN_PYTHON_RESULT_FILE_ENV} set to an absolute path for the
+   * result JSON, {@link PLUGIN_PYTHON_CHART_DIR_ENV} set to an absolute chart
+   * output directory, and `MPLBACKEND=Agg`. `data.json` (present only when the
+   * host passed data) holds `{ columns, rows }`. On success the wrapper writes
+   * result JSON to the result file and leaves charts as
+   * {@link PLUGIN_PYTHON_CHART_PATTERN}-matching PNGs in the chart directory,
+   * for the backend to read back and base64-encode.
+   *
+   * The wrapper exits 0 even for a Python-level error (the error rides in the
+   * result JSON), so a non-zero exit means the process died before reporting
+   * and the backend should surface stderr instead.
+   *
+   * A provider with a native structured-result execution API may use that
+   * instead of this script — the contract is the returned
+   * {@link PluginPythonResult}, not the transport. It then owns matching the
+   * guard's behaviour, which is why using the supplied wrapper is the default.
+   */
+  readonly wrapperSource: string;
+  /**
+   * Wall-clock budget for a single `exec`, in milliseconds. Set by the host
+   * from its own Python timeout configuration so every provider times out at
+   * the same point rather than at each plugin's local default.
+   */
+  readonly timeoutMs: number;
+  /**
+   * Cap on the total result payload (result JSON + base64 charts) in bytes.
+   * The host re-checks this at its own seam — a plugin is trust-the-author, so
+   * this is the plugin's chance to stop early, not the enforcement point.
+   */
+  readonly maxOutputBytes: number;
+  /**
+   * Per-request egress bound. Absent means the host asked for nothing beyond
+   * the provider's own default. A provider that declares
+   * `pythonEgressControl: "unsupported"` is expected to ignore this — the host
+   * logs the gap rather than pretending it was applied.
+   */
+  readonly networkPolicy?: PluginSandboxNetworkPolicy;
+  /**
+   * Apply to provider error text before logging it or putting it in a result's
+   * `error`. The host passes an exact-match scrub of the org's own stored
+   * credential values, so a provider error echoing a rejected API key does not
+   * land in plugin logs. The host scrubs again at its seam; this exists because
+   * the plugin logs first.
+   */
+  readonly scrubErrorDetail?: (detail: string) => string;
+}
+
+/**
+ * Python execution backend produced by a sandbox plugin. Structural mirror of
+ * the host's `PythonBackend`, so the host's Python tool seam needs no
+ * plugin-specific branch.
+ */
+export interface PluginPythonBackend {
+  exec(code: string, data?: PluginPythonData): Promise<PluginPythonResult>;
+  execStream?(
+    code: string,
+    data: PluginPythonData | undefined,
+    onProgress: (event: PluginPythonProgressEvent) => void,
+  ): Promise<PluginPythonResult>;
+  close?(): Promise<void>;
+}
+
+/** Env var naming the absolute path the Python wrapper writes result JSON to. */
+export const PLUGIN_PYTHON_RESULT_FILE_ENV = "ATLAS_RESULT_FILE";
+
+/** Env var naming the absolute chart output directory for the Python wrapper. */
+export const PLUGIN_PYTHON_CHART_DIR_ENV = "ATLAS_CHART_DIR";
+
+/** Chart files a Python backend collects from the chart directory, sorted. */
+export const PLUGIN_PYTHON_CHART_PATTERN = /^chart_.*\.png$/;
+
 /**
  * Sandbox plugin — pluggable explore backend for custom isolation strategies.
  *
@@ -1175,6 +1324,35 @@ export interface AtlasSandboxPlugin<TConfig = undefined> extends AtlasPluginBase
      * Plugin backends default to 60 (between nsjail and sidecar).
      */
     priority?: number;
+    /**
+     * Create a **Python** execution backend (#3414). Optional, and that
+     * optionality is load-bearing: every explore-only sandbox plugin stays
+     * valid, type-checks, and behaves identically with no edit.
+     *
+     * Presence is the capability — the host derives Python support for a
+     * provider from this method existing, the same capability-by-presence
+     * idiom the in-tree providers already use, so a declared capability can
+     * never disagree with an implemented one.
+     *
+     * Called per request (unlike {@link create}, whose backend is cached), so
+     * the returned backend must be safe to construct cheaply; provider
+     * sandboxes are expected to be created lazily on first `exec`.
+     */
+    createPython?(
+      options: PluginPythonOptions,
+    ): Promise<PluginPythonBackend> | PluginPythonBackend;
+    /**
+     * Whether this plugin's Python backend can actually enforce
+     * {@link PluginPythonOptions.networkPolicy}.
+     *
+     * Required in spirit whenever `createPython` is present, optional in the
+     * type so older plugins stay valid; the host treats an omitted value as
+     * `"unsupported"` — the honest default. It exists so a provider that
+     * cannot match the in-tree Vercel backend's `deny-all` pin says so, and
+     * the host logs the gap, rather than the difference being implied by
+     * omission (#4665).
+     */
+    pythonEgressControl?: "enforced" | "unsupported";
   };
   /**
    * Optional security metadata. Informational — the host logs these

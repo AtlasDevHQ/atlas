@@ -123,7 +123,7 @@ This is the one contract that is genuinely load-bearing, and the one most likely
 Episodes are **immutable, append-only, and deduped on `(workspace, source, source id)`**. There is no upsert and no archive — the only write is an insert that does nothing on conflict. So:
 
 - Two writers that disagree about a record's id **duplicate it**, and nothing later converges them.
-- A duplicate is not merely wasted storage. Extraction spends a model call on each copy, and fact reconciliation treats the two as *independent* evidence — so a claim gains a corroboration edge from its own echo and reads as better-supported than it is.
+- A duplicate is not merely wasted storage. Extraction spends a model call on each copy, and the claim gains a second provenance edge from its own echo — which moves its freshness anchor and sits in its evidence record permanently. Since #5487 that echo no longer inflates the corroboration count a reviewer reads, because that number counts distinct *sources* rather than episodes; but an episode with no identifiable author — every machine-produced one — is still counted on its own, so a duplicate there does read as independent evidence.
 - Changing an id's **format** re-ingests every record in every workspace as a new episode, and re-extracts facts from all of them.
 
 <Callout type="warn" title="The obligation, stated exactly">

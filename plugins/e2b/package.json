@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/e2b",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Atlas E2B sandbox plugin",
   "type": "module",
   "main": "./src/index.ts",
@@ -38,7 +38,7 @@
   "license": "MIT",
   "peerDependencies": {
     "e2b": ">=1.0.0",
-    "@useatlas/plugin-sdk": ">=0.0.1"
+    "@useatlas/plugin-sdk": ">=0.0.18"
   },
   "devDependencies": {
     "ai": "^6.0.235",

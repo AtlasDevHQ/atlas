@@ -1261,6 +1261,106 @@ describe("sandbox plugin", () => {
     expect((plugin as AtlasSandboxPlugin).sandbox.priority).toBeUndefined();
   });
 
+  // -------------------------------------------------------------------------
+  // Optional Python surface (#3414)
+  // -------------------------------------------------------------------------
+
+  test("an explore-only sandbox plugin stays valid with the Python surface absent", () => {
+    // The load-bearing case: every plugin published before #3414 must validate
+    // and behave identically with no edit. If this ever fails, the surface
+    // stopped being optional.
+    const plugin = definePlugin({
+      id: "explore-only",
+      types: ["sandbox"],
+      version: "1.0.0",
+      sandbox: {
+        create: () => ({
+          exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+        }),
+      },
+    } satisfies AtlasSandboxPlugin);
+
+    const sb = (plugin as AtlasSandboxPlugin).sandbox;
+    expect(sb.createPython).toBeUndefined();
+    expect(sb.pythonEgressControl).toBeUndefined();
+  });
+
+  test("definePlugin accepts a sandbox plugin declaring the Python surface", () => {
+    const plugin = definePlugin({
+      id: "python-sandbox",
+      types: ["sandbox"],
+      version: "1.0.0",
+      sandbox: {
+        create: () => ({
+          exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+        }),
+        createPython: () => ({
+          exec: async () => ({ success: true as const, output: "ok" }),
+        }),
+        pythonEgressControl: "unsupported",
+      },
+    } satisfies AtlasSandboxPlugin);
+
+    const sb = (plugin as AtlasSandboxPlugin).sandbox;
+    expect(typeof sb.createPython).toBe("function");
+    expect(sb.pythonEgressControl).toBe("unsupported");
+  });
+
+  test("rejects a non-function createPython with an actionable message", () => {
+    // Rejected at definition, not at the first Python call — by then the host
+    // has already told the org its provider covers Python.
+    expect(() =>
+      definePlugin({
+        id: "bad-python",
+        types: ["sandbox"],
+        version: "1.0.0",
+        sandbox: {
+          create: () => ({
+            exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+          }),
+          createPython: "yes" as unknown as AtlasSandboxPlugin["sandbox"]["createPython"],
+        },
+      }),
+    ).toThrow(/sandbox\.createPython.*must be a function.*omit it for an explore-only plugin/i);
+  });
+
+  test("rejects an unknown pythonEgressControl value", () => {
+    expect(() =>
+      definePlugin({
+        id: "bad-egress",
+        types: ["sandbox"],
+        version: "1.0.0",
+        sandbox: {
+          create: () => ({
+            exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+          }),
+          createPython: () => ({ exec: async () => ({ success: true as const }) }),
+          pythonEgressControl:
+            "maybe" as unknown as AtlasSandboxPlugin["sandbox"]["pythonEgressControl"],
+        },
+      }),
+    ).toThrow(/pythonEgressControl.*"enforced".*"unsupported"/i);
+  });
+
+  test("rejects an egress declaration with no Python backend behind it", () => {
+    // A plugin claiming an egress posture for a Python surface it does not
+    // provide is describing something that does not exist — the host would read
+    // the declaration and find no backend.
+    expect(() =>
+      definePlugin({
+        id: "egress-without-python",
+        types: ["sandbox"],
+        version: "1.0.0",
+        sandbox: {
+          create: () => ({
+            exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+          }),
+          pythonEgressControl: "enforced",
+        },
+      }),
+    ).toThrow(/pythonEgressControl.*without.*createPython/i);
+  });
+
   test("definePlugin accepts sandbox plugin with security metadata", () => {
     const plugin = definePlugin({
       id: "secure-sandbox",

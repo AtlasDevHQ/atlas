@@ -107,14 +107,16 @@ const PROVIDER_FOR_BACKEND: Record<string, string> = {
 void mock.module("@atlas/api/lib/sandbox/runtime", () => ({
   sandboxProviderForBackendId: (backendId: string) =>
     PROVIDER_FOR_BACKEND[backendId] ?? null,
-  providerSupportsPython: (provider: string) => provider === "vercel",
+  // Mirrors the real runtime table: vercel (in-tree) plus the plugin providers
+  // that ship a Python surface (#4665). railway stays explore-only.
+  providerSupportsPython: (provider: string) => provider !== "railway",
   missingCredentialFields: () => [],
   _scrubCredentialValuesForTest: (text: string) => text,
   isProviderRuntimeAvailable: async () => false,
   getProviderRuntimeAvailability: async () => ({
     vercel: true,
-    e2b: false,
-    daytona: false,
+    e2b: true,
+    daytona: true,
     railway: false,
   }),
   _resetRuntimeAvailabilityCacheForTest: () => {},
@@ -269,16 +271,56 @@ describe("executePython BYOC backend selection (#3410)", () => {
   });
 
   it("skips BYOC for python-incapable providers (selection covers explore only)", async () => {
-    mockSettings.set("ATLAS_SANDBOX_BACKEND", "e2b-sandbox");
+    mockSettings.set("ATLAS_SANDBOX_BACKEND", "railway-sandbox");
     mockRequestContext = { user: { activeOrganizationId: "org-1" } };
     // Would engage if consulted — but the capability gate must short-circuit
-    mockByocResult = { kind: "backend", create: () => makeByocBackend("byoc-e2b") };
+    mockByocResult = { kind: "backend", create: () => makeByocBackend("byoc-railway") };
 
     const result = await runPython();
 
     expect(result.output).toBe("[sidecar]");
     expect(byocCalls).toEqual([]);
   });
+
+  // #4665 — the residency criterion. `[sidecar]` is the operator chain's
+  // output, so each of these fails loudly if execution reaches it: an org that
+  // connected e2b or daytona specifically for region control must not have the
+  // one tool that ships raw query-result rows run on the operator's US account.
+  for (const { backendId, provider } of [
+    { backendId: "e2b-sandbox", provider: "e2b" },
+    { backendId: "daytona-sandbox", provider: "daytona" },
+  ]) {
+    it(`runs Python on the org's own ${provider} account, never the operator chain`, async () => {
+      mockSettings.set("ATLAS_SANDBOX_BACKEND", backendId);
+      mockRequestContext = { user: { activeOrganizationId: "org-1" } };
+      mockByocResult = { kind: "backend", create: () => makeByocBackend(`byoc-${provider}`) };
+
+      const result = await runPython();
+
+      expect(result.output).toBe(`[byoc-${provider}]`);
+      expect(result.output).not.toBe("[sidecar]");
+      expect(byocCalls).toHaveLength(1);
+      expect(byocCalls[0].backendId).toBe(backendId);
+    });
+
+    it(`fails closed when the engaged ${provider} BYOC backend cannot be built`, async () => {
+      // Broken or revoked credentials, or a plugin package too old to carry
+      // the Python surface. Falling through here is the exact defect #4665
+      // exists to close, so the tool must error instead.
+      mockSettings.set("ATLAS_SANDBOX_BACKEND", backendId);
+      mockRequestContext = { user: { activeOrganizationId: "org-1" } };
+      mockByocResult = {
+        kind: "throw",
+        message: `your connected ${provider} sandbox failed to start`,
+      };
+
+      const result = await runPython();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain(`${provider} sandbox failed to start`);
+      expect(result.output).toBeUndefined();
+    });
+  }
 
   it("normalizes legacy provider-key overrides before the BYOC lookup (#3375)", async () => {
     mockSettings.set("ATLAS_SANDBOX_BACKEND", "vercel"); // legacy stored value

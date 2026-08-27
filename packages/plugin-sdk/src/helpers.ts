@@ -143,6 +143,29 @@ function validatePluginShape(plugin: AtlasPlugin): void {
     if (sb.sandbox.priority !== undefined && (typeof sb.sandbox.priority !== "number" || isNaN(sb.sandbox.priority))) {
       throw new Error('Sandbox plugin "priority" must be a number');
     }
+    // Python surface (#3414) — optional. An explore-only plugin omits both
+    // fields and validates exactly as before; a plugin that declares them
+    // malformed is rejected here rather than at the first Python call, when
+    // the host has already told the org its provider runs Python.
+    if (sb.sandbox.createPython !== undefined && typeof sb.sandbox.createPython !== "function") {
+      throw new Error(
+        'Sandbox plugin "sandbox.createPython" must be a function returning a Python backend when provided — omit it for an explore-only plugin',
+      );
+    }
+    if (
+      sb.sandbox.pythonEgressControl !== undefined &&
+      sb.sandbox.pythonEgressControl !== "enforced" &&
+      sb.sandbox.pythonEgressControl !== "unsupported"
+    ) {
+      throw new Error(
+        'Sandbox plugin "sandbox.pythonEgressControl" must be "enforced" or "unsupported"',
+      );
+    }
+    if (sb.sandbox.createPython === undefined && sb.sandbox.pythonEgressControl !== undefined) {
+      throw new Error(
+        'Sandbox plugin declares "sandbox.pythonEgressControl" without "sandbox.createPython" — the egress declaration describes a Python backend this plugin does not provide',
+      );
+    }
   }
 }
 

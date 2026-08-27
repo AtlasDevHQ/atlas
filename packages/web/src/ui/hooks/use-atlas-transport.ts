@@ -5,7 +5,6 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
 import type { AnswerStyle } from "@useatlas/types/conversation";
 import { applyBrandColor, OKLCH_RE } from "./use-dark-mode";
-import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "../lib/correct-fact-types";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
 
@@ -446,22 +445,23 @@ export function useAtlasTransport(
   const transport = useMemo(() => {
     // #4018 — see `buildAuthHeaders`: managed mode rides the cookie (no bearer),
     // so a stale `atlas-api-key` can't 401 the chat while REST stays authed.
-    // #5496 — identify this client as the workspace web app. It is the surface
-    // that renders the correction confirm card, and the server offers
-    // `correct_fact` only where that card exists: the embeddable widget
-    // (`@useatlas/react`) reaches the SAME `/api/v1/chat` route and has no such
-    // card, so without this header nothing could tell the two apart.
-    //
-    // The resume path below rewrites the URL and body but not these headers, so
-    // a resumed turn claims the same surface as the turn it resumes — which is
-    // required: a resume must not widen the tool surface.
-    //
-    // ⚠️ A capability hint, never a credential. It gets a correction STAGED and
-    // nothing more; the write is gated server-side at
-    // `POST /api/v1/brain-corrections/confirm`.
     const headers = {
       ...buildAuthHeaders(authMode, apiKey),
-      [ATLAS_SURFACE_HEADER]: ATLAS_WORKSPACE_SURFACE,
+      // #5495 — the web app ships `rest-write-confirm-card.tsx`, so it can
+      // finish a staged REST write. Declaring it here is what keeps the agent
+      // allowed to stage one: the server gate fails closed, and a surface that
+      // stays silent (the embeddable widget, which has no such card) is offered
+      // reads only. Set on the transport, so the durable-resume re-target in
+      // `prepareSendMessagesRequest` carries it too — a resumed turn rebuilds
+      // the tool surface and has to re-declare.
+      //
+      // #5496 — this ONE header now also gates `correct_fact`, which stages onto
+      // its own confirm card in this same app. Both verbs ask the same question
+      // ("can this client finish a confirm-before-write flow?"), so they share
+      // the answer rather than shipping a second header that means the same
+      // thing. Split them only if a surface ever renders one card and not the
+      // other.
+      "x-atlas-write-confirm-ui": "1",
     };
     return new DefaultChatTransport({
       api: `${apiUrl}/api/v1/chat`,

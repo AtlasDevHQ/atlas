@@ -27,6 +27,9 @@ import {
 } from "@atlas/api/lib/workspace-capability";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+// #5495 — the confirm-before-write surface declaration lives next to the wire
+// contract it gates, so the header name and the payload cannot drift apart.
+import { readsWriteConfirmUiHeader } from "@atlas/api/lib/openapi/rest-write-confirm";
 import { logFirstAnswerLatency, isFirstTurn, turnAnsweredQuery } from "@atlas/api/lib/activation-metrics";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
@@ -80,7 +83,6 @@ import { getSetting } from "@atlas/api/lib/settings";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema } from "./shared-schemas";
 import { RunStatusResponseSchema } from "@useatlas/schemas";
-import { ATLAS_SURFACE_HEADER, rendersConfirmations as surfaceRendersConfirmations } from "@atlas/api/lib/chat-surface";
 
 const DEFAULT_CONVERSATION_STEP_CAP = 500;
 const DEFAULT_AGENT_MAX_STEPS = 25;
@@ -834,31 +836,26 @@ chat.openapi(chatRoute, async (c) => {
       authResult,
     );
 
-    // #5496 — which SURFACE this turn came from, for the one decision that
-    // depends on it: whether `correct_fact` is offered.
+    // #5495 — whether this surface can complete a staged REST write. Read once
+    // here and stamped into both request-context frames below.
+    const writeConfirmUi = readsWriteConfirmUiHeader(req.headers);
+
+    // #5496 — the SAME capability decides whether `correct_fact` is offered, and
+    // it is deliberately the same flag rather than a second header.
     //
-    // This route serves two clients — the first-party web app
-    // (`packages/web`) and the embeddable widget (`@useatlas/react`) — and
-    // until now nothing told them apart server-side. Same URL, same auth
-    // modes, same `dashboardUrlResolver`. Only the web app renders the
-    // correction confirm card, so only the web app may be offered a verb that
-    // stages onto one; the widget would show a gray `Tool: correct_fact` box
-    // and the correction could never be completed.
+    // Both verbs stage onto a confirm card and both are dead-ended on a surface
+    // that cannot render one. This branch originally introduced its own
+    // `x-atlas-surface` for the correction card while #5495 was independently
+    // introducing `x-atlas-write-confirm-ui` for the REST banner — two headers
+    // for one question ("can this client finish a confirm-before-write flow?"),
+    // which is the drift a reader would have to reconcile forever after. One
+    // header, one meaning; `packages/web` ships both cards and every other
+    // surface ships neither, so nothing is lost by fusing them.
     //
-    // Absent header ⇒ NOT confirm-capable, which is the fail-closed direction:
-    // every existing client (the widget, an SDK caller, anything bespoke) keeps
-    // working and simply is not offered the verb. `packages/web`'s transport is
-    // what sets it.
-    //
-    // Client-supplied, and that is sound HERE because it is not a privilege
-    // grant: forging it yields a STAGED correction and nothing else. The write
-    // happens at `POST /api/v1/brain-corrections/confirm`, which re-runs
-    // authority, ACL visibility, the tier-1 refusal and vocabulary closure
-    // against a single-use, workspace-bound token. See the `correct_fact` gate
-    // comment in lib/tools/registry.ts.
-    const rendersConfirmations = surfaceRendersConfirmations(
-      req.headers.get(ATLAS_SURFACE_HEADER),
-    );
+    // If a surface ever renders ONE card and not the other, split the signal
+    // then — the way #5496 split `correct_fact` off `dashboardUrlResolver` — and
+    // do it against a real case rather than a hypothetical one.
+    const rendersConfirmations = writeConfirmUi;
 
     // Bind user to AsyncLocalStorage so downstream code (logQueryAudit, etc.)
     // has access to user identity. The middleware already set up requestId context;
@@ -872,7 +869,15 @@ chat.openapi(chatRoute, async (c) => {
     // known so plugin tools / agent helpers see them in AsyncLocalStorage
     // without a second middleware pass.
     return withRequestContext(
-      { requestId, user: authResult.user, atlasMode, agentOrigin: "chat" },
+      {
+        requestId,
+        user: authResult.user,
+        atlasMode,
+        agentOrigin: "chat",
+        // #5495 — stamped only when true so the legacy context shape is
+        // byte-identical for every surface that does not declare the banner.
+        ...(writeConfirmUi ? { restWriteConfirmationUi: true } : {}),
+      },
       async () => {
         // --- Serviceability gate (#4826) ---
         // Two different questions, depending on tenancy:
@@ -1732,6 +1737,10 @@ chat.openapi(chatRoute, async (c) => {
               ...(effectiveGroupReach
                 ? { groupReach: effectiveGroupReach }
                 : {}),
+              // #5495 — the surface's confirm-before-write capability reaches
+              // the REST tool binding in `agent.ts` through this frame. Stamped
+              // only when true; absent ⇒ writes are refused before staging.
+              ...(writeConfirmUi ? { restWriteConfirmationUi: true } : {}),
             },
             () =>
               runAgent({
@@ -2072,21 +2081,28 @@ chat.openapi(chatResumeRoute, async (c) => {
 
     const atlasMode = resolveMode(req.headers.get("cookie"), req.headers.get("x-atlas-mode"), authResult);
 
-    // #5496 — the resume path resolves the surface signal independently of the
-    // initial turn, because it IS an independent request: the client re-sends
-    // its own headers. Resolving it here rather than reading it off the
-    // checkpoint is deliberate — a resume must not widen the tool surface
-    // relative to the turn it resumes, and a checkpointed capability claim
-    // would survive a client that no longer makes it. Fail-closed on absence,
-    // exactly as the initial turn is. See the initial-turn comment for why a
-    // client-supplied header is sound for this decision.
-    const rendersConfirmations = surfaceRendersConfirmations(
-      req.headers.get(ATLAS_SURFACE_HEADER),
-    );
     const conversationId = c.req.param("conversationId");
+    // #5495 — a resumed turn rebuilds the tool surface, so it must re-declare
+    // the capability too. Omitting it here would silently NARROW a web-app
+    // resume to read-only; asserting it unconditionally would silently WIDEN a
+    // widget resume back to the bug. Read from the resume request's own header.
+    const writeConfirmUi = readsWriteConfirmUiHeader(req.headers);
+
+    // #5496 — and it gates `correct_fact` here for the same reason it does on
+    // the initial turn: one capability, one flag. Read from THIS request rather
+    // than the checkpoint, so a client that no longer declares the card does not
+    // keep the verb across the resume boundary.
+    const rendersConfirmations = writeConfirmUi;
 
     return withRequestContext(
-      { requestId, user: authResult.user, atlasMode, agentOrigin: "chat", actor: { kind: "human" } },
+      {
+        requestId,
+        user: authResult.user,
+        atlasMode,
+        agentOrigin: "chat",
+        actor: { kind: "human" },
+        ...(writeConfirmUi ? { restWriteConfirmationUi: true } : {}),
+      },
       async () => {
         // Serviceability gate — a resumed turn needs the same capability a fresh
         // one does, and asks the same tenancy-aware question (#4826). Kept in

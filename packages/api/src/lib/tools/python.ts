@@ -629,8 +629,8 @@ Blocked: subprocess, os, socket, shutil, sys, ctypes, importlib, exec(), eval(),
 
     execute: async ({ code, explanation, data }, options) => {
       // 0a. BYOC workspace override (#3410): when the request's org selected
-      // a BYOC provider that can run Python (currently vercel only — see
-      // PYTHON_CAPABLE_PROVIDERS in sandbox/runtime.ts), build the backend
+      // a BYOC provider that can run Python (vercel, e2b, daytona — see
+      // providerSupportsPython in sandbox/runtime.ts), build the backend
       // from the org's stored credentials, with the same engagement and
       // fail-closed semantics as the explore tool (#3370). Not engaged
       // (no/incomplete credentials, runtime not installed, provider without

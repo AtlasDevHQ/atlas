@@ -60,6 +60,14 @@ export type {
   AtlasActionPlugin,
   PluginExecResult,
   PluginExploreBackend,
+  PluginSandboxNetworkPolicy,
+  PluginPythonChart,
+  PluginRechartsChart,
+  PluginPythonData,
+  PluginPythonResult,
+  PluginPythonProgressEvent,
+  PluginPythonOptions,
+  PluginPythonBackend,
   AtlasSandboxPlugin,
   ActionApprovalMode,
   ConfigSchemaField,
@@ -72,7 +80,12 @@ export type {
   PluginZodSchema,
 } from "./types";
 
-export { SANDBOX_DEFAULT_PRIORITY } from "./types";
+export {
+  SANDBOX_DEFAULT_PRIORITY,
+  PLUGIN_PYTHON_RESULT_FILE_ENV,
+  PLUGIN_PYTHON_CHART_DIR_ENV,
+  PLUGIN_PYTHON_CHART_PATTERN,
+} from "./types";
 
 export {
   definePlugin,
@@ -108,3 +121,14 @@ export type { SemanticWhitelistSubject, SemanticWhitelistGate } from "./semantic
 
 export type { ToolSet, Tool } from "./ai";
 export type { Context, MiddlewareHandler } from "./hono";
+
+export {
+  createFileTransportPythonBackend,
+} from "./python-backend";
+
+export type {
+  PythonBackendAdapter,
+  PythonBackendLogger,
+  PythonSandboxRunResult,
+  PythonSandboxSession,
+} from "./python-backend";

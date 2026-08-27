@@ -33,7 +33,7 @@ In SaaS mode the page is titled **Execution Environment** and presents a card gr
 
 Managed Firecracker microVM with network isolation (the `vercel-sandbox` backend, pinned by the SaaS platform). No credentials needed and no setup required. This is the default for all workspaces and is marked **(Recommended)**.
 
-Atlas Cloud sandboxes execute in the US (Vercel's `iad1` region) regardless of the workspace's data-residency region — connect your own provider below to control where `explore` executes (locality follows your provider account's region configuration; Python coverage is per-provider, see [Python Tool Coverage](#python-tool-coverage)). See [Sandbox Execution Locality](/platform-ops/data-residency#sandbox-execution-locality) for what transits and the isolation controls.
+Atlas Cloud sandboxes execute in the US (Vercel's `iad1` region) regardless of the workspace's data-residency region — connect your own provider below to control where `explore` and `executePython` run (locality follows your provider account's region configuration; coverage and egress posture are per-provider, see [Python Tool Coverage](#python-tool-coverage)). See [Sandbox Execution Locality](/platform-ops/data-residency#sandbox-execution-locality) for what transits and the isolation controls.
 
 - **Active state** — highlighted border with "Active" badge
 - **Inactive state** — click **Select** to make it active
@@ -146,29 +146,70 @@ call, so they pick up changes without a teardown step.)
 
 ### Python Tool Coverage
 
-BYOC coverage for the **Python tool** is per-provider — Python needs more
-than the explore-shaped command surface (file upload, a Python interpreter,
-and the per-request REST egress allowlist):
+BYOC coverage for the **Python tool** is per-provider. Python needs more than
+the explore-shaped command surface — a data payload in, a Python interpreter,
+artifact readback, and the per-request REST egress allowlist — and providers
+differ in the last of those:
 
-| Provider | Explore | Python |
-|----------|---------|--------|
-| Vercel Sandbox | Your account | Your account |
-| E2B | Your account | Platform sandbox |
-| Daytona | Your account | Platform sandbox |
-| Railway | Your account | Platform sandbox |
+| Provider | Explore | Python | Python egress control |
+|----------|---------|--------|-----------------------|
+| Vercel Sandbox | Your account | Your account | **Enforced** — `deny-all`, narrowed to the REST datasource host |
+| E2B | Your account | Your account | Not available — see below |
+| Daytona | Your account | Your account | Not available — see below |
+| Railway | Your account | Platform sandbox | n/a |
 
-With a connected **Vercel** provider selected, Python runs on your Vercel
-account with the same engagement and fail-closed rules as explore: if your
-sandbox can't start, the Python tool errors rather than silently falling back
-to the platform sandbox, and the egress allowlist for REST datasources is
-applied to your sandbox exactly as it would be to the managed one.
+With **Vercel**, **E2B**, or **Daytona** connected and selected, Python runs on
+your own provider account with the same engagement and fail-closed rules as
+explore: if your sandbox can't start, the Python tool **errors** rather than
+silently falling back to the platform sandbox. That matters more for Python
+than for explore — `executePython` is the tool that receives raw query-result
+rows, so a provider chosen for region control would otherwise be bypassed by
+the one tool with the largest data exposure.
+
+Each provider card on `/admin/sandbox` states which tools its connection
+covers, so you never have to infer it from this page.
+
+<Callout type="warn">
+**Egress differs by provider, and the difference is not cosmetic.** On the
+Vercel Sandbox, Atlas pins the Python sandbox's network to `deny-all` and then
+narrows it to exactly your REST datasource's host. **E2B and Daytona expose no
+equivalent per-sandbox host allowlist**, so that bound is *not* applied there:
+a Python sandbox on those providers has whatever outbound access the provider
+grants it by default. Atlas logs a warning on every request where an allowlist
+was requested but could not be applied.
+
+This is a real reduction in the egress boundary compared with the managed
+sandbox. It is the customer's to close at the network layer — E2B BYOC runs
+inside your own VPC, and Daytona sandboxes can be placed in an account you
+control — and it is stated here rather than left implied. If a `deny-all`
+egress pin is a requirement, use the Vercel Sandbox provider.
+</Callout>
 
 <Callout type="info">
-E2B, Daytona, and Railway sandboxes are explore-only today — their plugin
-interface has no Python execution surface yet. With one of these selected,
-explore runs on your account while Python falls back to the platform
-sandbox.
+**Railway is explore-only.** Railway cannot block outbound traffic at all,
+which interacts with the allowlist semantics in a way that is still an open
+decision — so its plugin deliberately does not declare a Python surface. With
+Railway selected, explore runs on your account while Python falls back to the
+platform sandbox.
 </Callout>
+
+<Callout type="warn">
+**Upgrading E2B or Daytona plugin packages.** Python capability is declared by
+the Atlas API server, and the Python backend is supplied by the plugin
+package. If you self-host with a `@useatlas/e2b` or `@useatlas/daytona` older
+than the release that added `sandbox.createPython`, Python on that provider
+**fails closed** with a message naming the package to upgrade — it does not
+fall back to the platform sandbox. That is deliberate: quietly running your
+Python elsewhere is the behaviour this feature exists to remove.
+</Callout>
+
+#### Daytona region placement
+
+Daytona sandboxes accept a `target` region (for example `us`, `eu`). When set,
+**both** explore and Python are placed there — a provider that honoured it for
+only one of the two would not be a residency answer. Configure it in
+`atlas.config.ts` via the plugin's `target` option; a `target` stored on the
+BYOC credential blob is also passed through.
 
 ---
 

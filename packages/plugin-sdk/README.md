@@ -93,15 +93,48 @@ Enable agent side-effects. Action plugins provide AI SDK tools with approval con
 
 ### Sandbox (`AtlasSandboxPlugin`)
 
-Provide code isolation for the explore tool. Sandbox plugins create backends that execute shell commands in an isolated environment.
+Provide code isolation for the explore tool, and optionally for the Python tool.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `sandbox.create(semanticRoot)` | `(string) => PluginExploreBackend` | Yes | Factory that creates an explore backend |
 | `sandbox.priority` | `number` | No | Higher = tried first. Built-in: Vercel=100, E2B=90, Daytona=85, nsjail=75, sidecar=50, just-bash=0. Plugin default: 60 |
+| `sandbox.createPython(options)` | `(PluginPythonOptions) => PluginPythonBackend` | No | Factory that creates a **Python** backend. Presence is the capability — the host derives Python support from this method existing |
+| `sandbox.pythonEgressControl` | `"enforced" \| "unsupported"` | No | Whether this plugin can actually apply `options.networkPolicy`. Treated as `"unsupported"` when omitted |
 | `security` | `object` | No | Informational metadata about isolation guarantees |
 
 **Reference:** [`nsjail`](../../plugins/nsjail/index.ts), [`vercel-sandbox`](../../plugins/vercel-sandbox/index.ts)
+
+#### Python execution (optional)
+
+`sandbox.createPython` is optional, and an explore-only plugin needs no edit to
+stay valid. A plugin that provides it gets a per-request `PluginPythonOptions`
+carrying:
+
+- `wrapperSource` — **the host's** Python wrapper. Run it as
+  `python3 <wrapper.py> <user_code.py> [<data.json>]` with `ATLAS_RESULT_FILE`
+  and `ATLAS_CHART_DIR` set. The wrapper carries the in-sandbox import guard, so
+  plugins do not ship their own copy of a security control.
+- `timeoutMs`, `maxOutputBytes` — the host's budget and output cap.
+- `networkPolicy` — a provider-neutral `{ mode, hosts }` egress bound. Declare
+  `pythonEgressControl: "unsupported"` if your provider cannot apply it; the
+  host logs the gap rather than assuming it was applied.
+- `scrubErrorDetail` — apply to provider error text before logging it.
+
+Most providers do not need to implement this by hand.
+`createFileTransportPythonBackend(options, adapter)` implements the whole
+protocol on top of four primitives (`mkdir`, `writeFile`, `run`, `readFile` /
+`listDir`, `destroy`):
+
+```typescript
+import { createFileTransportPythonBackend } from "@useatlas/plugin-sdk";
+
+createPython: (options) =>
+  createFileTransportPythonBackend(options, {
+    providerName: "MyProvider",
+    createSession: async () => myProviderSession(await createSandbox()),
+  }),
+```
 
 ## Base Fields
 

@@ -27,7 +27,10 @@ import { Effect, Data, Duration, Schedule } from "effect";
 import type { PythonBackend, PythonResult } from "./python";
 import type { SandboxNetworkPolicy } from "./backends/network-allowlist";
 import type { VercelSandboxAccessOverride } from "./explore-sandbox";
-import { PYTHON_SECURITY_AND_SETUP } from "./python-wrapper";
+import {
+  PYTHON_FILE_TRANSPORT,
+  PYTHON_FILE_TRANSPORT_WRAPPER,
+} from "./python-wrapper";
 import { sandboxErrorDetail, safeError, MAX_OUTPUT, atlasSandboxTags } from "./backends/shared";
 import { vercelSandboxAccess } from "./backends/detect";
 import { randomUUID } from "crypto";
@@ -84,85 +87,13 @@ const DATA_SCIENCE_PACKAGES = [
 ];
 
 /**
- * Non-streaming Python wrapper for Vercel Sandbox. Composes the shared security
- * fragment (PYTHON_SECURITY_AND_SETUP) with file-based data injection (argv[2],
- * since runCommand does not support stdin piping).
- *
- * Result transport diverges from the shared PYTHON_EXEC_AND_COLLECT fragment
- * (used by the nsjail/sidecar backends): instead of smuggling the structured
- * result back through a `__ATLAS_RESULT_<id>__` stdout marker, this wrapper
- * writes the result JSON to ATLAS_RESULT_FILE and leaves chart PNGs as files in
- * _chart_dir. The host reads both off the sandbox FS via the v2 sandbox.fs API
- * (readdir + readFileToBuffer). Charts are NOT base64-embedded here — they are
- * read as raw artifacts host-side.
+ * The wrapper this backend runs. Hoisted to python-wrapper.ts as
+ * PYTHON_FILE_TRANSPORT_WRAPPER (#3414) so the BYOC plugin providers execute
+ * byte-identical Python — including the in-sandbox import guard — rather than
+ * each shipping a copy that can drift. See that constant for the invocation
+ * contract this backend implements below.
  */
-const PYTHON_WRAPPER = `
-import sys, json, io, os, ast
-
-_chart_dir = os.environ.get("ATLAS_CHART_DIR", "/tmp/charts")
-_result_file = os.environ["ATLAS_RESULT_FILE"]
-
-def _report_error(msg):
-    with open(_result_file, "w") as _rf:
-        _rf.write(json.dumps({"success": False, "error": msg}))
-    sys.exit(0)
-
-${PYTHON_SECURITY_AND_SETUP}
-
-# --- Data injection (from file, not stdin) ---
-_atlas_data = None
-if len(sys.argv) > 2:
-    _data_file = sys.argv[2]
-    if os.path.exists(_data_file):
-        with open(_data_file) as f:
-            _raw = f.read().strip()
-            if _raw:
-                _atlas_data = json.loads(_raw)
-
-data = None
-df = None
-if _atlas_data:
-    try:
-        import pandas as pd
-        df = pd.DataFrame(_atlas_data["rows"], columns=_atlas_data["columns"])
-        data = df
-    except ImportError:
-        data = _atlas_data
-
-# --- Execute user code in isolated namespace ---
-_old_stdout = sys.stdout
-sys.stdout = _captured = io.StringIO()
-
-_user_ns = {"chart_path": chart_path, "data": data, "df": df}
-_atlas_error = None
-try:
-    exec(_user_code, _user_ns)
-except Exception as e:
-    _atlas_error = f"{type(e).__name__}: {e}"
-
-_output = _captured.getvalue()
-sys.stdout = _old_stdout
-
-# --- Build structured result (charts stay as PNG files, read host-side) ---
-_result = {"success": _atlas_error is None}
-if _output.strip():
-    _result["output"] = _output.strip()
-if _atlas_error:
-    _result["error"] = _atlas_error
-
-if "_atlas_table" in _user_ns:
-    _result["table"] = _user_ns["_atlas_table"]
-
-if "_atlas_chart" in _user_ns:
-    _ac = _user_ns["_atlas_chart"]
-    if isinstance(_ac, dict):
-        _result["rechartsCharts"] = [_ac]
-    elif isinstance(_ac, list):
-        _result["rechartsCharts"] = _ac
-
-with open(_result_file, "w") as _rf:
-    _rf.write(json.dumps(_result))
-`;
+const PYTHON_WRAPPER = PYTHON_FILE_TRANSPORT_WRAPPER;
 
 // Sandbox base dir for relative paths
 const SANDBOX_BASE = "/vercel/sandbox";
@@ -479,8 +410,8 @@ export function createPythonSandboxBackend(
               args: pythonArgs,
               cwd: `${SANDBOX_BASE}/${execDir}`,
               env: {
-                ATLAS_RESULT_FILE: resultPathAbs,
-                ATLAS_CHART_DIR: chartDirAbs,
+                [PYTHON_FILE_TRANSPORT.resultFileEnv]: resultPathAbs,
+                [PYTHON_FILE_TRANSPORT.chartDirEnv]: chartDirAbs,
                 MPLBACKEND: "Agg",
                 HOME: "/tmp",
                 LANG: "C.UTF-8",
@@ -561,7 +492,7 @@ export function createPythonSandboxBackend(
           const chartBuffers = yield* Effect.tryPromise({
             try: async () => {
               const names = await sandbox.fs.readdir(chartDirAbs);
-              const pngs = names.filter((n) => /^chart_.*\.png$/.test(n)).sort();
+              const pngs = names.filter((n) => PYTHON_FILE_TRANSPORT.chartPattern.test(n)).sort();
               // Reads are independent — fan out rather than awaiting serially.
               const bufs = await Promise.all(
                 pngs.map((name) =>

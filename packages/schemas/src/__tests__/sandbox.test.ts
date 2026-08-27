@@ -167,4 +167,30 @@ describe("SandboxStatusSchema", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  test("carries pythonSupported, and stays optional for older API builds (#4665)", () => {
+    const withField = SandboxConnectedProviderSchema.safeParse({
+      ...validStatus.connectedProviders[0],
+      pythonSupported: true,
+    });
+    expect(withField.success).toBe(true);
+    expect(withField.success && withField.data.pythonSupported).toBe(true);
+
+    // A response from a build predating the field must still parse — the web
+    // client treats `undefined` as "unknown" and says nothing, rather than
+    // guessing in either direction.
+    const withoutField = SandboxConnectedProviderSchema.safeParse(
+      validStatus.connectedProviders[0],
+    );
+    expect(withoutField.success).toBe(true);
+    expect(withoutField.success && withoutField.data.pythonSupported).toBeUndefined();
+  });
+
+  test("rejects a non-boolean pythonSupported", () => {
+    const result = SandboxConnectedProviderSchema.safeParse({
+      ...validStatus.connectedProviders[0],
+      pythonSupported: "yes",
+    });
+    expect(result.success).toBe(false);
+  });
 });

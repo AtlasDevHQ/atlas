@@ -1163,7 +1163,7 @@ import { Markdown, DataTable, ErrorBanner, SQLResultCard } from "@useatlas/react
 | `Markdown` | Chat-flavored Markdown (GFM tables, fenced code, sanitized HTML) |
 | `DataTable` | A query result grid with sorting, formatting, and CSV/Excel export |
 | `SQLResultCard` | The full `executeSQL` result card — table, chart toggle, row count, error state. Also exports `SQLResultCardProps`, `SqlResultActionContext`, `PreviousExecution` |
-| `PythonResultCard` | The `runPython` result card (stdout, artifacts, progress). Also exports `PythonResultCardProps`, `PythonProgressData` |
+| `PythonResultCard` | The `executePython` result card (stdout, artifacts, progress). Also exports `PythonResultCardProps`, `PythonProgressData` |
 | `ResultCardBase` / `ResultCardErrorBoundary` | The shared card chrome + an error boundary to wrap a custom card. Also exports `ResultCardBaseProps` |
 | `ErrorBanner` | The inline error surface driven by a parsed `ChatErrorInfo` |
 
@@ -1202,7 +1202,7 @@ import {
 
 ### Tool renderer types
 
-Type your own `executeSQL` / `explore` / `runPython` renderers against the same wire shapes `AtlasChat` uses:
+Type your own `executeSQL` / `explore` / `executePython` renderers against the same wire shapes `AtlasChat` uses:
 
 ```typescript
 import type {

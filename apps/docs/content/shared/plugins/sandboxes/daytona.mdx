@@ -11,6 +11,8 @@ Managed cloud sandbox isolation via the [Daytona](https://www.daytona.io) SDK. S
 bun add @useatlas/daytona @daytonaio/sdk
 ```
 
+Requires `@useatlas/plugin-sdk` >= 0.0.18 (the Python execution contract).
+
 ## Configuration
 
 ```typescript
@@ -35,6 +37,14 @@ export default defineConfig({
 | `apiKey` | `string` | Yes | -- | Daytona API key |
 | `apiUrl` | `string` | No | Daytona cloud endpoint | Custom API URL for self-hosted Daytona |
 | `timeoutSec` | `number` | No | `30` | Per-command timeout in seconds |
+| `target` | `string` | No | Account default | Daytona region for created sandboxes (e.g. `"us"`, `"eu"`). Both explore and Python runs land in this region -- this is what makes a Daytona connection a residency answer, not only an isolation one |
+| `pythonPackages` | `string[]` | No | `["pandas", "numpy", "matplotlib", "scipy", "scikit-learn", "statsmodels"]` | Packages installed before the first Python run. Set to `[]` when your Daytona image already bakes them in -- the install is the slowest part of a cold Python run |
+
+## Python execution
+
+Beyond the `explore` tool, this plugin provides the **Python execution** backend: Python runs (`executePython`) execute on your own Daytona account instead of the host's default backend. A sandbox is created lazily per request, the `pythonPackages` list is installed on first run, and the sandbox is deleted afterwards. The `target` option applies to Python sandboxes too.
+
+Note that Daytona sandboxes have no per-run egress allowlist -- the plugin declares `pythonEgressControl: "unsupported"`, so the host's per-request REST egress bound does not apply inside the sandbox. Bound egress at the network layer if your Python runs must not reach the open internet.
 
 ## Security
 
@@ -55,7 +65,7 @@ The `@daytonaio/sdk` package is an optional peer dependency, lazy-loaded at runt
 
 ### Combined stdout/stderr
 
-Daytona combines stdout and stderr into a single `result` field, so the plugin returns stderr as an empty string. This means error output from commands will appear in stdout.
+Daytona combines stdout and stderr into a single `result` field, so the plugin returns stderr as an empty string for `explore` commands -- error output will appear in stdout. Python runs differ: when the exit code is non-zero, the merged output is reported as stderr.
 
 ### Nested directory uploads
 

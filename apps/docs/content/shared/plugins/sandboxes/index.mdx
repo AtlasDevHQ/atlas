@@ -6,7 +6,7 @@ description: Isolate code execution with E2B, Daytona, Railway, nsjail, sidecar,
 import { Callout } from "fumadocs-ui/components/callout";
 import { Cards, Card } from "fumadocs-ui/components/card";
 
-Sandbox plugins provide isolation backends for the `explore` tool. They run user-initiated commands (file listing, grep, cat) in restricted environments to prevent unauthorized filesystem or network access. Each plugin implements the `AtlasSandboxPlugin` interface from `@useatlas/plugin-sdk`.
+Sandbox plugins provide isolation backends for the `explore` tool — and, for E2B and Daytona, for **Python execution** (`executePython`) on your own sandbox account. They run user-initiated commands (file listing, grep, cat) in restricted environments to prevent unauthorized filesystem or network access. Each plugin implements the `AtlasSandboxPlugin` interface from `@useatlas/plugin-sdk`.
 
 All six plugins follow the same pattern: validate config via a Zod schema, create an isolated environment, upload semantic layer files, execute commands, and clean up. The differences are in the isolation technology and where the sandbox runs.
 
@@ -25,16 +25,16 @@ All six plugins follow the same pattern: validate config via a Zod schema, creat
 
 When multiple sandbox backends are available, Atlas selects the highest-priority one. Higher priority means stronger isolation guarantees.
 
-| Plugin | Priority | Isolation Type | Runs on |
-|--------|----------|---------------|---------|
-| [Vercel](/plugins/sandboxes/vercel-sandbox) | 100 | Firecracker microVM | Vercel infrastructure |
-| [E2B](/plugins/sandboxes/e2b) | 90 | Firecracker microVM (managed) | E2B cloud |
-| [Daytona](/plugins/sandboxes/daytona) | 85 | Managed cloud sandbox | Daytona cloud |
-| [Railway](/plugins/sandboxes/railway) | 80 | Ephemeral microVM (no egress blocking) | Railway cloud |
-| [nsjail](/plugins/sandboxes/nsjail) | 75 | Linux namespace sandbox | Same host (Linux only) |
-| **Plugin default** | **60** | `SANDBOX_DEFAULT_PRIORITY` | -- |
-| [Sidecar](/plugins/sandboxes/sidecar) | 50 | HTTP-isolated container | Separate container |
-| just-bash (built-in) | 0 | OverlayFs (dev fallback) | Same host |
+| Plugin | Priority | Isolation Type | Python execution | Runs on |
+|--------|----------|---------------|------------------|---------|
+| [Vercel](/plugins/sandboxes/vercel-sandbox) | 100 | Firecracker microVM | No | Vercel infrastructure |
+| [E2B](/plugins/sandboxes/e2b) | 90 | Firecracker microVM (managed) | Yes | E2B cloud |
+| [Daytona](/plugins/sandboxes/daytona) | 85 | Managed cloud sandbox | Yes | Daytona cloud |
+| [Railway](/plugins/sandboxes/railway) | 80 | Ephemeral microVM (no egress blocking) | No | Railway cloud |
+| [nsjail](/plugins/sandboxes/nsjail) | 75 | Linux namespace sandbox | No | Same host (Linux only) |
+| **Plugin default** | **60** | `SANDBOX_DEFAULT_PRIORITY` | -- | -- |
+| [Sidecar](/plugins/sandboxes/sidecar) | 50 | HTTP-isolated container | No | Separate container |
+| just-bash (built-in) | 0 | OverlayFs (dev fallback) | No | Same host |
 
 <Callout type="info">
 The built-in `just-bash` backend (priority 0) is a development-only fallback. It uses OverlayFs for read-only filesystem protection but provides no network isolation. Never use it in production.

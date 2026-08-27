@@ -507,6 +507,30 @@ Displays query result cache statistics and inline controls:
 
 ---
 
+## Company Atlas
+
+**Routes:** `/admin/brain`, `/admin/brain/facts`, `/admin/brain/enrollment`, `/admin/brain/vocabulary`
+
+The operational surfaces of the [Company Atlas](/guides/atlas-temporal-model) — the pillar where claims drawn from chat, transcripts, and mail wait for a person before they count. (The routes say `brain` — the internal subsystem keeps its original name; everything a customer reads says Company Atlas.)
+
+- **Coverage** (`/admin/brain`) — states what Atlas covers, in parts: per source class, how much of the enumerable ground (channels, meetings, mailboxes, enrolled warehouse dimensions) has been seen, against denominators written by scheduled snapshot rosters. The **Coverage Plate** summarizes it at a glance, alongside counts of facts awaiting review and facts in tension.
+- **Facts** (`/admin/brain/facts`) — the review queue. Extraction stages fully-formed candidates; an admin promotes them via atomic publish, and each published claim carries the reviewer's name and a rendered trust-tier label. The page also hosts the oversight view, [correction](/guides/atlas-corrections) entry points (correct / retract), and the tension views ([conflict clusters](/guides/atlas-conflicts), forecast, and the admin-triggered bounded tension sweep).
+- **Enrollment** (`/admin/brain/enrollment`) — where a human names the `(entity, dimension)` pairs the warehouse producer may read. Nothing is produced un-enrolled; **Run** triggers a read now, and the cadence scheduler re-reads on its interval. See [Sources](/guides/atlas-sources) for what warehouse observations are (and deliberately are not).
+- **Vocabulary** (`/admin/brain/vocabulary`) — the claim vocabulary: approved alias edges with their derived effective-target closure, the Pending proposal queue (each proposal previews its target predicate and object-position blast radius), direct alias authoring, the In-force pane, and cardinality authoring. Every vocabulary write lands in the admin action log. See the [Vocabulary guide](/guides/atlas-vocabulary).
+
+**API endpoints (primary):**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/brain-coverage` | Coverage surface — per-class covered / seen / enumerated |
+| `GET` | `/api/v1/admin/brain-facts` | Review queue (plus `/summary`, `/oversight`, `/retirable`, `/tension-forecast`) |
+| `POST` | `/api/v1/admin/brain-facts/{id}/correct` · `/{id}/retract` | The correction verbs |
+| `POST` | `/api/v1/admin/brain-facts/tension-sweep` | Admin-triggered bounded tension sweep |
+| `GET` | `/api/v1/admin/brain-enrollment` | Enrolled warehouse `(entity, dimension)` pairs |
+| `GET` | `/api/v1/admin/brain-vocabulary` | Vocabulary edges, proposals, and closure |
+
+---
+
 ## Sessions
 
 **Route:** `/admin/sessions`

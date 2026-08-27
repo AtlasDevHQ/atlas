@@ -66,6 +66,76 @@ ask() {
 }
 
 # ---------------------------------------------------------------------------
+# FLEET CONCURRENCY. The per-command rules above are stateless, and that was the
+# hole they left: three agents each running a perfectly legal `--parallel=6` is
+# 18 workers, every command individually allowed. That is the shape that took
+# the box down on 2026-08-26, and the project memory recorded it as out of reach
+# for a per-command hook.
+#
+# It is not out of reach. MEASURED 2026-08-26: PreToolUse hooks DO fire for
+# subagent Bash calls and DO enforce -- a subagent-issued sentinel was blocked by
+# a `deny`, and the hook's stdin carried `agent_id`, `agent_type` and the SAME
+# `session_id` as the parent. So the guard can see the fleet; it just has to
+# count.
+#
+# ⚠️ THE PREDICATE IS "the executable is bun", NOT "the command line says
+# worker". A cmdline-TEXT scan counts anything that merely mentions the pattern,
+# including the scanner itself: the Bash tool wraps every command in
+# `bash -c '<command text>'`, so a `pgrep -f -- '--test-worker'` matches the very
+# shell running the check. That is not a hypothetical -- a `pkill -f` on this
+# pattern killed this session's own shell while the counter was being designed
+# (exit 144).
+#
+# So: comm == "bun" AND the cmdline carries `--test-worker`. Verified both ways
+# on 2026-08-26 -- a shell whose argv contains the flag counts 0, and three real
+# bun processes carrying it count 3. The shape is real, taken from `ps` during a
+# live run:
+#   bun test --parallel=4 w1.test.ts ...          <- the PARENT, no flag
+#     /home/msywu/.bun/bin/bun test --test-worker --isolate --timeout=5000 ...
+#     (x4)                                        <- the WORKERS
+#
+# ⚠️ KNOWN LIMIT, stated rather than papered over: only the parent exists for the
+# first moments of a run, so two invocations landing in the same sub-second can
+# both see zero. This closes the minutes-apart case that actually happened, not
+# the simultaneous one. A counter file would close it and was rejected: it leaks
+# on the crash this guard exists to prevent, and a leaked counter denies every
+# future run, which is how a gate becomes something people disable. Counting
+# real processes self-heals.
+count_bun_workers() {
+  local n=0 p comm
+  for p in /proc/[0-9]*; do
+    [ -r "$p/comm" ] || continue
+    read -r comm < "$p/comm" 2>/dev/null || continue
+    [ "$comm" = "bun" ] || continue
+    if tr '\0' ' ' < "$p/cmdline" 2>/dev/null | grep -q -- '--test-worker'; then
+      n=$((n + 1))
+    fi
+  done
+  printf '%s' "$n"
+}
+
+# 12 is MATT'S NUMBER, given on 2026-08-26 as "I'd budget for 15 probably just in
+# case maybe a few less" -- so: the cautious end of his range, not the headline.
+# It is not derived from a measurement and this comment is not going to pretend
+# it is. What it buys is a clean meaning: at the sanctioned cap of 6, TWO
+# concurrent breadth runs fit and a THIRD does not. Three at 6 is 18, which is
+# the run that took the box down.
+#
+# ⚠️ Do not "confirm" this number by citing the project memory later. The memory
+# names 6 as a per-command cap and says NOTHING about a fleet total; inventing a
+# threshold and then citing the record for it is the exact circular warrant this
+# guard's own history records (the cap of 8).
+#
+# ATLAS_GUARD_WORKER_BUDGET exists so the suite can drive the boundary without
+# spawning twelve processes on a box this guard exists to protect. It comes from
+# the hook's own environment, which Claude Code supplies -- a command cannot
+# export it into this process.
+budget="${ATLAS_GUARD_WORKER_BUDGET:-12}"
+case "$budget" in
+  ''|*[!0-9]*) budget=12 ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Strip anything that is DATA rather than a command before matching.
 #
 # `.tool_input.command` carries the text verbatim, so a plain grep cannot tell
@@ -145,6 +215,41 @@ Drop the flag: \`bun test --parallel --changed=origin/main\`"
   # points the real-Postgres suites at a live database, and the crash takes the
   # container down with the box -- destroying the database the run needed.
   args="$(printf '%s' "$seg" | sed -E 's/.*\bbun[[:space:]]+test\b//')"
+
+  # ---------------------------------------------------------------------
+  # THE FLEET CEILING, and it sits HERE deliberately -- above every allowance.
+  #
+  # `--changed`, named files and the capped hatch each `continue` out of this
+  # loop. Any of them placed above this check would be a way to skip it, and the
+  # whole point is that there is no such way: what a run costs is charged
+  # against what is already running, whatever shape the run is wearing.
+  #
+  # Cost model, deliberately crude: an explicit `--parallel=N` costs N, and
+  # everything else costs 1. A named-file run really is about one worker. A
+  # `--changed` run is the honest gap -- bun prints "32x PARALLEL" for it and the
+  # real fan-out depends on how many files the branch touched, which is not
+  # knowable here. Charging it 32 would deny the sanctioned pre-flight whenever
+  # anything else was running, and a gate that cries wolf on the everyday case
+  # is one people route around. So it is charged 1 and still bounded by the
+  # ceiling: it cannot ADD to an already-full box, it just cannot be predicted
+  # before it starts.
+  # ---------------------------------------------------------------------
+  fleet_cap="$(printf '%s' "$args" | grep -oE -- '--parallel=[0-9]+' | cut -d= -f2 | sort -n | tail -1)"
+  cost=1
+  if [ -n "$fleet_cap" ] && [ "$fleet_cap" -gt 0 ] 2>/dev/null; then
+    cost="$fleet_cap"
+  fi
+  live="$(count_bun_workers)"
+  if [ "$((live + cost))" -gt "$budget" ] 2>/dev/null; then
+    deny "BLOCKED: the box is already running $live bun test worker(s), and this asks for $cost more -- $((live + cost)) against a fleet budget of $budget.
+
+Every command here can be individually legal and still add up: three agents at --parallel=6 is 18 workers, which is what took the machine down on 2026-08-26. The per-command cap cannot see the other agents. This can.
+
+Wait for the in-flight run to finish, or narrow this one:
+  bun test path/to/one.test.ts                 # single file, one worker
+
+Remote CI on the PR is the gate -- it shards api-tests four ways against its own Postgres, which is why it goes green on SHAs a loaded local box calls red."
+  fi
 
   # --changed=<ref> bounds the run to the branch's source graph -- but only when
   # TEST_DATABASE_URL is absent. That graph was 874 files on a types-package

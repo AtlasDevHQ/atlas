@@ -206,5 +206,147 @@ check allow 'bun test packages/web/src/a.test.ts' 'and so is a single named file
 # history records, so the boundary is now load-bearing.
 check deny  'bun test --parallel=7 packages/api/src/lib/brain/__tests__/' 'one over the record number is not the record number'
 
+# --- THE FLEET CEILING (2026-08-26) -----------------------------------------
+# The per-command rules are stateless. Three agents each at a legal
+# `--parallel=6` is 18 workers, every command individually allowed -- the shape
+# that actually took the box down. These cases drive the REAL counter against
+# REAL processes; nothing here is faked with an injected count, because the
+# counter's predicate is the part most likely to be wrong.
+#
+# Budget is driven by ATLAS_GUARD_WORKER_BUDGET so the boundary can be crossed
+# with two or three processes instead of twelve. Spawning twelve to test a guard
+# that exists to stop the box being overloaded would be its own joke.
+#
+# Mutations applied to the hook and observed, 2026-08-26:
+#   drop `[ "$comm" = "bun" ]`          -> 1 red  (the self-match case)
+#   `if false` on the ceiling            -> 4 red
+#   charge every run 1, ignore the cap   -> 1 red
+#   default budget 12 -> 5               -> 3 red
+#   spawner produces no real workers     -> 1 red, LOUD: the suite refuses to run
+#                                           the dependent cases rather than pass
+#                                           them on an empty box
+#
+# ⚠️ The first of those SURVIVED on the first attempt, and the case was the
+# problem, not the rule -- see the fixture note further down. It is recorded
+# here because "the mutation reddened it" is the only evidence any of these
+# cases are worth their line, and one of them had none.
+
+SPAWNED=""
+cleanup_spawned() {
+  # shellcheck disable=SC2086
+  [ -n "$SPAWNED" ] && kill $SPAWNED 2>/dev/null
+  SPAWNED=""
+}
+trap cleanup_spawned EXIT
+
+# count as the HOOK counts: comm == bun AND the cmdline carries the worker flag.
+countable() {
+  local n=0 p comm
+  for p in /proc/[0-9]*; do
+    [ -r "$p/comm" ] || continue
+    read -r comm < "$p/comm" 2>/dev/null || continue
+    [ "$comm" = "bun" ] || continue
+    tr '\0' ' ' < "$p/cmdline" 2>/dev/null | grep -q -- '--test-worker' && n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
+# spawn_bun_workers <n> -- real bun processes carrying the flag, and it BLOCKS
+# until the counter can actually see them.
+#
+# ⚠️ This wait is not politeness, it is the difference between a falsifier and a
+# decoration. If a spawn silently failed, the live count would be 0 and the
+# ALLOW case below would go green while proving nothing -- the precise shape
+# that put two dead-path cases into this file's history. So the count is
+# asserted before any case runs, and a shortfall is a FAIL, not a shrug.
+spawn_bun_workers() {
+  local want="$1" i tries=0
+  for i in $(seq 1 "$want"); do
+    bun -e 'await Bun.sleep(30000)' '--test-worker' >/dev/null 2>&1 &
+    SPAWNED="$SPAWNED $!"
+  done
+  while [ "$(countable)" -lt "$want" ]; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 100 ]; then
+      printf '  FAIL could not spawn %d countable workers (saw %s) -- fleet cases below would prove nothing\n' \
+        "$want" "$(countable)"
+      fail=$((fail + 1))
+      return 1
+    fi
+    sleep 0.1
+  done
+  return 0
+}
+
+# check_fleet <want> <budget> <cmd> <label>
+check_fleet() {
+  local want="$1" bud="$2" cmd="$3" label="$4" out got
+  out="$(jq -nc --arg c "$cmd" '{tool_input:{command:$c},permission_mode:"default"}' \
+    | ATLAS_GUARD_WORKER_BUDGET="$bud" bash "$HOOK")"
+  case "$out" in
+    *'"permissionDecision":"deny"'*) got=deny ;;
+    *'"permissionDecision":"ask"'*)  got=ask ;;
+    *) got=allow ;;
+  esac
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s -- wanted %s, got %s\n' "$label" "$want" "$got"
+  fi
+}
+
+if spawn_bun_workers 2; then
+  printf '  (%s live bun workers)\n' "$(countable)"
+
+  # The ceiling sits ABOVE every allowance -- that is the whole design. Each of
+  # these shapes is unconditionally permitted by the per-command rules.
+  check_fleet deny 2 'bun test packages/web/src/a.test.ts' 'a single named file cannot add to an already-full box'
+  check_fleet deny 2 'bun test --parallel --changed=origin/main' 'nor can the sanctioned pre-flight -- --changed does not skip the ceiling'
+  check_fleet deny 2 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'nor the capped hatch, which never reaches the ask'
+  # ...and it must not fire when there is room. 2 live + 1 = 3, budget 3.
+  check_fleet allow 3 'bun test packages/web/src/a.test.ts' 'but with room to spare it stays out of the way'
+fi
+cleanup_spawned
+
+# Predicted cost, with nothing running at all: --parallel=6 is charged 6, not 1.
+check_fleet deny 4 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'a capped run is charged its CAP up front, on an idle box'
+check_fleet ask  6 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'and exactly fits a budget of 6'
+
+# ⚠️ THE SELF-MATCH CASE. The counter's predicate is `comm == "bun"`, not "the
+# command line mentions --test-worker", and this is why: the Bash tool wraps
+# every command in `bash -c '<command text>'`, so a cmdline-TEXT scan counts the
+# shell running the check. During design, a `pkill -f` on that pattern killed
+# this session's own shell (exit 144).
+#
+# A `bash` process carrying the flag in its argv must count ZERO. With a budget
+# of 1, a one-worker run fits only if it counts zero.
+#
+# Mutation: drop the `[ "$comm" = "bun" ] || continue` line from the hook and
+# this case reddens (the shell counts, 1 + 1 > 1, deny).
+# ⚠️ `bash -c 'sleep 30' '--test-worker'` DOES NOT WORK as this fixture, and it
+# sat here green and inert until a mutation exposed it. bash execs a lone simple
+# command in place, so that process becomes comm=`sleep`, cmdline=`[sleep 30]` --
+# the flag is GONE and the case passed without the rule under test doing
+# anything. Deleting the `comm` predicate left it green. A second command
+# defeats the exec optimisation and the argv survives:
+#   comm=bash  cmdline=[bash -c sleep 30; : --test-worker]
+# Verified by reading /proc/<pid>/comm and /proc/<pid>/cmdline for both forms.
+bash -c 'sleep 30; :' '--test-worker' >/dev/null 2>&1 &
+SPAWNED="$SPAWNED $!"
+# and assert the fixture is what it claims to be, before relying on it.
+sleep 0.3
+if ! tr '\0' ' ' < "/proc/$!/cmdline" 2>/dev/null | grep -q -- '--test-worker'; then
+  printf '  FAIL self-match fixture does not carry the flag -- the case below would prove nothing\n'
+  fail=$((fail + 1))
+fi
+check_fleet allow 1 'bun test packages/web/src/a.test.ts' 'a SHELL that merely mentions the worker flag is not a worker'
+cleanup_spawned
+
+# The default budget is Matt's number, not a measurement, and it is 12. Nothing
+# can pin a policy number to a fact -- what IS pinned is that it is not tiny:
+# with nothing running, the sanctioned cap of 6 must still reach the ask.
+# Mutation: default budget 12 -> 5 and this reddens.
+check ask 'bun test --parallel=6 packages/api/src/lib/brain/__tests__/' 'the default budget leaves room for one capped run'
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

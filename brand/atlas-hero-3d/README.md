@@ -26,6 +26,22 @@ The mesh is **"Atlas statue" by SpatialNeglect**, bought on Fab (Epic) under the
 revenue or funding in the trailing 12 months), not a non-commercial restriction,
 so shipping it in a product page is within licence.
 
+| | |
+|---|---|
+| Buy / re-download | <https://www.fab.com/listings/2198e435-9526-485a-a521-4b7e619c5b51> |
+| Original listing | <https://sketchfab.com/3d-models/atlas-738f84702bc14d8cbb165632bb704582> |
+| Licence | Fab Standard Licence, Personal tier. Flagged NoAI — render it, don't feed it to a generative 3D tool. |
+
+Purchases stay in the Fab Library indefinitely, so the original is
+re-downloadable; the account and order details are deliberately not recorded
+here, since this repo is public. Sketchfab's store is retired and now only links
+out to Fab.
+
+You need the original **only** to redo the optimisation — a different texture
+resolution, re-extracting maps, or the Marble&Gold / Oxidized Bronze variants,
+which ship in `atlasblend.zip` and were never pulled. Rebuilding the page needs
+nothing beyond what is committed here.
+
 Redistributing the *source asset* is not. This repo is **public and AGPL-3.0**,
 and AGPL would purport to grant everyone downstream rights we do not hold for
 that model. So the original 76 MB `.glb` stays out (`.gitignore` covers it), and

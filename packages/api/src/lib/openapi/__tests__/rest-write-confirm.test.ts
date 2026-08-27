@@ -232,3 +232,55 @@ describe("rest confirm token — key rotation (unknown kid)", () => {
     expect(verifyRestConfirmToken(token, binding())).toEqual({ ok: false, reason: "bad-signature" });
   });
 });
+
+// ---------------------------------------------------------------------------
+// The wire format itself (#5496)
+// ---------------------------------------------------------------------------
+
+describe("rest confirm token — the WIRE format is pinned, not just the round-trip", () => {
+  beforeAll(() => {
+    clearKeyEnv();
+    process.env.BETTER_AUTH_SECRET = SECRET;
+    _resetEncryptionKeyCache();
+  });
+  afterAll(restoreKeyEnv);
+
+  // #5496 extracted this gate's crypto into `lib/confirm-token.ts`, shared with
+  // the brain-correction gate, and the header there claims the REST payload is
+  // "still `{w, ds, op, ph, n, exp}`" with THIS suite as the evidence.
+  //
+  // Every other test in this file round-trips mint → verify through one module,
+  // so it would stay green if the claim names and the `typ` changed TOGETHER —
+  // which is exactly what a careless refactor of a shared core would do. The
+  // case that breaks is a token minted by an old replica and verified by a new
+  // one during a rolling deploy: same key, different claim names, silent
+  // rejection of every in-flight confirmation.
+  //
+  // So this decodes the segments and asserts the literal bytes. It is the only
+  // thing standing behind that comment.
+  it("emits the documented header and payload keys", () => {
+    const token = mintRestConfirmToken(binding(), { nonce: "fixed-nonce", nowSeconds: 1_000, ttlSeconds: 60 });
+    const [headerB64, payloadB64] = token.split(".");
+
+    const header = JSON.parse(Buffer.from(headerB64, "base64url").toString("utf8")) as Record<string, unknown>;
+    expect(header.alg).toBe("HS256");
+    expect(
+      header.typ,
+      "the REST gate's `typ` domain separator changed. It is the only thing stopping a brain-correction confirm token — signed with the SAME key — from verifying here.",
+    ).toBe("AtlasRestConfirm");
+    expect(typeof header.kid).toBe("number");
+
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8")) as Record<string, unknown>;
+    expect(
+      Object.keys(payload).toSorted(),
+      "the REST confirm payload's claim names changed. A token minted by a pre-deploy replica no longer verifies on a post-deploy one — every in-flight confirmation is silently rejected mid-rollout.",
+    ).toEqual(["ds", "exp", "n", "op", "ph", "w"]);
+    expect(payload.w).toBe("ws-1");
+    expect(payload.ds).toBe("twenty");
+    expect(payload.op).toBe("createOnePerson");
+    expect(payload.n).toBe("fixed-nonce");
+    expect(payload.exp).toBe(1_060);
+    // `ph` is a sha256 hex digest of the canonicalized params, not the params.
+    expect(payload.ph).toMatch(/^[0-9a-f]{64}$/);
+  });
+});

@@ -80,12 +80,20 @@ import {
 
 const log = createLogger("correct-fact");
 
-/** Why a call degraded — the discriminator every consumer branches on. */
+/**
+ * Why a call degraded — the discriminator every consumer branches on.
+ *
+ * `not_found` was removed by #5496 rather than kept "just in case": staging
+ * never reads the fact graph, so no path here can produce it. The condition
+ * still exists — it is a 404 from the confirm endpoint — but a consumer
+ * branching on `not_found` FROM THIS TOOL would be writing dead code, and a
+ * reason nothing can emit is exactly the kind of stale contract this object's
+ * one job is to keep honest.
+ */
 export const CORRECT_FACT_TOOL_REASONS = {
   noInternalDb: "no_internal_db",
   noWorkspace: "no_workspace",
   readerUnresolved: "reader_unresolved",
-  notFound: "not_found",
   refused: "correction_refused",
   correctionFailed: "correction_failed",
 } as const;

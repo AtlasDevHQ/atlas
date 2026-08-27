@@ -12,7 +12,9 @@
  */
 
 /** The correction verbs, mirroring `CORRECTION_VERBS` in `lib/brain/correction.ts`. */
-export type BrainCorrectionVerb = "retract" | "supersede" | "re-authority" | "pin";
+export const BRAIN_CORRECTION_VERBS = ["retract", "supersede", "re-authority", "pin"] as const;
+
+export type BrainCorrectionVerb = (typeof BRAIN_CORRECTION_VERBS)[number];
 
 /** The replay payload the confirm card POSTs to the confirm endpoint. */
 export interface CorrectFactConfirmRequest {
@@ -45,7 +47,14 @@ export function isCorrectFactConfirmResult(result: unknown): result is CorrectFa
   return (
     r.status === "needs_confirmation" &&
     typeof r.factId === "string" &&
+    // MEMBERSHIP, not `typeof === "string"`. The guard asserts the result IS a
+    // `CorrectFactConfirmResult`, whose `verb` is the four-member union — so a
+    // bare string check would let an off-union verb through wearing that type.
+    // It degrades safely (the card falls to non-destructive styling and the
+    // outcome copy's `default` arm), but the type would be lying about what was
+    // checked, and the styling it picks is the LESS cautious of the two.
     typeof r.verb === "string" &&
+    (BRAIN_CORRECTION_VERBS as readonly string[]).includes(r.verb) &&
     typeof r.summary === "string" &&
     typeof r.confirm === "object" &&
     r.confirm !== null

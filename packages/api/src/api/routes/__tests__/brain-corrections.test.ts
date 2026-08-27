@@ -138,8 +138,27 @@ const CORRECTED = {
 };
 let correctCalls: Array<Record<string, unknown>> = [];
 let correctionResult: () => unknown = () => CORRECTED;
+// Mock-all-exports, matching the sibling in `lib/tools/__tests__/correct-fact-tool.test.ts`:
+// the factory lists every VALUE export `correction.ts` has. A partial factory
+// makes any later import of a SQL-constant consumer fail with a `SyntaxError`
+// about a missing export rather than a useful assertion — which is exactly what
+// `.claude/rules/testing.md` means by "mock all exports".
 void mock.module("@atlas/api/lib/brain/correction", () => ({
   CORRECTION_VERBS: ["retract", "supersede", "re-authority", "pin"],
+  CORRECTION_EPISODE_INSERT_SQL: "INSERT",
+  DEPENDENT_FACTS_SQL: "SELECT",
+  DERIVES_FROM_EDGE_SQL: "INSERT",
+  MERGE_PROVENANCE_MARKER_SQL: "UPDATE",
+  PROMOTE_CORRECTION_FACT_SQL: "UPDATE",
+  REPLACEMENT_ROW_SQL: "SELECT",
+  RETRACT_FACT_SQL: "UPDATE",
+  CorrectionRefusedError: class CorrectionRefusedError extends Error {},
+  correctionTargetSql: () => "SELECT",
+  // The route never calls this — `correctFact` runs the authority gate itself,
+  // and the ROUTE's job is to hand it a live context. Stubbed to "no refusal" so
+  // the export exists and a future route that does consult it fails loudly here
+  // rather than silently taking the happy path.
+  correctionAuthorityRefusal: () => null,
   CORRECTION_REFUSAL_REASONS: {
     notAuthorized: "NOT_AUTHORIZED",
     warehouseTarget: "WAREHOUSE_TARGET",

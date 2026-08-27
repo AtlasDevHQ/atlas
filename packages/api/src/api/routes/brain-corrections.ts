@@ -22,6 +22,20 @@
  * over.
  *
  * Middleware mirrors `rest-operations.ts`: standardAuth → requestContext.
+ *
+ * ⚠️ That is NOT the admin correction routes' middleware, and the difference is
+ * recorded here rather than left to whoever notices it next. `createAdminRouter`
+ * mounts `adminAuth → mfaRequired → requestContext`, so an owner/admin who has
+ * not enrolled TOTP cannot reach `/admin/brain-facts/:id/retract`. This route
+ * carries no `mfaRequired`, so the same person CAN apply the same verb through
+ * the chat confirm card.
+ *
+ * Deliberate, and not a regression: the chat path never carried MFA, and #5496
+ * makes it strictly stronger than what shipped (it used to fire in the agent
+ * loop with no human act at all). The asymmetry is that one write now has two
+ * entry points with different second-factor postures — worth knowing before
+ * anyone concludes MFA gates every correction. If that becomes unacceptable,
+ * the fix is `mfaRequired` here, not weakening the admin router.
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";

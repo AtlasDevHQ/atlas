@@ -138,7 +138,7 @@ import { identityVocabulary } from "@atlas/api/lib/brain/identity";`,
 /** The retract route's `correctFact` call — the pair with the one below is why
  * both are anchored on surrounding lines rather than on the identical
  * `vocabulary:` line they share. */
-const ADMIN_RETRACT_VOCABULARY = `            verb: "retract",
+const ADMIN_RETRACT_VOCABULARY = `            intent: "admin-ui",
             requestId,
             vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),`;
 
@@ -750,7 +750,7 @@ be a fabricated measurement.
         {
           file: ADMIN_ROUTE,
           oldString: ADMIN_RETRACT_VOCABULARY,
-          newString: `            verb: "retract",
+          newString: `            intent: "admin-ui",
             requestId,
             vocabulary: identityVocabulary,`,
         },
@@ -829,7 +829,7 @@ be a fabricated measurement.
         {
           file: ADMIN_ROUTE,
           oldString: ADMIN_RETRACT_VOCABULARY,
-          newString: `            verb: "retract",
+          newString: `            intent: "admin-ui",
             requestId,
             vocabulary: ${INLINE_IDENTITY},`,
         },

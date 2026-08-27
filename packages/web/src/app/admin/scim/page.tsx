@@ -135,6 +135,33 @@ export default function SCIMPage() {
       invalidates: [refetchStatus, refetchMappings],
     });
 
+  // #5493 — @better-auth/scim 1.7 withdrew the public
+  // `POST /api/auth/scim/generate-token` route this page used to link to
+  // (it is the route GHSA-j8v8-g9cx-5qf4 was about). Issuing a credential
+  // now goes through the Atlas admin route, which gates on
+  // `canGenerateSCIMToken` before calling the plugin's server-only endpoint.
+  const { mutate: issueMutate, saving: issuing, error: issueError, clearError: clearIssueError } =
+    useAdminMutation({
+      method: "POST",
+      invalidates: [refetchStatus],
+    });
+
+  // The plaintext token, held only in component state for the one render
+  // after issuance. 1.7 stores an HMAC digest, so it is unrecoverable once
+  // dismissed — the UI has to say so rather than implying it can be re-read.
+  const [issuedToken, setIssuedToken] = useState<string | null>(null);
+
+  async function handleIssueToken() {
+    clearIssueError();
+    const result = await issueMutate({ path: "/api/v1/admin/scim/connections" });
+    // On failure the hook has already surfaced the error via `issueError`;
+    // narrowing here keeps a failed issue from clearing a token the admin
+    // may still be copying.
+    if (!result.ok) return;
+    const token = (result.data as { token?: unknown } | undefined)?.token;
+    if (typeof token === "string") setIssuedToken(token);
+  }
+
   const loading = statusLoading || mappingsLoading;
   const error = statusError ?? mappingsError;
   const connections = statusData?.connections ?? [];
@@ -422,21 +449,50 @@ export default function SCIMPage() {
                 <CompactRow
                   icon={Plus}
                   title={connections.length === 0 ? "Generate your first SCIM token" : "Generate another SCIM token"}
-                  description="Issue a bearer token via POST /api/auth/scim/generate-token for your IdP"
+                  description="Creates a provisioning connection and issues its bearer token. The token is shown once and cannot be retrieved later."
                   status="disconnected"
                   action={
-                    <Button variant="outline" size="sm" asChild>
-                      <a
-                        href="/api/auth/scim/generate-token"
-                        target="_blank"
-                        rel="noreferrer noopener"
-                      >
-                        <KeyRound className="mr-1.5 size-3.5" />
-                        Token API
-                      </a>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleIssueToken}
+                      disabled={issuing}
+                    >
+                      <KeyRound className="mr-1.5 size-3.5" />
+                      {issuing ? "Issuing…" : "Issue token"}
                     </Button>
                   }
                 />
+
+                {issueError && (
+                  <MutationErrorSurface
+                    error={issueError}
+                    feature="SCIM"
+                    variant="inline"
+                    inlinePrefix="Token issuance failed."
+                  />
+                )}
+
+                {issuedToken && (
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+                    <p className="font-medium">Copy this token now</p>
+                    <p className="text-muted-foreground mt-1">
+                      Atlas stores only a hash of it. Once you dismiss this, it cannot be
+                      shown again — rotate the connection to issue a new one.
+                    </p>
+                    <code className="mt-2 block break-all rounded bg-muted px-2 py-1 font-mono text-xs">
+                      {issuedToken}
+                    </code>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => setIssuedToken(null)}
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                )}
               </div>
             </section>
 

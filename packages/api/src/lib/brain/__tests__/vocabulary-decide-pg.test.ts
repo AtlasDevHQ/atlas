@@ -2065,9 +2065,15 @@ describeIfPg("the alias decision seam (#5023)", () => {
     // Backstopped: each file is proven to still CONSUME a vocabulary before it
     // is asserted not to name the empty one, so a rename or a deletion fails
     // here loudly instead of passing vacuously.
+    //
+    // #5496 moved one of them. `lib/tools/correct-fact.ts` used to load the
+    // vocabulary and call `correctFact`; it now STAGES a correction and loads
+    // nothing, because the vocabulary is workspace STATE that may have moved
+    // between staging and confirming — so the confirm endpoint loads it live.
+    // The consumer set is unchanged in size; only the file moved with the load.
     const consumers = [
       "lib/brain/extract.ts",
-      "lib/tools/correct-fact.ts",
+      "api/routes/brain-corrections.ts",
       "api/routes/admin-brain-facts.ts",
     ];
     const root = join(import.meta.dir, "..", "..", "..");

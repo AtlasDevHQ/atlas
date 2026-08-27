@@ -178,7 +178,7 @@ export function CorrectFactConfirmCard({ part }: { part: unknown }) {
       : cardState.phase === "error"
         ? "border-red-300 dark:border-red-900/50"
         : cardState.phase === "cancelled"
-          ? "border-zinc-200 dark:border-zinc-700"
+          ? "border-border"
           : isDestructive
             ? "border-amber-300 dark:border-amber-900/50"
             : "border-blue-300 dark:border-blue-900/50";
@@ -188,7 +188,7 @@ export function CorrectFactConfirmCard({ part }: { part: unknown }) {
     : "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300";
 
   return (
-    <div className={`my-2 overflow-hidden rounded-lg border ${borderColor} bg-zinc-50 dark:bg-zinc-900`}>
+    <div className={`my-2 overflow-hidden rounded-lg border ${borderColor} bg-muted`}>
       {/* Header — the staged correction, always visible. */}
       <div className="flex items-center gap-2 px-3 py-2 text-xs">
         <span
@@ -196,20 +196,20 @@ export function CorrectFactConfirmCard({ part }: { part: unknown }) {
         >
           {confirmResult.verb}
         </span>
-        <span className="flex-1 truncate text-zinc-700 dark:text-zinc-300">
+        <span className="flex-1 truncate text-foreground">
           {confirmResult.summary}
         </span>
       </div>
 
       {/* Pending: confirm-before-write controls. */}
       {isPending && (
-        <div className="border-t border-zinc-100 px-3 py-2 dark:border-zinc-800">
-          <p className="mb-2 text-xs text-zinc-600 dark:text-zinc-400">
+        <div className="border-t border-border px-3 py-2">
+          <p className="mb-2 text-xs text-muted-foreground">
             This will change your company brain on your authority, effective immediately. It has not
             been applied yet — confirm to proceed, or cancel to leave the fact as it is.
           </p>
           {confirmResult.confirm.reason ? (
-            <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-500">
+            <p className="mb-2 text-xs text-muted-foreground">
               Recorded reason: <span className="italic">{confirmResult.confirm.reason}</span>
             </p>
           ) : null}
@@ -217,21 +217,21 @@ export function CorrectFactConfirmCard({ part }: { part: unknown }) {
             <button
               onClick={handleConfirm}
               disabled={isSubmitting}
-              className={`inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-[3px] ${
+              className={`inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-[3px] ${
                 isDestructive
                   ? "bg-amber-600 hover:bg-amber-500 focus-visible:ring-amber-500/50"
                   : "bg-blue-600 hover:bg-blue-500 focus-visible:ring-blue-500/50"
               }`}
             >
               {isSubmitting && (
-                <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current/30 border-t-current" />
               )}
               Confirm correction
             </button>
             <button
               onClick={() => setCardState({ phase: "cancelled" })}
               disabled={isSubmitting}
-              className="rounded border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-40 dark:border-zinc-600 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+              className="rounded border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-40"
             >
               Cancel
             </button>
@@ -241,7 +241,7 @@ export function CorrectFactConfirmCard({ part }: { part: unknown }) {
 
       {/* Resolved states. */}
       {cardState.phase === "applied" && (
-        <div className="border-t border-zinc-100 px-3 py-2 dark:border-zinc-800">
+        <div className="border-t border-border px-3 py-2">
           <div className="rounded bg-green-50 p-2 text-xs text-green-700 dark:bg-green-900/20 dark:text-green-400">
             <span className="font-medium">Correction applied</span>
             <p className="mt-1">{describeCorrectionOutcome(cardState.response)}</p>
@@ -250,13 +250,13 @@ export function CorrectFactConfirmCard({ part }: { part: unknown }) {
       )}
 
       {cardState.phase === "cancelled" && (
-        <div className="border-t border-zinc-100 px-3 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+        <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
           Cancelled — the fact was not changed.
         </div>
       )}
 
       {cardState.phase === "error" && (
-        <div className="border-t border-zinc-100 px-3 py-2 dark:border-zinc-800">
+        <div className="border-t border-border px-3 py-2">
           <p className="text-xs text-red-600 dark:text-red-400">{cardState.message}</p>
           {/* Only re-arm Confirm when the correction provably didn't land (4xx).
               For an ambiguous outcome we deliberately offer no retry — the user
@@ -266,7 +266,7 @@ export function CorrectFactConfirmCard({ part }: { part: unknown }) {
           {cardState.retrySafe && (
             <button
               onClick={() => setCardState({ phase: "idle" })}
-              className="mt-2 rounded border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:border-zinc-600 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+              className="mt-2 rounded border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
             >
               Try again
             </button>

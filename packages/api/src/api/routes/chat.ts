@@ -80,7 +80,7 @@ import { getSetting } from "@atlas/api/lib/settings";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema } from "./shared-schemas";
 import { RunStatusResponseSchema } from "@useatlas/schemas";
-import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "@useatlas/types/auth";
+import { ATLAS_SURFACE_HEADER, rendersConfirmations as surfaceRendersConfirmations } from "@atlas/api/lib/chat-surface";
 
 const DEFAULT_CONVERSATION_STEP_CAP = 500;
 const DEFAULT_AGENT_MAX_STEPS = 25;
@@ -856,8 +856,9 @@ chat.openapi(chatRoute, async (c) => {
     // authority, ACL visibility, the tier-1 refusal and vocabulary closure
     // against a single-use, workspace-bound token. See the `correct_fact` gate
     // comment in lib/tools/registry.ts.
-    const rendersConfirmations =
-      req.headers.get(ATLAS_SURFACE_HEADER) === ATLAS_WORKSPACE_SURFACE;
+    const rendersConfirmations = surfaceRendersConfirmations(
+      req.headers.get(ATLAS_SURFACE_HEADER),
+    );
 
     // Bind user to AsyncLocalStorage so downstream code (logQueryAudit, etc.)
     // has access to user identity. The middleware already set up requestId context;
@@ -2079,8 +2080,9 @@ chat.openapi(chatResumeRoute, async (c) => {
     // would survive a client that no longer makes it. Fail-closed on absence,
     // exactly as the initial turn is. See the initial-turn comment for why a
     // client-supplied header is sound for this decision.
-    const rendersConfirmations =
-      req.headers.get(ATLAS_SURFACE_HEADER) === ATLAS_WORKSPACE_SURFACE;
+    const rendersConfirmations = surfaceRendersConfirmations(
+      req.headers.get(ATLAS_SURFACE_HEADER),
+    );
     const conversationId = c.req.param("conversationId");
 
     return withRequestContext(

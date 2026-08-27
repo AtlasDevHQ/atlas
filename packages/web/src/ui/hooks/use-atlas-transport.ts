@@ -5,7 +5,7 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
 import type { AnswerStyle } from "@useatlas/types/conversation";
 import { applyBrandColor, OKLCH_RE } from "./use-dark-mode";
-import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "@useatlas/types/auth";
+import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "../lib/correct-fact-types";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
 

@@ -68,7 +68,7 @@ void mock.module("@atlas/api/lib/durable-resume", () => ({
 // --- Latest-run-status probe (#3749) ---
 import type { LatestRunStatus } from "@atlas/api/lib/durable-session";
 import * as realDurableSession from "@atlas/api/lib/durable-session";
-import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "@useatlas/types/auth";
+import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "@atlas/api/lib/chat-surface";
 const mockLoadLatestRunStatus: Mock<() => Promise<LatestRunStatus>> = mock(() =>
   Promise.resolve({ status: "running" as const, runId: "run-abc", parkedReason: null }),
 );

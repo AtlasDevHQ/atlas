@@ -105,7 +105,7 @@ void mock.module("@atlas/api/lib/startup", () => ({
 // depend on its actual behaviour) while only the DB-backed probe is faked.
 import * as realWorkspaceCapability from "@atlas/api/lib/workspace-capability";
 import type { CapabilityProbe, WorkspaceCapability } from "@atlas/api/lib/workspace-capability";
-import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "@useatlas/types/auth";
+import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "@atlas/api/lib/chat-surface";
 
 /** Defaults to a datasource-capable workspace so every other test is unaffected. */
 const mockProbeWorkspaceCapabilities: Mock<(workspaceId: string) => Promise<CapabilityProbe>> =

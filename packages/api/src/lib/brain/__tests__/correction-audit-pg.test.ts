@@ -379,14 +379,17 @@ describeIfPg("correction audit row (real Postgres)", () => {
       // caller passed. `auditRowsFor` queried on the canonical id and found it,
       // which is the join this pins.
       expect(row.target_id).toBe(factId);
-      // Exactly the three unconditional keys FROM THIS CALL SITE — a `pin`
+      // Exactly the four unconditional keys FROM THIS CALL SITE — a `pin`
       // neither tombstones, supersedes, nor closes a validity window, and a row
       // asserting `invalidatedAt: null` reads as a decision that was made.
+      // `intent` (#5496) IS unconditional: every entry point must say how the
+      // human's intent was established, and this one is the admin surface.
       // (`resolveEntry` also merges `trustDeviceIdentifier` / `origin` when the
       // context carries them; this context carries neither, so a strict
       // `toEqual` is right and forces a deliberate decision if that changes.)
       expect(row.metadata).toEqual({
         verb: "pin",
+        intent: "admin-ui",
         workspaceId: WS,
         correctionEpisodeId: outcome.result.correctionEpisodeId,
       });

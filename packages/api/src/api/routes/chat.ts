@@ -27,6 +27,9 @@ import {
 } from "@atlas/api/lib/workspace-capability";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+// #5495 — the confirm-before-write surface declaration lives next to the wire
+// contract it gates, so the header name and the payload cannot drift apart.
+import { readsWriteConfirmUiHeader } from "@atlas/api/lib/openapi/rest-write-confirm";
 import { logFirstAnswerLatency, isFirstTurn, turnAnsweredQuery } from "@atlas/api/lib/activation-metrics";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
@@ -833,6 +836,10 @@ chat.openapi(chatRoute, async (c) => {
       authResult,
     );
 
+    // #5495 — whether this surface can complete a staged REST write. Read once
+    // here and stamped into both request-context frames below.
+    const writeConfirmUi = readsWriteConfirmUiHeader(req.headers);
+
     // Bind user to AsyncLocalStorage so downstream code (logQueryAudit, etc.)
     // has access to user identity. The middleware already set up requestId context;
     // this nested call adds the user after inline auth completes.
@@ -845,7 +852,15 @@ chat.openapi(chatRoute, async (c) => {
     // known so plugin tools / agent helpers see them in AsyncLocalStorage
     // without a second middleware pass.
     return withRequestContext(
-      { requestId, user: authResult.user, atlasMode, agentOrigin: "chat" },
+      {
+        requestId,
+        user: authResult.user,
+        atlasMode,
+        agentOrigin: "chat",
+        // #5495 — stamped only when true so the legacy context shape is
+        // byte-identical for every surface that does not declare the banner.
+        ...(writeConfirmUi ? { restWriteConfirmationUi: true } : {}),
+      },
       async () => {
         // --- Serviceability gate (#4826) ---
         // Two different questions, depending on tenancy:
@@ -1698,6 +1713,10 @@ chat.openapi(chatRoute, async (c) => {
               ...(effectiveGroupReach
                 ? { groupReach: effectiveGroupReach }
                 : {}),
+              // #5495 — the surface's confirm-before-write capability reaches
+              // the REST tool binding in `agent.ts` through this frame. Stamped
+              // only when true; absent ⇒ writes are refused before staging.
+              ...(writeConfirmUi ? { restWriteConfirmationUi: true } : {}),
             },
             () =>
               runAgent({
@@ -2038,9 +2057,21 @@ chat.openapi(chatResumeRoute, async (c) => {
 
     const atlasMode = resolveMode(req.headers.get("cookie"), req.headers.get("x-atlas-mode"), authResult);
     const conversationId = c.req.param("conversationId");
+    // #5495 — a resumed turn rebuilds the tool surface, so it must re-declare
+    // the capability too. Omitting it here would silently NARROW a web-app
+    // resume to read-only; asserting it unconditionally would silently WIDEN a
+    // widget resume back to the bug. Read from the resume request's own header.
+    const writeConfirmUi = readsWriteConfirmUiHeader(req.headers);
 
     return withRequestContext(
-      { requestId, user: authResult.user, atlasMode, agentOrigin: "chat", actor: { kind: "human" } },
+      {
+        requestId,
+        user: authResult.user,
+        atlasMode,
+        agentOrigin: "chat",
+        actor: { kind: "human" },
+        ...(writeConfirmUi ? { restWriteConfirmationUi: true } : {}),
+      },
       async () => {
         // Serviceability gate — a resumed turn needs the same capability a fresh
         // one does, and asks the same tenancy-aware question (#4826). Kept in

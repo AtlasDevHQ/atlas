@@ -36,14 +36,57 @@
  * The token is OPAQUE to the banner: it lives inside the `confirm` payload, which
  * the banner POSTs verbatim. Mirror this field on the web-local
  * `RestWriteConfirmRequest` (`packages/web/src/ui/lib/rest-operation-types.ts`).
- */
-import * as crypto from "crypto";
+ */import * as crypto from "crypto";
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import type { Operation, OperationParams } from "./types";
 
 const log = createLogger("openapi.rest-write-confirm");
+/**
+ * The request header by which a chat surface declares it can RENDER the
+ * confirm-before-write banner and POST the payload above (#5495).
+ *
+ * `POST /api/v1/chat` serves two clients with the same auth and the same
+ * registry: `packages/web`, which ships `rest-write-confirm-card.tsx`, and the
+ * embeddable `@useatlas/react` widget, which ships its own `tool-part.tsx` with
+ * no such card. Nothing already on the request tells them apart — not
+ * `dashboardUrlResolver`, the registry-build signal that gates `createDashboard`
+ * (#4566) and `correct_fact` (#4915), because both clients resolve the same
+ * `defaultRegistry`. So the surface declares the capability itself.
+ *
+ * Web sets it in `packages/web/src/ui/hooks/use-atlas-transport.ts` and
+ * `components/dashboards/bound-chat-drawer.tsx`; those literals mirror this
+ * constant the same way `rest-operation-types.ts` mirrors the wire shape (the
+ * frontend cannot import from `@atlas/api`). `lib/cors.ts` lists it in
+ * `Access-Control-Allow-Headers` so a cross-origin embedder that learns the card
+ * is not blocked at the preflight.
+ */
+export const WRITE_CONFIRM_UI_HEADER = "x-atlas-write-confirm-ui";
+
+/**
+ * Read {@link WRITE_CONFIRM_UI_HEADER}. Absent, blank, or anything other than
+ * `1` / `true` (case- and whitespace-insensitive) ⇒ `false`.
+ *
+ * **A capability hint, not a security control — and it is not relied on as
+ * one.** Asserting it grants nothing a caller could not already do: the write is
+ * still only STAGED in the agent loop, and firing it needs a separate POST to
+ * `/api/v1/rest-operations/confirm`, which re-resolves the datasource, re-runs
+ * the allowlist and param validation server-side, and verifies + burns the
+ * single-use token (#3007). A client that lies here only re-earns the dead-ended
+ * turn the gate exists to prevent.
+ *
+ * The value is entirely in the DEFAULT. Fail-closed means every published
+ * `@useatlas/react` version — none of which send this — stops being offered a
+ * write it cannot finish, with no new code shipped to them.
+ */
+export function readsWriteConfirmUiHeader(headers: Headers): boolean {
+  const raw = headers.get(WRITE_CONFIRM_UI_HEADER);
+  if (!raw) return false;
+  const v = raw.trim().toLowerCase();
+  return v === "1" || v === "true";
+}
+
 
 /** A scalar param value the agent / banner may carry (matches the tool input). */
 export type RestParamScalar = string | number | boolean;

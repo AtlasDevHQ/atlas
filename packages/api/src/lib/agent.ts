@@ -36,7 +36,11 @@ import { buildAgentRepresentation } from "./openapi/representation";
 import { loadSourceCatalog, type RestCatalogSource } from "./source-catalog/lookup";
 import { reachStateFromColumn, type ReachState } from "./group-reach";
 import { resolveReachableGroups } from "./group-reach/resolve";
-import { REST_OPERATION_DESCRIPTION, createExecuteRestOperationTool } from "./tools/rest-operation";
+import {
+  REST_OPERATION_DESCRIPTION,
+  REST_OPERATION_DESCRIPTION_READ_ONLY,
+  createExecuteRestOperationTool,
+} from "./tools/rest-operation";
 import { getStreamWriter } from "./tools/python-stream";
 import { getContextFragments, pluginDialectModules } from "./plugins/tools";
 import {
@@ -1326,6 +1330,12 @@ export async function runAgent({
   // resolves ONLY this datasource and suspends `executeSQL` (REST-only turn).
   // Undefined / null ⇒ not focused (default scope: SQL routing + exclude-set).
   const restFocusDatasourceId = reqCtx?.restFocusDatasourceId;
+  // #5495 — does this surface own a confirm-before-write banner? Gates the
+  // WRITE half of `executeRestOperation` below. Fails CLOSED (`=== true`), so a
+  // surface that never stamps it — the embeddable widget, every published
+  // version of it — is offered reads only rather than a write it would stage
+  // and then be unable to confirm.
+  const restWriteConfirmationUi = reqCtx?.restWriteConfirmationUi === true;
 
   // Resolve model: injected > workspace config (enterprise) > platform env vars
   let model: LanguageModel;
@@ -1700,12 +1710,21 @@ export async function runAgent({
       const restRegistry = new ToolRegistry();
       restRegistry.register({
         name: "executeRestOperation",
-        description: REST_OPERATION_DESCRIPTION,
+        // #5495 — the description follows the gate. Handing the write-capable
+        // text to a surface that cannot confirm is what produced the dead-end
+        // turn: the agent read "stage it and STOP, the user confirms via the
+        // banner", did exactly that, and there was no banner.
+        description: restWriteConfirmationUi
+          ? REST_OPERATION_DESCRIPTION
+          : REST_OPERATION_DESCRIPTION_READ_ONLY,
         // Bind the tool to exactly the datasources rendered into the prompt, so
         // the agent's `datasourceId` choice resolves against the same set the
         // representation described (no per-execute re-resolution / drift).
         tool: createExecuteRestOperationTool({
           resolveDatasources: async () => restDatasources,
+          // The description above is advisory; this is the enforcement. Both
+          // read the same flag so the prompt and the runtime cannot drift.
+          writeConfirmationUi: restWriteConfirmationUi,
         }),
       });
       activeRegistry = ToolRegistry.merge(baseRegistry, restRegistry).freeze();
@@ -1719,6 +1738,9 @@ export async function runAgent({
       for (const ds of restDatasources) {
         const rep = buildAgentRepresentation(ds.graph, ds.representationMode, {
           displayName: ds.displayName,
+          // #5495 — the prompt's write paragraph must agree with the gate, or
+          // the agent is told about a confirm flow the tool will refuse.
+          writeConfirmationUi: restWriteConfirmationUi,
           ...(multiple ? { datasourceId: ds.id } : {}),
         });
         // #3044 — prepend the environment-scope banner so the agent never

@@ -445,7 +445,17 @@ export function useAtlasTransport(
   const transport = useMemo(() => {
     // #4018 — see `buildAuthHeaders`: managed mode rides the cookie (no bearer),
     // so a stale `atlas-api-key` can't 401 the chat while REST stays authed.
-    const headers = buildAuthHeaders(authMode, apiKey);
+    const headers = {
+      ...buildAuthHeaders(authMode, apiKey),
+      // #5495 — the web app ships `rest-write-confirm-card.tsx`, so it can
+      // finish a staged REST write. Declaring it here is what keeps the agent
+      // allowed to stage one: the server gate fails closed, and a surface that
+      // stays silent (the embeddable widget, which has no such card) is offered
+      // reads only. Set on the transport, so the durable-resume re-target in
+      // `prepareSendMessagesRequest` carries it too — a resumed turn rebuilds
+      // the tool surface and has to re-declare.
+      "x-atlas-write-confirm-ui": "1",
+    };
     return new DefaultChatTransport({
       api: `${apiUrl}/api/v1/chat`,
       headers,

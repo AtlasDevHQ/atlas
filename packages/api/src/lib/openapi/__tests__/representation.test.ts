@@ -258,3 +258,48 @@ function sliceSchemaBlock(prompt: string, schemaName: string): string {
   const nextIdx = rest.indexOf("\n- **");
   return nextIdx === -1 ? prompt.slice(start) : prompt.slice(start, start + 1 + nextIdx);
 }
+
+
+/*
+ * #5495 — the prompt's write paragraph must agree with the tool's gate.
+ *
+ * The bug was not only that `executeRestOperation` staged a write the widget
+ * could not confirm; it was that the agent was TOLD to expect a banner. The tool
+ * description was the obvious half. This header paragraph is the other half, and
+ * it is rendered by BOTH representation modes — so a fix that only touched the
+ * tool description would still have promised the confirm flow here.
+ */
+describe("datasource header — confirm-before-write surface (#5495)", () => {
+  for (const mode of ["operation-graph", "semantic-yaml"] as const) {
+    it(`${mode}: a surface with no banner is told writes are unavailable, not how to confirm`, () => {
+      const rep = buildAgentRepresentation(graph, mode, {
+        displayName: "Twenty",
+        writeConfirmationUi: false,
+      });
+      expect(rep.promptContext).toContain("writes are unavailable in this chat");
+      expect(rep.promptContext).toContain("refuses every write");
+      // The confirm-flow instructions must be GONE, not merely contradicted
+      // later — a prompt that says both leaves the model to pick one.
+      expect(rep.promptContext).not.toContain("needs_confirmation");
+      expect(rep.promptContext).not.toContain("they confirm in the chat");
+    });
+
+    it(`${mode}: a surface that CAN confirm keeps the existing paragraph verbatim`, () => {
+      const rep = buildAgentRepresentation(graph, mode, {
+        displayName: "Twenty",
+        writeConfirmationUi: true,
+      });
+      expect(rep.promptContext).toContain("writes need opt-in + confirmation");
+      expect(rep.promptContext).toContain("needs_confirmation");
+    });
+  }
+
+  it("defaults to the write-capable paragraph — this option is prompt text, not the gate", () => {
+    // Deliberately the opposite default from `createExecuteRestOperationTool`,
+    // which fails closed. A wrong value here can only mis-describe, never
+    // permit, so the default is the one that leaves every existing caller's
+    // prompt unchanged.
+    const rep = buildAgentRepresentation(graph, "operation-graph", { displayName: "Twenty" });
+    expect(rep.promptContext).toContain("writes need opt-in + confirmation");
+  });
+});

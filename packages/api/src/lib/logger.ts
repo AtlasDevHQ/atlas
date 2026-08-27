@@ -149,6 +149,28 @@ interface RequestContext {
    * (intra-group) and the REST-scope fields (a separate axis).
    */
   groupReach?: string | null;
+  /**
+   * #5495 — whether THIS request's chat surface can render the
+   * confirm-before-write banner (`rest-write-confirm-card.tsx`). Gates the WRITE
+   * half of `executeRestOperation`: a staged write returns `needs_confirmation`
+   * and goes nowhere unless the surface can POST
+   * `/api/v1/rest-operations/confirm` on the user's behalf.
+   *
+   * Stamped by the chat route from the `x-atlas-write-confirm-ui` request
+   * header, because this is the one capability the registry-build signal cannot
+   * express: `packages/web` and the embeddable `@useatlas/react` widget POST the
+   * SAME `/api/v1/chat` with the same auth and the same `defaultRegistry`, so
+   * `dashboardUrlResolver` — which separates `createDashboard` / `correct_fact`
+   * (#4566, #4915) — does not separate these two.
+   *
+   * **Undefined / false is the closed state**, and that is what makes the fix
+   * reach consumers already on npm: every published `@useatlas/react` version
+   * sends no such header, so it is correct without upgrading. A surface earns
+   * writes by declaring it can finish them.
+   *
+   * Not a security control — see the note on the chat route's read of it.
+   */
+  restWriteConfirmationUi?: boolean;
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

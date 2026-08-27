@@ -36,8 +36,13 @@
  * The token is OPAQUE to the banner: it lives inside the `confirm` payload, which
  * the banner POSTs verbatim. Mirror this field on the web-local
  * `RestWriteConfirmRequest` (`packages/web/src/ui/lib/rest-operation-types.ts`).
- */
+ */import * as crypto from "crypto";
 
+import { createLogger } from "@atlas/api/lib/logger";
+import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
+import type { Operation, OperationParams } from "./types";
+
+const log = createLogger("openapi.rest-write-confirm");
 /**
  * The request header by which a chat surface declares it can RENDER the
  * confirm-before-write banner and POST the payload above (#5495).
@@ -81,13 +86,7 @@ export function readsWriteConfirmUiHeader(headers: Headers): boolean {
   const v = raw.trim().toLowerCase();
   return v === "1" || v === "true";
 }
-import * as crypto from "crypto";
 
-import { createLogger } from "@atlas/api/lib/logger";
-import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
-import type { Operation, OperationParams } from "./types";
-
-const log = createLogger("openapi.rest-write-confirm");
 
 /** A scalar param value the agent / banner may carry (matches the tool input). */
 export type RestParamScalar = string | number | boolean;

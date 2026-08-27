@@ -1738,6 +1738,9 @@ export async function runAgent({
       for (const ds of restDatasources) {
         const rep = buildAgentRepresentation(ds.graph, ds.representationMode, {
           displayName: ds.displayName,
+          // #5495 — the prompt's write paragraph must agree with the gate, or
+          // the agent is told about a confirm flow the tool will refuse.
+          writeConfirmationUi: restWriteConfirmationUi,
           ...(multiple ? { datasourceId: ds.id } : {}),
         });
         // #3044 — prepend the environment-scope banner so the agent never

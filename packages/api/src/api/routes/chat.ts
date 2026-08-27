@@ -119,7 +119,6 @@ function getReservationStepBudget(orgId?: string): number {
 
 const log = createLogger("chat");
 
-
 // ---------------------------------------------------------------------------
 // #1980 — error classification shared across pre-stream and mid-stream paths
 // ---------------------------------------------------------------------------

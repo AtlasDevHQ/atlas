@@ -692,20 +692,23 @@ describe("executeRestOperation — confirm-before-write surface gate (#5495)", (
     return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
   }
 
-  it("refuses an ALLOWLISTED write when the surface never declares the banner (the default)", async () => {
+  it("keeps its own status — never a reuse of the allowlist's writes_disabled", async () => {
     const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
     const result = await callOnSilentSurface(
       { operationId: "createOnePerson", body: { name: "Ada" } },
       async () => ds,
     );
-    // Not `needs_confirmation` — the whole point. The allowlist would have
-    // permitted it; the surface cannot finish it.
-    expect(result.status).toBe("writes_disabled");
-    if (result.status !== "writes_disabled") return;
+    // Not `needs_confirmation` — the whole point. And NOT `writes_disabled`
+    // either: this module's discriminated-union convention is that every branch
+    // the agent must distinguish gets its own `status`, never a shared one plus
+    // free text. `writes_disabled` means the datasource ADMIN has not allowlisted
+    // the operation — a different fix, in a different place, by a different
+    // person. The allowlist here would have permitted the write.
+    expect(result.status).toBe("write_confirmation_unavailable");
+    if (result.status !== "write_confirmation_unavailable") return;
     expect(result.method).toBe("POST");
-    // The reason must NOT send the user at the write allowlist, which is not
-    // what is stopping them and cannot fix it.
     expect(result.message).toContain("cannot be confirmed in this chat");
+    // Not the allowlist's advice — that would send the user somewhere already correct.
     expect(result.message).not.toContain("write allowlist");
   });
 
@@ -719,7 +722,7 @@ describe("executeRestOperation — confirm-before-write surface gate (#5495)", (
   it("refuses explicitly, not just by omission (writeConfirmationUi: false)", async () => {
     const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
     const result = await call({ operationId: "createOnePerson", body: { name: "Ada" } }, async () => ds, false);
-    expect(result.status).toBe("writes_disabled");
+    expect(result.status).toBe("write_confirmation_unavailable");
   });
 
   it("leaves READS untouched on a surface that cannot confirm", async () => {
@@ -729,13 +732,25 @@ describe("executeRestOperation — confirm-before-write surface gate (#5495)", (
     expect(result.status).toBe("ok");
   });
 
+  it("defers to the ALLOWLIST when a write is not allowlisted — that reason is fixed first", async () => {
+    // Both refusals apply; the user can only act on one of them, and "run it
+    // from the Atlas web app" is false advice for a write the admin has not
+    // allowlisted, because it would be refused there too.
+    const ds = datasource({ writeAllowlist: new Set<string>() });
+    const result = await callOnSilentSurface(
+      { operationId: "createOnePerson", body: { name: "Ada" } },
+      async () => ds,
+    );
+    expect(result.status).toBe("writes_disabled");
+  });
+
   it("refuses a side-effecting GET too — the gate follows write-ness, not the HTTP method (#3008)", async () => {
     const ds = datasource({
       writeAllowlist: new Set(["findManyPeople"]),
       sideEffectingOperations: new Set(["findManyPeople"]),
     });
     const result = await callOnSilentSurface({ operationId: "findManyPeople" }, async () => ds);
-    expect(result.status).toBe("writes_disabled");
+    expect(result.status).toBe("write_confirmation_unavailable");
   });
 
   it("still dispatches a datasource-declared read-safe POST — it is a read, not a write (#3035)", async () => {

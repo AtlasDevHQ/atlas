@@ -57,6 +57,9 @@ function RestResultLine({ result }: { result: unknown }) {
   const message = getRestOperationMessage(result);
   const isError =
     status === "writes_disabled" ||
+    // #5495 — "this chat cannot confirm a write". Its own status, not a reuse of
+    // `writes_disabled`, because the two are fixed in different places.
+    status === "write_confirmation_unavailable" ||
     status === "client_error" ||
     status === "http_error" ||
     status === "rate_limited" ||

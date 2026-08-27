@@ -117,6 +117,7 @@ describe("resumeChatTurn (#3750)", () => {
 
     const names = Object.keys(runArgs.tools!.getAll());
     expect(names).not.toContain("correct_fact");
+    expect(names).not.toContain("proposeFact");
     expect(names).not.toContain("createDashboard");
     // Not vacuous — the read surface the parked turn had is intact.
     expect(names).toContain("executeSQL");
@@ -157,6 +158,7 @@ describe("resumeChatTurn (#3750)", () => {
       const degradedNames = Object.keys(runArgs.tools!.getAll());
       expect(degradedNames).toContain("executeSQL");
       expect(degradedNames).not.toContain("correct_fact");
+      expect(degradedNames).not.toContain("proposeFact");
     } finally {
       if (savedPython === undefined) delete process.env.ATLAS_PYTHON_ENABLED;
       else process.env.ATLAS_PYTHON_ENABLED = savedPython;

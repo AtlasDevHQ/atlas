@@ -252,7 +252,23 @@ async function toolNamesForTurn(
 }
 
 /** Tools that WRITE — none may reach a turn that didn't ask for them. */
-const BRAIN_WRITE_TOOL = "correct_fact";
+/**
+ * Every agent verb that mutates the fact graph — `correct_fact` (#4915,
+ * confirm-staged since #5496) and `proposeFact` (#5482).
+ *
+ * A LIST rather than a constant, because the axis this file pins is "which
+ * registry does each call site resolve to", and that axis is per-registry, not
+ * per-verb: a surface either carries the confirm-gated brain writes or it does
+ * not. Asserting over the list is what makes a third verb joining that gate
+ * covered here the moment it is added to this array, instead of covered for
+ * whichever one someone remembered to name.
+ *
+ * `proposeFact` earns its place on the same footing as `correct_fact` rather
+ * than a lesser one. Its NOVEL claims land as drafts, but an AGREEING claim
+ * writes a provenance edge against a live fact immediately and unreviewed — so
+ * it is a fact-graph write on the read-safe surface's terms too (#4707).
+ */
+const BRAIN_WRITE_TOOLS = ["correct_fact", "proposeFact"] as const;
 const DASHBOARD_WRITE_TOOL = "createDashboard";
 
 /**
@@ -284,7 +300,7 @@ describe("#4936 — runAgent's default tool surface fails closed", () => {
 
     // The whole point of the issue: omitting `tools` used to yield
     // `defaultRegistry`, which carries both of these.
-    expect(names).not.toContain(BRAIN_WRITE_TOOL);
+    for (const verb of BRAIN_WRITE_TOOLS) expect(names).not.toContain(verb);
     expect(names).not.toContain(DASHBOARD_WRITE_TOOL);
     // Not vacuous — the read tools are still there, so this is a narrowed
     // surface, not a broken one.
@@ -306,7 +322,7 @@ describe("#4936 — runAgent's default tool surface fails closed", () => {
     // that still carries both verbs, or it stops being a control.
     const names = await toolNamesForTurn({ tools: confirmCapableRegistry });
 
-    expect(names).toContain(BRAIN_WRITE_TOOL);
+    for (const verb of BRAIN_WRITE_TOOLS) expect(names).toContain(verb);
     expect(names).toContain(DASHBOARD_WRITE_TOOL);
   });
 
@@ -316,10 +332,12 @@ describe("#4936 — runAgent's default tool surface fails closed", () => {
     const names = await toolNamesForTurn({ tools: defaultRegistry });
 
     expect(names).toContain(DASHBOARD_WRITE_TOOL);
-    expect(
-      names,
-      "defaultRegistry carries correct_fact again — it is the registry the embeddable widget gets, and the widget renders no confirm card (#5496)",
-    ).not.toContain(BRAIN_WRITE_TOOL);
+    for (const verb of BRAIN_WRITE_TOOLS) {
+      expect(
+        names,
+        `defaultRegistry carries ${verb} again — it is the registry the embeddable widget gets, and the widget renders no confirm card (#5496, #5482)`,
+      ).not.toContain(verb);
+    }
   });
 });
 

@@ -165,6 +165,9 @@ describe("executeAgentQuery actor binding", () => {
     // because `buildHeadlessRegistry()` is now the shared seam these surfaces
     // and the chat-plugin approval resume all route through.
     expect(names).not.toContain("correct_fact");
+    // #5482 — and `proposeFact`, which joins the same gate. Both write the fact
+    // graph, so both must stay off the read-safe `POST /api/v1/query` admission.
+    expect(names).not.toContain("proposeFact");
     // The core query capability is untouched — the surface stays useful.
     expect(names).toContain("executeSQL");
     expect(names).toContain("explore");

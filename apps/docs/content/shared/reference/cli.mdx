@@ -94,6 +94,8 @@ The same partial-profile signal is recorded **durably** when profiling through t
 
 In TTY mode (interactive terminal), `init` presents a table picker. Pass `--tables` to skip the picker for scripted/CI usage.
 
+Elasticsearch / OpenSearch datasources authenticate via `ATLAS_ES_*` environment variables — credentials are never carried in the URL. See [Environment Variables](/reference/environment-variables#elasticsearch--opensearch-datasource). The same applies to `diff`.
+
 **What it generates:**
 
 - `semantic/entities/*.yml` — One file per table/view with columns, types, sample values, joins, measures, virtual dimensions, and query patterns
@@ -1080,7 +1082,7 @@ bun run atlas -- completions fish > ~/.config/fish/completions/atlas.fish
 
 ## Operator subcommands
 
-Operator-only tools for tenant-data ops, promoted from the gitignored `internal/` directory in [#2635](https://github.com/AtlasDevHQ/atlas/pull/2635) so they're type-checked, unit-tested, and discoverable. They ship in a **separate `atlas-operator` binary** — split out of the published `atlas` CLI so the workspace-facing binary never carries tenant-destructive direct-DB tooling (ADR-0025 step 4, [#4045](https://github.com/AtlasDevHQ/atlas/issues/4045)). Run them with `bun run atlas-operator -- <command>`; the published `atlas` CLI prints a redirect if you try one there. This surface also includes the [`learn`](#learn) and [`export`](#export) commands above. The tenant-data subcommands (`proactive`, `seed`, `ops`) target the tenant Postgres at `ATLAS_TEAM_PG_URL`, falling back to `DATABASE_URL` when unset; `learn` and `export` instead read Atlas's **internal** database via `DATABASE_URL` (the two-database split). `--workspace` accepts either a literal `org_*` id or an `organization.slug`.
+Operator-only tools for tenant-data ops, promoted from the gitignored `internal/` directory in [#2635](https://github.com/AtlasDevHQ/atlas/pull/2635) so they're type-checked, unit-tested, and discoverable. They ship in a **separate `atlas-operator` binary** — split out of the published `atlas` CLI so the workspace-facing binary never carries tenant-destructive direct-DB tooling (ADR-0025 step 4, [#4045](https://github.com/AtlasDevHQ/atlas/issues/4045)). Run them with `bun run atlas-operator -- <command>`; the published `atlas` CLI prints a redirect if you try one there. This surface also includes the [`learn`](#learn) and [`export`](#export) commands above. The tenant-data subcommands (`proactive`, `seed`, `ops`) target the tenant Postgres at `ATLAS_TEAM_PG_URL`, falling back to `DATABASE_URL` when unset — except `ops teardown-verify-accounts`, `ops sweep-residue`, and `ops gate-export`, which have **no `DATABASE_URL` fallback** and require an explicit `--region`/`--database-url` so the wrong DB can't be hit by forgetting a flag; `learn` and `export` instead read Atlas's **internal** database via `DATABASE_URL` (the two-database split). `ops` has six subcommands: `wipe`, `backfill-crm-leads`, `smoke-crm`, `teardown-verify-accounts`, `sweep-residue`, `gate-export`. `--workspace` accepts either a literal `org_*` id or an `organization.slug`.
 
 The CLAUDE.md "Operator subcommands (destructive)" block is the source of truth for these — keep this page and CLAUDE.md aligned when adding subcommands.
 
@@ -1229,6 +1231,58 @@ ATLAS_TEARDOWN_OK=1 bun run atlas-operator -- ops teardown-verify-accounts \
 **Safety:** one region DB per invocation; DRY RUN unless both gates are present; execute refuses more than 12 owned workspaces (blast-radius cap — a verification run only creates one account per region). Non-owner memberships and orphan user rows are surfaced as warnings for manual follow-up, never silently deleted. The stamped `organization.region` label is reported as mislocation evidence but never gated on — the physical DB selected by `--region`/`--database-url` is the ground truth.
 
 **Exit codes:** `0` = clean; `1` = gate/argument error, a per-org teardown error, **or** a left-behind Stripe linkage (a failed customer-delete / subscription-cancel is enqueued for durable retry, but the run still exits non-zero so a scripted cleanup fails loudly rather than reporting a clean success).
+
+### ops sweep-residue
+
+<Callout type="warn" title="Destructive — deletes orphaned-workspace rows from a region's internal DB">
+Deletes **orphaned-workspace residue** — rows whose organization row is already gone, left behind by a purge that predated the table entering the purge path ([#5185](https://github.com/AtlasDevHQ/atlas/issues/5185)). The normal purge cannot reach them: it requires the workspace to exist and be soft-deleted. Candidate tables are derived from `lib/db/purge-scope.ts` (decision: `purged` only), and sentinel scope values (`_default`, `<atlas-operator>`, empty) are never deleted. **DRY RUN by default**; executing requires a **triple** gate: `ATLAS_RESIDUE_OK=1` in the env, `--confirm` on the command line, **and** `--pg-dump <path>` naming a real, non-empty backup file **less than 6 hours old**.
+</Callout>
+
+```bash
+# Preview (dry run — reports the residue that would be deleted, deletes nothing)
+bun run atlas-operator -- ops sweep-residue --region us
+
+# Execute (triple-gated: env + --confirm + a fresh backup)
+pg_dump "$ATLAS_REGION_US_DB_URL" > backup.sql
+ATLAS_RESIDUE_OK=1 bun run atlas-operator -- ops sweep-residue \
+  --region us --pg-dump ./backup.sql --confirm
+```
+
+| Flag | Description |
+|------|-------------|
+| `--region <us\|eu\|apac>` | Selects the region DB by resolving `ATLAS_REGION_<R>_DB_URL`. |
+| `--database-url <url>` | Explicit region DB URL (escape hatch). **There is no `DATABASE_URL` fallback** — one of `--region` / `--database-url` is required. |
+| `--pg-dump <path>` | Required to execute. Must name a real, non-empty backup file less than 6 hours old — the third gate. |
+| `--confirm` | Required to execute. Pairs with `ATLAS_RESIDUE_OK=1` in the env. |
+| `--dry-run` | Force preview even when the execute gates are satisfied. |
+
+**Exit codes:** non-zero if anything survived the sweep or could not be checked — a scripted cleanup fails loudly rather than reporting a clean success.
+
+### ops gate-export
+
+<Callout type="warn" title="Exfiltration-gated — cuts tenant review decisions into a file">
+Cuts an **EVALUATION bundle** of one workspace's review-gate decisions — (episode, decision, fact?) triples, with positives (published), rejected (retracted via the retract verb, which stamps `invalidated_at`, never `status`) and negatives (an extracted episode that yielded no claim) distinguishable. Warehouse observations are excluded: the publish gate refuses them, so no human ever ruled on one. ⚠️ **EVALUATION ONLY — never a training corpus** ([ADR-0044](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0044-fact-content-never-enters-model-weights.md), [#5339](https://github.com/AtlasDevHQ/atlas/issues/5339)). A bundle lives **outside** `purge-scope.ts` — cut it for a named evaluation and destroy it after. **DRY RUN by default**; executing requires **both** `ATLAS_GATE_EXPORT_OK=1` **and** `--confirm`.
+</Callout>
+
+```bash
+# Preview (dry run — runs the identical query, reports exact counts, writes nothing)
+bun run atlas-operator -- ops gate-export --workspace org_abc123 --region us
+
+# Execute (double-gated)
+ATLAS_GATE_EXPORT_OK=1 bun run atlas-operator -- ops gate-export \
+  --workspace org_abc123 --region us --output ./gate-eval.jsonl --confirm
+```
+
+| Flag | Description |
+|------|-------------|
+| `--workspace <orgId>` | Required. The single workspace whose gate decisions are exported. |
+| `--region <us\|eu\|apac>` | Selects the region DB by resolving `ATLAS_REGION_<R>_DB_URL`. The command **refuses to cross a region boundary**. |
+| `--database-url <url>` | Explicit region DB URL (escape hatch). **There is no `DATABASE_URL` fallback** — one of `--region` / `--database-url` is required. |
+| `--output <path>` | Bundle output path. |
+| `--confirm` | Required to execute. Pairs with `ATLAS_GATE_EXPORT_OK=1` in the env. |
+| `--dry-run` | Force preview even when the execute gate is satisfied. |
+
+**Safety:** refuses a workspace carrying a grant token outside the ACL grammar. Every run — refusals and dry runs included — lands in `admin_action_log`.
 
 ---
 

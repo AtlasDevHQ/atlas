@@ -78,6 +78,29 @@ Use executeRestOperation to call a single operation on a connected REST API (des
 - An allowlisted write does NOT run immediately: it returns \`needs_confirmation\`. Tell the user plainly what the write will do (e.g. "This will permanently delete 3 people in Twenty — confirm?") and STOP. The user confirms via the banner; do not retry, and never claim the write succeeded until you see a confirmed result.`;
 
 /**
+ * The description for a surface that CANNOT render the confirm-before-write
+ * banner (#5495) — the embeddable `@useatlas/react` widget being the case that
+ * forced it. `packages/web` owns `rest-write-confirm-card.tsx`; the widget ships
+ * its own `tool-part.tsx` with no such card, and both POST the same
+ * `/api/v1/chat`, so the surface cannot be told apart by the registry-build
+ * signal (`dashboardUrlResolver`) that gates `createDashboard` / `correct_fact`.
+ *
+ * Reads are unaffected — dropping the whole tool would take REST reads with it,
+ * a regression the bug does not ask for. Instead the WRITE half is withheld:
+ * `runOnce` refuses every write up front with `writes_disabled` and stages
+ * nothing, and this description tells the agent so rather than letting it offer
+ * a confirmation that can never be answered.
+ */
+export const REST_OPERATION_DESCRIPTION_READ_ONLY = `### Read a REST Datasource
+Use executeRestOperation to call a single READ operation on a connected REST API (described under "REST Datasource" in this prompt):
+- Pass the \`operationId\` exactly as listed, plus \`pathParams\` (for {id}-style path tokens), \`query\` (filters, limits, cursors), and \`body\` where the operation defines one
+- When more than one REST datasource is connected, pass \`datasourceId\` (shown in each datasource's header) to pick which one
+- Compose the filter \`query\` value yourself in the documented \`field[op]:value\` syntax — do NOT invent a bracketed form
+- For multi-step questions, call this tool once per step and feed each result into the next (e.g. find a person, then list their note targets, then fetch each note)
+- GET operations execute and return data immediately. A few operations use POST for a READ (e.g. a search endpoint like Notion's \`post-search\`); when the datasource marks such a POST read-safe it runs immediately and returns data exactly like a GET, so call it if that is the operation which answers the question.
+- ⚠️ **Writes are UNAVAILABLE in this chat.** It cannot show a confirm-before-write prompt, so every write (POST/PATCH/PUT/DELETE, and any GET the datasource flags as side-effecting) is refused immediately with \`writes_disabled\` and NOTHING is staged. Do not offer to perform a write, do not ask the user to confirm one, and never claim one happened. If the user asks for one, say plainly that writes are not available in this chat and that they can run it from the Atlas web app.`;
+
+/**
  * The tool's `client_error` reason: the slice-0 client's transport/parse reasons,
  * plus a `unexpected` catch-all for a non-{@link OpenApiClientError} fault (a code
  * bug, OOM, etc.). Keeping `unexpected` distinct from `network` stops the agent
@@ -182,6 +205,18 @@ export interface ExecuteRestOperationDeps {
    * `auto-refresh` drift mode runs on `unknown-operation` (#3315).
    */
   readonly driftRecovery?: typeof attemptDriftRecovery;
+  /**
+   * Whether the calling surface can render the confirm-before-write banner
+   * (#5495). **Defaults to `false` — the gate fails closed.**
+   *
+   * `false` refuses every write with `writes_disabled` before anything is
+   * staged: no confirm token is minted, no nonce is burned, no audit row is
+   * written (pre-dispatch rejections are not audited — see `runOnce` below).
+   * A surface only gets writes by SAYING it can complete them, so a consumer
+   * that predates this flag — every published `@useatlas/react` version — is
+   * correct without upgrading.
+   */
+  readonly writeConfirmationUi?: boolean;
 }
 
 /**
@@ -204,16 +239,25 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
           return single ? [single] : [];
         }
       : resolveFromContext);
+  // #5495 — fails closed: only a surface that declares it can render the
+  // confirm-before-write banner is offered writes.
+  const writeConfirmationUi = deps.writeConfirmationUi === true;
 
   return tool({
-    description:
-      "Call a single operation on a connected REST datasource by operationId. GET operations " +
+    description: writeConfirmationUi
+      ? "Call a single operation on a connected REST datasource by operationId. GET operations " +
       "execute and return data immediately, UNLESS a GET is flagged side-effecting — by the " +
       "datasource's spec or its admin config (some legacy APIs mutate via GET). Those, like write " +
       "operations (POST/PATCH/PUT/DELETE), run only if allowlisted, and an allowlisted write / " +
       "side-effecting GET is staged for the user to confirm before it fires (never claim a write " +
       "happened until confirmed). A few operations use POST for a READ (e.g. a search endpoint); a " +
-      "datasource-configured read-safe POST runs immediately and returns data like a GET.",
+      "datasource-configured read-safe POST runs immediately and returns data like a GET."
+      : "Call a single READ operation on a connected REST datasource by operationId. GET " +
+        "operations execute and return data immediately, as does a POST the datasource marks " +
+        "read-safe (e.g. a search endpoint). WRITES ARE UNAVAILABLE on this surface — it cannot " +
+        "show a confirm-before-write prompt, so every write (POST/PATCH/PUT/DELETE, and any GET " +
+        "flagged side-effecting) is refused with `writes_disabled` and nothing is staged. Never " +
+        "offer or claim a write here.",
     inputSchema: ExecuteRestOperationInput,
     execute: async ({ operationId, datasourceId, pathParams, query, header, body }): Promise<ExecuteRestOperationResult> => {
       let datasources: ReadonlyArray<RestDatasource>;
@@ -312,6 +356,30 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
               ds.readSafePostOperations,
             )
           : false;
+
+        // #5495 — the surface gate, ahead of the allowlist. A surface that
+        // cannot render the confirm-before-write banner must never reach the
+        // staging path below: it would return `needs_confirmation`, burn a
+        // minted nonce on a confirmation no one can answer, and leave the agent
+        // holding a turn it was told not to finish ("never claim the write
+        // succeeded until you see a confirmed result"). Refusing here keeps the
+        // outcome fail-safe AND legible — same `writes_disabled` arm every
+        // client already renders, so no new wire shape is needed.
+        //
+        // The reason is deliberately distinct from the allowlist's: this is not
+        // "your admin turned writes off", and telling the user to edit the
+        // allowlist would send them somewhere that cannot fix it.
+        if (isWrite && !writeConfirmationUi) {
+          return {
+            status: "writes_disabled",
+            method: peeked?.method ?? "WRITE",
+            message:
+              `Operation "${operationId}" is a write, and writes cannot be confirmed in this chat — ` +
+              "it has no confirm-before-write prompt, so nothing was staged and nothing ran. Tell the " +
+              "user this chat is read-only for writes and that they can run this from the Atlas web " +
+              "app; do NOT ask them to confirm, and never claim it happened.",
+          };
+        }
 
         const policy: RestOperationPolicy = {
           // The rate-limit bucket is keyed (workspace, datasource, operation). In

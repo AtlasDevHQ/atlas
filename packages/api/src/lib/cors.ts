@@ -82,7 +82,14 @@ export function corsResponseHeaders(requestOrigin: string): Record<string, strin
     // `fetch` throws a TypeError and the form reports "Unable to reach the
     // server". The failure is invisible to anything that doesn't mint a token:
     // same-origin local dev, and any automation where the widget never loads.
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-captcha-response",
+    // #5495 — `x-atlas-write-confirm-ui` is how a chat surface declares it can
+    // render the confirm-before-write banner. Cross-origin embedders (the
+    // `@useatlas/react` widget) are exactly the surfaces the gate exists for, so
+    // the preflight has to permit the header the day one of them learns the
+    // card. Listing it changes nothing on its own: the gate fails closed, and
+    // no shipped widget version sends it.
+    "Access-Control-Allow-Headers":
+      "Content-Type, Authorization, x-captcha-response, x-atlas-write-confirm-ui",
     "Access-Control-Expose-Headers": "Retry-After, x-conversation-id, x-run-id, X-Atlas-Export-Partial, X-Atlas-Truncated, X-Atlas-Row-Count, Content-Disposition",
   };
 

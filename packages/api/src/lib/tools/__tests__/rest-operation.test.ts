@@ -71,8 +71,13 @@ function datasource(overrides: Partial<RestDatasource> = {}): RestDatasource {
 async function call(
   input: Record<string, unknown>,
   resolve: () => Promise<RestDatasource | null> = async () => datasource(),
+  // #5495 — these cases exercise the ALLOWLIST layer, so they stand on a
+  // surface that can confirm. The PRODUCTION default is the opposite (`false`,
+  // fail-closed); that default is pinned by its own describe block below, which
+  // omits the flag entirely rather than trusting this helper's default.
+  writeConfirmationUi = true,
 ): Promise<ExecuteRestOperationResult> {
-  const t = createExecuteRestOperationTool({ resolveDatasource: resolve });
+  const t = createExecuteRestOperationTool({ resolveDatasource: resolve, writeConfirmationUi });
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub for a unit invocation
   return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
 }
@@ -217,6 +222,7 @@ describe("executeRestOperation — single-page truncation (executeOperationPaged
     }) as unknown as typeof globalThis.fetch;
 
     const t = createExecuteRestOperationTool({
+      writeConfirmationUi: true,
       resolveDatasource: async () => datasource(),
       fetchImpl,
     });
@@ -430,7 +436,7 @@ describe("executeRestOperation — multi-datasource routing", () => {
     input: Record<string, unknown>,
     datasources: RestDatasource[],
   ): Promise<ExecuteRestOperationResult> {
-    const t = createExecuteRestOperationTool({ resolveDatasources: async () => datasources });
+    const t = createExecuteRestOperationTool({ resolveDatasources: async () => datasources, writeConfirmationUi: true });
     // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
     return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
   }
@@ -500,7 +506,7 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
     ds: RestDatasource,
     driftRecovery: DriftRecoveryFn,
   ): Promise<ExecuteRestOperationResult> {
-    const t = createExecuteRestOperationTool({ resolveDatasource: async () => ds, driftRecovery });
+    const t = createExecuteRestOperationTool({ resolveDatasource: async () => ds, driftRecovery, writeConfirmationUi: true });
     // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
     return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
   }
@@ -654,5 +660,111 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
     );
     expect(result.status).toBe("ok");
     expect(mock.matching("/rest/people").length).toBeGreaterThan(0);
+  });
+});
+
+
+/*
+ * #5495 — the SURFACE gate, upstream of the allowlist.
+ *
+ * `executeRestOperation` stages an allowlisted write as `needs_confirmation` and
+ * expects the chat surface to render a confirm-before-write banner. Exactly ONE
+ * thing in the tree POSTs `/api/v1/rest-operations/confirm`:
+ * `packages/web/src/ui/components/chat/rest-write-confirm-card.tsx`. The
+ * embeddable `@useatlas/react` widget hits the SAME `/api/v1/chat` with its own
+ * `tool-part.tsx` and no such card, so a widget user got a confirmation prompt
+ * that could never be answered — fail-safe, but a dead-ended turn.
+ *
+ * The gate therefore fails CLOSED: a surface is offered writes only if it
+ * DECLARES it can finish them. That is what carries the fix to consumers already
+ * on npm — every published widget version declares nothing.
+ */
+describe("executeRestOperation — confirm-before-write surface gate (#5495)", () => {
+  /** Build the tool the way production does when the surface declares nothing. */
+  async function callOnSilentSurface(
+    input: Record<string, unknown>,
+    resolve: () => Promise<RestDatasource | null>,
+  ): Promise<ExecuteRestOperationResult> {
+    // Deliberately NO `writeConfirmationUi` key — this is the shape every caller
+    // that predates the flag produces, and the assertion is that it is closed.
+    const t = createExecuteRestOperationTool({ resolveDatasource: resolve });
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub for a unit invocation
+    return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
+  }
+
+  it("refuses an ALLOWLISTED write when the surface never declares the banner (the default)", async () => {
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const result = await callOnSilentSurface(
+      { operationId: "createOnePerson", body: { name: "Ada" } },
+      async () => ds,
+    );
+    // Not `needs_confirmation` — the whole point. The allowlist would have
+    // permitted it; the surface cannot finish it.
+    expect(result.status).toBe("writes_disabled");
+    if (result.status !== "writes_disabled") return;
+    expect(result.method).toBe("POST");
+    // The reason must NOT send the user at the write allowlist, which is not
+    // what is stopping them and cannot fix it.
+    expect(result.message).toContain("cannot be confirmed in this chat");
+    expect(result.message).not.toContain("write allowlist");
+  });
+
+  it("dispatches NOTHING upstream when the surface gate refuses", async () => {
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const before = mock.matching("/rest/people").length;
+    await callOnSilentSurface({ operationId: "createOnePerson", body: { name: "Ada" } }, async () => ds);
+    expect(mock.matching("/rest/people").length).toBe(before);
+  });
+
+  it("refuses explicitly, not just by omission (writeConfirmationUi: false)", async () => {
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const result = await call({ operationId: "createOnePerson", body: { name: "Ada" } }, async () => ds, false);
+    expect(result.status).toBe("writes_disabled");
+  });
+
+  it("leaves READS untouched on a surface that cannot confirm", async () => {
+    // Dropping the whole tool would have taken reads with it — a regression the
+    // bug never asked for. Reads are the widget's entire REST value today.
+    const result = await callOnSilentSurface({ operationId: "findManyPeople" }, async () => datasource());
+    expect(result.status).toBe("ok");
+  });
+
+  it("refuses a side-effecting GET too — the gate follows write-ness, not the HTTP method (#3008)", async () => {
+    const ds = datasource({
+      writeAllowlist: new Set(["findManyPeople"]),
+      sideEffectingOperations: new Set(["findManyPeople"]),
+    });
+    const result = await callOnSilentSurface({ operationId: "findManyPeople" }, async () => ds);
+    expect(result.status).toBe("writes_disabled");
+  });
+
+  it("still dispatches a datasource-declared read-safe POST — it is a read, not a write (#3035)", async () => {
+    const ds = datasource({ readSafePostOperations: new Set(["createOnePerson"]) });
+    const result = await callOnSilentSurface(
+      { operationId: "createOnePerson", body: { name: "Ada" } },
+      async () => ds,
+    );
+    expect(result.status).toBe("ok");
+  });
+
+  it("stages normally once the surface DOES declare the banner", async () => {
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const result = await call({ operationId: "createOnePerson", body: { name: "Ada" } }, async () => ds, true);
+    expect(result.status).toBe("needs_confirmation");
+    if (result.status !== "needs_confirmation") return;
+    // The single-use token (#3007) is still minted and carried verbatim.
+    expect(typeof result.confirm.token).toBe("string");
+    expect(result.confirm.token.length).toBeGreaterThan(0);
+  });
+
+  it("does not mint a confirm token for a refused write", async () => {
+    // A minted-and-abandoned token is a nonce burned on a confirmation nobody
+    // can answer; refusing BEFORE the mint keeps the #3007 ledger honest.
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const result = await callOnSilentSurface(
+      { operationId: "createOnePerson", body: { name: "Ada" } },
+      async () => ds,
+    );
+    expect(result).not.toHaveProperty("confirm");
   });
 });

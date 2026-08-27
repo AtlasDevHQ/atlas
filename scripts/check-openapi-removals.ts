@@ -12,10 +12,15 @@
  * promise nobody re-checks — exactly how the ADR-0034/0035 removals shipped
  * unacknowledged for six weeks before the audit caught them.
  *
- * Baseline: the nearest reachable `v*` release tag (`git describe`), i.e. the
- * spec customers were last shipped. Override with `--base <ref>` (any git ref
- * that contains apps/docs/openapi.json) — also how the fixture-style checks
- * below stay runnable against historical windows:
+ * Baseline: the highest version-sorted `v<maj>.<min>.<patch>` release tag —
+ * the spec customers were last shipped. Deliberately NOT `git describe`
+ * (ancestry-based): CI checkouts are shallow, so no tag is an *ancestor* of
+ * HEAD even after `git fetch --tags`, and describe would decline every PR run.
+ * The tag pattern is anchored + filtered exactly like /release's own
+ * next-version derivation — this repo runs ~20 tag trains, and an unanchored
+ * `v*` glob once matched `vercel-sandbox-v0.0.5` (#5384). Override with
+ * `--base <ref>` (any git ref that contains apps/docs/openapi.json) — also how
+ * the fixture-style checks below stay runnable against historical windows:
  *
  *   bun scripts/check-openapi-removals.ts                  # HEAD vs last v-tag
  *   bun scripts/check-openapi-removals.ts --base v0.0.46   # spans the ADR-0035 removals
@@ -85,15 +90,26 @@ const { base } = parseArgs();
 
 let baseRef = base;
 if (baseRef === null) {
-  const described = git("describe", "--tags", "--match", "v[0-9]*", "--abbrev=0", "HEAD");
-  if (!described.ok) {
+  const tags = git(
+    "tag",
+    "-l",
+    "v[0-9]*.[0-9]*.[0-9]*",
+    "--sort=-version:refname",
+  );
+  const latest = tags.ok
+    ? tags.stdout
+        .split("\n")
+        .map((t) => t.trim())
+        .find((t) => /^v\d+\.\d+\.\d+$/.test(t))
+    : undefined;
+  if (!latest) {
     console.error(
-      "[openapi-removals] DECLINED: no v* release tag reachable from HEAD — cannot compute the removal diff.",
+      "[openapi-removals] DECLINED: no v<maj>.<min>.<patch> release tag found — cannot compute the removal diff.",
     );
     console.error("  Fetch tags and re-run: git fetch --tags origin");
     process.exit(3);
   }
-  baseRef = described.stdout.trim();
+  baseRef = latest;
 }
 
 const baseSpec = git("show", `${baseRef}:${SPEC_REPO_PATH}`);

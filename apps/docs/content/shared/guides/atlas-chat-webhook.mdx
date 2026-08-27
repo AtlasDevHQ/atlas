@@ -29,7 +29,9 @@ The scheduled sync stores every top-level message either way. The fast-path stor
 
 Two writers into one store is only safe because they agree, byte for byte, on a message's identifier. They do, structurally: the fast-path does not compute its own id. It builds the same record shape the poll's page walk produces and hands it to the same function, so both writers reach one identifier-minting call site. When both writers see the same message, the second one is a **deduped no-op**, not a duplicate.
 
-That matters more than it sounds. Episodes are append-only — there is no later pass that merges duplicates — and a duplicated message would be treated by fact reconciliation as *independent corroboration*, so a claim would read as better-evidenced than it is purely because it was stored twice.
+That matters more than it sounds. Episodes are append-only — there is no later pass that merges duplicates — so a duplicated message is a second piece of evidence on the claim it supports, stored forever, that says nothing the first did not.
+
+Since #5487 it no longer inflates the **corroboration count** a reviewer reads: that number counts distinct *sources* (an episode's author), so one person's message stored twice weighs once. The duplicate still costs a model call at extraction, still occupies the record, and still moves the claim's freshness anchor — and the count protection does not reach an episode Atlas cannot attribute to an author, which is every machine-produced one. The obligation below is unchanged.
 
 ### The one exception: thread replies
 

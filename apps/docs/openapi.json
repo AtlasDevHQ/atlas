@@ -12325,6 +12325,252 @@
         "operationId": "postBrainCorrectionsConfirm"
       }
     },
+    "/api/v1/brain-proposals/confirm": {
+      "post": {
+        "tags": [
+          "Company Brain"
+        ],
+        "summary": "Record a confirmed brain-fact proposal",
+        "description": "Records a previously-staged net-new claim after the user confirms it in the chat surface. The claim enters the fact graph through the shared reconcile stage, landing as a DRAFT for review — or, when it agrees with a fact the workspace already holds, as additional evidence for that fact. The staged payload is never trusted: attribution, grant and vocabulary are all re-derived server-side.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subject": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "predicate": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "object": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "validFrom": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "token": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "subject",
+                  "predicate",
+                  "object",
+                  "token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Proposal recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "proposed"
+                          ]
+                        },
+                        "factId": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "draft"
+                          ]
+                        },
+                        "proposalEpisodeId": {
+                          "type": "string"
+                        },
+                        "provisional": {
+                          "type": "boolean"
+                        },
+                        "tensionEdges": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "factId",
+                        "status",
+                        "proposalEpisodeId",
+                        "provisional",
+                        "tensionEdges"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "corroborated"
+                          ]
+                        },
+                        "factId": {
+                          "type": "string"
+                        },
+                        "proposalEpisodeId": {
+                          "type": "string"
+                        },
+                        "evidenceAdded": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "factId",
+                        "proposalEpisodeId",
+                        "evidenceAdded"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active workspace / missing-invalid-expired-replayed confirm token / a claim that asserts nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "array",
+                      "items": {}
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server / configuration error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The brain store is unavailable for this deployment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postBrainProposalsConfirm"
+      }
+    },
     "/api/v1/prompts": {
       "get": {
         "tags": [

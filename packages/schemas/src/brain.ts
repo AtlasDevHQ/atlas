@@ -713,6 +713,29 @@ export const BrainFactCorrectionResponseSchema = z.object({
 }) satisfies z.ZodType<BrainFactCorrectionResponse, unknown>;
 
 // ---------------------------------------------------------------------------
+// proposeFact — the net-new claim verb (#5482, ADR-0036 §T7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Longest subject / predicate / object surface a proposal accepts.
+ *
+ * Equal to {@link BRAIN_CORRECTION_OBJECT_MAX_CHARS} and deliberately a
+ * SEPARATE constant rather than an alias of it. Both bound `brain_facts`' SPO
+ * columns and so land on the same number today, but they bound different write
+ * paths with different authority bars — an alias would make a future decision to
+ * loosen or tighten one silently move the other, which is the drift the
+ * correction constants exist to prevent within their own path.
+ *
+ * One constant for all three positions, not three: they are the same column
+ * family, and a per-position cap would be a distinction the schema does not
+ * make.
+ */
+export const BRAIN_PROPOSAL_SURFACE_MAX_CHARS = 2_000;
+
+/** Longest free-text `reason` a proposal accepts — recorded verbatim in the episode body. */
+export const BRAIN_PROPOSAL_REASON_MAX_CHARS = 2_000;
+
+// ---------------------------------------------------------------------------
 // Admin oversight — counts without content (#4825)
 // ---------------------------------------------------------------------------
 

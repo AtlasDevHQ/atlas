@@ -735,6 +735,66 @@ export const BRAIN_PROPOSAL_SURFACE_MAX_CHARS = 2_000;
 /** Longest free-text `reason` a proposal accepts — recorded verbatim in the episode body. */
 export const BRAIN_PROPOSAL_REASON_MAX_CHARS = 2_000;
 
+/**
+ * The claim a `proposeFact` call asserts — the ONE declaration of its five
+ * fields, shared by the agent tool's `inputSchema` and the confirm endpoint's
+ * request body.
+ *
+ * Shared rather than restated on each side, and that is a correctness property
+ * rather than tidiness. The confirm token binds a canonical hash of exactly
+ * these fields: the tool mints over what IT accepted and the endpoint verifies
+ * over what IT accepted, so two independently-maintained validators on one write
+ * path can drift into a state where a payload the tool staged is one the
+ * endpoint rejects — or, worse, where a field one side coerces and the other
+ * does not hashes differently on the two sides and every proposal carrying it
+ * fails its own confirm. `BRAIN_CORRECTION_*_MAX_CHARS` exists for the weaker
+ * version of the same hazard (three copies of one bound); this is the whole
+ * shape.
+ *
+ * ⚠️ The field descriptions are load-bearing on the TOOL side — they are what
+ * the model reads when deciding how to phrase a claim — and they are carried
+ * here rather than added at the tool so the two sides cannot diverge on what a
+ * subject or predicate is supposed to look like. They read as ordinary API
+ * guidance on the endpoint side, which is why sharing them costs nothing.
+ *
+ * Deliberately NOT extended with `token`: that is the confirm endpoint's
+ * concern, added at the route (`api/routes/brain-proposals.ts`), and a tool
+ * `inputSchema` that advertised a token field would invite the model to invent
+ * one.
+ */
+export const BrainProposalClaimSchema = z.object({
+  subject: z
+    .string()
+    .min(1)
+    .max(BRAIN_PROPOSAL_SURFACE_MAX_CHARS)
+    .describe("What the claim is about — a person, team, product, or account. Short and literal."),
+  predicate: z
+    .string()
+    .min(1)
+    .max(BRAIN_PROPOSAL_SURFACE_MAX_CHARS)
+    .describe(
+      'The relationship, phrased as a verb clause: "is the DRI for", "reports to", "is priced at".',
+    ),
+  object: z
+    .string()
+    .min(1)
+    .max(BRAIN_PROPOSAL_SURFACE_MAX_CHARS)
+    .describe("The asserted value — what the subject and predicate resolve to."),
+  validFrom: z
+    .string()
+    .datetime({ offset: true })
+    .optional()
+    .describe("ISO-8601 timestamp: when the claim began to hold. Defaults to now."),
+  reason: z
+    .string()
+    .max(BRAIN_PROPOSAL_REASON_MAX_CHARS)
+    .optional()
+    .describe(
+      "Why the user believes this — recorded verbatim in the proposal episode and shown to the reviewer.",
+    ),
+});
+export type BrainProposalClaim = z.infer<typeof BrainProposalClaimSchema>;
+
 // ---------------------------------------------------------------------------
 // Admin oversight — counts without content (#4825)
 // ---------------------------------------------------------------------------

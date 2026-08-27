@@ -50,32 +50,29 @@ import {
   VocabularyClosureError,
   loadWorkspaceVocabulary,
 } from "@atlas/api/lib/brain/vocabulary";
-import {
-  BRAIN_PROPOSAL_REASON_MAX_CHARS,
-  BRAIN_PROPOSAL_SURFACE_MAX_CHARS,
-} from "@useatlas/schemas";
+import { BrainProposalClaimSchema } from "@useatlas/schemas";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("brain-proposals");
 
 /**
- * The staged claim, echoed back verbatim by the card.
+ * The staged claim, echoed back verbatim by the card, plus the confirm token.
  *
- * The bounds are the shared ones, imported rather than restated — this schema
- * and the tool's `inputSchema` must not drift into two different caps on one
- * write path. A payload exceeding them was never mintable, so a request carrying
- * one is either a client bug or a forgery attempt; either way it is rejected
+ * The CLAIM half is the shared schema the tool validates with, extended rather
+ * than restated. That is not tidiness: the token binds a canonical hash of
+ * exactly these five fields, so two independently-maintained validators on one
+ * write path could stage a payload this endpoint rejects — or coerce a field one
+ * way here and another there, making every proposal carrying it fail its own
+ * confirm. A payload outside the shared bounds was never mintable, so a request
+ * carrying one is a client bug or a forgery attempt; either way it is rejected
  * before any token work.
  */
-const ConfirmRequestSchema = z.object({
-  subject: z.string().min(1).max(BRAIN_PROPOSAL_SURFACE_MAX_CHARS),
-  predicate: z.string().min(1).max(BRAIN_PROPOSAL_SURFACE_MAX_CHARS),
-  object: z.string().min(1).max(BRAIN_PROPOSAL_SURFACE_MAX_CHARS),
-  validFrom: z.string().datetime({ offset: true }).optional(),
-  reason: z.string().max(BRAIN_PROPOSAL_REASON_MAX_CHARS).optional(),
+const ConfirmRequestSchema = BrainProposalClaimSchema.extend({
   // The single-use confirm token minted at staging. Required — a confirm POST
-  // without it is a malformed request (rejected by the validation hook).
+  // without it is a malformed request (rejected by the validation hook). Lives
+  // HERE and not on the shared schema: it is this endpoint's concern, and a tool
+  // `inputSchema` advertising it would invite the model to invent one.
   token: z.string().min(1, "confirm token is required"),
 });
 
@@ -267,6 +264,12 @@ export function createBrainProposalsRoute() {
       // request before anything else: a missing, forged, expired, or
       // workspace-/claim-mismatched token never reaches the verb. The nonce burn
       // runs just before the write.
+      // Built ONCE and used for both the binding check and the write below, so
+      // the claim the token is verified against is the same object the verb
+      // records. Two constructions from the same `input` would be two places to
+      // keep in agreement, and the direction that fails is silent: a field
+      // included in one and omitted from the other verifies a claim that is not
+      // the one written.
       const claim = {
         subject: input.subject,
         predicate: input.predicate,
@@ -338,11 +341,12 @@ export function createBrainProposalsRoute() {
         outcome = await proposeFact({
           ctx,
           claim: {
-            subject: input.subject,
-            predicate: input.predicate,
-            object: input.object,
-            validFrom: input.validFrom ? new Date(input.validFrom) : null,
-            ...(input.reason !== undefined ? { reason: input.reason } : {}),
+            // The verified claim, with the ONE field the verb takes in another
+            // representation. `validFrom` travels as an ISO string through the
+            // gate because the token binds those bytes (`proposal-confirm.ts`);
+            // it becomes a `Date` here, past the gate, on its way in.
+            ...claim,
+            validFrom: claim.validFrom ? new Date(claim.validFrom) : null,
           },
           requestId,
           // The workspace's real vocabulary. Loaded HERE rather than carried in

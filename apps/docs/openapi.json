@@ -12342,25 +12342,30 @@
                   "subject": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 2000
+                    "maxLength": 2000,
+                    "description": "What the claim is about — a person, team, product, or account. Short and literal."
                   },
                   "predicate": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 2000
+                    "maxLength": 2000,
+                    "description": "The relationship, phrased as a verb clause: \"is the DRI for\", \"reports to\", \"is priced at\"."
                   },
                   "object": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 2000
+                    "maxLength": 2000,
+                    "description": "The asserted value — what the subject and predicate resolve to."
                   },
                   "validFrom": {
                     "type": "string",
-                    "format": "date-time"
+                    "format": "date-time",
+                    "description": "ISO-8601 timestamp: when the claim began to hold. Defaults to now."
                   },
                   "reason": {
                     "type": "string",
-                    "maxLength": 2000
+                    "maxLength": 2000,
+                    "description": "Why the user believes this — recorded verbatim in the proposal episode and shown to the reviewer."
                   },
                   "token": {
                     "type": "string",

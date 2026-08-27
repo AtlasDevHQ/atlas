@@ -50,7 +50,6 @@
  */
 
 import { tool } from "ai";
-import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, getInternalDB } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
@@ -60,10 +59,7 @@ import {
   type ProposalClaim,
   type ProposeFactConfirmRequest,
 } from "@atlas/api/lib/brain/proposal-confirm";
-import {
-  BRAIN_PROPOSAL_REASON_MAX_CHARS,
-  BRAIN_PROPOSAL_SURFACE_MAX_CHARS,
-} from "@useatlas/schemas";
+import { BrainProposalClaimSchema } from "@useatlas/schemas";
 import {
   BrainReaderIdentityError,
   resolveBrainReaderContext,
@@ -148,37 +144,13 @@ export const proposeFactTool = tool({
     "Any workspace member can propose. " +
     'Example: { "subject": "Ana", "predicate": "is the DRI for", "object": "billing", "reason": "Ana said so in standup" }.',
 
-  inputSchema: z.object({
-    subject: z
-      .string()
-      .min(1)
-      .max(BRAIN_PROPOSAL_SURFACE_MAX_CHARS)
-      .describe("What the claim is about — a person, team, product, or account. Short and literal."),
-    predicate: z
-      .string()
-      .min(1)
-      .max(BRAIN_PROPOSAL_SURFACE_MAX_CHARS)
-      .describe(
-        'The relationship, phrased as a verb clause: "is the DRI for", "reports to", "is priced at".',
-      ),
-    object: z
-      .string()
-      .min(1)
-      .max(BRAIN_PROPOSAL_SURFACE_MAX_CHARS)
-      .describe("The asserted value — what the subject and predicate resolve to."),
-    validFrom: z
-      .string()
-      .datetime({ offset: true })
-      .optional()
-      .describe("ISO-8601 timestamp: when the claim began to hold. Defaults to now."),
-    reason: z
-      .string()
-      .max(BRAIN_PROPOSAL_REASON_MAX_CHARS)
-      .optional()
-      .describe(
-        "Why the user believes this — recorded verbatim in the proposal episode and shown to the reviewer.",
-      ),
-  }),
+  // The SHARED claim schema, not a restatement of it. Both this tool and
+  // `POST /api/v1/brain-proposals/confirm` validate the same five fields, and
+  // the confirm token binds a canonical hash of exactly them — so two
+  // independently-maintained copies could stage a payload the endpoint rejects.
+  // `token` is deliberately absent: the endpoint extends the schema with it, and
+  // advertising it here would invite the model to invent one.
+  inputSchema: BrainProposalClaimSchema,
 
   execute: async (input) => {
     const reqCtx = getRequestContext();

@@ -129,9 +129,10 @@ import {
   identityKey,
   identityKeySql,
   lexicalNorm,
+  slotKey,
   type SlotPosition,
 } from "@atlas/api/lib/brain/identity";
-import { MAX_CHAIN_DEPTH } from "@atlas/api/lib/brain/vocabulary";
+import { MAX_CHAIN_DEPTH, loadClaimVocabulary } from "@atlas/api/lib/brain/vocabulary";
 import { cardinalitySingleSql } from "@atlas/api/lib/brain/cardinality";
 import {
   loadObjectPositionRadius,
@@ -872,6 +873,152 @@ export type BlastRadiusRequest =
   | { readonly kind: "cardinality-removal"; readonly predicateSurface: string };
 
 /**
+ * A request whose predicate surface has been through the alias closure.
+ *
+ * ## Why this is a TYPE, and not a line moved
+ *
+ * `/preview` keyed its two cardinality arms with `identityKey(predicateSurface)`
+ * — normalization only — while `POST /cardinality` keys its write with
+ * `slotKey(predicateSurface, vocabulary.predicate)` — normalization AND the
+ * alias closure. The two agree for an unaliased predicate and diverge for an
+ * aliased one, and `/surfaces` offers aliased norms because it groups by the
+ * norm of the observed SURFACE with no closure applied. So the divergent case
+ * was precisely the case the picker puts in front of an operator: a
+ * blast-radius count for one slot, beside a write that lands in another —
+ * which defeats the single property that justifies offering a retroactive flip
+ * at all (#5466).
+ *
+ * Both endpoints were correct in isolation. Two things have to hold at once for
+ * them to stay that way together, and only one of them is the closure call:
+ *
+ *   1. **One resolution per request.** {@link structurallyEmptyReason} and
+ *      {@link planCounterfactual} each derived the key independently. That was
+ *      free while the derivation was PURE, and stops being free the moment it
+ *      reads the store: two reads straddling an approval would gate on one slot
+ *      and count in another — {@link curatedSingle}'s ⚠️ reached by a different
+ *      route, and the module's own two-statements-disagreeing failure.
+ *   2. **The surface is unreachable downstream.** Carrying `predicateSurface`
+ *      into the arms beside the key would leave `identityKey(surface)`
+ *      spellable, and re-spelling it is the entire defect. Dropping the field
+ *      means a future edit that reaches for it fails to compile, rather than
+ *      passing review and diverging silently for aliased predicates only.
+ *
+ * The alias arms pass through untouched: they already resolve their own targets
+ * through {@link resolveEffectiveTarget}, and `fromNorm` / `toNorm` are the
+ * decision's own operands rather than a slot to look up.
+ */
+type ResolvedRequest =
+  | Extract<BlastRadiusRequest, { kind: "alias-approval" | "alias-removal" }>
+  | {
+      readonly kind: "cardinality-flip";
+      /** `slotKey(predicateSurface, vocabulary.predicate)` — where the write lands. */
+      readonly canonicalKey: string;
+    }
+  | {
+      readonly kind: "cardinality-removal";
+      /** `slotKey(predicateSurface, vocabulary.predicate)` — where the write lands. */
+      readonly canonicalKey: string;
+    };
+
+/**
+ * Put a request through the alias closure, once.
+ *
+ * ## The SAME composition `POST /cardinality` runs, not a third spelling of it
+ *
+ * `loadClaimVocabulary` + {@link slotKey} is verbatim what the route does
+ * before `declarePredicateCardinalityForSurface` — `loadWorkspaceVocabulary` is
+ * that same loader against the pool. Borrowing the composition rather than
+ * re-deriving it is the point of the fix: the browser copy this replaces
+ * (`write-slot.ts`) was a second implementation of a rule the API owns, and
+ * answering it here with a hand-rolled walk would have made a third.
+ *
+ * ⚠️ It also inherits the REFUSALS, which is the half a bare closure lookup
+ * cannot give:
+ *
+ *   - **A partial closure throws.** An approved edge with no closure row keys
+ *     its norm to ITSELF, which is byte-identical to *"approved nothing"* — so
+ *     a half-rebuilt position would otherwise produce a confident count for the
+ *     un-aliased slot, with nothing logged. `loadClaimVocabulary` refuses it by
+ *     name, and `/cardinality` has always refused it; preview refusing it too
+ *     is what makes the two answers comparable rather than coincidentally equal.
+ *   - **The vocabulary's own answer is re-normed** ({@link slotKey}), so an
+ *     entry authored as `"Priced At"` cannot make this compute a key that joins
+ *     nothing. ⚠️ Re-norming only turns that into a `null`, and `slotKey` gives
+ *     the SAME `null` for a degenerate request surface — so inheriting the
+ *     refusal takes an extra step, not just the call. The body asks
+ *     `identityKey(predicateSurface)` first precisely to tell the two apart,
+ *     and throws on the corrupt one exactly as `resolveEffectiveTarget` does.
+ *
+ * Both are this module's own rule — never a count and never a zero for a
+ * question that could not be answered — reached by borrowing rather than
+ * restating.
+ *
+ * ## The cycle guard and the depth bound are already server-side
+ *
+ * `write-slot.ts` walked the edge list in the browser under its own 32-hop
+ * bound with its own cycle guard. Neither needs to travel here.
+ * `brain_vocabulary_target` stores the closure ALREADY WALKED,
+ * {@link MAX_CHAIN_DEPTH} (64) bounds the walk that builds it, and a cycle is
+ * refused at approval time (`would-cycle`) rather than discovered at read time.
+ * Reading the materialized closure inherits all three, so the guard the page
+ * carried is not reimplemented — it is subsumed.
+ *
+ * Returns `"unkeyable-surface"` rather than `null` so the one caller cannot
+ * read *"this surface occupies no slot"* as *"resolved to nothing"* — the
+ * overloaded-null channel {@link StructurallyEmptyReason}'s own ⚠️ describes.
+ */
+async function resolveRequest(
+  db: BrainCandidateReader,
+  workspaceId: string,
+  request: BlastRadiusRequest,
+  requestId?: string,
+): Promise<ResolvedRequest | "unkeyable-surface"> {
+  if (request.kind !== "cardinality-flip" && request.kind !== "cardinality-removal") {
+    return request;
+  }
+  // ⚠️ ASKED FIRST, and its answer is what discriminates `slotKey`'s two null
+  // arms below. `slotKey` is `identityKey(alias(identityKey(surface)))`, so it
+  // answers `null` for a degenerate REQUEST surface AND for a stored closure
+  // target that norms away — two facts this module treats oppositely, and
+  // collapsing them is the exact fold `resolveEffectiveTarget` throws to
+  // prevent one arm over ("refused rather than folded into an
+  // unkeyable-surface answer, which would report store corruption as an
+  // ordinary property of the request").
+  if (identityKey(request.predicateSurface) === null) return "unkeyable-surface";
+
+  const vocabulary = await loadClaimVocabulary(db, workspaceId);
+  // Still `slotKey`, not a re-spelling of its composition: the parity with
+  // `POST /cardinality` is the point of this function, and a hand-inlined
+  // `identityKey(vocabulary.predicate(norm))` would be a second copy free to
+  // drift from the one the write path runs.
+  const canonicalKey = slotKey(request.predicateSurface, vocabulary.predicate);
+  if (canonicalKey === null) {
+    // The surface keys (asserted above), so the only remaining way to reach
+    // `null` is the vocabulary's own answer norming away — a curated target
+    // authored as `"Priced At"` or `" - "`. That is store corruption, and
+    // 0189's CHECKs do not constrain the closure to being a norm.
+    log.error(
+      { workspaceId, requestId, predicateKind: request.kind },
+      "brain vocabulary preview: the predicate vocabulary's target for this surface norms away — the closure is corrupt",
+    );
+    throw new Error(
+      `brain vocabulary preview: the predicate-position vocabulary maps "${request.predicateSurface}" to a ` +
+        `target that norms away to nothing in workspace ${workspaceId}. A closure target that keys nothing ` +
+        `is corrupt — 0189's CHECKs do not constrain it to being a norm, and the region importer rebuilds ` +
+        `this table — so it is refused rather than reported as an unkeyable surface, which would present ` +
+        `store corruption as an ordinary property of the request.`,
+    );
+  }
+  // Spelled per kind rather than `{ kind: request.kind, canonicalKey }`: the
+  // narrowed union of two literals is not assignable to a union of two members,
+  // and widening the type to accept it would be the shape this type exists to
+  // refuse.
+  return request.kind === "cardinality-flip"
+    ? { kind: "cardinality-flip", canonicalKey }
+    : { kind: "cardinality-removal", canonicalKey };
+}
+
+/**
  * Compute a decision's blast radius, both directions.
  *
  * @throws {BrainReaderUnresolvedError} when the reader has no usable principals
@@ -909,12 +1056,33 @@ export async function loadBlastRadius(
     return objectPositionRadius(db, ctx, request, opts);
   }
 
-  const structurallyEmpty = await structurallyEmptyReason(db, workspaceId, request);
+  // THE ALIAS CLOSURE, APPLIED ONCE — see {@link ResolvedRequest}.
+  //
+  // Sequenced after the object-position arm (which reads the decision's own
+  // operands and needs no slot) and before `structurallyEmptyReason`, because
+  // that function's cardinality probe asks whether the landing slot is already
+  // curated `single`. Asking it about the UN-ALIASED norm is how a flip preview
+  // came to answer `already-single` — or worse, to compute a count — against a
+  // gate the write never consults (#5466).
+  const resolved = await resolveRequest(db, workspaceId, request, opts.requestId);
+  if (typeof resolved === "string") {
+    // The same disclosure the plan's unkeyable arm produces below, raised here
+    // because resolution now happens before either consumer runs. Deliberately
+    // the identical log line and reason: one fact described two ways is what
+    // `"object-position"` vs `"unkeyable-surface"` already cost this module once.
+    log.warn(
+      { workspaceId, requestId: opts.requestId, kind: request.kind, reason: resolved },
+      "brain vocabulary preview: the decision could not be turned into a counterfactual — disclosing a reason rather than a zero blast radius",
+    );
+    return { kind: "structurally-empty", reason: resolved };
+  }
+
+  const structurallyEmpty = await structurallyEmptyReason(db, workspaceId, resolved);
   if (structurallyEmpty !== null) {
     return { kind: "structurally-empty", reason: structurallyEmpty };
   }
 
-  const plan = await planCounterfactual(db, workspaceId, request, opts);
+  const plan = await planCounterfactual(db, workspaceId, resolved, opts);
   if (typeof plan === "string") {
     // ⚠️ A REASON, carried out of `planCounterfactual` rather than manufactured
     // here. It used to return a bare `null` from six sites and this caller
@@ -1159,7 +1327,7 @@ interface CounterfactualPlan {
 async function planCounterfactual(
   db: BrainCandidateReader,
   workspaceId: string,
-  request: BlastRadiusRequest,
+  request: ResolvedRequest,
   opts: BlastRadiusOptions,
 ): Promise<CounterfactualPlan | StructurallyEmptyReason> {
   switch (request.kind) {
@@ -1228,8 +1396,11 @@ async function planCounterfactual(
     }
     case "cardinality-flip":
     case "cardinality-removal": {
-      const canonicalKey = identityKey(request.predicateSurface);
-      if (canonicalKey === null) return "unkeyable-surface";
+      // ⚠️ CARRIED, never `identityKey(request.predicateSurface)` — the surface
+      // is not on this type, so the old spelling no longer compiles. See
+      // {@link ResolvedRequest} for why the key arrives already resolved and
+      // why the unkeyable arm that used to sit here now lives at the boundary.
+      const { canonicalKey } = request;
       return {
         // A flip ADDS this key to the gate; a removal SUBTRACTS it. Both are
         // "the vocabulary after the decision", and the delta's direction swap
@@ -1444,7 +1615,7 @@ async function resolveEffectiveTarget(
 async function structurallyEmptyReason(
   db: BrainCandidateReader,
   workspaceId: string,
-  request: BlastRadiusRequest,
+  request: ResolvedRequest,
 ): Promise<StructurallyEmptyReason | null> {
   // ⚠️ DEAD from `loadBlastRadius`, and kept deliberately rather than deleted.
   // #5088 made the object position take its own radius arm, so the caller
@@ -1477,8 +1648,13 @@ async function structurallyEmptyReason(
   }
 
   if (request.kind === "cardinality-flip" || request.kind === "cardinality-removal") {
-    const canonicalKey = identityKey(request.predicateSurface);
-    if (canonicalKey === null) return null;
+    // ⚠️ No `identityKey` and no null arm. The slot arrived resolved through
+    // the closure, and an unkeyable surface returned at the boundary — so the
+    // `if (canonicalKey === null) return null` that used to sit here, deferring
+    // the disclosure to `planCounterfactual`, has no unresolved case left to
+    // defer. Probing the un-aliased norm is the defect (#5466): this gate and
+    // the count below now name the same slot as the write, by construction.
+    const { canonicalKey } = request;
     // The two kinds read the SAME probe and branch on opposite answers: a flip
     // has nothing to compute when the entry already exists, and a removal has
     // nothing to compute when it does not. One statement rather than two so the

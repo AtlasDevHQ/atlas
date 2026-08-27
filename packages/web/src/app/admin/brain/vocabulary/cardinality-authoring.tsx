@@ -6,7 +6,6 @@ import type {
   BrainVocabularyCardinality,
   BrainVocabularySurfaceOption,
 } from "@/ui/lib/types";
-import { isResolved, resolveWriteSlot, type PredicateVocabulary } from "./write-slot";
 import { usePreviewSlot } from "./use-preview-slot";
 import {
   BRAIN_VOCABULARY_CARDINALITIES,
@@ -59,35 +58,39 @@ import { AlertTriangle } from "lucide-react";
  * argument the *In force* pane was built on. Its preview kind is
  * `cardinality-removal`, whose disarming side is the arbitration being withdrawn.
  *
- * ## ⚠️ The alias divergence, disclosed rather than papered over
+ * ## The alias divergence is fixed at the API, not disclosed here
  *
- * `/preview` keys its cardinality arms with `identityKey(predicateSurface)` —
- * normalization only. `/cardinality` keys its write with `slotKey(predicateSurface,
- * predicateAlias)` — normalization **and the alias closure**. Those agree for an
- * unaliased predicate and diverge for an aliased one, and the picker offers
- * aliased norms because it groups by the norm of the observed SURFACE, not by the
- * closed key.
+ * `/preview` used to key its cardinality arms with `identityKey(predicateSurface)`
+ * — normalization only — while `/cardinality` keyed its write with
+ * `slotKey(predicateSurface, predicateAlias)` — normalization **and the alias
+ * closure**. Those agree for an unaliased predicate and diverge for an aliased
+ * one, and the picker offers aliased norms because it groups by the norm of the
+ * observed SURFACE, not by the closed key. So for a predicate that is the source
+ * of an in-force alias, the number on screen described one slot and the write
+ * landed in another — which defeats the single property that justifies offering
+ * this control at all.
  *
- * So for a predicate that is the source of an in-force predicate alias, the
- * number on screen describes one slot and the write lands in another. Both
- * behaviours are correct in isolation — the route documents curating
- * `is priced at` as correctly curating `priced at` — but the pair of them
- * defeats the single property that justifies offering this control.
+ * This card used to close that gap itself, walking the in-force edges to resolve
+ * the pick and sending the RESOLVED norm to `/preview` while sending the PICKED
+ * norm to `/cardinality`. It disclosed the fold, and refused rather than guessed
+ * on an unprovable or non-terminating chain. That was a second implementation of
+ * a closure the API owns, living in the browser, and its own header said the
+ * better repair was to fix `/preview`.
  *
- * This card therefore RESOLVES the pick through the in-force edges it is handed
- * and previews the norm the write will land on — `write-slot.ts` owns that walk
- * and the argument for it. The fold is disclosed, so the operator sees which norm
- * the count is about; an unresolvable or non-terminating chain refuses instead.
+ * ⚠️ **That repair landed (#5466), so this card sends the PICKED norm to both
+ * endpoints and holds no closure logic at all.** What it lost with the walk is
+ * the fold disclosure, and that is the right trade rather than a regression: the
+ * disclosure existed to make a possible DISAGREEMENT visible, and there is no
+ * longer a disagreement to make visible. Re-rendering the resolved norm from the
+ * server is not the replacement — `keys-not-on-the-wire.test.ts` refuses a slot
+ * key on the wire outright.
  *
- * ⚠️ An earlier cut simply blocked any aliased pick and told the operator to
+ * ⚠️ An even earlier cut simply blocked any aliased pick and told the operator to
  * choose the target instead. Recorded because it reads as the safer option and is
  * not: the picker lists norms of observed SURFACES, and an alias exists precisely
  * because claims spell the source — so the target was usually absent from the list
  * and the slot became uncurable through the UI, which is the console `fetch` this
  * card was built to end.
- *
- * Fixing `/preview` to apply the closure itself is the better repair and is API
- * work this change does not touch.
  */
 /**
  * The write body, typed from the SERVER's own schema.
@@ -161,18 +164,7 @@ const CARDINALITY_COPY: Record<BrainVocabularyCardinality, CardinalityCopy> = {
   },
 };
 
-export function CardinalityAuthoring({
-  vocabulary,
-  onWritten,
-}: {
-  /**
-   * What this page knows about its predicate aliases — a discriminated state, not
-   * a list plus a boolean. See {@link PredicateVocabulary} for why the earlier
-   * shape rendered a still-loading fetch as a failed one.
-   */
-  vocabulary: PredicateVocabulary;
-  onWritten: () => void;
-}) {
+export function CardinalityAuthoring({ onWritten }: { onWritten: () => void }) {
   const [surface, setSurface] = useState<BrainVocabularySurfaceOption | null>(null);
   const [cardinality, setCardinality] = useState<BrainVocabularyCardinality>("single");
   const [error, setError] = useState<string | null>(null);
@@ -194,15 +186,6 @@ export function CardinalityAuthoring({
   >({ path: "/api/v1/admin/brain-vocabulary/cardinality", method: "POST" });
 
   /**
-   * Which slot the write will land in — resolved, not merely detected.
-   *
-   * `write-slot.ts` carries the whole argument: `/preview` keys without the alias
-   * closure and `/cardinality` keys with it, so the surface sent to the preview
-   * has to be the RESOLVED norm for the two to be about the same slot.
-   */
-  const slot = resolveWriteSlot(vocabulary, surface?.norm ?? null);
-
-  /**
    * Everything that varies by direction, read off ONE per-arm record.
    *
    * `single` sizes what the flip ARMS; `multi` sizes what the un-curation
@@ -215,10 +198,13 @@ export function CardinalityAuthoring({
   /**
    * Whether the write may be attempted.
    *
-   * Five conditions, and each corresponds to a failure this page has actually
-   * shipped or nearly shipped: a write behind NO number, behind a PENDING one,
-   * behind a FAILED one, behind a number for a DIFFERENT SLOT, or behind a
-   * vocabulary this page could not read.
+   * Two conditions, down from five (#5466). Three of the original five guarded
+   * this page's own closure walk — a number for a DIFFERENT SLOT, a vocabulary
+   * that could not be READ, and one it could not prove COMPLETE — and none of
+   * them has a referent now that `/preview` and `/cardinality` resolve the same
+   * surface server-side. What survives is the pair that was never about the
+   * closure: a write behind NO number, and a write behind a PENDING or FAILED
+   * one, both folded into `hasRadius`.
    *
    * ⚠️ Declared ABOVE `onWrite`, which reads it. As a hoisted function
    * declaration reading a `const`, `onWrite` only worked because a click cannot
@@ -226,33 +212,31 @@ export function CardinalityAuthoring({
    * throw the moment anything calls it during render. `page.tsx` orders
    * `bothPicked` before `onAuthor` for the same reason.
    */
-  const armed = isResolved(slot) && preview.hasRadius;
+  const armed = surface !== null && preview.hasRadius;
 
   async function onPreview() {
-    // ⚠️ Gated on the SLOT being resolved, not merely on something being picked.
-    // Previewing an unresolved pick is what produced the divergence in the first
-    // place: the number would be about the picked norm while the write went to
-    // its alias target.
-    if (!isResolved(slot)) return;
-    // ⚠️ `slot.previewNorm`, NOT `surface.norm`. This is the fix: the resolved
-    // norm is the one `/cardinality` will key its write on, so it is the only
-    // value whose count describes the decision being made.
-    await preview.load({ kind: copy.previewKind, predicateSurface: slot.previewNorm });
+    if (surface === null) return;
+    // ⚠️ The PICKED norm — the same value `onWrite` sends one function down, and
+    // that sameness is the whole point (#5466). `/preview` applies the alias
+    // closure itself now, exactly as `/cardinality` always has, so both
+    // endpoints resolve one surface to one slot server-side. This page used to
+    // walk the edge list itself and send the RESOLVED norm here, because the two
+    // routes keyed differently and something had to make them agree; that walk
+    // was a second implementation of a rule the API owns, and it is gone.
+    await preview.load({ kind: copy.previewKind, predicateSurface: surface.norm });
   }
 
   async function onWrite() {
     if (surface === null || !armed) return;
     setError(null);
     setNotice(null);
-    // ⚠️ The PICKED norm, deliberately — not `slot.previewNorm`.
+    // The PICKED norm — unchanged, and now the same value `onPreview` sends.
     //
     // The route applies the closure itself and documents doing so ("curating `is
     // priced at` after `is priced at → priced at` is approved correctly curates
-    // `priced at`"), so sending the pick lets the SERVER decide the slot and keeps
-    // this page's walk out of the write path. The walk's only job is to make the
-    // PREVIEW ask about that same slot; if the two ever disagree, the disclosure
-    // shows the operator a norm they did not expect rather than silently writing
-    // somewhere else.
+    // `priced at`"), so sending the pick lets the SERVER decide the slot. It
+    // always did; what changed is that `/preview` does too, so the count and the
+    // write can no longer be about different slots.
     const body: CardinalityRequest = { predicateSurface: surface.norm, cardinality };
     const result = await writeMutation.mutate({ body });
     if (!result.ok) {
@@ -376,68 +360,25 @@ export function CardinalityAuthoring({
           </Alert>
         ) : null}
 
-        {/* ⚠️ THE FOLD, disclosed — and it no longer blocks.
-            The first cut refused any aliased pick and told the operator to choose
-            the target instead. That advice was usually impossible to follow: the
-            picker lists norms of observed SURFACES with no closure applied, and an
-            alias exists precisely because claims spell the source — so the target
-            was absent from the list and the slot became uncurable through the UI.
-            Now the preview asks about the resolved norm, and this says so. */}
-        {slot.kind === "folded" ? (
-          <Alert>
-            <AlertDescription className="text-sm">
-              <span className="font-medium">
-                “{slot.path[0]}” folds onto “{slot.previewNorm}”
-                {slot.path.length > 2 ? ` through ${slot.path.slice(1, -1).join(" → ")}` : ""}, so
-                this decision curates “{slot.previewNorm}”.
-              </span>{" "}
-              The write applies your workspace&rsquo;s alias closure, so the count below is “
-              {slot.previewNorm}”&rsquo;s — the slot the write lands in, not the spelling you
-              picked. Check that “{slot.previewNorm}” is the predicate you meant: it is the one
-              being curated.
-            </AlertDescription>
-          </Alert>
-        ) : null}
+        {/* The fold disclosure that stood here is GONE, and its absence is the
+            fix rather than a regression (#5466).
 
-        {/* ⚠️ Three separate sentences, because they are three different facts.
-            One boolean here rendered a still-loading `/in-force` as a failed one —
-            `useAdminFetch` returns null data for the whole initial fetch — which
-            put "could not read … reload before deciding" over a request that was
-            in flight and about to succeed, with a remedy that restarts it. */}
-        {slot.kind === "unresolvable" ? (
-          slot.because === "loading" ? (
-            <p className="text-muted-foreground text-sm">
-              Reading what is in force, so this page can tell whether “{surface?.norm}” is aliased
-              onto another predicate. The preview waits for that — an alias moves the write to a
-              different slot.
-            </p>
-          ) : (
-            <Alert variant="destructive">
-              <AlertTriangle className="size-4" aria-hidden />
-              <AlertDescription className="text-sm">
-                {slot.because === "failed"
-                  ? "What is in force could not be read, so this page cannot tell whether this predicate is aliased onto another one — and an alias moves this write to a slot other than the one previewed."
-                  : "This page cannot prove it saw every predicate alias in this workspace, so it cannot tell whether this predicate is aliased onto another one — and an alias moves this write to a slot other than the one previewed."}{" "}
-                That is <strong>unknown, not clear</strong>. Reload before deciding.
-              </AlertDescription>
-            </Alert>
-          )
-        ) : null}
+            It existed to make a possible DISAGREEMENT visible: `/preview` keyed
+            without the alias closure and `/cardinality` keyed with it, so this
+            page walked the edge list, sent the resolved norm to the preview, and
+            displayed the fold so an operator could see which norm the number was
+            about. Its two refusal arms — `unresolvable` when the alias set could
+            not be proven complete, `cyclic` when the walk did not terminate —
+            were the honest answers of a walk that could fail.
 
-        {/* The walk could not terminate. Refused rather than guessed — a `folded`
-            answer pointing at the wrong end of a malformed chain would be a
-            confident number about the wrong slot, which is worse than no answer. */}
-        {slot.kind === "cyclic" ? (
-          <Alert variant="destructive">
-            <AlertTriangle className="size-4" aria-hidden />
-            <AlertDescription className="text-sm">
-              The alias chain from “{slot.path[0]}” does not resolve to a single predicate — this
-              page followed {slot.path.join(" → ")} without reaching an end. Which slot this write
-              would land in is <strong>unknown</strong>, so it is not offered. This should not be
-              possible; report it rather than working around it.
-            </AlertDescription>
-          </Alert>
-        ) : null}
+            `/preview` now applies the closure itself, through the same
+            `loadClaimVocabulary` + `slotKey` composition `/cardinality` runs, so
+            both endpoints resolve one picked surface to one slot server-side.
+            There is no disagreement left to disclose, no walk here to fail, and
+            no completeness for this page to prove. The resolved key deliberately
+            does NOT come back to render instead: `keys-not-on-the-wire.test.ts`
+            refuses a slot key on the wire outright, and that prohibition is
+            older and wider than this card. */}
 
         <BlastRadiusPreview
           radius={preview.slot.radius}
@@ -467,10 +408,10 @@ export function CardinalityAuthoring({
               an operator problem before it is a test problem. */}
           <Button
             variant="outline"
-            // Gated on the slot being RESOLVED, matching `onPreview`'s own guard:
-            // a live button over an unresolved pick would offer a number for a
-            // slot the write does not use.
-            disabled={!isResolved(slot) || preview.slot.pending}
+            // Gated on a pick, matching `onPreview`'s own guard. It used to
+            // additionally require this page to have RESOLVED the pick; the
+            // server resolves it now, so a pick is the whole precondition.
+            disabled={surface === null || preview.slot.pending}
             onClick={onPreview}
           >
             Preview the cardinality impact
@@ -482,7 +423,7 @@ export function CardinalityAuthoring({
 
         {/* `awaitingFirst` rather than a second spelling of the triple. The two
             re-derivations had already drifted by a term. */}
-        {isResolved(slot) && preview.awaitingFirst ? (
+        {surface !== null && preview.awaitingFirst ? (
           <p className="text-muted-foreground text-xs">
             Preview first. Curating a predicate changes what replaces what across every claim
             already in that slot, so the blast radius is not optional.

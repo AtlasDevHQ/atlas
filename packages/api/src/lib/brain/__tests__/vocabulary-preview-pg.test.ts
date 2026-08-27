@@ -48,7 +48,11 @@ import {
   decideAliasProposal,
   proposeAliasEdge,
 } from "@atlas/api/lib/brain/vocabulary-decide";
-import { declarePredicateCardinality } from "@atlas/api/lib/brain/cardinality";
+import {
+  declarePredicateCardinality,
+  declarePredicateCardinalityForSurface,
+} from "@atlas/api/lib/brain/cardinality";
+import { loadClaimVocabulary } from "@atlas/api/lib/brain/vocabulary";
 import { reconcileFacts, type ReconcileEpisodeRef } from "@atlas/api/lib/brain/reconcile";
 import {
   WILL_SUPERSEDE_TOTAL_SQL,
@@ -973,6 +977,201 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
     expect(computed(radius).disarming.total).toBe(before);
     expect(computed(radius).arming.total).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
+
+
+  // ── 3. the two routes name ONE slot for an aliased predicate (#5466) ──────
+
+  describe("an aliased predicate resolves to one slot for both routes", () => {
+    /**
+     * The divergent case, end to end.
+     *
+     * `identityKey("is priced at")` is `"is priced at"`; `slotKey("is priced at",
+     * vocabulary.predicate)` is `"priced at"` once the alias is in force. `/preview`
+     * keyed with the first and `/cardinality` keys its write with the second, so the
+     * count described one slot and the write landed in another — and the picker
+     * offers the SOURCE spelling, because `/surfaces` groups by the norm of the
+     * observed surface with no closure applied. So this is not a corner: it is what
+     * an operator sees on any workspace that curates aliases.
+     *
+     * ⚠️ The alias is approved BEFORE the preview, which is what makes the two keys
+     * differ. Approving it also re-keys the landed rows onto `priced at`, so the
+     * un-aliased slot is left genuinely empty — which is why the pre-fix answer was
+     * a confident `0` rather than a wrong-but-nonzero number. A zero is the worst
+     * available shape here: it reads as *"this flip arms nothing"* about a decision
+     * that arms every pair in the slot.
+     */
+    it("a FLIP previewed on the alias source counts the pairs the write actually arms", async () => {
+      const published = await land({
+        subject: "widget",
+        predicate: "is priced at",
+        object: "10",
+      });
+      await publish(published);
+      await land({ subject: "widget", predicate: "is priced at", object: "20" });
+      await approve("is priced at", "priced at");
+
+      // The premise, asserted rather than assumed: the two keyings disagree here.
+      // Without this the test would still pass if the alias silently failed to
+      // land, and would be pinning nothing at all.
+      const vocabulary = await loadClaimVocabulary(pool, WS);
+      expect(vocabulary.predicate("is priced at")).toBe("priced at");
+
+      const before = await supersedesNow();
+      const radius = await loadBlastRadius(pool, owner(), {
+        kind: "cardinality-flip",
+        predicateSurface: "is priced at",
+      });
+
+      // Run the REAL write seam the route runs — surface plus vocabulary, so the
+      // slot is chosen by `slotKey` exactly as `POST /cardinality` chooses it.
+      const declared = await declarePredicateCardinalityForSurface(pool, WS, {
+        predicateSurface: "is priced at",
+        cardinality: "single",
+        authoredBy: "user-owner",
+        predicateAlias: vocabulary.predicate,
+      });
+      expect(declared.ok, "the curation the preview was about did not land").toBe(true);
+      const after = await supersedesNow();
+
+      // The parity property this file exists for, now across the closure: the
+      // preview PREDICTED the write. Before #5466 the preview keyed `is priced at`
+      // — empty after the re-key — and promised 0 while the write armed these pairs.
+      expect(computed(radius).arming.total).toBe(after - before);
+      expect(
+        computed(radius).arming.total,
+        "the fixture must actually arm something, or the equality above is vacuous",
+      ).toBeGreaterThan(0);
+    }, PG_TEST_TIMEOUT_MS);
+
+    /**
+     * The same divergence one function over, in {@link structurallyEmptyReason}.
+     *
+     * Worth its own case because it fails in the REASSURING direction and produces
+     * no number to look wrong: probing the un-aliased norm finds no approved entry,
+     * so a removal on the alias source answered `not-curated` — *"there is nothing
+     * to un-curate"* — about a slot that is curated `single` and whose un-curation
+     * disarms real supersession. An operator reading that stops, satisfied.
+     */
+    it("a REMOVAL previewed on the alias source is not reported as never curated", async () => {
+      const published = await land({ subject: "gadget", predicate: "is sized at", object: "10" });
+      await publish(published);
+      await land({ subject: "gadget", predicate: "is sized at", object: "20" });
+      await approve("is sized at", "sized at");
+
+      const vocabulary = await loadClaimVocabulary(pool, WS);
+      const declared = await declarePredicateCardinalityForSurface(pool, WS, {
+        predicateSurface: "is sized at",
+        cardinality: "single",
+        authoredBy: "user-owner",
+        predicateAlias: vocabulary.predicate,
+      });
+      expect(declared.ok).toBe(true);
+
+      const before = await supersedesNow();
+      expect(before, "the curated fixture must be colliding").toBeGreaterThan(0);
+
+      const radius = await loadBlastRadius(pool, owner(), {
+        kind: "cardinality-removal",
+        predicateSurface: "is sized at",
+      });
+
+      // NOT `not-curated`. That was the pre-fix answer, and it is the whole defect
+      // in one word.
+      expect(computed(radius).disarming.total).toBe(before);
+      expect(computed(radius).arming.total).toBe(0);
+    }, PG_TEST_TIMEOUT_MS);
+
+    /**
+     * The half a single-row closure lookup could not have given.
+     *
+     * An approved edge with no closure row keys its norm to ITSELF, which is
+     * byte-identical to *"approved nothing"* — so a half-rebuilt position would
+     * produce a confident count for the un-aliased slot with nothing logged.
+     * `/cardinality` has always refused this through `loadClaimVocabulary`;
+     * `/preview` borrows the same loader precisely so it refuses too, and the two
+     * answers stay comparable rather than coincidentally equal.
+     */
+    /**
+     * `slotKey` reaches `null` two ways, and they are opposite facts.
+     *
+     * `slotKey` is `identityKey(alias(identityKey(surface)))`, so it answers
+     * `null` for a degenerate REQUEST surface — which genuinely occupies no slot
+     * — and for a stored closure TARGET that norms away, which is store
+     * corruption. The first cut of #5466 returned `"unkeyable-surface"` for both,
+     * which is precisely the fold `resolveEffectiveTarget` throws to prevent one
+     * arm over: it reports corruption as an ordinary property of the request, and
+     * an operator reads *"that spelling occupies no slot"* about a vocabulary
+     * that is broken.
+     *
+     * ⚠️ A whitespace-only target is STORABLE. 0189's CHECK is
+     * `effective_target <> ''`, and `'   ' <> ''` is TRUE — so this is reachable
+     * from Postgres rather than hypothetical, which is why it is pinned against
+     * a real schema instead of a fake.
+     */
+    it("REFUSES a closure target that norms away, rather than calling the surface unkeyable", async () => {
+      const published = await land({ subject: "cog", predicate: "is weighted at", object: "10" });
+      await publish(published);
+      await land({ subject: "cog", predicate: "is weighted at", object: "20" });
+      await approve("is weighted at", "weighted at");
+
+      // Corrupt the target in place — the shape a hand-edit or a region import
+      // rebuilding from a foreign vocabulary can leave behind.
+      await pool.query(
+        `UPDATE brain_vocabulary_target SET effective_target = '   '
+          WHERE workspace_id = $1 AND slot_position = 'predicate' AND norm = $2`,
+        [WS, "is weighted at"],
+      );
+
+      await expect(
+        loadBlastRadius(pool, owner(), {
+          kind: "cardinality-flip",
+          predicateSurface: "is weighted at",
+        }),
+      ).rejects.toThrow(/norms away to nothing/i);
+    }, PG_TEST_TIMEOUT_MS);
+
+    /**
+     * The other arm of the same discrimination, so the refusal above cannot be
+     * satisfied by throwing on everything.
+     *
+     * `"-"` norms away, so it occupies no slot and can join nothing. That IS an
+     * ordinary property of the request, and it must still reach the disclosure
+     * rather than the throw.
+     */
+    it("POSITIVE CONTROL — a degenerate REQUEST surface is still a disclosure, not a throw", async () => {
+      expect(
+        emptyReason(
+          await loadBlastRadius(pool, owner(), {
+            kind: "cardinality-flip",
+            predicateSurface: "-",
+          }),
+        ),
+      ).toBe("unkeyable-surface");
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("REFUSES a half-rebuilt closure rather than counting the un-aliased slot", async () => {
+      const published = await land({ subject: "sprocket", predicate: "is rated at", object: "10" });
+      await publish(published);
+      await land({ subject: "sprocket", predicate: "is rated at", object: "20" });
+      await approve("is rated at", "rated at");
+
+      // Break the closure the way a restore or a hand-written DELETE would: the
+      // approved edge survives, its closure row does not.
+      await pool.query(
+        `DELETE FROM brain_vocabulary_target
+          WHERE workspace_id = $1 AND slot_position = 'predicate' AND norm = $2`,
+        [WS, "is rated at"],
+      );
+
+      await expect(
+        loadBlastRadius(pool, owner(), {
+          kind: "cardinality-flip",
+          predicateSurface: "is rated at",
+        }),
+        // Never a count, and never a zero, for a question that could not be answered.
+      ).rejects.toThrow(/closure is incomplete/i);
+    }, PG_TEST_TIMEOUT_MS);
+  });
 
   it("a SUBJECT-position alias arms pairs — the position the predicate fixtures cannot probe", async () => {
     // Round 2 of #5024's panel: a suite whose fixtures all share one value of a

@@ -19,7 +19,6 @@ import { NormPicker, ScopeBadge } from "./norm-picker";
 import { PendingQueue } from "./pending-queue";
 import { CardinalityAuthoring } from "./cardinality-authoring";
 import { TensionSweepPanel } from "./tension-sweep";
-import type { PredicateVocabulary } from "./write-slot";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
@@ -262,50 +261,6 @@ function ClaimVocabulary() {
   // fail-open reflex this whole surface refuses everywhere else.
   const positionScope = counts.find((c) => c.position === position)?.scope ?? null;
 
-  /**
-   * What the cardinality card is allowed to conclude about predicate aliases
-   * (#5447).
-   *
-   * ## Why `inForce.truncated` is NOT the test
-   *
-   * `loadInForceVocabulary` computes one flag for the whole payload —
-   * `truncated = cardinalities.truncated`, then OR-ed with each of the THREE
-   * positional edge lists, every one capped at `IN_FORCE_PAGE_MAX`. So a
-   * workspace with more than 200 SUBJECT aliases (or 200 object aliases, or 200
-   * curated predicates) sets it forever, and gating on it made the new card
-   * permanently unable to write while telling the operator to reload — which
-   * could never help. An unrelated cap disabling a feature is worse than the
-   * hazard the gate was for.
-   *
-   * The predicate list's own completeness is provable from data already on the
-   * wire: `counts` carries the workspace-wide `total` per position, and
-   * `countsConsistent` says whether that number could be established at all. If
-   * every predicate edge the workspace has is in the list this page received,
-   * the alias set is known — regardless of what any other position did.
-   *
-   * ⚠️ Compared against `total`, not `scoped`. The divergence check has to see
-   * every edge that could fold the pick, so an edge withheld from this reader is
-   * as disqualifying as one cut by a page cap.
-   *
-   * ## And loading is its own arm
-   *
-   * `useAdminFetch` returns `data: null` for the entire initial fetch, so a
-   * presence check alone cannot tell "not yet" from "failed" — and `/in-force`
-   * is several round trips where `/surfaces` is one, making that window easy to
-   * reach by picking a predicate quickly.
-   */
-  const predicateCounts = counts.find((c) => c.position === "predicate");
-  const predicateEdges = edges.filter((e) => e.position === "predicate");
-  const predicateVocabulary: PredicateVocabulary =
-    inForceError !== null
-      ? { kind: "failed" }
-      : inForceLoading || inForce === null || inForce === undefined
-        ? { kind: "loading" }
-        : predicateCounts === undefined ||
-            !predicateCounts.countsConsistent ||
-            predicateEdges.length !== predicateCounts.total
-          ? { kind: "incomplete" }
-          : { kind: "known", edges: predicateEdges };
 
   return (
     <div className="space-y-6">
@@ -479,7 +434,6 @@ function ClaimVocabulary() {
           the alias closure, which is why that card has to know what is in force).
           Reversing them would put the dependent decision first. */}
       <CardinalityAuthoring
-        vocabulary={predicateVocabulary}
         onWritten={() => {
           setNotice(null);
           // Unawaited deliberately — see `onAuthor`.

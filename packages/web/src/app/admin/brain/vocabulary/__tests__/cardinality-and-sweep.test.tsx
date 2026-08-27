@@ -430,45 +430,58 @@ describe("un-curation to multi is reachable, and says what a stored multi means"
   });
 });
 
-describe("⚠️ the alias divergence between /preview and /cardinality", () => {
-  test("an aliased pick PREVIEWS THE TARGET, discloses the fold, and still arms", async () => {
-    // `/preview` keys with `identityKey` (normalization only); `/cardinality` keys
-    // with `slotKey` (normalization AND the alias closure). `led by` is aliased
-    // onto `leads`, so previewing the pick would count one slot while the write
-    // landed in another.
-    //
-    // The first cut refused the write here. That was over-broad: the remedy it
-    // offered — "pick `leads` instead" — is usually impossible, because the picker
-    // lists norms of observed SURFACES and an alias exists precisely because
-    // claims spell the source. This fixture is that dead end exactly: `leads` is
-    // NOT in SURFACES. So the slot was uncurable through the UI, which is the
-    // console `fetch` this card was built to end.
+describe("the alias closure is the SERVER's, at both routes (#5466)", () => {
+  // This block used to pin a client-side closure: the card walked the in-force
+  // edges, sent the RESOLVED norm to `/preview` and the PICKED norm to
+  // `/cardinality`, disclosed the fold, and refused on an unprovable or
+  // non-terminating chain. All of that existed because the two routes keyed
+  // differently — `/preview` with `identityKey`, `/cardinality` with `slotKey`.
+  //
+  // `/preview` applies the closure itself now, so the walk is gone and with it
+  // every state it could be in. What replaces those tests is the property that
+  // made them unnecessary: ONE surface goes to BOTH routes, and the card holds no
+  // opinion about which slot that resolves to.
+  //
+  // The API-side proof that the resolution is correct lives where it can be made
+  // against a real closure — `vocabulary-preview-pg.test.ts`, which measures the
+  // preview against what the write actually arms for an aliased predicate. A DOM
+  // test cannot make that claim, and asserting a resolved norm here would only be
+  // re-pinning a walk this change deleted.
+
+  test("an ALIASED pick sends the picked norm to /preview — unresolved, deliberately", async () => {
+    // `led by` is aliased onto `leads`, and `leads` is NOT in SURFACES — the dead
+    // end the old walk existed for, since the picker lists norms of observed
+    // surfaces and an alias exists precisely because claims spell the source.
+    // The card now sends what the operator picked and lets the server close over
+    // it, so the aliased case needs no special path here at all.
     renderPage();
     await pickPredicate("led by");
-    await waitFor(() =>
-      expect(within(cardinalityCard()).getByText(/folds onto/)).toBeTruthy(),
-    );
     fireEvent.click(previewButton());
     await waitFor(() => expect(previewCalls.length).toBe(1));
-    // THE assertion: the preview asks about the slot the write lands in.
-    expect(JSON.parse(previewCalls[0]!).predicateSurface).toBe("leads");
+    expect(JSON.parse(previewCalls[0]!).predicateSurface).toBe("led by");
     await waitFor(() => expect(curateButton().disabled).toBe(false));
   });
 
-  test("the WRITE still sends the picked norm — the server owns the closure", async () => {
-    // This page's walk decides only what to PREVIEW. Sending the resolved norm to
-    // the write would put a client-side closure on the write path, where the route
-    // already applies its own and documents doing so.
+  test("the WRITE sends the same norm the PREVIEW asked about", async () => {
+    // THE assertion this block exists for, and the one the divergence broke: the
+    // count and the write are about one surface. Which slot that is, is the
+    // server's answer to give — and it now gives the same one twice.
     renderPage();
     await pickPredicate("led by");
     fireEvent.click(previewButton());
+    await waitFor(() => expect(previewCalls.length).toBe(1));
     await waitFor(() => expect(curateButton().disabled).toBe(false));
     fireEvent.click(curateButton());
     await waitFor(() => expect(cardinalityCalls.length).toBe(1));
+    expect(JSON.parse(cardinalityCalls[0]!).predicateSurface).toBe(
+      JSON.parse(previewCalls[0]!).predicateSurface,
+    );
     expect(JSON.parse(cardinalityCalls[0]!).predicateSurface).toBe("led by");
   });
 
-  test("POSITIVE CONTROL — an UNALIASED pick shows no fold and previews itself", async () => {
+  test("POSITIVE CONTROL — an UNALIASED pick behaves identically", async () => {
+    // The two picks are now indistinguishable from this card's side, which is the
+    // point: there is no fold to disclose and no branch to get wrong.
     renderPage();
     await pickPredicate("reports to");
     expect(within(cardinalityCard()).queryByText(/folds onto/)).toBeNull();
@@ -478,58 +491,50 @@ describe("⚠️ the alias divergence between /preview and /cardinality", () => 
     await waitFor(() => expect(curateButton().disabled).toBe(false));
   });
 
-  test("⚠️ a FAILED in-force load blocks the write rather than reading as no-alias", async () => {
-    // `edges` falls back to `[]` on failure, so "no alias starts here" and
-    // "nobody knows what starts here" are the same value — and an alias is
-    // precisely the hazard an absent edge would be read as ruling out.
+  test("⚠️ a FAILED in-force load no longer blocks the write", async () => {
+    // Reversed deliberately, and it is a loosening with a reason rather than a
+    // dropped guard. The gate existed because this page had to walk the edge list
+    // and `edges` falls back to `[]` on failure — so "no alias starts here" and
+    // "nobody knows what starts here" were the same value, and the card refused
+    // rather than key against a set it could not prove complete.
+    //
+    // It no longer walks anything. The closure is read server-side, inside the
+    // request, from the same table `/cardinality` reads — so an unreadable
+    // `/in-force` on this page says nothing about whether the preview can resolve
+    // the slot, and blocking on it would disable a working control for an
+    // unrelated failure. The page still surfaces the load error at the top.
     inForceStatus = 500;
     renderPage();
     await pickPredicate("reports to");
-    const scope = cardinalityCard();
-    await waitFor(() => expect(within(scope).getByText(/unknown, not clear/)).toBeTruthy());
-    // The preview button is dead too — asking for a number about a slot this page
-    // cannot identify is how the divergence gets re-armed.
-    expect(previewButton().disabled).toBe(true);
-    expect(curateButton().disabled).toBe(true);
-  });
-
-  test("⚠️ a LOADING in-force does NOT render as a failed one", async () => {
-    // THE finding. `useAdminFetch` returns `data: null` for the whole initial
-    // fetch, so a presence check alone cannot tell "not yet" from "failed" — and
-    // `/surfaces` is one round trip where `/in-force` is several, making this
-    // window easy to reach by picking a predicate quickly. The card used to put a
-    // destructive "could not read … Reload before deciding" over a request that
-    // was in flight and about to succeed, offering a remedy that restarts the load.
-    let releaseInForce: (() => void) | null = null;
-    holdInForce = new Promise<void>((resolve) => {
-      releaseInForce = resolve;
-    });
-    renderPage();
-    await pickPredicate("reports to");
-    const scope = cardinalityCard();
-    await waitFor(() => expect(within(scope).getByText(/Reading what is in force/)).toBeTruthy());
-    expect(within(scope).queryByText(/unknown, not clear/)).toBeNull();
-    expect(within(scope).queryByText(/could not be read/)).toBeNull();
-
-    // POSITIVE CONTROL — it resolves to the writable state once the fetch lands,
-    // so the assertions above are about the loading window rather than about a
-    // card that never arms.
-    // `!`, not `?.` — the sibling suite's pattern for the same quirk. Assignment
-    // inside a Promise executor is invisible to control-flow analysis, so the
-    // binding narrows to `never` and `?.()` fails to compile.
-    releaseInForce!();
-    await waitFor(() => expect(previewButton().disabled).toBe(false));
+    expect(previewButton().disabled).toBe(false);
     fireEvent.click(previewButton());
+    await waitFor(() => expect(previewCalls.length).toBe(1));
     await waitFor(() => expect(curateButton().disabled).toBe(false));
   });
 
+  test("⚠️ an INCOMPLETE predicate count no longer blocks it either", async () => {
+    // Same reversal, same reason. The workspace says it has three predicate
+    // aliases and this page received one; that made the page's own alias set
+    // provably partial, which mattered only while the page was the one closing
+    // over it. A page cap on a list this card no longer reads cannot make the
+    // server's closure wrong.
+    inForce = { ...IN_FORCE, counts: [{ ...EMPTY_COUNTS, total: 3, scoped: 3 }] };
+    renderPage();
+    await pickPredicate("reports to");
+    expect(previewButton().disabled).toBe(false);
+    fireEvent.click(previewButton());
+    await waitFor(() => expect(previewCalls.length).toBe(1));
+    expect(JSON.parse(previewCalls[0]!).predicateSurface).toBe("reports to");
+  });
+
   test("⚠️ an unrelated GLOBAL truncation does not disable the write", async () => {
-    // THE second finding. `loadInForceVocabulary` ORs one `truncated` flag across
-    // all three positional edge lists AND the cardinality list, each capped at
-    // 200. Gating on it meant a workspace with >200 SUBJECT aliases could never
-    // curate a predicate through this UI — permanently, while being told to
-    // reload, which could never help. Predicate completeness is provable on its
-    // own from `counts`.
+    // Carried unchanged from the block this replaces. `loadInForceVocabulary` ORs
+    // one `truncated` flag across all three positional edge lists AND the
+    // cardinality list, each capped at 200 — so a workspace with >200 SUBJECT
+    // aliases set it forever. Gating on it made the card permanently unable to
+    // write while telling the operator to reload, which could never help. Kept as
+    // a live assertion rather than deleted with the walk: the flag still exists
+    // and is still global, so nothing stops a future edit from gating on it again.
     inForce = { ...IN_FORCE, truncated: true };
     renderPage();
     await pickPredicate("reports to");
@@ -538,32 +543,17 @@ describe("⚠️ the alias divergence between /preview and /cardinality", () => 
     await waitFor(() => expect(curateButton().disabled).toBe(false));
   });
 
-  test("⚠️ but an INCOMPLETE predicate count does block it", async () => {
-    // The narrower gate that replaced the global flag: the workspace says it has
-    // three predicate aliases and this page received one, so the alias set it
-    // would check against is provably partial.
-    inForce = { ...IN_FORCE, counts: [{ ...EMPTY_COUNTS, total: 3, scoped: 3 }] };
+  test("the preview is still MANDATORY before the write", async () => {
+    // The one gate that has nothing to do with the closure, asserted here because
+    // the block above deleted four gates and a reader needs to see which one
+    // survived. A cardinality flip is retroactive across the whole slot; the
+    // blast radius is not optional, and no amount of server-side resolution
+    // changes that.
     renderPage();
     await pickPredicate("reports to");
-    await waitFor(() =>
-      expect(within(cardinalityCard()).getByText(/cannot prove it saw every/)).toBeTruthy(),
-    );
-    expect(previewButton().disabled).toBe(true);
-  });
-
-  test("⚠️ a count that could not be established blocks it too", async () => {
-    // `countsConsistent: false` means the total was never read, not that it was
-    // small. Treating an unread total as a match would be the fail-open reflex.
-    inForce = {
-      ...IN_FORCE,
-      counts: [{ ...EMPTY_COUNTS, total: 1, scoped: 1, countsConsistent: false }],
-    };
-    renderPage();
-    await pickPredicate("reports to");
-    await waitFor(() =>
-      expect(within(cardinalityCard()).getByText(/cannot prove it saw every/)).toBeTruthy(),
-    );
-    expect(previewButton().disabled).toBe(true);
+    expect(curateButton().disabled).toBe(true);
+    fireEvent.click(previewButton());
+    await waitFor(() => expect(curateButton().disabled).toBe(false));
   });
 });
 

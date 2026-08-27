@@ -28,7 +28,11 @@ import {
   createPlugin,
   collectSemanticFiles,
   createFileTransportPythonBackend,
+  directoryEntryNames,
+  installPythonPackages,
+  isNotFoundSdkError,
   runHealthCheckWithTimeout,
+  shellQuote,
 } from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
@@ -128,23 +132,16 @@ async function createE2BSandbox(config: E2BSandboxConfig): Promise<any> {
 const E2B_PYTHON_WORK_DIR = "/home/user/atlas-python";
 
 /**
- * Shell-quote a path for `commands.run`, which takes one command string rather
- * than an argv array. Every path here is host-generated (a fixed prefix plus a
- * UUID), so this guards against a surprising template/home-dir value rather
- * than against agent input — the agent's code never reaches this function.
- */
-function shellQuote(value: string): string {
-  return `'${value.split("'").join(`'\\''`)}'`;
-}
-
-/**
  * Adapt an E2B sandbox to the SDK's {@link PythonSandboxSession} primitives.
  * The file-transport protocol itself (argv order, env vars, chart readback,
  * output cap, timeout) lives in the SDK — this only maps four operations onto
  * the E2B API.
  */
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-function e2bPythonSession(sandbox: any): PythonSandboxSession {
+function e2bPythonSession(
+  sandbox: any,
+  log?: { warn(msg: string): void },
+): PythonSandboxSession {
   return {
     workDir: E2B_PYTHON_WORK_DIR,
     async mkdir(path: string): Promise<void> {
@@ -196,20 +193,16 @@ function e2bPythonSession(sandbox: any): PythonSandboxSession {
         // A missing result file is a normal outcome (the interpreter died
         // before the wrapper wrote one) and the shared backend handles `null`;
         // anything else is a real read failure and must propagate.
-        if (isNotFoundError(err)) return null;
+        if (isNotFoundSdkError(err)) return null;
         throw err;
       }
     },
     async listDir(path: string): Promise<string[]> {
       try {
         const entries = await sandbox.files.list(path);
-        return Array.isArray(entries)
-          ? entries.map((entry: { name?: string } | string) =>
-              typeof entry === "string" ? entry : (entry.name ?? ""),
-            ).filter((name: string) => name.length > 0)
-          : [];
+        return directoryEntryNames(entries);
       } catch (err) {
-        if (isNotFoundError(err)) return [];
+        if (isNotFoundSdkError(err)) return [];
         throw err;
       }
     },
@@ -219,55 +212,14 @@ function e2bPythonSession(sandbox: any): PythonSandboxSession {
       } catch (err) {
         // Best-effort teardown: the sandbox is already being discarded and
         // E2B reaps it on its own timeout, so a failure here must not mask the
-        // error that prompted the teardown.
-        (console as { debug(msg: string): void }).debug(
+        // error that prompted the teardown — but it is still logged, because a
+        // provider that never reaps leaks the org's sandboxes silently.
+        (log ?? console).warn(
           `[e2b-sandbox] Failed to kill Python sandbox: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     },
   };
-}
-
-/** Whether an SDK error means "no such file or directory". */
-function isNotFoundError(err: unknown): boolean {
-  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return (
-    message.includes("not found") ||
-    message.includes("no such file") ||
-    message.includes("enoent")
-  );
-}
-
-/**
- * Install the data-science packages a Python run expects. Non-fatal by design,
- * matching the in-tree Vercel backend: a sandbox template that already carries
- * them (or a registry hiccup) should not fail every Python call — the user code
- * that needs a missing package reports its own ImportError, which is a far more
- * actionable message than a sandbox that refused to start.
- */
-async function installPythonPackages(
-  session: PythonSandboxSession,
-  config: E2BSandboxConfig,
-  log?: { warn(msg: string): void },
-): Promise<void> {
-  if (config.pythonPackages.length === 0) return;
-  try {
-    const result = await session.run(
-      "pip",
-      ["install", "--quiet", ...config.pythonPackages],
-      {},
-      120_000,
-    );
-    if (result.exitCode !== 0) {
-      log?.warn(
-        `[e2b-sandbox] pip install returned ${result.exitCode} — some Python packages may be unavailable: ${result.stderr.slice(0, 300)}`,
-      );
-    }
-  } catch (err) {
-    log?.warn(
-      `[e2b-sandbox] pip install failed — continuing without data science packages: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -361,10 +313,10 @@ export function buildE2BSandboxPlugin(
             providerName: "E2B",
             async createSession() {
               const sandbox = await createE2BSandbox(config);
-              const session = e2bPythonSession(sandbox);
+              const session = e2bPythonSession(sandbox, log);
               try {
                 await session.mkdir(E2B_PYTHON_WORK_DIR);
-                await installPythonPackages(session, config, log);
+                await installPythonPackages(session, config.pythonPackages, "E2B", log);
               } catch (err) {
                 await session.destroy();
                 throw err;

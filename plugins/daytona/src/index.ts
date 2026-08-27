@@ -28,7 +28,11 @@ import {
   createPlugin,
   collectSemanticFiles,
   createFileTransportPythonBackend,
+  directoryEntryNames,
+  installPythonPackages,
+  isNotFoundSdkError,
   runHealthCheckWithTimeout,
+  shellQuote,
 } from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
@@ -144,15 +148,6 @@ function daytonaCreateParams(config: DaytonaSandboxConfig): Record<string, unkno
 const DAYTONA_PYTHON_WORK_DIR = "/home/daytona/atlas-python";
 
 /**
- * Shell-quote a path for `process.executeCommand`, which takes one command
- * string rather than an argv array. Every path here is host-generated (a fixed
- * prefix plus a UUID); the agent's code never reaches this function.
- */
-function shellQuote(value: string): string {
-  return `'${value.split("'").join(`'\\''`)}'`;
-}
-
-/**
  * Adapt a Daytona sandbox to the SDK's {@link PythonSandboxSession}
  * primitives. The file-transport protocol (argv order, env vars, chart
  * readback, output cap, timeout) lives in the SDK — this maps four operations
@@ -163,6 +158,7 @@ function daytonaPythonSession(
   daytona: any,
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   sandbox: any,
+  log?: { warn(msg: string): void },
 ): PythonSandboxSession {
   const toBytes = (value: unknown): Uint8Array | null => {
     if (value == null) return null;
@@ -219,22 +215,16 @@ function daytonaPythonSession(
         // A missing result file is a normal outcome (the interpreter died
         // before the wrapper wrote one) and the shared backend handles `null`;
         // anything else is a real read failure and must propagate.
-        if (isNotFoundError(err)) return null;
+        if (isNotFoundSdkError(err)) return null;
         throw err;
       }
     },
     async listDir(path: string): Promise<string[]> {
       try {
         const entries = await sandbox.fs.listFiles(path);
-        return Array.isArray(entries)
-          ? entries
-              .map((entry: { name?: string } | string) =>
-                typeof entry === "string" ? entry : (entry.name ?? ""),
-              )
-              .filter((name: string) => name.length > 0)
-          : [];
+        return directoryEntryNames(entries);
       } catch (err) {
-        if (isNotFoundError(err)) return [];
+        if (isNotFoundSdkError(err)) return [];
         throw err;
       }
     },
@@ -243,56 +233,16 @@ function daytonaPythonSession(
         await daytona.delete(sandbox);
       } catch (err) {
         // Best-effort teardown: the sandbox is already being discarded, so a
-        // failure here must not mask the error that prompted it.
-        (console as { debug(msg: string): void }).debug(
+        // failure here must not mask the error that prompted it — but it is
+        // still logged, because a sandbox that is never deleted is a live cost
+        // on the org's Daytona account. Uses the same `(log ?? console)` idiom
+        // as this plugin's explore close().
+        (log ?? console).warn(
           `[daytona-sandbox] Failed to delete Python sandbox: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     },
   };
-}
-
-/** Whether an SDK error means "no such file or directory". */
-function isNotFoundError(err: unknown): boolean {
-  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return (
-    message.includes("not found") ||
-    message.includes("no such file") ||
-    message.includes("enoent") ||
-    message.includes("404")
-  );
-}
-
-/**
- * Install the data-science packages a Python run expects. Non-fatal by design,
- * matching the in-tree Vercel backend: a Daytona image that already carries
- * them (or a registry hiccup) should not fail every Python call — the user code
- * that needs a missing package reports its own ImportError, which is a far more
- * actionable message than a sandbox that refused to start.
- */
-async function installPythonPackages(
-  session: PythonSandboxSession,
-  config: DaytonaSandboxConfig,
-  log?: { warn(msg: string): void },
-): Promise<void> {
-  if (config.pythonPackages.length === 0) return;
-  try {
-    const result = await session.run(
-      "pip",
-      ["install", "--quiet", ...config.pythonPackages],
-      {},
-      120_000,
-    );
-    if (result.exitCode !== 0) {
-      log?.warn(
-        `[daytona-sandbox] pip install returned ${result.exitCode} — some Python packages may be unavailable: ${result.stderr.slice(0, 300)}`,
-      );
-    }
-  } catch (err) {
-    log?.warn(
-      `[daytona-sandbox] pip install failed — continuing without data science packages: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -429,10 +379,10 @@ export function buildDaytonaSandboxPlugin(
               const DaytonaClass = loadDaytonaSdk();
               const daytona = createDaytonaClient(DaytonaClass, config);
               const sandbox = await daytona.create(daytonaCreateParams(config));
-              const session = daytonaPythonSession(daytona, sandbox);
+              const session = daytonaPythonSession(daytona, sandbox, log);
               try {
                 await session.mkdir(DAYTONA_PYTHON_WORK_DIR);
-                await installPythonPackages(session, config, log);
+                await installPythonPackages(session, config.pythonPackages, "Daytona", log);
               } catch (err) {
                 await session.destroy();
                 throw err;

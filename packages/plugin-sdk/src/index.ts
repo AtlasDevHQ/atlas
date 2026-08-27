@@ -124,6 +124,10 @@ export type { Context, MiddlewareHandler } from "./hono";
 
 export {
   createFileTransportPythonBackend,
+  directoryEntryNames,
+  installPythonPackages,
+  isNotFoundSdkError,
+  shellQuote,
 } from "./python-backend";
 
 export type {

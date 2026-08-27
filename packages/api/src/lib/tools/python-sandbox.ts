@@ -31,7 +31,13 @@ import {
   PYTHON_FILE_TRANSPORT,
   PYTHON_FILE_TRANSPORT_WRAPPER,
 } from "./python-wrapper";
-import { sandboxErrorDetail, safeError, MAX_OUTPUT, atlasSandboxTags } from "./backends/shared";
+import {
+  sandboxErrorDetail,
+  safeError,
+  MAX_OUTPUT,
+  PYTHON_OUTPUT_TOO_LARGE_ERROR,
+  atlasSandboxTags,
+} from "./backends/shared";
 import { vercelSandboxAccess } from "./backends/detect";
 import { randomUUID } from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -86,21 +92,8 @@ const DATA_SCIENCE_PACKAGES = [
   "statsmodels",
 ];
 
-/**
- * The wrapper this backend runs. Hoisted to python-wrapper.ts as
- * PYTHON_FILE_TRANSPORT_WRAPPER (#3414) so the BYOC plugin providers execute
- * byte-identical Python — including the in-sandbox import guard — rather than
- * each shipping a copy that can drift. See that constant for the invocation
- * contract this backend implements below.
- */
-const PYTHON_WRAPPER = PYTHON_FILE_TRANSPORT_WRAPPER;
-
 // Sandbox base dir for relative paths
 const SANDBOX_BASE = "/vercel/sandbox";
-
-/** Shared 1 MB output-guard message (matches nsjail's MAX_OUTPUT rejection). */
-const OUTPUT_TOO_LARGE_ERROR =
-  "Python output exceeded 1 MB limit — reduce print() output or use _atlas_table for large results.";
 
 // ── Local tagged errors ──────────────────────────────────────────────
 // Module-internal errors for Effect control flow. Not part of the global
@@ -376,7 +369,7 @@ export function createPythonSandboxBackend(
 
         // 3. Write files
         const files: { path: string; content: Buffer }[] = [
-          { path: wrapperPath, content: Buffer.from(PYTHON_WRAPPER) },
+          { path: wrapperPath, content: Buffer.from(PYTHON_FILE_TRANSPORT_WRAPPER) },
           { path: codePath, content: Buffer.from(code) },
         ];
         if (data) {
@@ -412,9 +405,7 @@ export function createPythonSandboxBackend(
               env: {
                 [PYTHON_FILE_TRANSPORT.resultFileEnv]: resultPathAbs,
                 [PYTHON_FILE_TRANSPORT.chartDirEnv]: chartDirAbs,
-                MPLBACKEND: "Agg",
-                HOME: "/tmp",
-                LANG: "C.UTF-8",
+                ...PYTHON_FILE_TRANSPORT.baseEnv,
               },
             }),
           catch: (err) => {
@@ -469,7 +460,7 @@ export function createPythonSandboxBackend(
           // (step 8) so the total payload returned to the agent stays bounded —
           // the same cap the stdout marker enforced before #3126.
           if (resultBuffer.length > MAX_OUTPUT) {
-            return { success: false as const, error: OUTPUT_TOO_LARGE_ERROR };
+            return { success: false as const, error: PYTHON_OUTPUT_TOO_LARGE_ERROR };
           }
 
           let parsed: PythonResult;
@@ -514,7 +505,7 @@ export function createPythonSandboxBackend(
           const totalBytes =
             resultBuffer.length + chartsB64.reduce((n, s) => n + s.length, 0);
           if (totalBytes > MAX_OUTPUT) {
-            return { success: false as const, error: OUTPUT_TOO_LARGE_ERROR };
+            return { success: false as const, error: PYTHON_OUTPUT_TOO_LARGE_ERROR };
           }
 
           log.debug(

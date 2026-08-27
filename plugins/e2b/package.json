@@ -38,7 +38,7 @@
   "license": "MIT",
   "peerDependencies": {
     "e2b": ">=1.0.0",
-    "@useatlas/plugin-sdk": ">=0.0.1"
+    "@useatlas/plugin-sdk": ">=0.0.18"
   },
   "devDependencies": {
     "ai": "^6.0.235",

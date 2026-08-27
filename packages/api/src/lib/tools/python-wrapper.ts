@@ -241,4 +241,15 @@ export const PYTHON_FILE_TRANSPORT = {
   chartDirEnv: "ATLAS_CHART_DIR",
   /** Charts the host collects from the chart directory, in sorted order. */
   chartPattern: /^chart_.*\.png$/,
+  /**
+   * Environment every backend running this wrapper must set beyond the two
+   * path vars: headless matplotlib, a writable HOME, and a UTF-8 locale.
+   * Defined once so a backend cannot get the trio subtly wrong — a missing
+   * MPLBACKEND turns every chart into a crash inside a sandbox with no display.
+   */
+  baseEnv: {
+    MPLBACKEND: "Agg",
+    HOME: "/tmp",
+    LANG: "C.UTF-8",
+  },
 } as const;

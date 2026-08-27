@@ -689,9 +689,11 @@ function fakePythonPluginModule(
   // `unknown` covers the function case too — narrowed with a typeof check
   // below. Spelling the union out widens to `any` under type-aware lint.
   execResult: unknown,
+  egressControl?: "enforced" | "unsupported",
 ) {
   const optionCalls: FakePluginPythonOptions[] = [];
   const execCalls: { code: string; data: unknown }[] = [];
+  let closes = 0;
   const mod = {
     [factoryExport]: (_config: Record<string, unknown>) => ({
       sandbox: {
@@ -707,13 +709,16 @@ function fakePythonPluginModule(
                 ? (execResult as (c: string, d: unknown) => unknown)(code, data)
                 : execResult;
             },
+            close: async () => {
+              closes++;
+            },
           };
         },
-        pythonEgressControl: "unsupported" as const,
+        ...(egressControl ? { pythonEgressControl: egressControl } : {}),
       },
     }),
   };
-  return { mod, optionCalls, execCalls };
+  return { mod, optionCalls, execCalls, closes: () => closes };
 }
 
 const E2B_CREDS = { apiKey: "e2b_org_key_abcdef" };
@@ -937,6 +942,102 @@ describe("tryCreateByocPythonBackend — plugin providers", () => {
     expect(result.success && result.charts).toEqual([
       { base64: "abc", mimeType: "image/png" },
     ]);
+  });
+
+  it("releases the per-request sandbox after the run, so it cannot linger on the org's account", async () => {
+    // BYOC Python backends are built fresh per request and exec'd once, so
+    // nothing will ever reuse this sandbox — leaving it running bills the org
+    // for an idle VM until their provider's reaper gets to it.
+    const fake = fakePythonPluginModule("e2bSandboxPlugin", { success: true });
+    const backend = await tryCreateByocPythonBackend(
+      "org-1",
+      "e2b-sandbox",
+      async () => ({}),
+      pluginDeps("e2b", E2B_CREDS, { "@useatlas/e2b": fake.mod, e2b: {} }),
+    );
+    await backend!.exec("print(1)");
+    expect(fake.closes()).toBe(1);
+  });
+
+  it("still returns the result when releasing the sandbox fails", async () => {
+    // The result is already in hand; a teardown fault must not turn a
+    // successful run into an error the agent has to retry.
+    const mod = {
+      e2bSandboxPlugin: () => ({
+        sandbox: {
+          create: async () => ({ exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }) }),
+          createPython: () => ({
+            exec: async () => ({ success: true, output: "42" }),
+            close: async () => {
+              throw new Error("provider refused to release the sandbox");
+            },
+          }),
+        },
+      }),
+    };
+    const backend = await tryCreateByocPythonBackend(
+      "org-1",
+      "e2b-sandbox",
+      async () => ({}),
+      pluginDeps("e2b", E2B_CREDS, { "@useatlas/e2b": mod, e2b: {} }),
+    );
+    const result = await backend!.exec("print(42)");
+    expect(result).toEqual({ success: true, output: "42" });
+  });
+
+  it("reads the egress posture from the PLUGIN, not from a host-side table", async () => {
+    // The plugin is the only thing that knows whether it applied the policy.
+    // A provider that gains real enforcement and declares it must stop being
+    // reported as unenforced without anyone editing the host.
+    const enforced = fakePythonPluginModule(
+      "e2bSandboxPlugin",
+      { success: true },
+      "enforced",
+    );
+    const unsupported = fakePythonPluginModule(
+      "daytonaSandboxPlugin",
+      { success: true },
+      "unsupported",
+    );
+
+    // Both must construct and run; the declaration changes only what is logged
+    // about the bound, never whether the org's own account is used.
+    for (const [backendId, provider, fake, creds] of [
+      ["e2b-sandbox", "e2b", enforced, E2B_CREDS],
+      ["daytona-sandbox", "daytona", unsupported, { apiKey: "dt_org_key_abcdef" }],
+    ] as const) {
+      const modules =
+        provider === "e2b"
+          ? { "@useatlas/e2b": fake.mod, e2b: {} }
+          : { "@useatlas/daytona": fake.mod, "@daytonaio/sdk": {} };
+      const backend = await tryCreateByocPythonBackend(
+        backendId,
+        backendId,
+        async () => ({ networkPolicy: networkPolicyFromAllowlist(["crm.example.com"]) }),
+        pluginDeps(provider, creds, modules),
+      );
+      expect(backend).not.toBeNull();
+      expect(await backend!.exec("print(1)")).toEqual({ success: true });
+    }
+  });
+
+  it("treats an absent egress declaration as unsupported, never as enforced", async () => {
+    // Omission must not read as a bound being applied — the honest default is
+    // to assume there is none.
+    const fake = fakePythonPluginModule("e2bSandboxPlugin", { success: true });
+    const backend = await tryCreateByocPythonBackend(
+      "org-1",
+      "e2b-sandbox",
+      async () => ({ networkPolicy: networkPolicyFromAllowlist(["crm.example.com"]) }),
+      pluginDeps("e2b", E2B_CREDS, { "@useatlas/e2b": fake.mod, e2b: {} }),
+    );
+    // The policy still reaches the plugin — it is told what was asked for even
+    // when it cannot apply it — and the host logs the gap.
+    expect(fake.optionCalls[0]!.networkPolicy).toEqual({
+      mode: "allowlist",
+      hosts: ["crm.example.com"],
+    });
+    expect(await backend!.exec("print(1)")).toEqual({ success: true });
   });
 
   it("stays NOT ENGAGED for railway, which declares no Python surface", async () => {

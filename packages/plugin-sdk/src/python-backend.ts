@@ -30,6 +30,16 @@ export interface PythonBackendLogger {
   warn(msg: string): void;
 }
 
+/**
+ * A warn that always emits. The plugin logger is optional (a plugin's
+ * `initialize` may not have run), and a catch whose only action is an optional
+ * call is exactly the silence CLAUDE.md's error-handling rule forbids — so the
+ * absent case falls back to `console.debug` rather than dropping the error.
+ */
+function warnFn(logger?: PythonBackendLogger): (msg: string) => void {
+  return logger ? (msg) => logger.warn(msg) : (msg) => console.debug(msg);
+}
+
 /** Result of running a command inside a provider sandbox. */
 export interface PythonSandboxRunResult {
   stdout: string;
@@ -69,6 +79,84 @@ export interface PythonBackendAdapter {
   readonly providerName: string;
   /** Create a fresh sandbox. Called lazily on first exec, and again after an infra failure. */
   createSession(): Promise<PythonSandboxSession>;
+}
+
+/**
+ * Shell-quote a path for a provider whose exec surface takes one command
+ * string rather than an argv array. Lives here rather than in each plugin
+ * because both need it identically; the paths passed are host-generated (a
+ * fixed prefix plus a UUID), so this guards against a surprising working-dir
+ * value, not against agent input — the agent's code never reaches it.
+ */
+export function shellQuote(value: string): string {
+  return `'${value.split("'").join(`'\\''`)}'`;
+}
+
+/**
+ * Whether a provider SDK error means "no such file or directory".
+ *
+ * Shared deliberately: a missing result file is a *normal* outcome (the
+ * interpreter died before the wrapper could write one) that the backend must
+ * turn into `null`, while any other read failure has to propagate. Two plugins
+ * each guessing at that predicate is how they drift — and they had already:
+ * one recognised a bare `404`, the other did not.
+ */
+export function isNotFoundSdkError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    message.includes("not found") ||
+    message.includes("no such file") ||
+    message.includes("enoent") ||
+    message.includes("404")
+  );
+}
+
+/** Names in a provider directory listing, whatever entry shape the SDK returns. */
+export function directoryEntryNames(entries: unknown): string[] {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .map((entry) =>
+      typeof entry === "string" ? entry : ((entry as { name?: string })?.name ?? ""),
+    )
+    .filter((name) => name.length > 0);
+}
+
+/** How long a package install may take before the backend gives up on it. */
+const PACKAGE_INSTALL_TIMEOUT_MS = 120_000;
+
+/**
+ * Install the data-science packages a Python run expects, into a live session.
+ *
+ * **Non-fatal by design**, matching the in-tree Vercel backend: a sandbox image
+ * that already carries them (or a registry hiccup) must not fail every Python
+ * call. User code that needs a missing package reports its own ImportError,
+ * which is far more actionable than a sandbox that refused to start.
+ */
+export async function installPythonPackages(
+  session: PythonSandboxSession,
+  packages: readonly string[],
+  providerName: string,
+  logger?: PythonBackendLogger,
+): Promise<void> {
+  if (packages.length === 0) return;
+  const warn = warnFn(logger);
+  try {
+    const result = await session.run(
+      "pip",
+      ["install", "--quiet", ...packages],
+      {},
+      PACKAGE_INSTALL_TIMEOUT_MS,
+    );
+    if (result.exitCode !== 0) {
+      warn(
+        `[${providerName}] pip install returned ${result.exitCode} — some Python packages may be unavailable: ${result.stderr.slice(0, 300)}`,
+      );
+    }
+  } catch (err) {
+    warn(
+      `[${providerName}] pip install failed — continuing without data science packages: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /** Matches the in-tree backends' 1 MB rejection message verbatim. */
@@ -113,6 +201,7 @@ export function createFileTransportPythonBackend(
   logger?: PythonBackendLogger,
 ): PluginPythonBackend {
   const scrub = options.scrubErrorDetail ?? ((detail: string) => detail);
+  const warn = warnFn(logger);
   let sessionPromise: Promise<PythonSandboxSession> | null = null;
 
   const detailOf = (err: unknown): string =>
@@ -125,7 +214,7 @@ export function createFileTransportPythonBackend(
     old
       .then((session) => session.destroy())
       .catch((err: unknown) => {
-        logger?.warn(
+        warn(
           `[${adapter.providerName}] Failed to destroy Python sandbox during cleanup: ${detailOf(err)}`,
         );
       });
@@ -252,9 +341,7 @@ export function createFileTransportPythonBackend(
     try {
       parsed = JSON.parse(textOf(resultBytes)) as PluginPythonResult;
     } catch (err) {
-      logger?.warn(
-        `[${adapter.providerName}] Failed to parse Python result JSON: ${detailOf(err)}`,
-      );
+      warn(`[${adapter.providerName}] Failed to parse Python result JSON: ${detailOf(err)}`);
       const stderr = scrub(run.stderr).trim();
       return {
         success: false,
@@ -278,9 +365,7 @@ export function createFileTransportPythonBackend(
     } catch (err) {
       // Charts are an artifact of a run that already succeeded — losing them is
       // worth a warning, not a failed result the agent has to retry.
-      logger?.warn(
-        `[${adapter.providerName}] Failed to read Python chart artifacts: ${detailOf(err)}`,
-      );
+      warn(`[${adapter.providerName}] Failed to read Python chart artifacts: ${detailOf(err)}`);
     }
 
     const totalBytes =
@@ -306,9 +391,7 @@ export function createFileTransportPythonBackend(
       try {
         await (await old).destroy();
       } catch (err) {
-        logger?.warn(
-          `[${adapter.providerName}] Failed to destroy Python sandbox on close: ${detailOf(err)}`,
-        );
+        warn(`[${adapter.providerName}] Failed to destroy Python sandbox on close: ${detailOf(err)}`);
       }
     },
   };

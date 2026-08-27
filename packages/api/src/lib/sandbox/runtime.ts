@@ -55,7 +55,10 @@ import type { PythonSandboxOptions } from "@atlas/api/lib/tools/python-sandbox";
 import type { VercelSandboxAccessOverride } from "@atlas/api/lib/tools/explore-sandbox";
 import type { SandboxNetworkPolicy } from "@atlas/api/lib/tools/backends/network-allowlist";
 import { redactedSecret } from "@atlas/api/lib/tools/backends/detect";
-import { MAX_OUTPUT } from "@atlas/api/lib/tools/backends/shared";
+import {
+  MAX_OUTPUT,
+  PYTHON_OUTPUT_TOO_LARGE_ERROR,
+} from "@atlas/api/lib/tools/backends/shared";
 import { PYTHON_FILE_TRANSPORT_WRAPPER } from "@atlas/api/lib/tools/python-wrapper";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
@@ -331,21 +334,24 @@ function pythonResultBytes(result: PythonResult): number {
   return rest.length + chartBytes;
 }
 
-/** Matches the in-tree backends' 1 MB rejection message verbatim. */
-const OUTPUT_TOO_LARGE_ERROR =
-  "Python output exceeded 1 MB limit — reduce print() output or use _atlas_table for large results.";
-
-/** Extra `pluginRuntime` wiring for providers whose plugin ships Python. */
-interface PluginPythonSupport {
-  /**
-   * Whether this provider's Python sandbox can enforce the per-request egress
-   * allowlist. `false` is a *declaration*, not a TODO: neither E2B nor Daytona
-   * exposes a host-level egress control equivalent to Vercel's
-   * `updateNetworkPolicy`, so the host logs the gap on every request that asks
-   * for one instead of letting an unenforced policy read as an enforced one
-   * (#4665, isolation-parity criterion).
-   */
-  readonly egressEnforced: boolean;
+/**
+ * Tear down a plugin Python backend without letting the teardown fail the call
+ * whose result is already in hand. Best-effort, but never silent: a provider
+ * that keeps failing to release sandboxes is running up the org's bill.
+ */
+async function closeQuietly(
+  backend: PluginPythonBackendLike,
+  packageName: string,
+): Promise<void> {
+  if (typeof backend.close !== "function") return;
+  try {
+    await backend.close();
+  } catch (err) {
+    log.warn(
+      { provider: packageName, err: err instanceof Error ? err.message : String(err) },
+      "Failed to release the BYOC Python sandbox after execution — it may linger on the org's provider account until the provider reaps it",
+    );
+  }
 }
 
 /** Build via a published `@useatlas/*` sandbox plugin factory. */
@@ -354,7 +360,19 @@ function pluginRuntime(
   sdkModule: string,
   factoryExport: string,
   mapConfig: (creds: Record<string, unknown>) => Record<string, unknown>,
-  python?: PluginPythonSupport,
+  /**
+   * Whether this provider's plugin ships a Python surface (#4665).
+   *
+   * Declared here rather than derived from the loaded plugin because
+   * `providerSupportsPython` answers *before* any credential read or module
+   * load — and because deriving it from the installed package would mean an
+   * outdated plugin silently falls through to the operator chain, which is the
+   * exact residency leak this work removes. `SandboxProviderKey` is a closed
+   * union, so there is no third-party provider this could fail to reach; a
+   * table entry whose plugin turns out to lack the method fails closed with a
+   * message naming the upgrade.
+   */
+  shipsPython = false,
 ): ProviderRuntime {
   /**
    * Load the package, build the plugin from the org's credentials, and check
@@ -394,7 +412,7 @@ function pluginRuntime(
     },
   };
 
-  if (!python) return runtime;
+  if (!shipsPython) return runtime;
 
   runtime.createPython = async (options, credentials, load) => {
     const plugin = await buildPlugin(credentials, load);
@@ -410,13 +428,19 @@ function pluginRuntime(
     }
 
     const networkPolicy = toPluginNetworkPolicy(options.networkPolicy);
-    if (networkPolicy.mode !== "deny-all" && !python.egressEnforced) {
-      // Say it out loud, every request that asks for one. The alternative is a
-      // per-tenant egress bound that the admin page implies is in force and
-      // that nothing applies.
+    // Read the PLUGIN's declaration, not a second copy of the answer kept here.
+    // The plugin is the only thing that knows whether it applied the policy, so
+    // a host-side table would be a claim about code it does not own — and the
+    // two would disagree the moment a provider gained real enforcement. Absent
+    // is treated as "unsupported": the honest default is to assume no bound.
+    const egressControl = plugin.sandbox.pythonEgressControl ?? "unsupported";
+    if (networkPolicy.mode !== "deny-all" && egressControl !== "enforced") {
+      // Said out loud on every request that asks for one. The alternative is a
+      // per-tenant egress bound the admin page implies is in force and that
+      // nothing applies.
       log.warn(
         { provider: packageName, mode: networkPolicy.mode },
-        "Provider cannot enforce a Python sandbox egress policy — the requested REST allowlist is NOT applied on this provider (explore and Python still run on the org's own account)",
+        "Provider does not enforce a Python sandbox egress policy — the requested REST allowlist is NOT applied on this provider (explore and Python still run on the org's own account)",
       );
     }
 
@@ -435,16 +459,27 @@ function pluginRuntime(
 
     return {
       exec: async (code, data) => {
-        const result = coercePluginPythonResult(
-          await backend.exec(code, data),
-          packageName,
-        );
-        // The cap belongs at the seam, not inside the plugin: the plugin is
-        // asked to stop early (maxOutputBytes) but is not trusted to.
-        if (pythonResultBytes(result) > MAX_OUTPUT) {
-          return { success: false, error: OUTPUT_TOO_LARGE_ERROR };
+        try {
+          const result = coercePluginPythonResult(
+            await backend.exec(code, data),
+            packageName,
+          );
+          // The cap belongs at the seam, not inside the plugin: the plugin is
+          // asked to stop early (maxOutputBytes) but is not trusted to.
+          if (pythonResultBytes(result) > MAX_OUTPUT) {
+            return { success: false, error: PYTHON_OUTPUT_TOO_LARGE_ERROR };
+          }
+          return result;
+        } finally {
+          // BYOC Python backends are built fresh per request (python.ts
+          // constructs one per call and re-reads credentials), and the tool
+          // execs exactly once — so nothing will ever reuse this sandbox. Left
+          // running it would sit on the ORG's account until the provider's own
+          // reaper got to it, which is their bill and their idle VM, not ours.
+          // The unused-reuse case is what makes closing here correct; the
+          // in-tree Vercel backend caches across calls and so does not.
+          void closeQuietly(backend, packageName);
         }
-        return result;
       },
     };
   };
@@ -493,17 +528,16 @@ const PROVIDER_RUNTIMES: Record<SandboxProviderKey, ProviderRuntime> = {
     },
   },
   // Python (#4665): E2B runs the host's wrapper inside its Firecracker microVM
-  // on the ORG's E2B account. `egressEnforced: false` is the honest reading of
-  // E2B's API — a sandbox has network access and there is no per-sandbox host
-  // allowlist to narrow it to the REST datasource, so a requested allowlist is
-  // logged as unapplied rather than assumed. E2B BYOC deployments run inside
-  // the customer's own VPC, where egress is the customer's to bound.
+  // on the ORG's E2B account. Whether the per-request egress allowlist is
+  // actually applied is the plugin's own declaration
+  // (`sandbox.pythonEgressControl`), read at construction — the host does not
+  // keep a second copy of that answer.
   e2b: pluginRuntime(
     "@useatlas/e2b",
     "e2b",
     "e2bSandboxPlugin",
     (creds) => ({ apiKey: creds.apiKey }),
-    { egressEnforced: false },
+    true,
   ),
   daytona: pluginRuntime(
     "@useatlas/daytona",
@@ -524,12 +558,11 @@ const PROVIDER_RUNTIMES: Record<SandboxProviderKey, ProviderRuntime> = {
         ? { target: creds.target }
         : {}),
     }),
-    // Python (#4665). Daytona sandboxes have outbound network access with no
-    // per-sandbox host allowlist, so the same honest declaration as E2B. What
-    // Daytona *does* control is placement — its `target` region selector is
-    // what makes a Daytona BYOC connection an EU/APAC residency answer for
-    // Python, which is the point of turning this on.
-    { egressEnforced: false },
+    // Python (#4665). What Daytona controls is placement — its `target` region
+    // selector is what makes a Daytona BYOC connection an EU/APAC residency
+    // answer for Python, which is the point of turning this on. Its egress
+    // posture is declared by the plugin itself, not asserted here.
+    true,
   ),
   // Both fields passed explicitly — the plugin's env-var fallback
   // (RAILWAY_API_TOKEN / RAILWAY_ENVIRONMENT_ID) must never fill in for an

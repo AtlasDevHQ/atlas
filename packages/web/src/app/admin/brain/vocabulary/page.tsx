@@ -430,9 +430,14 @@ function ClaimVocabulary() {
       {/* CARDINALITY AUTHORING, second (#5447).
           After aliases rather than before, because the two are not peers: an
           alias decides what a spelling MEANS, and a cardinality entry decides
-          what a slot ALLOWS — and the second reads the first (the write applies
-          the alias closure, which is why that card has to know what is in force).
-          Reversing them would put the dependent decision first. */}
+          what a slot ALLOWS — and the second reads the first. Reversing them
+          would put the dependent decision first.
+          ⚠️ The dependency is real but no longer this page's to carry: since
+          #5466 BOTH routes apply the alias closure server-side, so the card is
+          handed no vocabulary and holds no opinion about which slot a pick
+          resolves to. The ordering still matters for the operator — curate a
+          predicate before aliasing it and the count is about a slot the alias
+          is about to move — but nothing in this component depends on it. */}
       <CardinalityAuthoring
         onWritten={() => {
           setNotice(null);

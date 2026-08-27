@@ -943,7 +943,11 @@ type ResolvedRequest =
  *     is what makes the two answers comparable rather than coincidentally equal.
  *   - **The vocabulary's own answer is re-normed** ({@link slotKey}), so an
  *     entry authored as `"Priced At"` cannot make this compute a key that joins
- *     nothing — `resolveEffectiveTarget`'s corrupt-closure arm, one layer up.
+ *     nothing. ⚠️ Re-norming only turns that into a `null`, and `slotKey` gives
+ *     the SAME `null` for a degenerate request surface — so inheriting the
+ *     refusal takes an extra step, not just the call. The body asks
+ *     `identityKey(predicateSurface)` first precisely to tell the two apart,
+ *     and throws on the corrupt one exactly as `resolveEffectiveTarget` does.
  *
  * Both are this module's own rule — never a count and never a zero for a
  * question that could not be answered — reached by borrowing rather than
@@ -967,13 +971,44 @@ async function resolveRequest(
   db: BrainCandidateReader,
   workspaceId: string,
   request: BlastRadiusRequest,
+  requestId?: string,
 ): Promise<ResolvedRequest | "unkeyable-surface"> {
   if (request.kind !== "cardinality-flip" && request.kind !== "cardinality-removal") {
     return request;
   }
+  // ⚠️ ASKED FIRST, and its answer is what discriminates `slotKey`'s two null
+  // arms below. `slotKey` is `identityKey(alias(identityKey(surface)))`, so it
+  // answers `null` for a degenerate REQUEST surface AND for a stored closure
+  // target that norms away — two facts this module treats oppositely, and
+  // collapsing them is the exact fold `resolveEffectiveTarget` throws to
+  // prevent one arm over ("refused rather than folded into an
+  // unkeyable-surface answer, which would report store corruption as an
+  // ordinary property of the request").
+  if (identityKey(request.predicateSurface) === null) return "unkeyable-surface";
+
   const vocabulary = await loadClaimVocabulary(db, workspaceId);
+  // Still `slotKey`, not a re-spelling of its composition: the parity with
+  // `POST /cardinality` is the point of this function, and a hand-inlined
+  // `identityKey(vocabulary.predicate(norm))` would be a second copy free to
+  // drift from the one the write path runs.
   const canonicalKey = slotKey(request.predicateSurface, vocabulary.predicate);
-  if (canonicalKey === null) return "unkeyable-surface";
+  if (canonicalKey === null) {
+    // The surface keys (asserted above), so the only remaining way to reach
+    // `null` is the vocabulary's own answer norming away — a curated target
+    // authored as `"Priced At"` or `" - "`. That is store corruption, and
+    // 0189's CHECKs do not constrain the closure to being a norm.
+    log.error(
+      { workspaceId, requestId, predicateKind: request.kind },
+      "brain vocabulary preview: the predicate vocabulary's target for this surface norms away — the closure is corrupt",
+    );
+    throw new Error(
+      `brain vocabulary preview: the predicate-position vocabulary maps "${request.predicateSurface}" to a ` +
+        `target that norms away to nothing in workspace ${workspaceId}. A closure target that keys nothing ` +
+        `is corrupt — 0189's CHECKs do not constrain it to being a norm, and the region importer rebuilds ` +
+        `this table — so it is refused rather than reported as an unkeyable surface, which would present ` +
+        `store corruption as an ordinary property of the request.`,
+    );
+  }
   // Spelled per kind rather than `{ kind: request.kind, canonicalKey }`: the
   // narrowed union of two literals is not assignable to a union of two members,
   // and widening the type to accept it would be the shape this type exists to
@@ -1029,7 +1064,7 @@ export async function loadBlastRadius(
   // curated `single`. Asking it about the UN-ALIASED norm is how a flip preview
   // came to answer `already-single` — or worse, to compute a count — against a
   // gate the write never consults (#5466).
-  const resolved = await resolveRequest(db, workspaceId, request);
+  const resolved = await resolveRequest(db, workspaceId, request, opts.requestId);
   if (typeof resolved === "string") {
     // The same disclosure the plan's unkeyable arm produces below, raised here
     // because resolution now happens before either consumer runs. Deliberately

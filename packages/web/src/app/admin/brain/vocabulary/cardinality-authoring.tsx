@@ -198,10 +198,13 @@ export function CardinalityAuthoring({ onWritten }: { onWritten: () => void }) {
   /**
    * Whether the write may be attempted.
    *
-   * Five conditions, and each corresponds to a failure this page has actually
-   * shipped or nearly shipped: a write behind NO number, behind a PENDING one,
-   * behind a FAILED one, behind a number for a DIFFERENT SLOT, or behind a
-   * vocabulary this page could not read.
+   * Two conditions, down from five (#5466). Three of the original five guarded
+   * this page's own closure walk — a number for a DIFFERENT SLOT, a vocabulary
+   * that could not be READ, and one it could not prove COMPLETE — and none of
+   * them has a referent now that `/preview` and `/cardinality` resolve the same
+   * surface server-side. What survives is the pair that was never about the
+   * closure: a write behind NO number, and a write behind a PENDING or FAILED
+   * one, both folded into `hasRadius`.
    *
    * ⚠️ Declared ABOVE `onWrite`, which reads it. As a hoisted function
    * declaration reading a `const`, `onWrite` only worked because a click cannot

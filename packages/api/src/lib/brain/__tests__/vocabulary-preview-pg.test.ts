@@ -1091,6 +1091,64 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
      * `/preview` borrows the same loader precisely so it refuses too, and the two
      * answers stay comparable rather than coincidentally equal.
      */
+    /**
+     * `slotKey` reaches `null` two ways, and they are opposite facts.
+     *
+     * `slotKey` is `identityKey(alias(identityKey(surface)))`, so it answers
+     * `null` for a degenerate REQUEST surface — which genuinely occupies no slot
+     * — and for a stored closure TARGET that norms away, which is store
+     * corruption. The first cut of #5466 returned `"unkeyable-surface"` for both,
+     * which is precisely the fold `resolveEffectiveTarget` throws to prevent one
+     * arm over: it reports corruption as an ordinary property of the request, and
+     * an operator reads *"that spelling occupies no slot"* about a vocabulary
+     * that is broken.
+     *
+     * ⚠️ A whitespace-only target is STORABLE. 0189's CHECK is
+     * `effective_target <> ''`, and `'   ' <> ''` is TRUE — so this is reachable
+     * from Postgres rather than hypothetical, which is why it is pinned against
+     * a real schema instead of a fake.
+     */
+    it("REFUSES a closure target that norms away, rather than calling the surface unkeyable", async () => {
+      const published = await land({ subject: "cog", predicate: "is weighted at", object: "10" });
+      await publish(published);
+      await land({ subject: "cog", predicate: "is weighted at", object: "20" });
+      await approve("is weighted at", "weighted at");
+
+      // Corrupt the target in place — the shape a hand-edit or a region import
+      // rebuilding from a foreign vocabulary can leave behind.
+      await pool.query(
+        `UPDATE brain_vocabulary_target SET effective_target = '   '
+          WHERE workspace_id = $1 AND slot_position = 'predicate' AND norm = $2`,
+        [WS, "is weighted at"],
+      );
+
+      await expect(
+        loadBlastRadius(pool, owner(), {
+          kind: "cardinality-flip",
+          predicateSurface: "is weighted at",
+        }),
+      ).rejects.toThrow(/norms away to nothing/i);
+    }, PG_TEST_TIMEOUT_MS);
+
+    /**
+     * The other arm of the same discrimination, so the refusal above cannot be
+     * satisfied by throwing on everything.
+     *
+     * `"-"` norms away, so it occupies no slot and can join nothing. That IS an
+     * ordinary property of the request, and it must still reach the disclosure
+     * rather than the throw.
+     */
+    it("POSITIVE CONTROL — a degenerate REQUEST surface is still a disclosure, not a throw", async () => {
+      expect(
+        emptyReason(
+          await loadBlastRadius(pool, owner(), {
+            kind: "cardinality-flip",
+            predicateSurface: "-",
+          }),
+        ),
+      ).toBe("unkeyable-surface");
+    }, PG_TEST_TIMEOUT_MS);
+
     it("REFUSES a half-rebuilt closure rather than counting the un-aliased slot", async () => {
       const published = await land({ subject: "sprocket", predicate: "is rated at", object: "10" });
       await publish(published);

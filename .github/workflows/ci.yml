@@ -242,6 +242,21 @@ jobs:
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
 
+      # `check-template-drift.sh` above compares template SOURCE against monorepo
+      # source and reads no manifest; syncpack (first step of this job) reconciles
+      # version RANGES for deps in more than one manifest. Neither can see a dep
+      # that is in NO template manifest — which is how a new `import` under
+      # `packages/api/src/lib/**` reached every scaffolded project's source but
+      # not its package.json, surfacing later as a Deploy Validation scaffold
+      # failing `npm install` in a run whose diff held no clue (#5354/#5419).
+      # This gate owns PRESENCE; syncpack still owns RANGES. --skip-prepare
+      # because check-template-drift.sh has just generated the templates.
+      - name: Adversarial fixtures for the template-deps gate (#5421)
+        run: bun scripts/check-template-deps.ts --self-test
+
+      - name: Check template deps declared (#5421)
+        run: bun scripts/check-template-deps.ts --skip-prepare
+
       # `deploy/docs/Caddyfile` is the ONLY redirect layer for apps/docs — the
       # site is `output: "export"`, which disables Next's `redirects()`. It was
       # asserted only AS TEXT (redirect-coverage.test.ts, security-txt-redirect.test.ts

@@ -319,11 +319,17 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
     // default fact read on purpose, re-capture the literal — that is the
     // deliberate act this pin exists to force.
     //
-    // Re-captured once, at #5341, for ADR-0042's observation exclusion. That is
-    // the only clause added since the original capture, and it is INTENDED to
-    // appear in both temporal arms — the `asOf` test above asserts the same
+    // Re-captured at #5341, for ADR-0042's observation exclusion — INTENDED to
+    // appear in both temporal arms, and the `asOf` test above asserts the same
     // predicate under a point read, so a leak in either direction still fails
     // something.
+    //
+    // Re-captured again at #5487: `corroborationCountSql` replaced a
+    // hand-written `COUNT(DISTINCT ed.to_episode_id)` here and at two sibling
+    // call sites, so the corroboration subquery is longer and now joins
+    // `brain_episodes` to reach `source`/`source_actor`. That join is INSIDE
+    // the scalar subquery and touches no temporal predicate, so it is
+    // deliberately identical under both arms.
     const { sql, params } = buildFactQuery("published", {
       query: "billing",
       limit: 10,
@@ -342,13 +348,18 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
          f.valid_to,
          f.invalidated_at,
          f.ingested_at,
-         (
-    SELECT COUNT(DISTINCT ed.to_episode_id)
-      FROM brain_edges ed
-     WHERE ed.workspace_id = f.workspace_id
-       AND ed.edge_type = 'provenance'
-       AND ed.from_fact_id = f.id
-  )::int AS corroboration_count,
+         (SELECT COUNT(DISTINCT COALESCE(CASE WHEN ep.source <> ALL (ARRAY['warehouse']::text[])
+                    THEN CASE WHEN ep.source_actor IS NOT NULL AND btrim(ep.source_actor) <> ''
+                    THEN ep.source || ':' || btrim(ep.source_actor)
+               END
+               END, 'edge:' || ed.to_episode_id::text))
+             FROM brain_edges ed
+             JOIN brain_episodes ep
+               ON ep.workspace_id = ed.workspace_id
+              AND ep.id = ed.to_episode_id
+            WHERE ed.workspace_id = f.workspace_id
+              AND ed.edge_type = 'provenance'
+              AND ed.from_fact_id = f.id)::int AS corroboration_count,
          (
     SELECT MAX(COALESCE(ep.occurred_at, ep.ingested_at))
       FROM brain_edges ed
@@ -1123,7 +1134,18 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     // predicate with the reader's own bound tokens, and joins nothing.
     const counterpartCall = db.calls.find((c) => c.sql.includes(SQL.tensionCounterparts))!;
     expect(counterpartCall.sql).toContain("f.visible_to && $2::text[]");
-    expect(counterpartCall.sql).not.toContain("JOIN");
+    // ⚠️ NARROWED at #5487, and the file already set this precedent once: the
+    // page statement's blanket no-JOIN gave way at #4914 because the decay
+    // anchor legitimately joins `brain_episodes` for a timestamp, and "no
+    // tension-edge traversal" is what the invariant had always meant. The
+    // corroboration count now joins `brain_episodes` for the same kind of
+    // reason — it counts distinct SOURCES, which is a property of the episode
+    // — so the counterpart statement inherits the same narrowing. What must
+    // stay absent is a traversal onto the OWNER's row or its tension edges;
+    // that, plus the bound array below, is the leak this test exists for.
+    expect(counterpartCall.sql).not.toContain("JOIN brain_facts");
+    expect(counterpartCall.sql).not.toContain("in-tension-with");
+    expect(counterpartCall.sql).not.toContain("to_fact_id");
     expect(counterpartCall.params[1]).toEqual([
       "org",
       "role:member",

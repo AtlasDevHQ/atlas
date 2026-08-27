@@ -23,7 +23,11 @@ import {
   captureAuthoringIdentities,
   decideIdentity,
 } from "@atlas/api/lib/brain/audience/identity-capture";
-import { AUTHORING_PRINCIPALS_SQL, type ActorIdentityReader } from "@atlas/api/lib/brain/actor-identity";
+import {
+  AUTHORING_PRINCIPALS_SQL,
+  authoringPrincipalSql,
+  type ActorIdentityReader,
+} from "@atlas/api/lib/brain/actor-identity";
 
 const WS = "ws-capture";
 
@@ -306,7 +310,14 @@ describe("captureAuthoringIdentities — the bound is authorship", () => {
     // `opaque` SILENTLY, which is the hardest failure here to notice. So the
     // separator lives in one place — this SQL — rather than being re-spelled in
     // TypeScript beside it.
-    expect(AUTHORING_PRINCIPALS_SQL).toContain("e.source || ':' || btrim(e.source_actor) AS actor");
+    // Asserted THROUGH the builder since #5487, not against a literal copy of
+    // its output. The composition now has four readers — this capture query,
+    // the provenance edge's dedupe guard, the reviewer's corroboration count,
+    // and `resolvedPrincipal` — and a literal here would go on passing after
+    // the builder the other three read had drifted away from it. Splicing the
+    // builder is what makes THAT the thing being pinned.
+    expect(AUTHORING_PRINCIPALS_SQL).toContain(authoringPrincipalSql("e"));
+    expect(authoringPrincipalSql("e")).toContain("e.source || ':' || btrim(e.source_actor)");
     expect(AUTHORING_PRINCIPALS_SQL).toContain("FROM brain_episodes e");
     // ⚠️ `btrim`, because agreeing about the separator is not enough — the two
     // also have to agree about WHITESPACE. `resolvedPrincipal` trims, so an

@@ -93,7 +93,12 @@ import { USER_PREFIX } from "@atlas/api/lib/brain/acl";
  * the handle alone.
  */
 const SYSTEM_PREFIX = "system:";
-import { WAREHOUSE_CLASS, episodeSourceClassOf } from "@atlas/api/lib/brain/sources";
+import {
+  WAREHOUSE_CLASS,
+  WAREHOUSE_SOURCES,
+  episodeSourceArraySql,
+  episodeSourceClassOf,
+} from "@atlas/api/lib/brain/sources";
 
 const log = createLogger("brain.actor-identity");
 
@@ -129,6 +134,161 @@ const ERASED_IDENTITY: BrainActorIdentityOpaque = Object.freeze({
  * mutation would be a corpus-wide wrong answer rather than a one-row one.
  */
 export const MACHINE_IDENTITY: BrainActorIdentityMachine = Object.freeze({ state: "machine" });
+
+// ---------------------------------------------------------------------------
+// The SOURCE of a claim — one spelling, in SQL (#5487)
+// ---------------------------------------------------------------------------
+
+/**
+ * The authoring principal of an episode, in SQL — `NULL` when it has none.
+ *
+ * `` `${source}:${btrim(source_actor)}` ``, which is the SAME composition
+ * {@link AUTHORING_PRINCIPALS_SQL} projects and {@link resolvedPrincipal}
+ * (`reconcile.ts`) builds in TypeScript. It is a BUILDER rather than a literal
+ * because #5487 gave the handle a third and a fourth reader — the provenance
+ * edge's dedupe guard and the reviewer's corroboration count — each under a
+ * different table alias, and `AUTHORING_PRINCIPALS_SQL`'s own header already
+ * names the failure a second spelling produces: *"a claim whose handle does not
+ * match a captured row renders `opaque` silently, which is the failure mode
+ * that would be hardest to notice."* Four hand-written copies of one `||` and
+ * one `btrim` is that failure with three more chances to happen.
+ *
+ * ⚠️ `btrim` in BOTH the projection and the guard, for that header's reason:
+ * `resolvedPrincipal` trims, so an episode stored with `source_actor = ' U123'`
+ * must compose `slack:U123` here too or the two never join.
+ *
+ * `<> ''` after the trim rather than before it — `IS NOT NULL` alone admits
+ * `' '`, which composes a handle naming nobody.
+ */
+export function authoringPrincipalSql(alias: string): string {
+  return `CASE WHEN ${alias}.source_actor IS NOT NULL AND btrim(${alias}.source_actor) <> ''
+                    THEN ${alias}.source || ':' || btrim(${alias}.source_actor)
+               END`;
+}
+
+/**
+ * The **distinct source** of a claim, in SQL — ADR-0036 §T9 lock 5's unit, and
+ * the whole of #5487's definitional choice.
+ *
+ * ## The definition
+ *
+ * > A claim's **source** is its episode's authoring principal
+ * > ({@link authoringPrincipalSql}), and only when that principal names a
+ * > **person**. A MACHINE principal, and an episode with no principal at all,
+ * > have NO distinct source: each such episode counts, and corroborates, on its
+ * > own.
+ *
+ * Three candidates were available and only one of them is the unit lock 5
+ * names. **Episode** is what ships and is what #5487 reports as the gap: two
+ * episodes from one person are two corroborations. **Episode source**
+ * (`slack`, `zoom`) and **source class** (`chat`, `email`) both over-correct in
+ * the same direction and by a wide margin — every Slack user in the workspace
+ * would collapse into one voice, which is not self-echo, it is erasure of
+ * genuinely independent testimony. The **authoring principal** is the unit that
+ * makes *"the same person saying the same thing on Monday and again on Friday"*
+ * one corroboration and two different people two, which is the sentence lock 5
+ * is written in.
+ *
+ * ## Why a MACHINE is exempt, which is the part that is NOT obvious
+ *
+ * ⚠️ Without this arm the fix is a REGRESSION, not a fix, and the shape of it
+ * is worth stating: `warehouse-producer.ts` stamps every snapshot episode with
+ * the SAME `source_actor` — the constant `WAREHOUSE_PRODUCER_PRINCIPAL` — so a
+ * principal-keyed dedupe with no machine arm collapses every warehouse reading
+ * a workspace has ever taken into a single corroboration, permanently. That
+ * would break `observation-reap.ts`, which measures an observation's freshness
+ * by exactly these edges.
+ *
+ * The exemption is not a carve-out to dodge that; it is what self-echo MEANS.
+ * Self-echo is a property of **testimony**: a person restating on Friday what
+ * they said on Monday has told you nothing new, because the claim's warrant is
+ * that they said it. A machine re-reading the world is not restating itself —
+ * it is a fresh reading of a world that may have changed, and `reconcile.ts`
+ * says so at the corroboration branch already: *"a warehouse re-read of the
+ * same row, where 'one more piece of evidence' is exactly what the edge means"*.
+ *
+ * ## Machine is decided the way {@link derivableActor} decides it
+ *
+ * Deliberately the same test, and it reduces to ONE arm here. `derivableActor`
+ * has two machine arms — the `system:` PREFIX and the warehouse CLASS — and a
+ * composed `${source}:${actor}` handle can only ever take the second: the
+ * prefix arm needs `source = 'system'`, and `system` is not in
+ * `EPISODE_SOURCE_SPECS` (nor could it be — `sources.ts` refuses a member that
+ * is not a bare slug). So the warehouse-source test below IS the machine test
+ * for every handle this builder can produce.
+ *
+ * ⚠️ Membership in {@link WAREHOUSE_SOURCES} is POSITIVE evidence, and an
+ * unrecognised `source` — `snowflake`, a value a region import restored
+ * verbatim — is NOT machine and therefore keeps its principal. That inherits
+ * `WAREHOUSE_SOURCES`' own three-population rule verbatim and it is the safe
+ * direction here: the cost of wrongly calling a row machine is a corroboration
+ * that never collapses (today's behaviour), while the cost of wrongly calling
+ * it human is a genuine second source silently suppressed.
+ *
+ * ## NULL is the abstain, and it abstains OUT
+ *
+ * Every arm that cannot answer yields SQL NULL, and both consumers are
+ * NULL-hostile: `NULL = NULL` is NULL, which a `WHERE` treats as false, so an
+ * episode with no distinct source never suppresses another episode's edge and
+ * never merges with one in the count. That is the same posture
+ * `TENSION_CANDIDATES_SQL` documents at length — *"a row with no identity
+ * abstains OUT"* — and it is what makes this change safe on the existing
+ * corpus: every episode whose source Atlas cannot attribute behaves exactly as
+ * it does today.
+ */
+export function distinctSourceSql(alias: string): string {
+  return `CASE WHEN ${alias}.source <> ALL (${episodeSourceArraySql(WAREHOUSE_SOURCES)})
+                    THEN ${authoringPrincipalSql(alias)}
+               END`;
+}
+
+/**
+ * How many DISTINCT SOURCES back a fact — the number lock 5 requires be
+ * *"surfaced to the reviewer"*, and since #5487 the number that actually is.
+ *
+ * ## What it replaced, and why that was wrong
+ *
+ * `COUNT(DISTINCT ed.to_episode_id)`, written out three times (the review
+ * queue, `searchBrain`, and the tension counterpart). That counts EPISODES. It
+ * was described honestly in the type — *"DISTINCT provenance edges"* — and then
+ * rendered to humans as **"Sources"** in five places, including the review
+ * queue's own column header and the chat card's *"N sources"* caption. A
+ * reviewer reading *"5 corroborating sources"* over five messages from one
+ * person was reading an inflated number, which is the second half of #5487.
+ *
+ * ## The COALESCE is the whole of the counting rule
+ *
+ * A source-less episode ({@link distinctSourceSql} NULL — a machine, an
+ * unattributed row) counts as ITSELF, keyed on its own episode id, because
+ * `COUNT(DISTINCT …)` drops NULLs outright and dropping them would report
+ * **zero** sources for a fact whose entire evidence is warehouse snapshots.
+ * Zero is a worse lie than the inflation this fixes: it reads as *unsupported*.
+ *
+ * The `edge:` prefix keeps the two key spaces disjoint, so a uuid can never
+ * collide with a principal handle.
+ *
+ * ⚠️ **This expression and `INSERT_PROVENANCE_EDGE_SQL`'s guard are one rule
+ * seen from two sides, and they must stay that way**: the guard admits an edge
+ * exactly when it would raise this count. Both read {@link distinctSourceSql},
+ * which is why it is a builder — and `extract-reconcile-pg.test.ts` asserts the
+ * count equals the edge count the guard actually produced, so a drift between
+ * them is a red test rather than a reviewer quietly reading the wrong number.
+ *
+ * Takes the FACT's alias because the three call sites correlate it differently
+ * (`f` in the review queue and in search, an aliased inner `f` in the tension
+ * counterpart) — which is also why it is now one builder rather than the three
+ * near-identical literals it replaced.
+ */
+export function corroborationCountSql(factAlias: string): string {
+  return `(SELECT COUNT(DISTINCT COALESCE(${distinctSourceSql("ep")}, 'edge:' || ed.to_episode_id::text))
+             FROM brain_edges ed
+             JOIN brain_episodes ep
+               ON ep.workspace_id = ed.workspace_id
+              AND ep.id = ed.to_episode_id
+            WHERE ed.workspace_id = ${factAlias}.workspace_id
+              AND ed.edge_type = 'provenance'
+              AND ed.from_fact_id = ${factAlias}.id)::int`;
+}
 
 // ---------------------------------------------------------------------------
 // Reading
@@ -675,7 +835,7 @@ export function identityFor(
  *
  * Exported so the real-Postgres test runs this exact string.
  */
-export const AUTHORING_PRINCIPALS_SQL = `SELECT DISTINCT e.source || ':' || btrim(e.source_actor) AS actor,
+export const AUTHORING_PRINCIPALS_SQL = `SELECT DISTINCT ${authoringPrincipalSql("e")} AS actor,
               e.source,
               btrim(e.source_actor) AS vendor_user_id
          FROM brain_episodes e

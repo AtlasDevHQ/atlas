@@ -141,6 +141,13 @@ export function resolveRegionDbUrl(
   };
 }
 
+/**
+ * How many of the ranked predicates the console prints. The bundle carries
+ * `TOP_REJECTED_PREDICATE_MAX`; a terminal summary wants the head of that list,
+ * not all of it — named rather than a bare `5` beside a named constant.
+ */
+export const CONSOLE_PREDICATE_ROWS = 5;
+
 /** Render the analytics block for the operator's console. */
 export function formatAnalytics(analytics: GateAnalytics): string {
   const lines = [
@@ -152,13 +159,15 @@ export function formatAnalytics(analytics: GateAnalytics): string {
         ? "n/a (nothing decided yet)"
         : `${(analytics.approvalRate * 100).toFixed(1)}%`
     }`,
-    `  median hours to decide: ${
-      analytics.medianHoursToDecision === null ? "n/a" : analytics.medianHoursToDecision.toFixed(2)
+    `  median hrs to retract:  ${
+      analytics.medianHoursToRetraction === null
+        ? "n/a"
+        : analytics.medianHoursToRetraction.toFixed(2)
     }`,
   ];
   if (analytics.topRejectedPredicates.length > 0) {
     lines.push("  most-rejected predicates:");
-    for (const entry of analytics.topRejectedPredicates.slice(0, 5)) {
+    for (const entry of analytics.topRejectedPredicates.slice(0, CONSOLE_PREDICATE_ROWS)) {
       lines.push(`    ${entry.predicate}: ${entry.rejections}`);
     }
   }
@@ -252,6 +261,19 @@ export async function handleGateExport(args: string[]): Promise<void> {
     const rowCount = bundle.decisions.length;
 
     console.log(`${TAG} ${rowCount} decision row(s)`);
+    if (rowCount === 0) {
+      // Loud, because this is the shape an operator typo takes. There is no
+      // "unknown workspace" refusal to lean on — after a purge, a purged
+      // workspace and a mistyped id are indistinguishable to every query this
+      // command can run, and refusing would break the purged-exports-zero
+      // criterion. So the empty result is REPORTED rather than returned as a
+      // quiet success. See the note in `lib/brain/gate-export.ts`.
+      console.warn(
+        `${TAG} ⚠️ NOTHING TO EXPORT for workspace ${workspaceId}. Either the workspace has no ` +
+          `decided claims yet, or it was purged, or the id is wrong — this command cannot tell ` +
+          `those apart. Check the id before reading anything into an empty bundle.`,
+      );
+    }
     console.log(formatAnalytics(bundle.analytics));
     if (capped) {
       console.warn(

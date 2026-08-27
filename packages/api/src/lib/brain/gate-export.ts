@@ -48,20 +48,34 @@
  *
  * So the three classes read off two columns, not one:
  *
- * | Class      | Predicate                                          |
- * |------------|----------------------------------------------------|
- * | `positive` | `status = 'published' AND invalidated_at IS NULL`   |
- * | `rejected` | `invalidated_at IS NOT NULL`                       |
- * | `negative` | extracted episode with NO fact rows at all         |
+ * | Class      | Predicate                                                     |
+ * |------------|---------------------------------------------------------------|
+ * | `positive` | `status = 'published' AND invalidated_at IS NULL`              |
+ * | `rejected` | tombstoned AND carrying a human correction episode (see below) |
+ * | `negative` | extracted episode holding no claim except `archived` ones      |
+ *
+ * ⚠️ **`rejected` is not simply `invalidated_at IS NOT NULL`**, and the first
+ * cut of this module assumed it was. `retract` is not that column's only
+ * writer: `admin-migrate.ts` lands unkeyable region-imported facts tombstoned
+ * (#5047), and migration 0194 did the same in place. Those are import
+ * artifacts, not human decisions, and admitting them would label claims no
+ * reviewer ever saw as rejections — poisoning the very measurement #5338 is
+ * meant to trust. {@link GATE_REJECTED_PREDICATE} therefore tests the POSITIVE
+ * evidence of the human act: the `derives-from` edge to the correction episode
+ * a retraction materializes.
  *
  * The classes are disjoint and each row is one `(episode, decision, fact?)`
  * triple, which is why `fact` is null on exactly the `negative` arm. One
  * episode can appear on several rows — a reviewer who published one claim and
  * retracted another from the same message produced two decisions, and both are
- * signal. `negative` is deliberately "proposed nothing" rather than "promoted
- * nothing": an episode whose only claim was retracted is already carried, with
- * its rejection, on the `rejected` arm, and counting it twice would teach a
- * measurement that the extractor stayed silent when it did not.
+ * signal.
+ *
+ * `negative` is the subtle arm — see {@link GATE_OCCUPIES_SLOT_PREDICATE} for
+ * the full reasoning. In short: it asserts the extractor produced nothing a
+ * reviewer promoted AND nothing is pending, so any non-archived claim on the
+ * episode disqualifies it, while an episode whose only claims are `archived`
+ * qualifies (the spec's wording is *"yielded no promoted fact"*, and an
+ * archived claim was not promoted).
  *
  * ## Warehouse observations are excluded, because they were never decisions
  *
@@ -96,6 +110,7 @@ import {
   notAnObservationSql,
   notAWarehouseEpisodeSql,
 } from "@atlas/api/lib/brain/observation";
+import { HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
 
 const log = createLogger("brain-gate-export");
 
@@ -156,9 +171,23 @@ export const GATE_EXPORT_REFUSALS = {
    * are invisible.
    */
   unrepresentableGrant: "unrepresentable-grant",
-  /** No such workspace in this region's internal DB. */
-  unknownWorkspace: "unknown-workspace",
 } as const;
+
+/**
+ * ⚠️ There is deliberately NO `unknownWorkspace` refusal, and the reason is
+ * that it cannot be told apart from the state acceptance criterion 5 requires.
+ *
+ * A purged workspace must export ZERO ROWS rather than refuse — the exporter
+ * must not be able to resurrect deleted content, and "refused" is not "nothing
+ * to export". But `hardDeleteWorkspace` removes the `organization` row too, so
+ * after a purge a purged workspace and a mistyped id are byte-identical to
+ * every query this module can run. A refusal keyed on "no such workspace"
+ * would therefore fire on the purged case and break the criterion.
+ *
+ * What protects the operator from a typo instead is LOUDNESS, not a refusal:
+ * an empty bundle is reported as an explicit warning by the operator command
+ * rather than as a quiet success. See `ops-gate-export.ts`.
+ */
 
 export type GateExportRefusalCode =
   (typeof GATE_EXPORT_REFUSALS)[keyof typeof GATE_EXPORT_REFUSALS];
@@ -255,12 +284,23 @@ export interface GateAnalytics {
     readonly rejections: number;
   }[];
   /**
-   * Median hours from a claim's extraction to its decision, over decided
-   * claims that carry both stamps. Null when no claim carries both — an
-   * authored (never-extracted) fact has no `extracted_at`, and reporting its
-   * absence as zero would claim an instantaneous review.
+   * Median hours from a claim's extraction to its RETRACTION, over rejected
+   * claims carrying both stamps.
+   *
+   * ⚠️ Retraction, not "decision", and the narrower name is the honest one. An
+   * approval leaves no timestamp of its own: publish writes `status` and the
+   * atomic publish endpoint stamps nothing per-claim that says WHEN a reviewer
+   * approved it (`updated_at` is also moved by grant widening, so it cannot
+   * stand in). Only the negative verb dates itself. An earlier cut of this
+   * called the field `medianHoursToDecision` and filtered on `invalidatedAt`
+   * anyway — so every positive fell out of the sample and the number described
+   * rejections while claiming to describe decisions.
+   *
+   * Null when no rejected claim carries both stamps — an authored
+   * (never-extracted) fact has no `extracted_at`, and reporting its absence as
+   * zero would claim an instantaneous review.
    */
-  readonly medianHoursToDecision: number | null;
+  readonly medianHoursToRetraction: number | null;
 }
 
 export interface GateExportBundle {
@@ -302,9 +342,92 @@ export const GATE_EXPORT_ROW_MAX = 5_000;
  * exports of an unchanged workspace must be byte-identical, which an
  * unstable sort silently breaks as soon as Postgres changes a plan.
  */
+/**
+ * `brain_facts` is a published, non-retracted claim — a gate APPROVAL.
+ *
+ * Exported so the operator bundle and the oversight panel cannot drift: one
+ * definition of what a positive is, in one place, and — since the review pass
+ * on #5335 — genuinely composed by BOTH, rather than re-spelled inline in the
+ * bundle SQL while a docstring claimed otherwise.
+ */
+export const GATE_POSITIVE_PREDICATE = `(f.status = 'published' AND f.invalidated_at IS NULL)`;
+
+/**
+ * `brain_facts` was retracted BY A HUMAN — a gate REJECTION.
+ *
+ * ## Why this is not simply `invalidated_at IS NOT NULL`
+ *
+ * On `invalidated_at` rather than `status`, because the review gate's negative
+ * verb is `POST /:id/retract` (#4915) and ADR-0036 makes withdrawal a tombstone
+ * rather than a demotion — `status` has exactly one writer (the atomic publish
+ * endpoint) and carries no `rejected` value.
+ *
+ * ⚠️ **But the tombstone alone does not mean a human rejected anything, and an
+ * earlier cut of this module assumed it did.** `retract` is not the only writer
+ * of `invalidated_at`: `admin-migrate.ts` lands region-imported facts whose
+ * slot key could not be derived with a placeholder key AND `invalidated_at`
+ * set (#5047 — its own run report calls `tombstonedFacts` "THE COUNT TO ACT ON
+ * FIRST"), and migration 0194 tombstoned the same population in place. Those
+ * rows are import artifacts. Counting them as rejections would put claims no
+ * reviewer ever saw into an evaluation corpus labelled as human decisions, and
+ * would drag `approvalRate` and `topRejectedPredicates` with them — poisoning
+ * exactly the measurement #5338 is meant to trust.
+ *
+ * So the test is the POSITIVE evidence of the human act rather than its
+ * side effect: a retraction materializes an immutable human-authored
+ * correction episode and links it `derives-from` (fact → episode). That edge
+ * is `derives-from` and not `provenance` deliberately — the episode REFUTES
+ * the claim rather than evidencing it — and `correction.ts` is the only
+ * in-region writer of it at this grain. A region import restores such edges
+ * verbatim, which is correct: an imported workspace's real retractions were
+ * still real retractions.
+ */
+export const GATE_REJECTED_PREDICATE = `(f.invalidated_at IS NOT NULL AND EXISTS (
+  SELECT 1
+    FROM brain_edges ed
+    JOIN brain_episodes ce
+      ON ce.workspace_id = ed.workspace_id AND ce.id = ed.to_episode_id
+   WHERE ed.workspace_id = f.workspace_id
+     AND ed.from_fact_id = f.id
+     AND ed.edge_type = 'derives-from'
+     AND ce.source = '${HUMAN_SOURCE}'))`;
+
+/**
+ * `brain_facts` still OCCUPIES its slot — anything but `archived`.
+ *
+ * Not a class a bundle carries; it exists to keep the `negative` arm honest,
+ * and getting it right took two attempts.
+ *
+ * A negative asserts something quite specific: *the extractor produced no claim
+ * a reviewer promoted, and nothing is pending*. The danger is asserting SILENCE
+ * about an episode the extractor actually spoke about — that teaches #5338's
+ * measurement the opposite of what happened.
+ *
+ * So the arm excludes an episode holding any non-archived claim:
+ *
+ *   - **published** — already carried, on the `positive` arm.
+ *   - **human-retracted** — already carried, on the `rejected` arm.
+ *   - **a live draft** — undecided. A queue a reviewer has not reached is not
+ *     the extractor staying silent.
+ *   - **a tombstone with NO correction episode** — a migration artifact
+ *     (`admin-migrate.ts`'s unkeyable imports, #5047; migration 0194). Neither
+ *     a rejection nor silence: a claim WAS extracted and then destroyed by
+ *     something unrelated to review. Ambiguous, so it is carried by no arm at
+ *     all rather than guessed onto one. This is the case an earlier cut got
+ *     wrong in both directions — first labelling it a rejection, then
+ *     labelling its episode a negative.
+ *
+ * `archived` is the one state that does NOT block the negative arm, and the
+ * spec is explicit about why: negatives are episodes that *"yielded no promoted
+ * fact"*, and an archived claim was not promoted. An earlier cut tested "no
+ * fact rows at all" and dropped the archived-only episode into no arm
+ * whatsoever — a silent hole.
+ */
+export const GATE_OCCUPIES_SLOT_PREDICATE = `(f.status <> 'archived')`;
+
 const GATE_DECISIONS_SQL = `
 WITH decided AS (
-  SELECT CASE WHEN f.invalidated_at IS NOT NULL THEN 'rejected' ELSE 'positive' END AS decision,
+  SELECT CASE WHEN ${GATE_REJECTED_PREDICATE} THEN 'rejected' ELSE 'positive' END AS decision,
          e.id AS episode_id, e.source, e.source_id, e.source_actor, e.body, e.locator,
          e.occurred_at, e.ingested_at, e.extracted_at AS episode_extracted_at, e.visible_to AS episode_visible_to,
          f.id AS fact_id, f.subject, f.predicate, f.object, f.status,
@@ -316,7 +439,7 @@ WITH decided AS (
    WHERE f.workspace_id = $1
      AND ${notAnObservationSql("f")}
      AND ${notAWarehouseEpisodeSql("e")}
-     AND (f.status = 'published' OR f.invalidated_at IS NOT NULL)
+     AND (${GATE_POSITIVE_PREDICATE} OR ${GATE_REJECTED_PREDICATE})
 ),
 silent AS (
   SELECT 'negative' AS decision,
@@ -330,8 +453,10 @@ silent AS (
      AND e.extracted_at IS NOT NULL
      AND ${notAWarehouseEpisodeSql("e")}
      AND NOT EXISTS (
-           SELECT 1 FROM brain_facts f2
-            WHERE f2.workspace_id = e.workspace_id AND f2.source_episode_id = e.id
+           SELECT 1 FROM brain_facts f
+            WHERE f.workspace_id = e.workspace_id
+              AND f.source_episode_id = e.id
+              AND ${GATE_OCCUPIES_SLOT_PREDICATE}
          )
 )
 SELECT * FROM (SELECT * FROM decided UNION ALL SELECT * FROM silent) rows
@@ -375,6 +500,23 @@ function iso(value: Date | string | null | undefined): string | null {
  * deny is the result rather than an exception — so the fail-closed decision is
  * this function's, not the parser's.
  */
+/**
+ * The unrepresentable-grant refusal, in one place.
+ *
+ * `subject` names the row so an operator can go and repair it — the episode id
+ * or the fact id. Two near-identical nine-line blocks were the alternative, and
+ * the copy that drifts is the one that stops naming the row.
+ */
+function unrepresentableGrantRefusal(kind: "Episode" | "Fact", id: string): GateExportRefusal {
+  return {
+    refusal: GATE_EXPORT_REFUSALS.unrepresentableGrant,
+    detail:
+      `${kind} ${id} carries a visible_to token outside the grant grammar, so this deployment ` +
+      `cannot state who the row is for. Grants travel with the rows or the rows do not leave — ` +
+      `no bundle was written. Repair the grant (see lib/brain/acl.ts for the grammar) and re-run.`,
+  };
+}
+
 function representableGrant(raw: unknown): readonly string[] | null {
   if (!Array.isArray(raw)) return null;
   const parsed = parseGrant(raw as readonly unknown[]);
@@ -416,33 +558,14 @@ export async function loadGateDecisions(
   for (const row of kept) {
     const episodeGrant = representableGrant(row.episode_visible_to);
     if (!episodeGrant) {
-      return {
-        ok: false,
-        refusal: {
-          refusal: GATE_EXPORT_REFUSALS.unrepresentableGrant,
-          detail:
-            `Episode ${row.episode_id} carries a visible_to token outside the grant grammar, ` +
-            `so this deployment cannot state who the row is for. Grants travel with the rows or ` +
-            `the rows do not leave — no bundle was written. Repair the grant (see lib/brain/acl.ts ` +
-            `for the grammar) and re-run.`,
-        },
-      };
+      return { ok: false, refusal: unrepresentableGrantRefusal("Episode", row.episode_id) };
     }
 
     let fact: GateExportFact | null = null;
     if (row.fact_id !== null) {
       const factGrant = representableGrant(row.fact_visible_to);
       if (!factGrant) {
-        return {
-          ok: false,
-          refusal: {
-            refusal: GATE_EXPORT_REFUSALS.unrepresentableGrant,
-            detail:
-              `Fact ${row.fact_id} carries a visible_to token outside the grant grammar, ` +
-              `so this deployment cannot state who the claim is for. No bundle was written. ` +
-              `Repair the grant (see lib/brain/acl.ts for the grammar) and re-run.`,
-          },
-        };
+        return { ok: false, refusal: unrepresentableGrantRefusal("Fact", row.fact_id) };
       }
       fact = {
         id: row.fact_id,
@@ -492,6 +615,24 @@ export async function loadGateDecisions(
 }
 
 /**
+ * Approvals over all decided claims, or null when nothing has been decided.
+ *
+ * One function rather than the same ternary in two places: the operator bundle
+ * and the reader-scoped panel must not be able to round differently, because a
+ * bundle and a panel disagreeing in the third decimal is the kind of thing that
+ * gets investigated as a data bug.
+ *
+ * Null and NOT zero on an empty denominator — "no decisions yet" and "the
+ * reviewer rejects everything" are different states, and only the second is
+ * alarming.
+ */
+export function approvalRateOf(positives: number, rejected: number): number | null {
+  const decided = positives + rejected;
+  if (decided === 0) return null;
+  return Math.round((positives / decided) * 1000) / 1000;
+}
+
+/**
  * Median of a numeric sample. Even-length takes the mean of the two middle
  * values; an empty sample is null, never zero.
  */
@@ -518,7 +659,7 @@ export function summarizeGateDecisions(
   let rejected = 0;
   let negatives = 0;
   const rejectionsByPredicate = new Map<string, number>();
-  const hoursToDecision: number[] = [];
+  const hoursToRetraction: number[] = [];
 
   for (const row of decisions) {
     if (row.decision === "positive") positives += 1;
@@ -530,17 +671,15 @@ export function summarizeGateDecisions(
       rejectionsByPredicate.set(key, (rejectionsByPredicate.get(key) ?? 0) + 1);
     }
 
-    // Time-to-review is only meaningful where BOTH stamps exist. A published
-    // fact carries no decision timestamp of its own, so the positive arm's
-    // clock is the episode's extraction stamp to the fact's — and an authored
-    // fact has no `extracted_at` at all, which is why this is a filter rather
-    // than a COALESCE to zero.
-    if (row.fact) {
+    // Only RETRACTIONS are timed, because only they are dated — see the field's
+    // docstring. `invalidatedAt` is non-null on exactly the rejected arm, so
+    // this loop samples that arm alone; the name says so rather than implying
+    // an approval clock the schema does not carry.
+    if (row.fact?.invalidatedAt) {
       const from = row.fact.extractedAt ?? row.episode.extractedAt;
-      const to = row.fact.invalidatedAt;
-      if (from && to) {
-        const delta = Date.parse(to) - Date.parse(from);
-        if (Number.isFinite(delta) && delta >= 0) hoursToDecision.push(delta / 3_600_000);
+      if (from) {
+        const delta = Date.parse(row.fact.invalidatedAt) - Date.parse(from);
+        if (Number.isFinite(delta) && delta >= 0) hoursToRetraction.push(delta / 3_600_000);
       }
     }
   }
@@ -557,9 +696,9 @@ export function summarizeGateDecisions(
     positives,
     rejected,
     negatives,
-    approvalRate: decided === 0 ? null : Math.round((positives / decided) * 1000) / 1000,
+    approvalRate: approvalRateOf(positives, rejected),
     topRejectedPredicates,
-    medianHoursToDecision: median(hoursToDecision),
+    medianHoursToRetraction: median(hoursToRetraction),
   };
 }
 
@@ -580,8 +719,32 @@ export function checkRegionContainment(
   apiRegion: string | null,
   workspaceRegion: string | null,
 ): GateExportRefusal | null {
-  if (!apiRegion) return null;
+  // A workspace with no region assigned is a NEW one, not a foreign one — the
+  // same call `detectMisrouting` makes. Refusing it would block the export on a
+  // condition the operator cannot fix from here, and on a self-hosted
+  // deployment (no regions at all) it would block every export.
   if (!workspaceRegion) return null;
+
+  // ⚠️ The workspace IS in a region and this process cannot say which region it
+  // is itself — so containment is UNPROVEN, and unproven fails closed.
+  //
+  // The first cut returned null here, which made the whole criterion nearly
+  // unreachable: on the `--database-url` path from an operator's laptop there
+  // is no `ATLAS_API_REGION`, so the one invocation that can point at any
+  // region on earth was also the one that skipped the check. CLAUDE.md's
+  // "prefer errors over silent fallbacks" is the rule, and a residency
+  // boundary is exactly where a silent pass is worst.
+  if (!apiRegion) {
+    return {
+      refusal: GATE_EXPORT_REFUSALS.regionBoundary,
+      detail:
+        `This workspace is resident in region "${workspaceRegion}" and this process cannot ` +
+        `establish its own region, so containment cannot be proven (ADR-0024). Set ` +
+        `ATLAS_API_REGION to the region this deployment serves, or re-run with ` +
+        `--region ${workspaceRegion}.`,
+    };
+  }
+
   if (apiRegion === workspaceRegion) return null;
   return {
     refusal: GATE_EXPORT_REFUSALS.regionBoundary,
@@ -634,27 +797,6 @@ export async function buildGateExportBundle(
 // ---------------------------------------------------------------------------
 // The oversight-page arm — the same classes, READER-SCOPED
 // ---------------------------------------------------------------------------
-
-/**
- * `brain_facts` is a published, non-retracted claim — a gate APPROVAL.
- *
- * Exported so the operator bundle above and the oversight panel below cannot
- * drift: one definition of what a positive is, in one place, composed by both.
- * That is acceptance criterion 7's *"derived from the same query"* read the
- * only way it can safely be read — the class DEFINITIONS are shared, while the
- * two callers differ in scope, which they must (see {@link loadGateAnalytics}).
- */
-export const GATE_POSITIVE_PREDICATE = `(f.status = 'published' AND f.invalidated_at IS NULL)`;
-
-/**
- * `brain_facts` is a retracted claim — a gate REJECTION.
- *
- * On `invalidated_at`, never on `status`: the review gate's negative verb is
- * `POST /:id/retract` (#4915) and ADR-0036 makes withdrawal a tombstone rather
- * than a demotion, so `status` has exactly one writer (the atomic publish
- * endpoint) and there is no `rejected` value to look for.
- */
-export const GATE_REJECTED_PREDICATE = `(f.invalidated_at IS NOT NULL)`;
 
 /**
  * Gate analytics for the oversight page.
@@ -731,10 +873,5 @@ export async function loadGateAnalytics(
 
   const positives = Number(row.positives ?? 0);
   const rejected = Number(row.rejected ?? 0);
-  const decided = positives + rejected;
-  return {
-    positives,
-    rejected,
-    approvalRate: decided === 0 ? null : Math.round((positives / decided) * 1000) / 1000,
-  };
+  return { positives, rejected, approvalRate: approvalRateOf(positives, rejected) };
 }

@@ -28,7 +28,7 @@ import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { PURGE_TABLE_DECISIONS } from "@atlas/api/lib/db/purge-scope";
-import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
+import { WAREHOUSE_SOURCE, HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
 import {
   buildGateExportBundle,
   loadGateDecisions,
@@ -92,6 +92,30 @@ describeIfPg("brain gate-decision export (real Postgres)", () => {
     return rows[0]!.id;
   }
 
+  /**
+   * Mint the human-authored correction episode a real retraction materializes,
+   * and link it `derives-from` (fact → episode) — the marker
+   * `GATE_REJECTED_PREDICATE` tests for. Mirrors `correction.ts`'s
+   * `DERIVES_FROM_EDGE_SQL`.
+   */
+  async function seedHumanRetraction(
+    workspaceId: string,
+    factId: string,
+    sourceId: string,
+  ): Promise<void> {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO brain_episodes (workspace_id, source, source_id, body, visible_to)
+       VALUES ($1, $2, $3, 'retracted by a reviewer', ARRAY['org']::text[])
+       RETURNING id`,
+      [workspaceId, HUMAN_SOURCE, `correction:${sourceId}`],
+    );
+    await pool.query(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_episode_id)
+       VALUES ($1, 'derives-from', $2::uuid, $3::uuid)`,
+      [workspaceId, factId, rows[0]!.id],
+    );
+  }
+
   async function seedFact(
     workspaceId: string,
     episodeId: string,
@@ -153,12 +177,14 @@ describeIfPg("brain gate-decision export (real Postgres)", () => {
     const retracted = await seedEpisode(ws, "c:2");
     // The retract verb stamps `invalidated_at` and leaves `status` alone —
     // ADR-0036 makes withdrawal a tombstone, not a demotion. A `draft` row with
-    // an `invalidated_at` is the shape a rejection actually has.
-    await seedFact(ws, retracted, {
+    // an `invalidated_at` is the shape a rejection actually has, and the
+    // correction episode is what makes it a HUMAN one.
+    const retractedFact = await seedFact(ws, retracted, {
       predicate: "owns",
       status: "draft",
       invalidated: true,
     });
+    await seedHumanRetraction(ws, retractedFact, "c:2");
 
     // Extracted, and the extractor proposed nothing.
     await seedEpisode(ws, "c:3");
@@ -188,7 +214,12 @@ describeIfPg("brain gate-decision export (real Postgres)", () => {
     const ws = "ws-two-decisions";
     const episode = await seedEpisode(ws, "d:1");
     await seedFact(ws, episode, { predicate: "leads", status: "published" });
-    await seedFact(ws, episode, { predicate: "owns", status: "draft", invalidated: true });
+    const rejected = await seedFact(ws, episode, {
+      predicate: "owns",
+      status: "draft",
+      invalidated: true,
+    });
+    await seedHumanRetraction(ws, rejected, "d:1");
 
     const result = await loadGateDecisions(reader, ws);
     expect(result.ok).toBe(true);
@@ -241,6 +272,49 @@ describeIfPg("brain gate-decision export (real Postgres)", () => {
     expect(result.decisions).toHaveLength(0);
   });
 
+  it("does NOT count a migration-minted tombstone as a human rejection", async () => {
+    const ws = "ws-import-tombstone";
+    // `admin-migrate.ts` lands an unkeyable region-imported fact tombstoned
+    // (#5047), and migration 0194 did the same in place. Neither is a reviewer
+    // decision — there is no correction episode, because no human acted.
+    const episode = await seedEpisode(ws, "t:1");
+    await seedFact(ws, episode, { status: "draft", invalidated: true });
+
+    const result = await loadGateDecisions(reader, ws);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decisions.some((d) => d.decision === "rejected")).toBe(false);
+    // Nor does it become a negative: the episode DID yield a claim, so saying
+    // the extractor stayed silent would be false too. It is simply undecided.
+    expect(result.decisions).toHaveLength(0);
+  });
+
+  it("counts an archived-only episode as a negative — it yielded no promoted fact", async () => {
+    const ws = "ws-archived";
+    const episode = await seedEpisode(ws, "a:1");
+    await seedFact(ws, episode, { status: "archived" });
+
+    const result = await loadGateDecisions(reader, ws);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // An earlier cut tested "no fact rows at all" and dropped this episode into
+    // no arm whatsoever — a silent hole in the corpus.
+    expect(result.decisions).toHaveLength(1);
+    expect(result.decisions[0]!.decision).toBe("negative");
+    expect(result.decisions[0]!.fact).toBeNull();
+  });
+
+  it("keeps an episode with a live draft OUT of every arm — undecided is not a decision", async () => {
+    const ws = "ws-pending";
+    const episode = await seedEpisode(ws, "p:9");
+    await seedFact(ws, episode, { status: "draft" });
+
+    const result = await loadGateDecisions(reader, ws);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decisions).toHaveLength(0);
+  });
+
   it("exports zero rows for a purged workspace — AC5", async () => {
     const ws = "ws-purged";
     const episode = await seedEpisode(ws, "x:1");
@@ -284,7 +358,12 @@ describeIfPg("brain gate-decision export (real Postgres)", () => {
     const a = await seedEpisode(ws, "b:1");
     await seedFact(ws, a, { predicate: "leads", status: "published" });
     const b = await seedEpisode(ws, "b:2");
-    await seedFact(ws, b, { predicate: "owns", status: "draft", invalidated: true });
+    const rejected = await seedFact(ws, b, {
+      predicate: "owns",
+      status: "draft",
+      invalidated: true,
+    });
+    await seedHumanRetraction(ws, rejected, "b:2");
 
     const built = await buildGateExportBundle(reader, {
       workspaceId: ws,

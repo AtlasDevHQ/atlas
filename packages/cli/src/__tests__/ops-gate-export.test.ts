@@ -124,7 +124,7 @@ describe("ops gate-export — the operator's report", () => {
       negatives: 5,
       approvalRate: null,
       topRejectedPredicates: [],
-      medianHoursToDecision: null,
+      medianHoursToRetraction: null,
     });
     expect(out).toContain("n/a (nothing decided yet)");
     expect(out).not.toContain("0.0%");
@@ -137,7 +137,7 @@ describe("ops gate-export — the operator's report", () => {
       negatives: 2,
       approvalRate: 0.75,
       topRejectedPredicates: [{ predicate: "owns", rejections: 1 }],
-      medianHoursToDecision: 2.5,
+      medianHoursToRetraction: 2.5,
     });
     expect(out).toContain("75.0%");
     expect(out).toContain("owns: 1");

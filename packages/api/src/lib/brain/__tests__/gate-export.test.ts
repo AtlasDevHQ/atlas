@@ -16,6 +16,7 @@ import {
   GATE_EXPORT_REFUSALS,
   buildGateExportBundle,
   checkRegionContainment,
+  approvalRateOf,
   loadGateDecisions,
   summarizeGateDecisions,
   type GateDecision,
@@ -113,6 +114,28 @@ describe("gate export — what can possibly leave", () => {
     expect(sql).not.toMatch(/SELECT\s+\*\s+FROM\s+brain_/i);
   });
 
+  it("requires POSITIVE evidence of the human act for a rejection", async () => {
+    const reader = readerOf([]);
+    await loadGateDecisions(reader, "ws-1");
+    const sql = reader.sql.join("\n");
+    // `retract` is not the only writer of `invalidated_at` — `admin-migrate.ts`
+    // lands unkeyable imported facts tombstoned (#5047) and migration 0194 did
+    // the same in place. A bare tombstone test would label those import
+    // artifacts as human rejections and poison #5338's measurement.
+    expect(sql).toContain("'derives-from'");
+    expect(sql).toContain("ce.source = 'human'");
+  });
+
+  it("only calls an episode silent when every claim on it is archived, or there are none", async () => {
+    const reader = readerOf([]);
+    await loadGateDecisions(reader, "ws-1");
+    // A negative asserts the extractor produced nothing a reviewer promoted and
+    // nothing is pending. Any non-archived claim — a live draft, or a tombstone
+    // with no correction episode behind it — means the extractor DID speak, so
+    // the episode must not be labelled silent.
+    expect(reader.sql.join("\n")).toContain("f.status <> 'archived'");
+  });
+
   it("excludes warehouse observations on BOTH grains", async () => {
     const reader = readerOf([]);
     await loadGateDecisions(reader, "ws-1");
@@ -140,13 +163,24 @@ describe("gate export — refusals are fail-closed", () => {
     expect(refusal?.detail).toContain("us");
   });
 
-  it("allows a matching region, and a self-hosted deployment with no region at all", () => {
+  it("allows a matching region, and a workspace with no region assigned", () => {
     expect(checkRegionContainment("us", "us")).toBeNull();
-    expect(checkRegionContainment(null, "eu")).toBeNull();
     // An unassigned workspace is a NEW one, not a foreign one — the same call
     // `detectMisrouting` makes. Refusing it would block the export on a
-    // condition the operator cannot fix from here.
+    // condition the operator cannot fix from here, and on a self-hosted
+    // deployment (no regions anywhere) it would block every export.
     expect(checkRegionContainment("us", null)).toBeNull();
+    expect(checkRegionContainment(null, null)).toBeNull();
+  });
+
+  it("REFUSES when the workspace has a region and this process cannot name its own", () => {
+    // The `--database-url` path from an operator laptop: no ATLAS_API_REGION,
+    // so containment is unproven. Unproven fails closed — the first cut
+    // returned null here, which made the criterion nearly unreachable on the
+    // one invocation that can point at any region on earth.
+    const refusal = checkRegionContainment(null, "eu");
+    expect(refusal?.refusal).toBe(GATE_EXPORT_REFUSALS.regionBoundary);
+    expect(refusal?.detail).toContain("ATLAS_API_REGION");
   });
 
   it("refuses the whole workspace when one EPISODE grant is unrepresentable", async () => {
@@ -282,8 +316,10 @@ describe("gate export — analytics", () => {
     ]);
   });
 
-  it("medians the time to decision, and reports null when no claim carries both stamps", () => {
-    expect(summarizeGateDecisions([decision({ fact: fact() })]).medianHoursToDecision).toBeNull();
+  it("times RETRACTIONS only, and reports null when none carries both stamps", () => {
+    // An approval leaves no timestamp of its own, so there is no approval clock
+    // to median. The field name says retraction rather than implying one.
+    expect(summarizeGateDecisions([decision({ fact: fact() })]).medianHoursToRetraction).toBeNull();
 
     const summary = summarizeGateDecisions([
       decision({
@@ -301,6 +337,29 @@ describe("gate export — analytics", () => {
         }),
       }),
     ]);
-    expect(summary.medianHoursToDecision).toBe(3);
+    expect(summary.medianHoursToRetraction).toBe(3);
+  });
+
+  it("excludes positives from the retraction clock rather than counting them as zero", () => {
+    const summary = summarizeGateDecisions([
+      decision({ fact: fact({ extractedAt: "2026-08-01T00:00:00.000Z" }) }),
+      decision({
+        decision: "rejected",
+        fact: fact({
+          extractedAt: "2026-08-01T00:00:00.000Z",
+          invalidatedAt: "2026-08-01T06:00:00.000Z",
+        }),
+      }),
+    ]);
+    // Six, not three: the positive is absent from the sample, not a zero in it.
+    expect(summary.medianHoursToRetraction).toBe(6);
+  });
+
+  it("shares one approval-rate function with the reader-scoped panel", () => {
+    // A bundle and a panel disagreeing in the third decimal gets investigated
+    // as a data bug, so the rounding lives in one place.
+    expect(approvalRateOf(0, 0)).toBeNull();
+    expect(approvalRateOf(3, 1)).toBe(0.75);
+    expect(approvalRateOf(1, 2)).toBe(0.333);
   });
 });

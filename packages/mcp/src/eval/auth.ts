@@ -415,7 +415,12 @@ function buildEvalAuth(opts: BuildEvalAuthOptions): EvalAuth {
     //                     teamMember
     //   - jwt:            jwks
     //   - oauth-provider: oauthClient, oauthAccessToken,
-    //                     oauthRefreshToken, oauthConsent
+    //                     oauthRefreshToken, oauthConsent, oauthResource,
+    //                     oauthClientResource, oauthClientAssertion
+    //
+    // To re-derive after an upgrade rather than guessing table-by-table:
+    //   node -e "import('@better-auth/oauth-provider').then(m =>
+    //     console.log(Object.keys(m.oauthProvider({...}).schema)))"
     // Listing them inline (rather than auto-discovering from the plugin
     // schema) keeps the eval failure mode obvious — a future plugin
     // upgrade that adds a new table will surface as "Model Z not found"
@@ -436,6 +441,16 @@ function buildEvalAuth(opts: BuildEvalAuthOptions): EvalAuth {
       oauthAccessToken: [],
       oauthRefreshToken: [],
       oauthConsent: [],
+      // #5493 — the three tables oauth-provider 1.7 adds. `oauthResource`
+      // and `oauthClientResource` back the RFC 8707 resource model, now a
+      // persisted entity that token issuance resolves every requested
+      // `resource` against; `oauthClientAssertion` backs private-key-jwt
+      // client auth. Without them the token endpoint 500s with
+      // "Model <name> not found" — exactly the failure mode the note above
+      // predicts, and how each of these was found.
+      oauthResource: [],
+      oauthClientResource: [],
+      oauthClientAssertion: [],
     }),
     emailAndPassword: {
       enabled: true,
@@ -456,6 +471,19 @@ function buildEvalAuth(opts: BuildEvalAuthOptions): EvalAuth {
         allowUnauthenticatedClientRegistration: true,
         scopes: [...REQUESTED_SCOPE_LIST],
         validAudiences: [`${opts.baseUrl}/mcp`],
+        // #5493 — oauth-provider 1.7 resolves every requested `resource`
+        // against the persisted `oauthResource` table, so an audience that
+        // is only allow-listed now fails issuance with
+        // `invalid_target: requested resource … is not configured`.
+        // Seeded from the same expression as `validAudiences` above, which
+        // is the parity this eval exists to protect: production does the
+        // identical thing in `lib/auth/server.ts`.
+        resources: [`${opts.baseUrl}/mcp`],
+        // Links each DCR-registered client to the resource, without which
+        // 1.7's `assertClientLinkedToResources` rejects the token exchange
+        // with `invalid_target: client … is not linked to resource(s) …`.
+        // Production mirrors this in `lib/auth/server.ts`.
+        clientRegistrationDefaultResources: [`${opts.baseUrl}/mcp`],
         accessTokenExpiresIn: 3600,
         refreshTokenExpiresIn: 60 * 60 * 24,
         // Shared reader from `oauth-claims.ts` — production reads the

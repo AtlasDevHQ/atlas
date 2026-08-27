@@ -68,17 +68,29 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 // `@atlas/api`. Keeping the import static gives us proper type
 // resolution at the call site below.
 //
-// ⚠️ This was `verifyAccessToken` until Better Auth 1.7, which removed it.
-// When it disappears, `tsc` suggests `verifyJwsAccessToken` — DO NOT take
-// that suggestion. It is a near-spelling, not the replacement:
-// `verifyJwsAccessToken` accepts only `JwksFetchOptions & { verifyOptions }`
-// and has NO scope parameter, so switching to it (and dropping the now-
-// invalid `scopes` property to make the file compile) would silently stop
-// enforcing `mcp:read` on every hosted MCP request — with a green
-// typecheck and a green test run, because the 403 path below simply
-// stops being reachable. The real replacement is
-// `verifyAccessTokenRequest`, where `scopes` is spelled `requiredScopes`.
-import { verifyAccessTokenRequest } from "better-auth/oauth2";
+// ⚠️ TWO traps here, both of which typecheck clean. Read before editing.
+//
+// 1. This was `verifyAccessToken` until Better Auth 1.7, which removed it.
+//    When it disappears, `tsc` suggests `verifyJwsAccessToken` — DO NOT take
+//    that suggestion. It is a near-spelling, not the replacement:
+//    `verifyJwsAccessToken` takes only `JwksFetchOptions & { verifyOptions }`
+//    and has NO scope parameter, so switching to it (and dropping the
+//    now-invalid `scopes` property to make the file compile) would silently
+//    stop enforcing `mcp:read` on every hosted MCP request — with a green
+//    typecheck AND a green test run, because the 403 branch below simply
+//    stops being reachable. The replacement is `verifyAccessTokenRequest`,
+//    where `scopes` is spelled `requiredScopes`.
+//
+// 2. Import it from `@better-auth/core/oauth2`, NOT `better-auth/oauth2`.
+//    In 1.6 the latter re-exported the verifiers at runtime via
+//    `export * from "@better-auth/core/oauth2"`. 1.7 dropped that star from
+//    `dist/oauth2/index.mjs` but LEFT it in `dist/oauth2/index.d.mts`, so
+//    the type surface still promises symbols the runtime no longer provides.
+//    Importing from `better-auth/oauth2` compiles and then dies at module
+//    load with `SyntaxError: Export named 'verifyAccessTokenRequest' not
+//    found`. `@better-auth/core` is declared in this package's manifest for
+//    exactly this reason — it is not an accidental transitive import.
+import { verifyAccessTokenRequest } from "@better-auth/core/oauth2";
 import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { getWorkspaceRegion } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";

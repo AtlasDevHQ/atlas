@@ -23,7 +23,43 @@ export interface RegisterOptions {
  * Public-client posture: `token_endpoint_auth_method: "none"` matches
  * both the SDK popup flow and the CLI loopback flow — the server enforces
  * PKCE on the token exchange instead.
+ *
+ * `application_type` is derived from the redirect URI rather than fixed,
+ * because RFC 8252 splits the two flows and @better-auth/oauth-provider 1.7
+ * started enforcing that split (#5493). Its validator:
+ *
+ *   web    -> https AND non-loopback, else invalid_redirect_uri
+ *   native -> http on localhost/127.0.0.1/[::1], or https non-loopback
+ *
+ * Omitting the field defaults the server to `web`, which rejects the CLI's
+ * `http://127.0.0.1:<port>/callback` outright — DCR fails with
+ * `invalid_redirect_uri` and login never starts. 1.6 had no such check, so
+ * this is a behaviour change on the upgrade, not a latent bug.
  */
+
+/**
+ * Classify a redirect URI per RFC 8252.
+ *
+ * Loopback HTTP is the native-app pattern (the CLI spawns a listener on an
+ * ephemeral port); everything else is a web client. Deriving it keeps the
+ * two callers — SDK popup and CLI — on one code path.
+ */
+function applicationTypeFor(redirectUri: string): "web" | "native" {
+  let url: URL;
+  try {
+    url = new URL(redirectUri);
+  } catch {
+    // Let the server reject a malformed URI with its own message rather
+    // than guessing a type here.
+    return "web";
+  }
+  if (url.protocol !== "http:") return "web";
+  const host = url.hostname;
+  // `URL` normalises [::1] to the bracketless form in `hostname`.
+  return host === "localhost" || host === "127.0.0.1" || host === "::1"
+    ? "native"
+    : "web";
+}
 export async function register(
   metadata: AuthServerMetadata,
   params: RegisterParams,
@@ -37,6 +73,7 @@ export async function register(
     response_types: ["code"],
     scope: params.scopes.join(" "),
     token_endpoint_auth_method: "none",
+    application_type: applicationTypeFor(params.redirectUri),
   };
   let res: Response;
   try {

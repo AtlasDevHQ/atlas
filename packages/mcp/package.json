@@ -27,6 +27,7 @@
   "dependencies": {
     "@atlas/api": "workspace:*",
     "@atlas/ee": "workspace:*",
+    "@better-auth/core": "^1.7.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@useatlas/mcp": "workspace:*",
     "@useatlas/schemas": "workspace:*",

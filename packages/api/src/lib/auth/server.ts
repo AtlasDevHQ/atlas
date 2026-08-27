@@ -2755,6 +2755,37 @@ export function buildPlugins() {
       allowUnauthenticatedClientRegistration: resolveAllowUnauthDcr(process.env),
       scopes: [...ATLAS_OAUTH_SCOPES],
       validAudiences: resolveOAuthValidAudiences(process.env),
+      // #5493 — oauth-provider 1.7 promotes RFC 8707 resources to a
+      // first-class persisted entity (`oauthResource`) and now RESOLVES
+      // every requested resource against it during token issuance:
+      //
+      //   if (!row) throw APIError("BAD_REQUEST", { error: "invalid_target",
+      //     error_description: `requested resource ${id} does not exist` })
+      //
+      // So an audience that is merely allow-listed is no longer sufficient —
+      // unregistered resources fail token issuance outright, which would
+      // break every hosted MCP login. Seeding from the SAME derivation that
+      // feeds `validAudiences` keeps the two lists from drifting: they are
+      // the identical set by construction, not by convention.
+      //
+      // Both entries denote ONE resource server under two hostnames (the
+      // #2068 api*/mcp* brand mirror, region-preserving), which is the
+      // reasoning GHSA-p2fr-6hmx-4528 was assessed against in #4903 — a
+      // third, genuinely distinct entry would need that revisited.
+      resources: resolveOAuthValidAudiences(process.env),
+      // Default, stated explicitly: boot-time seeding INSERTS rows whose
+      // identifier is absent and never overwrites ones edited through the
+      // CRUD surface. A redeploy must not silently revert an operator's
+      // per-resource TTL or scope allowlist.
+      resourceSeedMode: "insertOnly",
+      // Every dynamically-registered client is linked to these resources at
+      // registration. 1.7 added `assertClientLinkedToResources`, which fails
+      // token issuance with `invalid_target: client <id> is not linked to
+      // resource(s) …` when a link row is absent — so without this, EVERY
+      // DCR client (Claude Desktop, ChatGPT, Cursor) would register fine and
+      // then fail at the token exchange. 1.6 had no link table at all, so
+      // this restores the prior behaviour rather than widening anything.
+      clientRegistrationDefaultResources: resolveOAuthValidAudiences(process.env),
       // Token TTLs (#2066). Defaults match Better Auth's own defaults
       // (1h access / 30d refresh) but surfaced explicitly so the e2e
       // test can drop access TTL to ~30s without rebuilding the auth

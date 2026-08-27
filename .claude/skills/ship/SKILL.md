@@ -51,26 +51,91 @@ Stop and report if any row holds. Do not continue.
 
 ## Step 2 — A fresh worktree
 
-```bash
-git fetch --prune origin
-git worktree add .claude/worktrees/<slug> -b <type>-<N>-<slug> origin/main
-cd .claude/worktrees/<slug>
-bun install
+**One string names both.** The branch and the directory are the same token, derived only
+from the issue:
+
+```
+LANE=<type>-<N>-<slug>        # e.g. docs-5450-anchor-arm-precision-prd
+
+.claude/worktrees/$LANE   ←→   branch $LANE
 ```
 
 `<type>` matches the commit convention on `main` — `fix`, `feat`, `chore`, `docs`,
 `refactor`. Branch off `origin/main`, never off local `main`, which may be behind.
 
+⚠️ **Do not "improve" the directory name, and never shorten it.** This equality is the
+entire collision guard. Measured on 2026-08-27 with four lanes live, the directories in
+flight were `ci-deps-track`, `m6-writeback-grill`, `ship-5335-gate-export` and
+`ship-5450-prd` — against branches `chore-5421-…`, `docs-5468-…`, `feat-5335-…` and
+`docs-5450-…`. Four naming schemes, two directories carrying no issue number at all, and
+not one directory equal to its branch. With no mapping from directory to branch, no lane
+can answer *"is this issue already claimed?"*: one entered a worktree another session was
+working in, created a branch over it, then deleted that branch on the way out — orphaning
+a commit the other session had already made on it. The recovery was manual.
+
+### Claim the lane, or stop
+
+From the **primary checkout**, before creating anything:
+
+```bash
+LANE="<type>-<N>-<slug>"
+git worktree list --porcelain | grep -F "$LANE"   # expect: no output
+git branch -a --list "*-<N>-*"                    # expect: no output
+cat .claude/worktrees/.lanes/*.json 2>/dev/null   # who owns what, if anything
+```
+
+| What you see | What to do |
+|---|---|
+| All empty | Unclaimed. Continue. |
+| A worktree or branch carries this issue number | **Stop.** Another lane owns it, live or abandoned. Report the path, the branch, and the owning session from the lane file. |
+| A worktree exists with uncommitted work | **Stop.** Never enter it. Uncommitted work belongs to a session that is still thinking. |
+| `git worktree add` fails, for any reason | **Stop and report the error verbatim.** Something raced you between the check and the add. |
+
+The trailing dash in `*-<N>-*` is load-bearing: it keeps `#545` from matching
+`docs-5450-…`.
+
+### Create it
+
+```bash
+git fetch --prune origin
+git worktree add ".claude/worktrees/$LANE" -b "$LANE" origin/main
+mkdir -p .claude/worktrees/.lanes
+printf '{"lane":"%s","issue":%s,"session":"%s","started":"%s"}\n' \
+  "$LANE" "<N>" "${CLAUDE_CODE_SESSION_ID:-unknown}" "$(date -Iseconds)" \
+  > ".claude/worktrees/.lanes/$LANE.json"
+cd ".claude/worktrees/$LANE" && bun install
+```
+
+The lane file is what makes an abandoned worktree distinguishable from a live one, which
+`git worktree list` alone cannot tell you. It sits **beside** the worktrees, never inside
+one — a marker file inside a checkout shows up as untracked and trips this lane's own
+dirty-tree checks.
+
 `.claude/worktrees/` is the established location: `.gitignore` ignores `.claude/*` with a
-short un-ignore list that does not include it, so the worktree is invisible to
-`git status` in the primary checkout, and the repo's own guards prune that path when they
-walk the tree. `docs/development/release-process.md` uses the same directory for the
-hotfix lane.
+short un-ignore list that does not include it, so worktrees and lane files are invisible to
+`git status` in the primary checkout, and the repo's guards prune that path when they walk
+the tree. `docs/development/release-process.md` uses the same directory for the hotfix lane.
+
+### Three things this lane never does
+
+Absolute. Each is the exact move that orphaned the commit on 2026-08-27.
+
+1. **Never `git branch -d` or `-D`.** Not to clean up, not to retry, not even on a branch
+   you created seconds ago — a concurrent session may already have committed onto it, and
+   a deleted branch whose commit is unmerged leaves that commit reachable only by SHA.
+2. **Never `git worktree remove`, and never enter a worktree you did not create.**
+   Cleanup belongs to `/tidy`, after the merge.
+3. **Never improvise past a failed `worktree add`.** No `-2` suffix, no `--force`, no
+   reusing the directory that is already there. **The failure is the guard working** —
+   report it and stop.
+
+If you believe a lane is genuinely abandoned, say so with its lane file and let the human
+decide. Reclaiming one is not this command's call.
 
 ⚠️ **`bun install` per worktree is a full `node_modules`.** It is the cost of the
-isolation and it is worth paying, but three lanes is three copies. `bun install` exits 0
-while printing peer-dependency conflicts — quote any warning it prints, and say if it
-changed `bun.lock`.
+isolation and worth paying, but four lanes is four copies. `bun install` exits 0 while
+printing peer-dependency conflicts — quote any warning it prints, and say if it changed
+`bun.lock`.
 
 ## Step 3 — Implement
 
@@ -224,7 +289,8 @@ Then report and **stop**. Do not merge. Do not `--admin`. Report:
 
 | | |
 |---|---|
-| PR | number, URL, branch, worktree path |
+| Lane | `$LANE` — the branch and the worktree directory, which are the same string |
+| PR | number and URL |
 | Checks | every job and its state on the **head SHA** — not an earlier one |
 | Standards axis | finding count, and the disposition of each |
 | Spec axis | acceptance criteria met / partial / missing, quoted |
@@ -252,6 +318,10 @@ contended resource. **The box is.**
   Sequence the pg-touching pre-flights, or accept that a red there needs re-running alone
   before you believe it.
 - **Only one lane regenerates mutation tables at a time.** It rewrites source in place.
+- **A lane is claimed by its issue number, and the claim is visible in three places** —
+  the branch name, the worktree directory name (the same string) and
+  `.claude/worktrees/.lanes/`. Two lanes on one issue is not a case to disambiguate with a
+  suffix; it is a mistake, and step 2 stops on it.
 - Lanes are independent until merge. Two PRs touching the same file merge-conflict on the
   second merge, not during the lane — that is `/mattpocock-skills:resolving-merge-conflicts`
   territory, after the human's answer in step 8.

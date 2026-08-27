@@ -545,7 +545,20 @@ describe("loadFactCandidates — contradiction hints", () => {
     // bound array is the real pin: `not.toContain("JOIN")` alone would pass a
     // correlated EXISTS against the owner row.
     expect(counterpartCall.sql).toContain("f.visible_to && $2::text[]");
-    expect(counterpartCall.sql).not.toContain("JOIN");
+    // ⚠️ NARROWED at #5487, and this file already set the precedent once: the
+    // page statement's blanket no-JOIN gave way at #4914 (see the comment a few
+    // lines above) because the decay anchor legitimately joins `brain_episodes`
+    // for a timestamp, and "no tension-edge traversal" is what the invariant had
+    // always meant.
+    // The corroboration count now joins `brain_episodes` for the same kind of
+    // reason — it counts distinct SOURCES, which is a property of the episode —
+    // so a blanket no-JOIN can no longer express what this test is for. What
+    // must stay absent is a traversal onto the OWNER's row or its tension
+    // edges; that, plus the bound array above, is the leak this test exists
+    // for.
+    expect(counterpartCall.sql).not.toContain("JOIN brain_facts");
+    expect(counterpartCall.sql).not.toContain("in-tension-with");
+    expect(counterpartCall.sql).not.toContain("to_fact_id");
     expect(counterpartCall.params[1]).toEqual([
       "org",
       "role:admin",

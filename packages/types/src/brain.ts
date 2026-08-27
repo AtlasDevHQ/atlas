@@ -457,6 +457,7 @@ export interface BrainFactTensionVisible {
    * counterparts by it.
    */
   readonly validTo: string | null;
+  /** DISTINCT SOURCES backing the counterpart — see {@link BrainFactCandidate.corroborationCount}. */
   readonly corroborationCount: number;
   readonly provenance: BrainFactProvenanceView;
 }
@@ -565,10 +566,24 @@ export interface BrainFactCandidate {
    */
   readonly grantReadable: boolean;
   /**
-   * DISTINCT `provenance` edges (fact → episode) — how many separate pieces of
-   * evidence back this claim. Re-observation strengthens a claim by adding an
-   * edge, never by duplicating the fact, so this is the corroboration signal
-   * and not a row count.
+   * How many DISTINCT SOURCES back this claim — the count ADR-0036 §T9 lock 5
+   * requires be surfaced to the reviewer.
+   *
+   * A **source** is the authoring principal of an evidence episode
+   * (`source:source_actor`), so the same person restating the same claim
+   * strengthens it ONCE: self-echo is idempotent. Two different people are two.
+   * Re-observation strengthens a claim by adding a `provenance` edge, never by
+   * duplicating the fact, so this is never a row count either.
+   *
+   * ⚠️ **Until #5487 this was a count of EDGES**, i.e. of distinct evidence
+   * EPISODES, and every renderer already labelled it *"sources"* — so five
+   * messages from one person read to a reviewer as five corroborating sources.
+   * If you are comparing against a stored number from before that fix, expect
+   * this one to be the same or SMALLER, never larger.
+   *
+   * A machine reading has no authoring principal for this purpose and counts as
+   * itself: three warehouse snapshots are three, because a machine re-reading
+   * the world is a fresh reading rather than a restatement.
    */
   readonly corroborationCount: number;
   readonly provenance: BrainFactProvenanceView;
@@ -1682,7 +1697,7 @@ export interface BrainFactResult {
   /** `ts_headline` snippet when a lexical query ran, else null. */
   readonly snippet: string | null;
   readonly provenance: BrainFactProvenanceView;
-  /** DISTINCT `provenance` edges backing the claim — see {@link BrainFactCandidate.corroborationCount}. */
+  /** DISTINCT SOURCES backing the claim — see {@link BrainFactCandidate.corroborationCount}. */
   readonly corroborationCount: number;
   /**
    * Read-time staleness signal (#4914) — advisory temporal metadata, carried

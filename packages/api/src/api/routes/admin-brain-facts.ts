@@ -269,7 +269,7 @@ const listRoute = createRoute({
   tags: ["Admin — Brain Facts"],
   summary: "List fact candidates awaiting review",
   description:
-    "Returns a paginated page of company-brain fact candidates with everything the reconcile stage attached: the SPO claim, the provenance chain back to its episode, the derived grant, the corroboration count (distinct provenance edges), provisional-entity flags, and advisory in-tension-with hints. " +
+    "Returns a paginated page of company-brain fact candidates with everything the reconcile stage attached: the SPO claim, the provenance chain back to its episode, the derived grant, the corroboration count (distinct SOURCES, so one person restating a claim strengthens it once), provisional-entity flags, and advisory in-tension-with hints. " +
     "Results are gated by the reviewer's own fail-closed visibility predicate; the provenance episode is gated INDEPENDENTLY, so evidence a reviewer is not entitled to is reported as withheld rather than omitted. " +
     "`provenance.attribution` is gated on a THIRD grant — the one the fact held before publish-time widening. A reviewer who can see a claim only because it was restated under some principal they hold receives `{ visible: false }` instead of its first episode's `sourceId`, `actor` and `occurredAt`; anyone entitled to the original grant receives all three. " +
     "Block-class extraction failures (no provenance, no usable grant, unattributable actor, malformed claim) never appear here — they were refused upstream. Retracted facts are excluded.",

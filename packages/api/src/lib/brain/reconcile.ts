@@ -1114,8 +1114,8 @@ export const INSERT_FACT_SQL = `INSERT INTO brain_facts
  *    world and both are worth being able to read back.
  *
  * So this statement is UNCHANGED, and lock 5's residue lives one layer up in
- * {@link corroborationCountSql} — the number a reviewer actually reads, which
- * is now a count of distinct SOURCES over exactly these edges. The edge set
+ * `actor-identity.ts`'s `corroborationCountSql` — the number a reviewer reads,
+ * which is now a count of distinct SOURCES over exactly these edges. The edge set
  * stays complete; the weighting stops double-counting a voice. Every writer of
  * this statement (`extract.ts`, `warehouse-producer.ts`, `correction.ts`)
  * therefore behaves precisely as it did.

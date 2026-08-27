@@ -38,6 +38,7 @@ import { tables } from "./routes/tables";
 import { validateSqlRoute } from "./routes/validate-sql";
 import { explore } from "./routes/explore";
 import { restOperations } from "./routes/rest-operations";
+import { brainCorrections } from "./routes/brain-corrections";
 import { prompts } from "./routes/prompts";
 import { widget } from "./routes/widget";
 import { widgetLoader, widgetTypesLoader } from "./routes/widget-loader";
@@ -216,6 +217,7 @@ app.route("/api/v1/validate-sql", validateSqlRoute);
 // + origin=cli audit. Backs the `atlas explore` CLI command.
 app.route("/api/v1/explore", explore);
 app.route("/api/v1/rest-operations", restOperations);
+app.route("/api/v1/brain-corrections", brainCorrections);
 app.route("/api/v1/prompts", prompts);
 app.route("/widget", widget);
 app.route("/widget.js", widgetLoader);

@@ -99,7 +99,10 @@ const {
   correctFact,
   correctionTargetSql,
 } = await import("@atlas/api/lib/brain/correction");
-import type { CorrectionRequest } from "@atlas/api/lib/brain/correction";
+import type {
+  CorrectionIntentSource,
+  CorrectionRequest,
+} from "@atlas/api/lib/brain/correction";
 import {
   EPISODE_SOURCES,
   HUMAN_SOURCE,
@@ -671,16 +674,24 @@ class FakeCorrectionStore {
  * on purpose (`identity.ts`, "`alias` is REQUIRED"); a test helper is exactly
  * where a default belongs, since forgetting it here costs nothing and
  * forgetting it in production keys a corpus under the wrong identity function.
+ *
+ * `intent` (#5496) is defaulted on the same terms and for the same reason. The
+ * production field is required so a new ENTRY POINT has to declare how it
+ * established the human's intent; that argument says nothing about a test whose
+ * subject is the verb machinery, and threading a constant through ~90 call
+ * sites would only make the two tests that actually assert on `intent` harder
+ * to see. Those override it.
  */
 function run(
   store: FakeCorrectionStore,
-  request: Omit<CorrectionRequest, "ctx" | "vocabulary"> & {
+  request: Omit<CorrectionRequest, "ctx" | "vocabulary" | "intent"> & {
     ctx?: BrainPrincipalContext;
     vocabulary?: ClaimVocabulary;
+    intent?: CorrectionIntentSource;
   },
 ) {
   return correctFact(
-    { ctx: admin(), vocabulary: identityVocabulary, ...request },
+    { ctx: admin(), vocabulary: identityVocabulary, intent: "admin-ui", ...request },
     { withTransaction: store.runner, now: () => NOW, newCorrectionId: () => "test-uuid" },
   );
 }
@@ -2188,7 +2199,7 @@ describe("cardinality proposer", () => {
     store.hangCardinalityProposal = true;
 
     const outcome = await correctFact(
-      {
+      { intent: "admin-ui",
         ctx: admin(),
         vocabulary: identityVocabulary,
         factId: "old",
@@ -2296,7 +2307,7 @@ describe("cardinality proposer", () => {
     store.hangCardinalityProposal = true;
 
     const outcome = await correctFact(
-      {
+      { intent: "admin-ui",
         ctx: admin(),
         vocabulary: identityVocabulary,
         factId: "old",
@@ -2333,7 +2344,7 @@ describe("cardinality proposer", () => {
     store.delayedProposalRejects = true;
 
     const outcome = await correctFact(
-      {
+      { intent: "admin-ui",
         ctx: admin(),
         vocabulary: identityVocabulary,
         factId: "old",
@@ -2373,7 +2384,7 @@ describe("cardinality proposer", () => {
     late.delayCardinalityProposalMs = 120;
 
     await correctFact(
-      {
+      { intent: "admin-ui",
         ctx: admin(),
         vocabulary: identityVocabulary,
         factId: "old",

@@ -165,7 +165,9 @@ void mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
 }));
 
 const { runAgent } = await import("@atlas/api/lib/agent");
-const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
+const { defaultRegistry, confirmCapableRegistry } = await import(
+  "@atlas/api/lib/tools/registry"
+);
 
 let lastToolNames: string[] | undefined;
 
@@ -291,15 +293,33 @@ describe("#4936 — runAgent's default tool surface fails closed", () => {
     expect(names).toContain("searchBrain");
   });
 
-  it("positive control: passing `defaultRegistry` explicitly DOES carry both write verbs", async () => {
+  it("positive control: passing `confirmCapableRegistry` explicitly DOES carry both write verbs", async () => {
     // Without this the assertions above would pass just as happily against a
     // model that never receives tools at all, or against a registry rename
     // that made both names unreachable. The workspace surface is the one place
     // these tools belong, and it must still get them.
-    const names = await toolNamesForTurn({ tools: defaultRegistry });
+    //
+    // #5496 split that surface in two. `defaultRegistry` is now the
+    // dashboards-owning registry WITHOUT `correct_fact` (the embeddable widget,
+    // which renders no confirm card); `confirmCapableRegistry` is the
+    // first-party web app, which does. The positive control has to name the one
+    // that still carries both verbs, or it stops being a control.
+    const names = await toolNamesForTurn({ tools: confirmCapableRegistry });
 
     expect(names).toContain(BRAIN_WRITE_TOOL);
     expect(names).toContain(DASHBOARD_WRITE_TOOL);
+  });
+
+  it("#5496 — `defaultRegistry` carries the dashboard verb but NOT the brain write", async () => {
+    // The other half of the split, asserted so a revert that re-globalized
+    // `correct_fact` onto the widget's registry fails here rather than shipping.
+    const names = await toolNamesForTurn({ tools: defaultRegistry });
+
+    expect(names).toContain(DASHBOARD_WRITE_TOOL);
+    expect(
+      names,
+      "defaultRegistry carries correct_fact again — it is the registry the embeddable widget gets, and the widget renders no confirm card (#5496)",
+    ).not.toContain(BRAIN_WRITE_TOOL);
   });
 });
 

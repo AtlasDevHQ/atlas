@@ -1253,7 +1253,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       );
 
       const correction = await correctFact(
-        { vocabulary: identityVocabulary, ctx: adminCtx, factId: winner.id, verb: "retract", reason: "wrong side of the rename" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: adminCtx, factId: winner.id, verb: "retract", reason: "wrong side of the rename" },
         { now: CORRECTION_CLOCK },
       );
       if (correction.kind !== "corrected") {

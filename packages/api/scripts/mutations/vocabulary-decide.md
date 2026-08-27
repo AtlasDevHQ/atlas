@@ -4,7 +4,7 @@
 # Mutations the alias-decision suites catch
 
 Source: `src/lib/brain/vocabulary-decide.ts`, plus the four call sites that consume a
-`ClaimVocabulary` (`src/lib/brain/extract.ts`, `src/lib/tools/correct-fact.ts`, and both
+`ClaimVocabulary` (`src/lib/brain/extract.ts`, `src/api/routes/brain-corrections.ts`, and both
 `correctFact` entry points in `src/api/routes/admin-brain-facts.ts`). Mutation list:
 `scripts/mutations/vocabulary-decide.mutations.ts`.
 
@@ -91,7 +91,7 @@ be a fabricated measurement.
 
 Every number is the count of tests that FAIL in that suite under that mutation, measured one mutation at a time against an otherwise clean tree. A `0` means the suite does not catch it — see the notes for whether that is honest or a gap.
 
-| Mutation | decide-pg | correct-fact-tool | admin-route |
+| Mutation | decide-pg | confirm-route | admin-route |
 |---|---|---|---|
 | rejection memory dropped (`rejected` falls through to the insert) | 4 | 0 | 0 |
 | rejection-memory identity made ORDERED | 2 | 0 | 0 |
@@ -132,13 +132,13 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the eligible-but-refused row stops counting as `queued` | 1 | 0 | 0 |
 | `deduped` and `refused` swapped | 1 | 0 | 0 |
 | the ingest path reverts to `identityVocabulary` | 3 | 0 | 0 |
-| the correctFact TOOL reverts to `identityVocabulary` | 1 | 1 | 0 |
+| the confirm ROUTE reverts to `identityVocabulary` | 1 | 1 | 0 |
 | the admin route reverts to `identityVocabulary` | 1 | 0 | 1 |
 | the pair lookup loses its `slot_position` arm | 1 | 0 | 0 |
 | `approverEntitled` narrowed to owner only (admins locked out) | 1 | 0 | 0 |
 | `resolveDirection`'s same-norm conjunct dropped | 1 | 0 | 0 |
 | the ingest load DEGRADED to the empty vocabulary on failure | 2 | 0 | 0 |
-| the correctFact TOOL hands over an inline identity vocabulary | 0 | 1 | 0 |
+| the confirm ROUTE hands over an inline identity vocabulary | 0 | 1 | 0 |
 | the admin route hands over an inline identity vocabulary | 0 | 0 | 1 |
 | `recordedApprover` collapses every human onto the local-operator sentinel | 3 | 0 | 0 |
 | the machine-may-not-reject refusal downgraded to `not-entitled` | 1 | 0 | 0 |
@@ -147,7 +147,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the unreadable-settings-tier latch dropped (#5162) | 2 | 0 | 0 |
 | the settings-unreadable refusal message replaced by the policy one (#5162) | 1 | 0 | 0 |
 
-Suite sizes: **decide-pg** 85 tests (`src/lib/brain/__tests__/vocabulary-decide-pg.test.ts`) · **correct-fact-tool** 15 tests (`src/lib/tools/__tests__/correct-fact-tool.test.ts`) · **admin-route** 66 tests (`src/api/routes/__tests__/admin-brain-facts.test.ts`).
+Suite sizes: **decide-pg** 85 tests (`src/lib/brain/__tests__/vocabulary-decide-pg.test.ts`) · **confirm-route** 17 tests (`src/api/routes/__tests__/brain-corrections.test.ts`) · **admin-route** 66 tests (`src/api/routes/__tests__/admin-brain-facts.test.ts`).
 
 ## Notes
 
@@ -190,13 +190,13 @@ Suite sizes: **decide-pg** 85 tests (`src/lib/brain/__tests__/vocabulary-decide-
 - **the eligible-but-refused row stops counting as `queued`** — That row IS queued and a human still has to decide it. Counting it under `refused` alone makes `queued` stop meaning *rows awaiting review*, which is the field's documented promise and the number a producer dashboard reads.
 - **`deduped` and `refused` swapped** — BOTH increments, because a swap is not two mutations. The second edit is anchored on the `case "queued"` that follows it, so it cannot pick the `already_pending` arm the first edit just rewrote — and the two are order-independent for that reason.
 - **the ingest path reverts to `identityVocabulary`** — TWO edits, because a revert needs the import: `extract.ts` reaches `identity.ts` through a TYPE-only import today, and the suite's source-level tripwire matches on the IMPORT rather than on any mention (the prose explaining why a load failure is NOT degraded would otherwise trip it). Behaviourally the whole episode keys un-aliased — which no fixture could see before #5023, since every fixture workspace had an empty vocabulary and the two answers were byte-identical.
-- **the correctFact TOOL reverts to `identityVocabulary`** — The `loadWorkspaceVocabulary` import is deliberately LEFT in place: the tripwire first asserts each consumer still loads a vocabulary at all, and removing it would trip that backstop instead of the assertion this row is about. The behavioural coverage for this site is the `correct-fact-tool` column beside it, which is why that suite is a column at all.
+- **the confirm ROUTE reverts to `identityVocabulary`** — The `loadWorkspaceVocabulary` import is deliberately LEFT in place: the tripwire first asserts each consumer still loads a vocabulary at all, and removing it would trip that backstop instead of the assertion this row is about. The behavioural coverage for this site is the `confirm-route` column beside it, which is why that suite is a column at all.
 - **the admin route reverts to `identityVocabulary`** — BOTH admin call sites, spelled out because *the admin route* names two — the retract verb and the correct verb are separate `correctFact` calls with an identical `vocabulary:` line, so each is anchored on its own surrounding lines. Reverting one alone is a different mutation with a different number.
 - **the pair lookup loses its `slot_position` arm** — `$2` is kept BOUND rather than removed, so the failure is the cross-position collision the label names and not a parameter-arity error that would fail the whole suite on a bind. The three positions are independent vocabularies: a pair aliased at `subject` then suppresses the same pair proposed at `predicate`.
 - **`approverEntitled` narrowed to owner only (admins locked out)** — The fail-closed direction of the same bar, and ADR-0037 §6 says owner OR admin — `acl.ts` spells the identical pair for the audit override. A workspace whose only owner has left cannot decide its vocabulary at all.
 - **`resolveDirection`'s same-norm conjunct dropped** — `pair.includes` passes for a direction whose two sides are the SAME norm — it is in the pair, twice. Without this conjunct a self-edge reaches `approveAliasEdge`, where the schema's `ck_..._not_self` refuses it by throwing instead of the seam refusing it by returning.
 - **the ingest load DEGRADED to the empty vocabulary on failure** — The failure semantics `extract.ts` spends twenty lines forbidding. It carries the import edit for the same reason the revert above does, so it trips the tripwire too — the distinguishing half is that the load still SUCCEEDS on a healthy workspace, so the alias wiring keeps working and only the throw path changes. The degrade keys the whole episode into the slot the vocabulary exists to move it OUT of: an under-match today, an over-match the moment an entry merges two spellings, and neither visible at rest.
-- **the correctFact TOOL hands over an inline identity vocabulary** — NO import edit, and that is the whole point of the row: this is the revert a source-level tripwire cannot see. The `loadWorkspaceVocabulary` import survives (unused), so the tripwire's `includes` check still passes and only a test asserting the vocabulary the caller actually handed over can kill it.
+- **the confirm ROUTE hands over an inline identity vocabulary** — NO import edit, and that is the whole point of the row: this is the revert a source-level tripwire cannot see. The `loadWorkspaceVocabulary` import survives (unused), so the tripwire's `includes` check still passes and only a test asserting the vocabulary the caller actually handed over can kill it.
 - **the admin route hands over an inline identity vocabulary** — Both admin sites again, and no import edit — the tripwire-invisible form. On the retract verb the value is loaded and never read, so only the correct/supersede site changes an answer; that asymmetry is why reverting one site alone would measure something different.
 - **`recordedApprover` collapses every human onto the local-operator sentinel** — The `ctx.userId ?? SENTINEL` spelling the switch exists to refuse, reached from the other side: every authenticated approver is recorded as the declared local operator, so `approved_by` stops naming who re-keyed the corpus without ever being NULL.
 - **the machine-may-not-reject refusal downgraded to `not-entitled`** — The refusal still refuses; it says the wrong thing. `not-entitled` is a 403 a DIFFERENT user could satisfy, and this is *no actor of this class may ever do this* — the distinction #5025's route maps to a response, and the reason the member exists rather than reusing `not-entitled`.

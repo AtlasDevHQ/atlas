@@ -572,7 +572,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       const id = await seedFact({ subject: "RetractMe", episodeId: ep });
 
       const first = await correctFact(
-        { vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "retract", reason: "wrong on arrival" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "retract", reason: "wrong on arrival" },
         { withTransaction: poolTx },
       );
       if (first.kind !== "corrected") throw new Error(`expected corrected, got ${first.kind}`);
@@ -616,7 +616,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       // Second call matches nothing: `invalidated_at IS NULL` already failed —
       // indistinguishable from absence.
       const second = await correctFact(
-        { vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "retract" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "retract" },
         { withTransaction: poolTx },
       );
       expect(second.kind).toBe("not-found");
@@ -641,7 +641,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       );
 
       const outcome = await correctFact(
-        { vocabulary: identityVocabulary, ctx: reviewer(), factId: premise, verb: "retract" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId: premise, verb: "retract" },
         { withTransaction: poolTx },
       );
       if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
@@ -680,7 +680,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       });
 
       const outcome = await correctFact(
-        {
+        { intent: "admin-ui",
           vocabulary: identityVocabulary,
           ctx: reviewer(),
           factId: oldId,
@@ -752,7 +752,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       const id = await seedFact({ subject: "PinMe", episodeId: ep, status: "published" });
 
       const outcome = await correctFact(
-        { vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "pin" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "pin" },
         { withTransaction: poolTx },
       );
       if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
@@ -815,7 +815,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       ]);
 
       const refused = await correctFact(
-        { vocabulary: identityVocabulary, ctx: reviewer(), factId: closed, verb: "pin" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId: closed, verb: "pin" },
         { withTransaction: poolTx },
       );
       expect(refused).toMatchObject({
@@ -837,7 +837,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       // The other side of the same boundary: a scheduled end is a live claim,
       // and `brainFactCurrentClause` still serves it — so the vouch lands.
       const admitted = await correctFact(
-        { vocabulary: identityVocabulary, ctx: reviewer(), factId: scheduled, verb: "pin" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId: scheduled, verb: "pin" },
         { withTransaction: poolTx },
       );
       expect(admitted.kind).toBe("corrected");
@@ -882,7 +882,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       });
 
       const outcome = await correctFact(
-        {
+        { intent: "admin-ui",
           vocabulary: identityVocabulary,
           ctx: reviewer(),
           factId: oldId,
@@ -951,7 +951,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       ]);
 
       const outcome = await correctFact(
-        {
+        { intent: "admin-ui",
           vocabulary: identityVocabulary,
           ctx: reviewer(),
           factId: oldId,
@@ -997,7 +997,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       });
 
       const asOutsider = await correctFact(
-        { vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "retract" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "retract" },
         { withTransaction: poolTx },
       );
       expect(asOutsider.kind).toBe("not-found");
@@ -1010,7 +1010,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       // A MEMBER who can see it still lacks the verb: corrections land
       // authoritative immediately, so they carry the review gate's bar.
       const asMember = await correctFact(
-        { vocabulary: identityVocabulary, ctx: insider(), factId: id, verb: "retract" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: insider(), factId: id, verb: "retract" },
         { withTransaction: poolTx },
       );
       expect(asMember).toMatchObject({
@@ -1027,7 +1027,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         audienceIds: ["private-channel"],
       };
       const allowed = await correctFact(
-        { vocabulary: identityVocabulary, ctx: insiderAdmin, factId: id, verb: "retract" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: insiderAdmin, factId: id, verb: "retract" },
         { withTransaction: poolTx },
       );
       expect(allowed.kind).toBe("corrected");
@@ -1040,7 +1040,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     async () => {
       const absent = "00000000-0000-4000-8000-000000000000";
       const outcome = await correctFact(
-        { vocabulary: identityVocabulary, ctx: reviewer(), factId: absent, verb: "retract" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId: absent, verb: "retract" },
         { withTransaction: poolTx },
       );
       expect(outcome.kind).toBe("not-found");

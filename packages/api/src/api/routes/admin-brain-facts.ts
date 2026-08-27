@@ -113,12 +113,7 @@ import {
   RETIRABLE_PAGE_MAX,
   loadRetirableObservations,
 } from "@atlas/api/lib/brain/retirable";
-import {
-  CORRECTION_REFUSAL_REASONS,
-  correctFact,
-  type CorrectionOutcome,
-  type CorrectionRefusalReason,
-} from "@atlas/api/lib/brain/correction";
+import { correctFact, type CorrectionOutcome } from "@atlas/api/lib/brain/correction";
 import {
   loadFactOversight,
   loadSupersessionPreview,
@@ -169,6 +164,7 @@ import {
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
 import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
+import { refusalStatus, correctionNotFoundBody } from "./shared-correction";
 
 const log = createLogger("admin-brain-facts");
 
@@ -638,59 +634,6 @@ const eraseActorIdentityRoute = createRoute({
   },
 });
 
-/**
- * Correction refusal → HTTP status. Request-shape mistakes are 400s, authority
- * is 403, and target-state mismatches are 409s — the state can change out from
- * under the client, so "try again after fixing the target" is the semantics.
- */
-function refusalStatus(reason: CorrectionRefusalReason): 400 | 403 | 409 {
-  switch (reason) {
-    case CORRECTION_REFUSAL_REASONS.notAuthorized:
-      return 403;
-    case CORRECTION_REFUSAL_REASONS.replacementMissing:
-    case CORRECTION_REFUSAL_REASONS.replacementIdentical:
-    // `replacementMalformed` is a request-shape mistake and not a target-state
-    // one (#5047): the target is fine, the replacement TEXT asserts nothing.
-    // Retrying the identical request can never succeed, which is what separates
-    // it from every 409 below — those describe a target that can change.
-    case CORRECTION_REFUSAL_REASONS.replacementMalformed:
-      return 400;
-    // 409 and not 501/503: the client-observable contract is this arm's — "the
-    // verb cannot apply to this target". For `unrecognizedSourceKind` it is not
-    // permanent; once this deployment runs a vocabulary that knows the kind the
-    // correct gate takes over (tier-1 refusal if the kind is warehouse-class,
-    // an ordinary correction otherwise). The retry condition is a DEPLOY rather
-    // than anything the client or the target can change, which is unusual
-    // though not unique here. `warehouseTarget` is permanent for the verb it
-    // refused — but since #5331 it is no longer a dead end for the FACT: the
-    // same row admits `retract`, and the refusal message names it, so the 409
-    // carries a next step rather than only a no. `malformedSourceKind` is a
-    // stored-data defect:
-    // still a target-state 409, but no deploy resolves it (#4964).
-    case CORRECTION_REFUSAL_REASONS.unrecognizedSourceKind:
-    case CORRECTION_REFUSAL_REASONS.malformedSourceKind:
-    case CORRECTION_REFUSAL_REASONS.warehouseTarget:
-    case CORRECTION_REFUSAL_REASONS.targetNotPublished:
-    case CORRECTION_REFUSAL_REASONS.validityAlreadyClosed:
-    case CORRECTION_REFUSAL_REASONS.targetNotCurrent:
-    case CORRECTION_REFUSAL_REASONS.replacementUnpublishable:
-      return 409;
-    default: {
-      const unexpected: never = reason;
-      throw new Error(`Unhandled correction refusal reason: ${JSON.stringify(unexpected)}`);
-    }
-  }
-}
-
-/** The one 404 body for the deliberately indistinguishable trio. */
-function correctionNotFoundBody(requestId: string) {
-  return {
-    error: "not_found",
-    message:
-      "That fact could not be corrected. It may not exist, may already be retracted, or may not be visible to you.",
-    requestId,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Router
@@ -882,6 +825,12 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
             ctx,
             factId,
             verb: "retract",
+            // #5496 — this route IS the human's explicit act: an admin clicked
+            // Retract in the admin brain UI, with no agent between the intent
+            // and the request. It is deliberately NOT routed through the chat
+            // surface's confirm card; confirming a click you just made is
+            // ceremony, not evidence.
+            intent: "admin-ui",
             requestId,
             vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),
           }),
@@ -970,6 +919,9 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
             ctx,
             factId,
             verb: body.verb,
+            // #5496 — see the retract route above: the admin UI click is the
+            // explicit act, so this entry point establishes intent directly.
+            intent: "admin-ui",
             reason: body.reason,
             // Always a valid Date past the body schema's `.datetime()` gate;
             // the machinery keeps a warn-and-degrade backstop regardless.

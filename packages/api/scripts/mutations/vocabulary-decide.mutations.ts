@@ -76,7 +76,15 @@ import type { MutationSpec } from "../mutation-spec";
 
 const SOURCE = "src/lib/brain/vocabulary-decide.ts";
 const EXTRACT = "src/lib/brain/extract.ts";
-const CORRECT_FACT_TOOL = "src/lib/tools/correct-fact.ts";
+/**
+ * #5496 moved this consumer. `lib/tools/correct-fact.ts` used to load the
+ * vocabulary and call `correctFact`; it now STAGES a correction for a human to
+ * confirm and loads nothing, because a vocabulary is workspace STATE that may
+ * have moved between staging and confirming. The confirm endpoint loads it live,
+ * so that is where the anchors are — the row's SUBJECT is unchanged (a chat-path
+ * consumer reverting to the empty vocabulary), only its address moved.
+ */
+const CONFIRM_ROUTE = "src/api/routes/brain-corrections.ts";
 const ADMIN_ROUTE = "src/api/routes/admin-brain-facts.ts";
 
 /** `findProposalByPair`'s WHERE — 0190's unordered-pair identity, asked in SQL. */
@@ -107,8 +115,8 @@ const EXTRACT_IDENTITY_IMPORT = {
   newString: `import { identityVocabulary, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";`,
 } as const;
 
-const CORRECT_FACT_IDENTITY_IMPORT = {
-  file: CORRECT_FACT_TOOL,
+const CONFIRM_ROUTE_IDENTITY_IMPORT = {
+  file: CONFIRM_ROUTE,
   oldString: `import {
   VocabularyClosureError,
   loadWorkspaceVocabulary,
@@ -130,7 +138,7 @@ import { identityVocabulary } from "@atlas/api/lib/brain/identity";`,
 /** The retract route's `correctFact` call — the pair with the one below is why
  * both are anchored on surrounding lines rather than on the identical
  * `vocabulary:` line they share. */
-const ADMIN_RETRACT_VOCABULARY = `            verb: "retract",
+const ADMIN_RETRACT_VOCABULARY = `            intent: "admin-ui",
             requestId,
             vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),`;
 
@@ -152,12 +160,12 @@ const spec: MutationSpec = {
     // with a note naming these two files as the falsifier, which is exactly the
     // shape #5061's own brief warns about: a `0` justified by prose pointing at
     // a test that exists. If the falsifier exists, it is a COLUMN.
-    { name: "correct-fact-tool", file: "src/lib/tools/__tests__/correct-fact-tool.test.ts" },
+    { name: "confirm-route", file: "src/api/routes/__tests__/brain-corrections.test.ts" },
     { name: "admin-route", file: "src/api/routes/__tests__/admin-brain-facts.test.ts" },
   ],
   preamble: `
 Source: \`${SOURCE}\`, plus the four call sites that consume a
-\`ClaimVocabulary\` (\`${EXTRACT}\`, \`${CORRECT_FACT_TOOL}\`, and both
+\`ClaimVocabulary\` (\`${EXTRACT}\`, \`${CONFIRM_ROUTE}\`, and both
 \`correctFact\` entry points in \`${ADMIN_ROUTE}\`). Mutation list:
 \`scripts/mutations/vocabulary-decide.mutations.ts\`.
 
@@ -724,16 +732,16 @@ be a fabricated measurement.
       note: "TWO edits, because a revert needs the import: `extract.ts` reaches `identity.ts` through a TYPE-only import today, and the suite's source-level tripwire matches on the IMPORT rather than on any mention (the prose explaining why a load failure is NOT degraded would otherwise trip it). Behaviourally the whole episode keys un-aliased — which no fixture could see before #5023, since every fixture workspace had an empty vocabulary and the two answers were byte-identical.",
     },
     {
-      label: "the correctFact TOOL reverts to `identityVocabulary`",
+      label: "the confirm ROUTE reverts to `identityVocabulary`",
       edits: [
-        CORRECT_FACT_IDENTITY_IMPORT,
+        CONFIRM_ROUTE_IDENTITY_IMPORT,
         {
-          file: CORRECT_FACT_TOOL,
-          oldString: `        vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),`,
-          newString: `        vocabulary: identityVocabulary,`,
+          file: CONFIRM_ROUTE,
+          oldString: `          vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),`,
+          newString: `          vocabulary: identityVocabulary,`,
         },
       ],
-      note: "The `loadWorkspaceVocabulary` import is deliberately LEFT in place: the tripwire first asserts each consumer still loads a vocabulary at all, and removing it would trip that backstop instead of the assertion this row is about. The behavioural coverage for this site is the `correct-fact-tool` column beside it, which is why that suite is a column at all.",
+      note: "The `loadWorkspaceVocabulary` import is deliberately LEFT in place: the tripwire first asserts each consumer still loads a vocabulary at all, and removing it would trip that backstop instead of the assertion this row is about. The behavioural coverage for this site is the `confirm-route` column beside it, which is why that suite is a column at all.",
     },
     {
       label: "the admin route reverts to `identityVocabulary`",
@@ -742,7 +750,7 @@ be a fabricated measurement.
         {
           file: ADMIN_ROUTE,
           oldString: ADMIN_RETRACT_VOCABULARY,
-          newString: `            verb: "retract",
+          newString: `            intent: "admin-ui",
             requestId,
             vocabulary: identityVocabulary,`,
         },
@@ -805,12 +813,12 @@ be a fabricated measurement.
       note: "The failure semantics `extract.ts` spends twenty lines forbidding. It carries the import edit for the same reason the revert above does, so it trips the tripwire too — the distinguishing half is that the load still SUCCEEDS on a healthy workspace, so the alias wiring keeps working and only the throw path changes. The degrade keys the whole episode into the slot the vocabulary exists to move it OUT of: an under-match today, an over-match the moment an entry merges two spellings, and neither visible at rest.",
     },
     {
-      label: "the correctFact TOOL hands over an inline identity vocabulary",
+      label: "the confirm ROUTE hands over an inline identity vocabulary",
       edits: [
         {
-          file: CORRECT_FACT_TOOL,
-          oldString: `        vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),`,
-          newString: `        vocabulary: ${INLINE_IDENTITY},`,
+          file: CONFIRM_ROUTE,
+          oldString: `          vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),`,
+          newString: `          vocabulary: ${INLINE_IDENTITY},`,
         },
       ],
       note: "NO import edit, and that is the whole point of the row: this is the revert a source-level tripwire cannot see. The `loadWorkspaceVocabulary` import survives (unused), so the tripwire's `includes` check still passes and only a test asserting the vocabulary the caller actually handed over can kill it.",
@@ -821,7 +829,7 @@ be a fabricated measurement.
         {
           file: ADMIN_ROUTE,
           oldString: ADMIN_RETRACT_VOCABULARY,
-          newString: `            verb: "retract",
+          newString: `            intent: "admin-ui",
             requestId,
             vocabulary: ${INLINE_IDENTITY},`,
         },

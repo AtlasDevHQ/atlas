@@ -454,6 +454,13 @@ export function useAtlasTransport(
       // reads only. Set on the transport, so the durable-resume re-target in
       // `prepareSendMessagesRequest` carries it too — a resumed turn rebuilds
       // the tool surface and has to re-declare.
+      //
+      // #5496 — this ONE header now also gates `correct_fact`, which stages onto
+      // its own confirm card in this same app. Both verbs ask the same question
+      // ("can this client finish a confirm-before-write flow?"), so they share
+      // the answer rather than shipping a second header that means the same
+      // thing. Split them only if a surface ever renders one card and not the
+      // other.
       "x-atlas-write-confirm-ui": "1",
     };
     return new DefaultChatTransport({

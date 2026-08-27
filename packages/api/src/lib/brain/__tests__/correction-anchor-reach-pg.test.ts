@@ -260,7 +260,7 @@ describeIfPg("the correction lane's anchor arm (real Postgres, #5467)", () => {
     const target = await seedFact(workspaceId, RAISE, "8M", `${workspaceId}-raise-8m`);
 
     const outcome = await correctFact(
-      {
+      { intent: "admin-ui",
         vocabulary: identityVocabulary,
         ctx: reviewer(workspaceId),
         factId: target,

@@ -840,6 +840,23 @@ chat.openapi(chatRoute, async (c) => {
     // here and stamped into both request-context frames below.
     const writeConfirmUi = readsWriteConfirmUiHeader(req.headers);
 
+    // #5496 — the SAME capability decides whether `correct_fact` is offered, and
+    // it is deliberately the same flag rather than a second header.
+    //
+    // Both verbs stage onto a confirm card and both are dead-ended on a surface
+    // that cannot render one. This branch originally introduced its own
+    // `x-atlas-surface` for the correction card while #5495 was independently
+    // introducing `x-atlas-write-confirm-ui` for the REST banner — two headers
+    // for one question ("can this client finish a confirm-before-write flow?"),
+    // which is the drift a reader would have to reconcile forever after. One
+    // header, one meaning; `packages/web` ships both cards and every other
+    // surface ships neither, so nothing is lost by fusing them.
+    //
+    // If a surface ever renders ONE card and not the other, split the signal
+    // then — the way #5496 split `correct_fact` off `dashboardUrlResolver` — and
+    // do it against a real case rather than a hypothetical one.
+    const rendersConfirmations = writeConfirmUi;
+
     // Bind user to AsyncLocalStorage so downstream code (logQueryAudit, etc.)
     // has access to user identity. The middleware already set up requestId context;
     // this nested call adds the user after inline auth completes.
@@ -1528,7 +1545,7 @@ chat.openapi(chatRoute, async (c) => {
           if (includeActions) {
             try {
               const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
-              const result = await buildRegistry({ includeActions });
+              const result = await buildRegistry({ includeActions, rendersConfirmations });
               toolRegistry = result.registry;
               warnings.push(...result.warnings);
             } catch (err) {
@@ -1601,8 +1618,15 @@ chat.openapi(chatRoute, async (c) => {
           // (actions off, no plugin tools, not bound), which is exactly why it
           // cannot be left implicit. Rationale: the `correct_fact` gate comment
           // in lib/tools/registry.ts.
-          const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
-          const resolvedToolRegistry = toolRegistry ?? defaultRegistry;
+          // #5496 — two dashboards-owning singletons now, differing by
+          // `correct_fact` alone. The widget lands on `defaultRegistry`; the
+          // first-party web app opts up. Fail-closed: an unrecognized or absent
+          // surface header takes the left branch.
+          const { defaultRegistry, confirmCapableRegistry } = await import(
+            "@atlas/api/lib/tools/registry"
+          );
+          const resolvedToolRegistry =
+            toolRegistry ?? (rendersConfirmations ? confirmCapableRegistry : defaultRegistry);
 
           // #1988 B5 — out-array the agent's preflight loaders push into
           // when the org semantic layer or learned-patterns lookup fail.
@@ -2056,12 +2080,19 @@ chat.openapi(chatResumeRoute, async (c) => {
     }
 
     const atlasMode = resolveMode(req.headers.get("cookie"), req.headers.get("x-atlas-mode"), authResult);
+
     const conversationId = c.req.param("conversationId");
     // #5495 — a resumed turn rebuilds the tool surface, so it must re-declare
     // the capability too. Omitting it here would silently NARROW a web-app
     // resume to read-only; asserting it unconditionally would silently WIDEN a
     // widget resume back to the bug. Read from the resume request's own header.
     const writeConfirmUi = readsWriteConfirmUiHeader(req.headers);
+
+    // #5496 — and it gates `correct_fact` here for the same reason it does on
+    // the initial turn: one capability, one flag. Read from THIS request rather
+    // than the checkpoint, so a client that no longer declares the card does not
+    // keep the verb across the resume boundary.
+    const rendersConfirmations = writeConfirmUi;
 
     return withRequestContext(
       {
@@ -2203,7 +2234,7 @@ chat.openapi(chatResumeRoute, async (c) => {
           if (includeActions) {
             try {
               const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
-              const result = await buildRegistry({ includeActions });
+              const result = await buildRegistry({ includeActions, rendersConfirmations });
               toolRegistry = result.registry;
               resumeWarnings.push(...result.warnings);
             } catch (err) {
@@ -2249,10 +2280,14 @@ chat.openapi(chatResumeRoute, async (c) => {
           // resolves `buildHeadlessRegistry()`. The two resume paths must not
           // share one implicit default — that is how the widening went
           // unnoticed.
-          const { defaultRegistry: workspaceRegistry } = await import(
+          // #5496 — same two-singleton choice as the initial turn above. A
+          // resume must not widen the tool surface relative to the turn it
+          // resumes, which is exactly the widening #4936 caught one level up.
+          const { defaultRegistry: workspaceRegistry, confirmCapableRegistry } = await import(
             "@atlas/api/lib/tools/registry"
           );
-          const resolvedToolRegistry = toolRegistry ?? workspaceRegistry;
+          const resolvedToolRegistry =
+            toolRegistry ?? (rendersConfirmations ? confirmCapableRegistry : workspaceRegistry);
 
           // Re-enter the agent loop from the checkpoint. `messages: []` is inert
           // — the `resume.transcript` is the model input; the loop continues from

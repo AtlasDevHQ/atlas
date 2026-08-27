@@ -318,7 +318,7 @@ describeIfPg("retirement listing vs review queue (real Postgres)", () => {
     // about the warehouse. If this ever refuses, the retirement listing is
     // pointing an operator at rows they cannot act on.
     const outcome = await correctFact(
-      {
+      { intent: "admin-ui",
         vocabulary: identityVocabulary,
         ctx: reviewer(),
         factId: strandedId,

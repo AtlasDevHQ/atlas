@@ -553,7 +553,7 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
 
       const outcome = await asRequest("req-cond2-supersede", () =>
         correctFact(
-          {
+          { intent: "admin-ui",
             vocabulary: identityVocabulary,
             ctx: reviewer(),
             factId: targetId,
@@ -710,7 +710,7 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
 
       await asRequest("req-cond2-retire", () =>
         correctFact(
-          {
+          { intent: "admin-ui",
             vocabulary: identityVocabulary,
             ctx: reviewer(),
             factId: retiredId,
@@ -827,7 +827,7 @@ describeIfPg("finish condition 2 — a human name on every claim (#5424)", () =>
 
       const outcome = await asRequest("req-cond2-vouch", () =>
         correctFact(
-          {
+          { intent: "admin-ui",
             vocabulary: identityVocabulary,
             ctx: reviewer(),
             factId,

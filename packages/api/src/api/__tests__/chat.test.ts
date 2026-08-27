@@ -105,6 +105,7 @@ void mock.module("@atlas/api/lib/startup", () => ({
 // depend on its actual behaviour) while only the DB-backed probe is faked.
 import * as realWorkspaceCapability from "@atlas/api/lib/workspace-capability";
 import type { CapabilityProbe, WorkspaceCapability } from "@atlas/api/lib/workspace-capability";
+import { WRITE_CONFIRM_UI_HEADER } from "@atlas/api/lib/openapi/rest-write-confirm";
 
 /** Defaults to a datasource-capable workspace so every other test is unaffected. */
 const mockProbeWorkspaceCapabilities: Mock<(workspaceId: string) => Promise<CapabilityProbe>> =
@@ -355,10 +356,20 @@ describe("POST /api/v1/chat", () => {
     else delete process.env.ATLAS_ACTIONS_ENABLED;
   });
 
-  function makeRequest(body?: unknown): Request {
+  /**
+   * `surface: "workspace"` sends the `x-atlas-write-confirm-ui` header the
+   * first-party web app sends — the only thing that separates a web-app turn
+   * from an embeddable-widget turn, which are otherwise identical on this
+   * route. One header answers it for BOTH confirm-gated verbs: the REST write
+   * banner (#5495) and the correction card (#5496).
+   */
+  function makeRequest(body?: unknown, opts: { surface?: "workspace" } = {}): Request {
     return new Request("http://localhost/api/v1/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(opts.surface ? { [WRITE_CONFIRM_UI_HEADER]: "1" } : {}),
+      },
       body: JSON.stringify(
         body ?? {
           messages: [
@@ -1682,7 +1693,7 @@ describe("POST /api/v1/chat", () => {
 
   it("does not pass action tools when ATLAS_ACTIONS_ENABLED is unset", async () => {
     delete process.env.ATLAS_ACTIONS_ENABLED;
-    const response = await app.fetch(makeRequest());
+    const response = await app.fetch(makeRequest(undefined, { surface: "workspace" }));
     expect(response.status).toBe(200);
     expect(mockRunAgent).toHaveBeenCalledTimes(1);
     const names = toolNamesFromRunAgentCall();
@@ -1694,8 +1705,30 @@ describe("POST /api/v1/chat", () => {
     // they belong. Without this, over-correcting the route's fallback to
     // `nonDashboardRegistry` would silently strip dashboards and fact
     // correction from web chat and every test in the fix would stay green.
+    //
+    // #5496 — `correct_fact` now additionally requires the surface CLAIM this
+    // request sends, because the widget shares this route. The next test is the
+    // other half.
     expect(names).toContain("createDashboard");
     expect(names).toContain("correct_fact");
+  });
+
+  it("#5496 — a turn with no surface claim is not offered correct_fact", async () => {
+    // The embeddable widget (`@useatlas/react`) POSTs the same route with the
+    // same body and no `x-atlas-write-confirm-ui` header. It renders no card, so
+    // offering it a verb that stages onto one would produce a correction nobody
+    // can complete — the "stage and never confirm" shape tracked as #5495.
+    delete process.env.ATLAS_ACTIONS_ENABLED;
+    const response = await app.fetch(makeRequest());
+    expect(response.status).toBe(200);
+    const names = toolNamesFromRunAgentCall();
+    expect(
+      names,
+      "a turn with no `x-atlas-write-confirm-ui` claim was offered correct_fact — the widget reaches this same route and has no confirm card (#5496)",
+    ).not.toContain("correct_fact");
+    // A capability removal, not a stripped surface: everything else is intact.
+    expect(names).toContain("createDashboard");
+    expect(names).toContain("executeSQL");
   });
 
   it("does not pass action tools when ATLAS_ACTIONS_ENABLED=false", async () => {

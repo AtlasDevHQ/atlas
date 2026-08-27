@@ -33,16 +33,31 @@
  *   - {@link burnRestConfirmNonce} consumes the nonce so a replay of the same
  *     token is rejected — single-use.
  *
+ * Since #5496 the scheme itself is NOT written here: it lives in
+ * `lib/confirm-token.ts`, which `lib/brain/correction-confirm.ts` shares. The
+ * three functions above are this gate's thin specialization of it (its `typ`
+ * domain separator, its TTL env var, and the four things it binds). That is what
+ * keeps the two gates one implementation rather than two copies of a security
+ * primitive, only one of which anybody reads.
+ *
  * The token is OPAQUE to the banner: it lives inside the `confirm` payload, which
  * the banner POSTs verbatim. Mirror this field on the web-local
  * `RestWriteConfirmRequest` (`packages/web/src/ui/lib/rest-operation-types.ts`).
- */import * as crypto from "crypto";
-
-import { createLogger } from "@atlas/api/lib/logger";
-import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
+ */
+import {
+  burnConfirmNonce,
+  claimsHash,
+  mintConfirmToken,
+  verifyConfirmToken,
+  _resetConfirmNonces,
+  type ConfirmClaims,
+  type ConfirmTokenKind,
+  type ConfirmTokenRejection,
+  type ConfirmTokenVerification,
+  type MintConfirmTokenOptions,
+} from "@atlas/api/lib/confirm-token";
 import type { Operation, OperationParams } from "./types";
 
-const log = createLogger("openapi.rest-write-confirm");
 /**
  * The request header by which a chat surface declares it can RENDER the
  * confirm-before-write banner and POST the payload above (#5495).
@@ -86,8 +101,6 @@ export function readsWriteConfirmUiHeader(headers: Headers): boolean {
   const v = raw.trim().toLowerCase();
   return v === "1" || v === "true";
 }
-
-
 /** A scalar param value the agent / banner may carry (matches the tool input). */
 export type RestParamScalar = string | number | boolean;
 
@@ -141,23 +154,23 @@ export function buildRestWriteSummary(operation: Operation, datasourceName: stri
 // ─────────────────────────────────────────────────────────────────────
 //  Single-use confirm token (#3007)
 // ─────────────────────────────────────────────────────────────────────
-
-const SIG_ALGORITHM = "sha256";
-const ALG = "HS256";
-/** Domain separator (in the signed header) — a confirm token can't be cross-used as another signed-token type. */
-const TYP = "AtlasRestConfirm";
+//
+//  The scheme itself lives in `lib/confirm-token.ts` (extracted by #5496, when
+//  `correct_fact` became the second gate on this shape). This section is the
+//  REST gate's THIN specialization of it: the domain separator, the TTL env
+//  var, and which four things a REST confirm token binds. Behaviour and wire
+//  bytes are unchanged — the payload is still `{w, ds, op, ph, n, exp}`, and
+//  `rest-write-confirm.test.ts` is what says so.
 
 /**
- * Default confirm-token lifetime. The confirm step is interactive — the agent
- * stages the write, the human reads the banner ("this will delete 3 people") and
- * clicks Confirm. Ten minutes covers reasonable read/deliberate latency while
- * keeping the replay window narrow (same interactive rationale as the OAuth state
- * token). Override via `ATLAS_OPENAPI_CONFIRM_TTL_SECONDS`, clamped [60, 3600].
+ * The REST write gate's token identity. `typ` is the domain separator carried
+ * in the signed header: it is why a brain-correction confirm token — signed
+ * with the same keyset — cannot be presented at `/api/v1/rest-operations/confirm`.
  */
-const DEFAULT_TTL_SECONDS = 10 * 60;
-const MIN_TTL_SECONDS = 60;
-const MAX_TTL_SECONDS = 60 * 60;
-const NONCE_BYTES = 16;
+const REST_CONFIRM_KIND: ConfirmTokenKind = {
+  typ: "AtlasRestConfirm",
+  ttlEnvVar: "ATLAS_OPENAPI_CONFIRM_TTL_SECONDS",
+};
 
 /** The binding a confirm token is signed over and re-verified against. */
 export interface RestConfirmBinding {
@@ -168,49 +181,32 @@ export interface RestConfirmBinding {
   readonly params: OperationParams;
 }
 
-export interface MintRestConfirmTokenOptions {
-  /** Override the TTL in seconds (≥1). Primarily for tests; production uses the env/default. */
-  readonly ttlSeconds?: number;
-  /** Override "now" in unix seconds — tests mint expired / far-future tokens deterministically. */
-  readonly nowSeconds?: number;
-  /** Override the random nonce — tests only (forces a deterministic single-use id). */
-  readonly nonce?: string;
-}
-
-interface TokenHeader {
-  readonly alg: typeof ALG;
-  readonly kid: number;
-  readonly typ: typeof TYP;
-}
-
-interface TokenPayload {
-  /** Workspace (org) id. */
-  readonly w: string;
-  /** Datasource install id. */
-  readonly ds: string;
-  /** Operation id. */
-  readonly op: string;
-  /** sha256(canonical params) — binds the exact params without embedding them. */
-  readonly ph: string;
-  /** Single-use nonce. */
-  readonly n: string;
-  /** Expiration in unix seconds. */
-  readonly exp: number;
-}
+export type MintRestConfirmTokenOptions = MintConfirmTokenOptions;
 
 /** Why a confirm token was refused. Machine-readable for server-side logging; the route maps every arm to one neutral 400. */
-export type RestConfirmTokenRejection =
-  | "missing"
-  | "malformed"
-  | "no-key"
-  | "bad-signature"
-  | "binding-mismatch"
-  | "expired";
+export type RestConfirmTokenRejection = ConfirmTokenRejection;
 
 /** The result of {@link verifyRestConfirmToken}. On success it carries the nonce + exp the caller burns. */
-export type RestConfirmTokenVerification =
-  | { readonly ok: true; readonly nonce: string; readonly expSeconds: number }
-  | { readonly ok: false; readonly reason: RestConfirmTokenRejection };
+export type RestConfirmTokenVerification = ConfirmTokenVerification;
+
+/**
+ * The signed claims for a REST confirm token. Short keys are the wire format
+ * this gate has always used; `ph` binds the exact params by hash rather than
+ * embedding them, so the token stays small and says nothing readable about the
+ * write it authorizes.
+ */
+function restClaims(binding: RestConfirmBinding): ConfirmClaims {
+  return {
+    /** Workspace (org) id. */
+    w: binding.workspaceId,
+    /** Datasource install id. */
+    ds: binding.datasourceId,
+    /** Operation id. */
+    op: binding.operationId,
+    /** sha256(canonical params) — binds the exact params without embedding them. */
+    ph: claimsHash(binding.params),
+  };
+}
 
 /**
  * Mint a single-use confirm token binding a staged write. Always signs with the
@@ -225,34 +221,7 @@ export function mintRestConfirmToken(
   binding: RestConfirmBinding,
   options: MintRestConfirmTokenOptions = {},
 ): string {
-  const keyset = getEncryptionKeyset();
-  if (!keyset) {
-    throw new Error(
-      "mintRestConfirmToken: no signing key configured — set ATLAS_ENCRYPTION_KEYS / ATLAS_ENCRYPTION_KEY / BETTER_AUTH_SECRET. " +
-        "The confirm-before-write gate cannot fall through to an unsigned token.",
-    );
-  }
-
-  const ttl = resolveConfirmTtlSeconds(options.ttlSeconds);
-  const now = options.nowSeconds ?? Math.floor(Date.now() / 1000);
-  const exp = now + ttl;
-  const nonce = options.nonce ?? crypto.randomBytes(NONCE_BYTES).toString("base64url");
-
-  const header: TokenHeader = { alg: ALG, kid: keyset.active.version, typ: TYP };
-  const payload: TokenPayload = {
-    w: binding.workspaceId,
-    ds: binding.datasourceId,
-    op: binding.operationId,
-    ph: paramsHash(binding.params),
-    n: nonce,
-    exp,
-  };
-
-  const headerB64 = encodeJson(header);
-  const payloadB64 = encodeJson(payload);
-  const signingInput = `${headerB64}.${payloadB64}`;
-  const sig = crypto.createHmac(SIG_ALGORITHM, keyset.active.key).update(signingInput).digest();
-  return `${signingInput}.${sig.toString("base64url")}`;
+  return mintConfirmToken(REST_CONFIRM_KIND, restClaims(binding), options);
 }
 
 /**
@@ -269,95 +238,8 @@ export function verifyRestConfirmToken(
   expected: RestConfirmBinding,
   nowSeconds: number = Math.floor(Date.now() / 1000),
 ): RestConfirmTokenVerification {
-  if (typeof token !== "string" || token.length === 0) return { ok: false, reason: "missing" };
-
-  let keyset: ReturnType<typeof getEncryptionKeyset>;
-  try {
-    keyset = getEncryptionKeyset();
-  } catch (err) {
-    // getEncryptionKeyset throws on malformed ATLAS_ENCRYPTION_KEYS (operator
-    // misconfig that should normally fail at boot). Warn once, reject all tokens.
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "verifyRestConfirmToken: keyset resolution threw — operator misconfig; rejecting",
-    );
-    return { ok: false, reason: "no-key" };
-  }
-  if (!keyset) return { ok: false, reason: "no-key" };
-
-  const parts = token.split(".");
-  if (parts.length !== 3) return { ok: false, reason: "malformed" };
-  const [headerB64, payloadB64, sigB64] = parts;
-
-  const header = decodeJson<TokenHeader>(headerB64);
-  if (!header || header.alg !== ALG || header.typ !== TYP) return { ok: false, reason: "malformed" };
-  if (typeof header.kid !== "number" || !Number.isFinite(header.kid)) return { ok: false, reason: "malformed" };
-
-  const key = keyset.byVersion.get(header.kid);
-  // Unknown kid (key rotated out) — treat like a bad signature: we can't verify it.
-  if (!key) return { ok: false, reason: "bad-signature" };
-
-  // The signature covers the received `headerB64.payloadB64` literally, so ANY
-  // tampering of either segment fails this comparison — constant-time on the sig.
-  const expectedSig = crypto.createHmac(SIG_ALGORITHM, key).update(`${headerB64}.${payloadB64}`).digest();
-  const providedSig = Buffer.from(sigB64, "base64url");
-  if (providedSig.length !== expectedSig.length) return { ok: false, reason: "bad-signature" };
-  if (!crypto.timingSafeEqual(providedSig, expectedSig)) return { ok: false, reason: "bad-signature" };
-
-  // Signature verified ⇒ the payload is trusted. Decode + structurally check it.
-  const payload = decodeJson<TokenPayload>(payloadB64);
-  if (
-    !payload ||
-    typeof payload.w !== "string" ||
-    typeof payload.ds !== "string" ||
-    typeof payload.op !== "string" ||
-    typeof payload.ph !== "string" ||
-    typeof payload.n !== "string" ||
-    payload.n.length === 0 ||
-    typeof payload.exp !== "number" ||
-    !Number.isFinite(payload.exp)
-  ) {
-    return { ok: false, reason: "malformed" };
-  }
-
-  // Binding: the signed token must match the workspace/datasource/operation/params
-  // re-resolved for THIS confirm request. A token minted for a different binding —
-  // or a payload whose params were swapped after staging (ph diverges) — is refused.
-  if (
-    payload.w !== expected.workspaceId ||
-    payload.ds !== expected.datasourceId ||
-    payload.op !== expected.operationId ||
-    payload.ph !== paramsHash(expected.params)
-  ) {
-    return { ok: false, reason: "binding-mismatch" };
-  }
-
-  if (payload.exp <= nowSeconds) return { ok: false, reason: "expired" };
-
-  return { ok: true, nonce: payload.n, expSeconds: payload.exp };
+  return verifyConfirmToken(REST_CONFIRM_KIND, token, restClaims(expected), nowSeconds);
 }
-
-// ─────────────────────────────────────────────────────────────────────
-//  Single-use nonce store (in-process)
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Burned-nonce store: `nonce → exp (unix seconds)`. Only holds nonces that were
- * actually consumed (human-gated confirms — tiny). Eviction is lazy / on-write:
- * each {@link burnRestConfirmNonce} call first drops entries past their token's
- * `exp`, so if confirm traffic stops, already-expired entries linger until the
- * next burn — harmless, since the expiry check in {@link verifyRestConfirmToken}
- * rejects an expired token regardless of whether its nonce is still in the store.
- *
- * In-process, like the rate-limit token bucket in `validate-rest-operation.ts`:
- * the single-use guarantee is exact WITHIN a process (the check-and-set is
- * synchronous, so two concurrent replays can't both win). Across replicas a
- * captured token could in principle be replayed on a different instance before
- * its short TTL — the same multi-instance caveat the rate-limit bucket documents.
- * A process restart drops the store, which only invalidates pending confirms
- * (fail-safe). Reset between tests via {@link _resetRestConfirmNonces}.
- */
-const burnedNonces = new Map<string, number>();
 
 /**
  * Atomically consume a confirm nonce. Returns `true` when it was newly burned
@@ -366,97 +248,14 @@ const burnedNonces = new Map<string, number>();
  * between token verification and dispatch, so concurrent replays of the same token
  * can't both pass before the nonce is recorded.
  */
-export function burnRestConfirmNonce(
-  nonce: string,
-  expSeconds: number,
-  nowSeconds: number = Math.floor(Date.now() / 1000),
-): boolean {
-  // Opportunistic eviction of expired entries (store is small — short TTL, low
-  // volume). Deleting during Map iteration is safe.
-  for (const [n, exp] of burnedNonces) {
-    if (exp <= nowSeconds) burnedNonces.delete(n);
-  }
-  if (burnedNonces.has(nonce)) return false; // replay
-  burnedNonces.set(nonce, expSeconds);
-  return true;
-}
-
-/** Clear the burned-nonce store. For tests. */
-export function _resetRestConfirmNonces(): void {
-  burnedNonces.clear();
-}
-
-// ─────────────────────────────────────────────────────────────────────
-//  Internal helpers
-// ─────────────────────────────────────────────────────────────────────
+export const burnRestConfirmNonce = burnConfirmNonce;
 
 /**
- * The effective confirm-token TTL in seconds. Per-call override (tests) takes
- * precedence; otherwise read `ATLAS_OPENAPI_CONFIRM_TTL_SECONDS`, clamped
- * [60, 3600], defaulting to 600. Mirrors `ATLAS_OAUTH_STATE_TTL_SECONDS`.
+ * Clear the burned-nonce store. For tests.
+ *
+ * The store is shared across every confirm gate (see `lib/confirm-token.ts`), so
+ * this clears brain-correction nonces too. Harmless — a test that burned one
+ * gate's nonce has no interest in another's, and one store is one eviction
+ * policy instead of two that can drift.
  */
-function resolveConfirmTtlSeconds(override?: number): number {
-  if (override !== undefined) {
-    if (Number.isFinite(override) && override >= 1) return Math.floor(override);
-    return DEFAULT_TTL_SECONDS;
-  }
-  const raw = process.env.ATLAS_OPENAPI_CONFIRM_TTL_SECONDS;
-  if (!raw) return DEFAULT_TTL_SECONDS;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < MIN_TTL_SECONDS || parsed > MAX_TTL_SECONDS) {
-    log.warn(
-      { ATLAS_OPENAPI_CONFIRM_TTL_SECONDS: raw, min: MIN_TTL_SECONDS, max: MAX_TTL_SECONDS },
-      "Ignoring out-of-range ATLAS_OPENAPI_CONFIRM_TTL_SECONDS — using default",
-    );
-    return DEFAULT_TTL_SECONDS;
-  }
-  return parsed;
-}
-
-/** sha256 hex of the canonicalized params — order-stable, so equal params hash equally. */
-function paramsHash(params: OperationParams): string {
-  return crypto.createHash("sha256").update(canonicalize(params)).digest("hex");
-}
-
-/**
- * Deterministic JSON serialization: object keys sorted recursively, `undefined`
- * object values dropped, array order preserved (query array values are
- * order-significant). So the same logical params always produce the same string
- * (and thus the same {@link paramsHash}), regardless of key insertion order.
- */
-function canonicalize(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "null";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalize).join(",")}]`;
-  }
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj)
-    .filter((k) => obj[k] !== undefined)
-    .toSorted();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k])}`).join(",")}}`;
-}
-
-/** base64url-encode a JSON value (native — no hand-rolled regex strip). */
-function encodeJson(value: unknown): string {
-  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
-}
-
-/**
- * Decode a base64url JSON segment to `T`, or `null` on any parse failure. Only
- * called AFTER signature verification, so a tampered segment has already been
- * rejected; this just guards against a structurally-broken (but somehow signed)
- * payload.
- */
-function decodeJson<T>(b64: string): T | null {
-  try {
-    const parsed = JSON.parse(Buffer.from(b64, "base64url").toString("utf8")) as T;
-    if (typeof parsed !== "object" || parsed === null) return null;
-    return parsed;
-  } catch {
-    // intentionally ignored: a malformed segment collapses to null, which the
-    // caller maps to a uniform rejection — the contract is boolean-shaped.
-    return null;
-  }
-}
+export const _resetRestConfirmNonces = _resetConfirmNonces;

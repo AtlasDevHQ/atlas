@@ -361,10 +361,52 @@ export interface CorrectionReplacement {
   readonly validFrom?: Date | null;
 }
 
+/**
+ * How the human's intent to make THIS correction was established (#5496).
+ *
+ * Recorded on the `admin_action_log` row, because until #5496 a row could not
+ * distinguish an admin who DECIDED to retract from an agent that decided while
+ * an admin happened to be authenticated. Both produced the same row.
+ *
+ * ⭐ The point is the TRANSITION, not the steady state. Once every entry point
+ * confirms, a marker saying so looks redundant — but rows written BEFORE this
+ * shipped carry no marker at all, so they are distinguishable from rows written
+ * after only because the marker exists. That distinction is precisely what you
+ * would need if you ever suspected an injected correction landed in the old
+ * regime, and it can only be created going forward.
+ *
+ * REQUIRED on {@link CorrectionRequest} rather than optional-with-a-default: a
+ * future entry point must CHOOSE how it established intent, and a default would
+ * silently label it with whatever the last author happened to pick. An unmarked
+ * row is honest about the old regime; a wrongly-marked one is not.
+ */
+export type CorrectionIntentSource =
+  /**
+   * A human clicked Confirm on the chat surface's correction card and the server
+   * verified a single-use, workspace-bound confirm token before applying the
+   * verb (`api/routes/brain-corrections.ts`). The strongest available evidence:
+   * the act is the human's and it was checked server-side.
+   */
+  | "confirmed"
+  /**
+   * A human acted directly in the admin brain UI, where the button click IS the
+   * explicit act — there is no agent between the intent and the request
+   * (`api/routes/admin-brain-facts.ts`, `app/admin/brain/facts/claim-correction.ts`).
+   * Deliberately NOT routed through a confirm card: confirming a click you just
+   * made is ceremony, not evidence.
+   */
+  | "admin-ui";
+
 export interface CorrectionRequest {
   readonly ctx: BrainPrincipalContext;
   readonly factId: string;
   readonly verb: CorrectionVerb;
+  /**
+   * How this caller established that a human wanted this correction. See
+   * {@link CorrectionIntentSource} — required, so a new entry point has to
+   * answer the question rather than inherit an answer.
+   */
+  readonly intent: CorrectionIntentSource;
   /** Free-text rationale, recorded verbatim in the correction episode body. */
   readonly reason?: string;
   /** Required for `supersede`, meaningless elsewhere. */
@@ -972,21 +1014,31 @@ interface TargetRow {
  * failure (the caller's 500 path) and {@link BrainReaderUnresolvedError} when
  * the actor's identity resolves to no usable principals.
  */
-export async function correctFact(
-  request: CorrectionRequest,
-  deps: CorrectionDeps = {},
-): Promise<CorrectionOutcome> {
-  const { ctx, factId, verb, requestId, vocabulary } = request;
-  const now = deps.now ?? (() => new Date());
-  const withTransaction = deps.withTransaction ?? withBrainTransaction;
-  const newCorrectionId = deps.newCorrectionId ?? randomUUID;
-
-  // ── Authority ─────────────────────────────────────────────────────────
-  // A correction is a trust decision with immediate authoritative effect, so
-  // it carries the review gate's own bar: org owner/admin. The
-  // `unauthenticated-local` arm passes — that deployment has DECLARED the
-  // local operator is the only identity there is, and the admin surface
-  // already treats them as such.
+/**
+ * The authority bar for a correction, as a predicate — `null` when the actor may
+ * correct, a refusal outcome when they may not.
+ *
+ * A correction is a trust decision with immediate authoritative effect, so it
+ * carries the review gate's own bar: org owner/admin. The `unauthenticated-local`
+ * arm passes — that deployment has DECLARED the local operator is the only
+ * identity there is, and the admin surface already treats them as such.
+ *
+ * EXPORTED since #5496 so the staging tool can refuse an unauthorized correction
+ * promptly — before it mints a confirm token and shows a human a card for a write
+ * that would be refused the moment they clicked it. It is deliberately a shared
+ * predicate rather than a second check spelled out in `lib/tools/correct-fact.ts`:
+ * that module's header promises it "carries no SQL and no gating logic of its
+ * own… so the tool and the admin API cannot drift into two correction policies",
+ * and a copied authority test is exactly that drift.
+ *
+ * Calling it at staging does NOT make it the gate. {@link correctFact} still runs
+ * it on every path, which is what the confirm endpoint depends on: a role revoked
+ * between staging and confirm must refuse at confirm, and it does, because the
+ * check re-runs there rather than being trusted from the staged payload.
+ */
+export function correctionAuthorityRefusal(
+  ctx: BrainPrincipalContext,
+): Extract<CorrectionOutcome, { kind: "refused" }> | null {
   if (ctx.origin === "authenticated" && ctx.role !== "owner" && ctx.role !== "admin") {
     return {
       kind: "refused",
@@ -996,6 +1048,21 @@ export async function correctFact(
         "Ask a workspace owner or admin to apply this correction, or flag the fact in review instead.",
     };
   }
+  return null;
+}
+
+export async function correctFact(
+  request: CorrectionRequest,
+  deps: CorrectionDeps = {},
+): Promise<CorrectionOutcome> {
+  const { ctx, factId, verb, requestId, vocabulary, intent } = request;
+  const now = deps.now ?? (() => new Date());
+  const withTransaction = deps.withTransaction ?? withBrainTransaction;
+  const newCorrectionId = deps.newCorrectionId ?? randomUUID;
+
+  // ── Authority ─────────────────────────────────────────────────────────
+  const authorityRefusal = correctionAuthorityRefusal(ctx);
+  if (authorityRefusal) return authorityRefusal;
 
   const acl = aclVisibilityClause(ctx, {
     table: "brain_facts",
@@ -1548,6 +1615,7 @@ export async function correctFact(
   await emitCorrectionAudit({
     ctx,
     result,
+    intent,
     requestId,
     timeoutMs: resolveAuditDeadline(deps.auditWriteTimeoutMs),
   });
@@ -1707,10 +1775,11 @@ function resolveAuditDeadline(ms: number | undefined): number {
 async function emitCorrectionAudit(args: {
   readonly ctx: BrainPrincipalContext;
   readonly result: BrainFactCorrectionResponse;
+  readonly intent: CorrectionIntentSource;
   readonly requestId: string | undefined;
   readonly timeoutMs: number;
 }): Promise<void> {
-  const { ctx, result, requestId, timeoutMs } = args;
+  const { ctx, result, intent, requestId, timeoutMs } = args;
   let deadline: ReturnType<typeof setTimeout> | undefined;
   /** Distinguishes the write's own rejection from a post-deadline one. */
   let timedOut = false;
@@ -1756,13 +1825,31 @@ async function emitCorrectionAudit(args: {
       // Key ORDER is load-bearing here, unusually (#4939). The action-log
       // table previews `Object.entries(metadata).slice(0, 3)` in a truncating
       // cell, so a key that lands fourth is invisible on the surface an
-      // operator actually opens. `flaggedForReReview` is the one entry NOTHING
-      // else renders — no queue lists the flagged facts, and this row is their
-      // only durable record — so it rides directly behind `verb`, which is
-      // what makes a row readable at all. Everything after is recoverable
-      // elsewhere: from the response, the fact row, or the request context.
+      // operator actually opens. Three slots, and the contest for them is
+      // decided by "what does NOTHING else record":
+      //
+      //   1. `verb` — what makes a row readable at all.
+      //   2. `intent` (#5496) — how the human's decision was established. It
+      //      takes the second slot AHEAD of `flaggedForReReview` because it is
+      //      the only key that answers the question this row could not answer
+      //      before: whether an admin DECIDED to retract, or an agent decided
+      //      while an admin happened to be authenticated. Rows predating #5496
+      //      carry no `intent` at all, and that absence is the signal — an
+      //      operator auditing a suspected injected correction reads exactly
+      //      this cell, and reads it FIRST. Being invisible in the preview
+      //      would defeat the whole marker.
+      //   3. `flaggedForReReview` — still the only durable record of the
+      //      flagged dependents (no queue lists them), which is why it keeps a
+      //      preview slot rather than dropping below the fold. It is emitted
+      //      only when non-empty, so on the common row `workspaceId` takes the
+      //      third slot instead, and nothing is lost: that one IS recoverable
+      //      from the request context.
+      //
+      // Everything after the third key is recoverable elsewhere — from the
+      // response, the fact row, or the request context.
       metadata: {
         verb: result.verb,
+        intent,
         ...(result.flaggedForReReview.length > 0
           ? { flaggedForReReview: result.flaggedForReReview }
           : {}),

@@ -255,7 +255,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
 
       const outcome = await asRequest("req-retract-1", () =>
         correctFact(
-          { vocabulary: identityVocabulary, ctx: reviewer(), factId, verb: "retract", reason: "wrong on arrival" },
+          { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId, verb: "retract", reason: "wrong on arrival" },
           { withTransaction: poolTx },
         ),
       );
@@ -304,7 +304,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
 
       const outcome = await asRequest("req-supersede-1", () =>
         correctFact(
-          {
+          { intent: "admin-ui",
             vocabulary: identityVocabulary,
             ctx: reviewer(),
             factId,
@@ -364,7 +364,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
       // `brain_facts.id`. The emitter uses `result.factId` for exactly this.
       const outcome = await asRequest("req-pin-1", () =>
         correctFact(
-          { vocabulary: identityVocabulary, ctx: reviewer(), factId: factId.toUpperCase(), verb: "pin" },
+          { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId: factId.toUpperCase(), verb: "pin" },
           { withTransaction: poolTx },
         ),
       );
@@ -379,14 +379,17 @@ describeIfPg("correction audit row (real Postgres)", () => {
       // caller passed. `auditRowsFor` queried on the canonical id and found it,
       // which is the join this pins.
       expect(row.target_id).toBe(factId);
-      // Exactly the three unconditional keys FROM THIS CALL SITE — a `pin`
+      // Exactly the four unconditional keys FROM THIS CALL SITE — a `pin`
       // neither tombstones, supersedes, nor closes a validity window, and a row
       // asserting `invalidatedAt: null` reads as a decision that was made.
+      // `intent` (#5496) IS unconditional: every entry point must say how the
+      // human's intent was established, and this one is the admin surface.
       // (`resolveEntry` also merges `trustDeviceIdentifier` / `origin` when the
       // context carries them; this context carries neither, so a strict
       // `toEqual` is right and forces a deliberate decision if that changes.)
       expect(row.metadata).toEqual({
         verb: "pin",
+        intent: "admin-ui",
         workspaceId: WS,
         correctionEpisodeId: outcome.result.correctionEpisodeId,
       });
@@ -412,7 +415,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
       );
 
       const outcome = await asRequest("req-refused-1", () =>
-        correctFact({ vocabulary: identityVocabulary, ctx: reviewer(), factId, verb: "pin" }, { withTransaction: poolTx }),
+        correctFact({ intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId, verb: "pin" }, { withTransaction: poolTx }),
       );
       expect(outcome).toMatchObject({
         kind: "refused",

@@ -187,7 +187,11 @@ export function createProactiveAnswerAdapter(
     // `undefined` on the linked-asker branch and spread away at the call site
     // (`...(toolRegistry ? { tools: toolRegistry } : {})`), so a linked asker
     // fell through to whatever `runAgent` defaulted to — then the dashboards-
-    // owning `defaultRegistry`, which carries the brain-mutating `correct_fact`.
+    // owning `defaultRegistry`, which AT THAT TIME carried the brain-mutating
+    // `correct_fact`. (Since #5496 it does not: that verb moved to
+    // `confirmCapableRegistry`, the surface that can render a confirm card. The
+    // hazard this paragraph describes was real when it was fixed, and the fix —
+    // passing `tools` explicitly — is what still holds it closed.)
     // `resolveLinkedActor` returns a REAL user, with a real
     // `activeOrganizationId` whenever they have a member row, and
     // `resolveBrainReaderContext` re-resolves their real `member.role` — so for

@@ -2,41 +2,72 @@
  * `correct_fact` — the agent-facing wrapper over the four correction verbs
  * (#4915, ADR-0036 §Temporal, conflict & provenance).
  *
+ * ## It STAGES; it does not write (#5496)
+ *
+ * Until #5496 this tool applied the correction the moment the model called it,
+ * inside the agent loop, gated only by the CALLING USER holding owner/admin —
+ * the human's intent to make this particular correction was assumed by a
+ * sentence in {@link CORRECT_FACT_DESCRIPTION} telling the model to ask first.
+ * A sentence in a prompt is not a gate.
+ *
+ * It now returns `needs_confirmation` carrying a `CorrectFactConfirmRequest`
+ * and touches nothing. The write executes at
+ * `POST /api/v1/brain-corrections/confirm`, after a human clicks Confirm on the
+ * card, and that endpoint re-runs the WHOLE gate server-side rather than
+ * trusting the staged payload. The decision and its reasoning are ADR-0036
+ * §T9's 2026-08-27b amendment (#5485); the mechanism is
+ * `lib/brain/correction-confirm.ts`, which mirrors the REST write gate (#3007).
+ *
+ * What this tool checks at staging is deliberately narrow: the deployment has a
+ * brain, the session has a workspace, the actor resolves, and the actor holds
+ * authority. All four exist to refuse PROMPTLY — so the agent says "you need
+ * admin for that" instead of showing a human a card that would be refused the
+ * instant they clicked it. None of them is the gate. Authority is checked here
+ * through `correctionAuthorityRefusal`, the same predicate `correctFact` runs on
+ * every path, so there is one policy rather than a copy; everything else the
+ * machinery gates — ACL visibility, the tier-1 refusal, vocabulary closure, the
+ * target's existence — is left to the confirm endpoint, which is where it is
+ * load-bearing.
+ *
  * The verb machinery is `lib/brain/correction.ts`; this module is the adapter
- * that resolves the caller's workspace and principal set out of request
- * context and turns every failure into something an agent can act on. It
- * carries no SQL and no gating logic of its own — authority (owner/admin
- * only), ACL visibility, and the tier-1 refusal are all the machinery's, so
- * the tool and the admin API cannot drift into two correction policies.
+ * that resolves the caller's workspace and principal set out of request context
+ * and turns every failure into something an agent can act on. It carries no SQL
+ * and no gating logic of its own.
  *
  * ## Degraded paths — mirror `searchBrain`'s contract
  *
  * Every degraded path carries a machine-readable `reason` beside user-facing
- * prose. A refused correction additionally carries the machinery's own
- * refusal code (e.g. `WAREHOUSE_TARGET`) so a caller can branch without
- * pattern-matching English.
+ * prose. A refused correction additionally carries the machinery's own refusal
+ * code (e.g. `NOT_AUTHORIZED`) so a caller can branch without pattern-matching
+ * English.
  *
- * ## The success result is PROJECTED, not spread (#4939)
+ * ## The #4939 projection moved with the write
  *
- * `BrainFactCorrectionResponse` is the ADMIN shape. The one field that must
- * not cross to the agent verbatim is `flaggedForReReview`: those ids come from
- * a deliberately un-ACL-gated query, so a subset of them names facts the actor
- * cannot read. This surface reports the COUNT — the same call `searchBrain`
- * makes for withheld tension rivals, on the same surface, for the same reason.
- * The projection is an explicit destructure so a future field has to be named
- * here to reach the model.
+ * `BrainFactCorrectionResponse` is the ADMIN shape, and the one field that must
+ * not cross to a lesser surface verbatim is `flaggedForReReview`: those ids come
+ * from a deliberately un-ACL-gated query, so a subset of them names facts the
+ * actor cannot read. This tool no longer returns a correction result at all, so
+ * the hazard cannot arise HERE — it moved to the confirm endpoint, which makes
+ * the same projection to a bare count, for the same reason, and carries the same
+ * `satisfies` guard. `correct-fact-tool.test.ts`'s scan of the serialized result
+ * still applies to what this tool returns, which is now only a staged payload.
  */
 
 import { tool } from "ai";
 import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
-import { getInternalDB, hasInternalDB } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, getInternalDB } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import {
   CORRECTION_VERBS,
-  correctFact,
-  type CorrectionOutcome,
+  correctionAuthorityRefusal,
 } from "@atlas/api/lib/brain/correction";
+import {
+  buildCorrectionSummary,
+  mintCorrectionConfirmToken,
+  type CorrectFactConfirmRequest,
+  type CorrectionConfirmPayload,
+} from "@atlas/api/lib/brain/correction-confirm";
 import {
   BRAIN_CORRECTION_OBJECT_MAX_CHARS,
   BRAIN_CORRECTION_REASON_MAX_CHARS,
@@ -46,19 +77,23 @@ import {
   BrainReaderIdentityError,
   resolveBrainReaderContext,
 } from "@atlas/api/lib/brain/reader-context";
-import {
-  VocabularyClosureError,
-  loadWorkspaceVocabulary,
-} from "@atlas/api/lib/brain/vocabulary";
 
 const log = createLogger("correct-fact");
 
-/** Why a call degraded — the discriminator every consumer branches on. */
+/**
+ * Why a call degraded — the discriminator every consumer branches on.
+ *
+ * `not_found` was removed by #5496 rather than kept "just in case": staging
+ * never reads the fact graph, so no path here can produce it. The condition
+ * still exists — it is a 404 from the confirm endpoint — but a consumer
+ * branching on `not_found` FROM THIS TOOL would be writing dead code, and a
+ * reason nothing can emit is exactly the kind of stale contract this object's
+ * one job is to keep honest.
+ */
 export const CORRECT_FACT_TOOL_REASONS = {
   noInternalDb: "no_internal_db",
   noWorkspace: "no_workspace",
   readerUnresolved: "reader_unresolved",
-  notFound: "not_found",
   refused: "correction_refused",
   correctionFailed: "correction_failed",
 } as const;
@@ -73,41 +108,29 @@ export type CorrectFactToolReason =
  * before it offers a correction that will be refused.
  */
 export const CORRECT_FACT_DESCRIPTION = `### Correct a Company-Brain Fact
-Use the correct_fact tool ONLY when a user with authority states that a reviewed fact (\`tier: "fact"\` from searchBrain) is wrong — it is a human-authoritative correction that takes effect immediately, with the user recorded as its author:
+Use the correct_fact tool when a user with authority states that a reviewed fact (\`tier: "fact"\` from searchBrain) is wrong. The tool does NOT apply the correction — it STAGES it and the user confirms it on a card:
 - \`retract\` withdraws a false or to-be-erased claim (the only deletion-like verb; dependents are flagged for human re-review, never auto-removed)
 - \`supersede\` replaces an outdated value: pass \`replacement.object\` with the corrected value; the old fact stays readable as history
 - \`re-authority\` / \`pin\` confirm a claim is still true on the user's authority, resetting its staleness clock — refused once a claim's validity window has closed, since nothing serves it any more; if a newer claim replaced it, vouch for that one instead
 - Trust tiers: tier-1 warehouse numbers have NO correction path — the warehouse is authoritative, so route those to fixing the data or semantic layer, never this tool. Tier-3 raw episodes are records of what was said and are never corrected, only the facts drawn from them
-- Requires workspace owner/admin authority; a refusal explains what to do instead. Confirm the user actually wants the brain changed before calling — this is a write, not a lookup`;
+- Requires workspace owner/admin authority; a refusal explains what to do instead
+- The result is \`needs_confirmation\`. Say plainly what the correction will do (e.g. "This will retract the claim that Ana is the DRI for billing — confirm?") and STOP. The user confirms on the card; do not retry, do not call the tool again, and never claim the correction was applied until you see a confirmed result`;
 
 /**
- * What a SUCCESSFUL correction hands the model — declared, so the projection
- * below is checked rather than merely intended (#4939).
+ * What a STAGED correction hands the model — declared, so the return below is
+ * checked rather than merely intended.
  *
- * The comment on that projection used to be the whole enforcement, and a
- * comment does not fail a build. With `satisfies` on the literal, re-adding
- * `flaggedForReReview` is `TS2561: 'flaggedForReReview' does not exist in type
- * 'CorrectFactSuccess'. Did you mean to write 'flaggedForReReviewCount'?` —
- * which is the mistake, named, at the moment it is made.
- *
- * It does NOT replace `correct-fact-tool.test.ts`'s scan of the serialized
- * result: that catches the same ids arriving under a DIFFERENT name, which no
- * excess-property check can see. Two mechanisms for two failure modes.
+ * Nothing here is derived from a read of the fact graph: the staging path does
+ * not read the target. `summary` is built from the verb and the replacement
+ * alone (`buildCorrectionSummary`), so the card cannot misstate what was staged
+ * even when the agent's surrounding prose is wrong.
  */
-interface CorrectFactSuccess {
-  readonly corrected: true;
-  readonly verb: BrainCorrectionVerb;
+interface CorrectFactStaged {
+  readonly status: "needs_confirmation";
   readonly factId: string;
-  readonly correctionEpisodeId: string;
-  readonly invalidatedAt: string | null;
-  readonly supersededBy: string | null;
-  readonly validTo: string | null;
-  /**
-   * A COUNT, never the ids. `DEPENDENT_FACTS_SQL` is deliberately
-   * un-ACL-gated, so a subset of those ids names facts this actor cannot read.
-   */
-  readonly flaggedForReReviewCount: number;
+  readonly verb: BrainCorrectionVerb;
   readonly summary: string;
+  readonly confirm: CorrectFactConfirmRequest;
 }
 
 /** Append the request id so the user has something to quote. */
@@ -122,7 +145,8 @@ const READER_UNRESOLVED_MESSAGE =
 
 export const correctFactTool = tool({
   description:
-    "Apply a human-authoritative correction to a reviewed company-brain fact (tier-2), on the calling user's authority — it takes effect immediately, without the review queue. " +
+    "Stage a human-authoritative correction to a reviewed company-brain fact (tier-2) for the user to confirm. " +
+    "This tool does NOT apply the correction: it returns `needs_confirmation`, the user confirms it on a card, and the write happens then. " +
     'Verbs: "retract" (withdraw the claim — the only deletion-like verb; facts derived from it are flagged for human re-review, never removed), ' +
     '"supersede" (replace an outdated value: same subject and predicate, corrected `replacement.object`; the old fact stays readable as history), ' +
     '"re-authority" and "pin" (confirm the claim is still true, resetting its staleness clock — refused on a claim whose validity window has already closed, because no current read serves it; vouch for whatever replaced it). ' +
@@ -184,51 +208,17 @@ export const correctFactTool = tool({
       };
     }
 
-    // The `try` covers ONLY the code that runs before the correction commits,
-    // so the catch's "nothing was changed — retry" instruction is true by
-    // construction. Outcome mapping happens OUTSIDE it: a (today unreachable)
-    // throw while shaping the success response must never tell the agent to
-    // retry a correction that already committed.
-    //
-    // `correctFact` does post-commit work of its own since #4934 — it emits the
-    // `admin_action_log` row — so that "by construction" now rests on
-    // `emitCorrectionAudit` never throwing, which its own body enforces by
-    // holding everything inside the try. If that ever changes, this catch
-    // starts telling users to re-run a correction that already landed.
-    let outcome: CorrectionOutcome;
+    // Nothing below this line writes, so the old "the try covers only the code
+    // that runs before the correction commits" reasoning no longer has anything
+    // to protect — this whole path is pre-commit by construction now. The catch
+    // is kept for the one thing that can still fail here: resolving the actor.
+    let ctx: Awaited<ReturnType<typeof resolveBrainReaderContext>>;
     try {
-      const db = getInternalDB();
-      const ctx = await resolveBrainReaderContext(db, {
+      ctx = await resolveBrainReaderContext(getInternalDB(), {
         workspaceId,
         mode: detectAuthMode(),
         user: reqCtx?.user,
         requestId,
-      });
-      const replacementValidFrom = input.replacement?.validFrom
-        ? new Date(input.replacement.validFrom)
-        : null;
-      outcome = await correctFact({
-        ctx,
-        factId: input.factId,
-        verb: input.verb,
-        reason: input.reason,
-        replacement: input.replacement
-          ? { object: input.replacement.object, validFrom: replacementValidFrom }
-          : undefined,
-        requestId,
-        // The workspace's real vocabulary since #5023, loaded from `ctx` rather
-        // than from this tool's own `workspaceId` so the identity function and
-        // the reader identity provably come from one resolution.
-        //
-        // It is never DEGRADED — there is no safe fallback, and the empty
-        // vocabulary would key the replacement under a different function than
-        // the ingest path used. It is not un-caught either, and an earlier
-        // version of this comment claimed it was: the load sits inside the
-        // pre-commit `try` below, so a `VocabularyClosureError` reaches that
-        // catch — which now has its own arm for it, because the generic
-        // "retry once" is advice a deterministic, permanent condition would
-        // make an agent loop on.
-        vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),
       });
     } catch (err) {
       if (err instanceof BrainReaderIdentityError) {
@@ -241,33 +231,6 @@ export const correctFactTool = tool({
           reason: CORRECT_FACT_TOOL_REASONS.readerUnresolved,
         };
       }
-      if (err instanceof VocabularyClosureError) {
-        // Deterministic, workspace-scoped, and permanent until an operator
-        // recomputes the closure — so the generic arm below is actively wrong
-        // here on both counts: retrying cannot clear it, and the brain store is
-        // not "temporarily unavailable". An agent given that advice loops.
-        log.error(
-          {
-            err: err.message,
-            workspaceId,
-            factId: input.factId,
-            verb: input.verb,
-            position: err.position,
-            norm: err.norm,
-            requestId,
-          },
-          "correct_fact refused: the workspace's alias vocabulary is half-rebuilt",
-        );
-        return {
-          error: withRequestId(
-            "This workspace's alias vocabulary is incomplete, so a correction cannot be keyed the " +
-              "way ingest keys it — nothing was changed. Retrying will not help: an operator has to " +
-              "recompute the vocabulary's closure first.",
-            requestId,
-          ),
-          reason: CORRECT_FACT_TOOL_REASONS.correctionFailed,
-        };
-      }
       log.error(
         {
           err: err instanceof Error ? err.message : String(err),
@@ -276,94 +239,95 @@ export const correctFactTool = tool({
           verb: input.verb,
           requestId,
         },
-        "correct_fact failed",
+        "correct_fact could not resolve the actor for staging",
       );
       return {
         error: withRequestId(
-          "The correction failed before it could be applied — nothing was changed. Retry once; " +
-            "if it persists, the brain store may be temporarily unavailable.",
+          "The correction could not be prepared — nothing was changed. Retry once; if it persists, " +
+            "the brain store may be temporarily unavailable.",
           requestId,
         ),
         reason: CORRECT_FACT_TOOL_REASONS.correctionFailed,
       };
     }
 
-    switch (outcome.kind) {
-      case "corrected": {
-        // Projected field by field rather than spread (#4939). The spread put
-        // `flaggedForReReview`'s RAW IDS into the LLM's result, and
-        // `DEPENDENT_FACTS_SQL` is deliberately un-ACL-gated — it flags every
-        // dependent, including ones this actor cannot read, because skipping
-        // those would leave exactly them unflagged forever. Sound for the
-        // WRITE; wrong as a disclosure. `searchBrain` made the same call on
-        // the same surface and collapses withheld rivals to a bare count
-        // (`lib/brain/search.ts`, #4913), so this does too. The admin routes
-        // keep the ids — see the note on `BrainFactRetractResponse`.
-        //
-        // Explicit destructure, not `delete` or a rest-spread of the id
-        // field: a new field on `BrainFactCorrectionResponse` then has to be
-        // named HERE to reach the agent, so the next one carrying rows the
-        // actor cannot see cannot arrive by inheritance. `satisfies` is what
-        // makes re-adding the OLD one a compile error rather than a review
-        // catch — see {@link CorrectFactSuccess}.
-        const { verb, factId, correctionEpisodeId, invalidatedAt, supersededBy, validTo } =
-          outcome.result;
-        return {
-          corrected: true as const,
-          verb,
-          factId,
-          correctionEpisodeId,
-          invalidatedAt,
-          supersededBy,
-          validTo,
-          flaggedForReReviewCount: outcome.result.flaggedForReReview.length,
-          summary: summarize(outcome),
-        } satisfies CorrectFactSuccess;
-      }
-      case "refused":
-        // The machinery's prose is already actionable and secret-free; the
-        // structured `refusal` code lets a caller branch without parsing it.
-        return {
-          error: outcome.message,
-          reason: CORRECT_FACT_TOOL_REASONS.refused,
-          refusal: outcome.reason,
-        };
-      case "not-found":
-        return {
-          error:
-            "That fact could not be corrected. It may not exist, may already be retracted, or may not " +
-            "be visible to you. Use searchBrain to find the current fact id and try again.",
-          reason: CORRECT_FACT_TOOL_REASONS.notFound,
-        };
-      default: {
-        const unexpected: never = outcome;
-        throw new Error(`Unhandled correction outcome: ${JSON.stringify(unexpected)}`);
-      }
+    // Refuse an unauthorized correction here rather than staging a card whose
+    // Confirm button would be refused. The SHARED predicate, not a copy — see
+    // the module header, and `correctFact` runs it again at confirm time, which
+    // is what makes a role revoked in between still refuse.
+    const authorityRefusal = correctionAuthorityRefusal(ctx);
+    if (authorityRefusal) {
+      return {
+        error: authorityRefusal.message,
+        reason: CORRECT_FACT_TOOL_REASONS.refused,
+        refusal: authorityRefusal.reason,
+      };
     }
+
+    const payload: CorrectionConfirmPayload = {
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      ...(input.replacement !== undefined
+        ? {
+            replacement: {
+              object: input.replacement.object,
+              ...(input.replacement.validFrom !== undefined
+                ? { validFrom: input.replacement.validFrom }
+                : {}),
+            },
+          }
+        : {}),
+    };
+
+    // Mint the single-use confirm token binding this exact staged correction. If
+    // no signing key is configured the gate cannot be enforced, so we refuse to
+    // stage rather than offer an unverifiable confirm — the same fail-loud stance
+    // `mintOAuthStateToken` and the REST write gate take. A staged correction the
+    // server cannot later prove a human approved is worse than no correction.
+    let token: string;
+    try {
+      token = mintCorrectionConfirmToken({
+        // `ctx.workspaceId`, not the raw `workspaceId` off request context: the
+        // confirm endpoint re-derives the binding from ITS resolved context, and
+        // binding one of the two while verifying against the other is how a
+        // token starts failing for reasons nobody can reproduce.
+        workspaceId: ctx.workspaceId,
+        factId: input.factId,
+        verb: input.verb,
+        payload,
+      });
+    } catch (err) {
+      log.error(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          workspaceId: ctx.workspaceId,
+          factId: input.factId,
+          verb: input.verb,
+          requestId,
+        },
+        "correct_fact could not mint a confirm token",
+      );
+      return {
+        error: withRequestId(
+          "This correction can't be staged for confirmation — the server is missing a signing key for " +
+            "confirmation tokens. Tell the user the correction can't be confirmed right now; do not claim " +
+            "it was applied. Nothing was changed.",
+          requestId,
+        ),
+        reason: CORRECT_FACT_TOOL_REASONS.correctionFailed,
+      };
+    }
+
+    log.info(
+      { workspaceId: ctx.workspaceId, factId: input.factId, verb: input.verb, requestId },
+      "correct_fact staged a correction for confirmation",
+    );
+
+    return {
+      status: "needs_confirmation" as const,
+      factId: input.factId,
+      verb: input.verb,
+      summary: buildCorrectionSummary(input.verb, payload),
+      confirm: { factId: input.factId, verb: input.verb, ...payload, token },
+    } satisfies CorrectFactStaged;
   },
 });
-
-/** One human sentence the agent can relay verbatim. */
-function summarize(outcome: Extract<CorrectionOutcome, { kind: "corrected" }>): string {
-  const { result } = outcome;
-  switch (result.verb) {
-    case "retract":
-      // "were flagged" without "and here is where" reads as a queue somebody
-      // can go work through; there isn't one (see
-      // `MERGE_PROVENANCE_MARKER_SQL`'s header). The count IS the report, and
-      // saying so is what keeps this string inside the rule that block states.
-      return result.flaggedForReReview.length > 0
-        ? `The fact was retracted, and ${result.flaggedForReReview.length} derived fact(s) were marked as needing human re-review — nothing was removed automatically, and this count is the whole report: no queue lists them. Relay it to the user so a person can decide about those claims.`
-        : "The fact was retracted. It leaves current answers immediately but stays readable as history.";
-    case "supersede":
-      return "The corrected fact is now the current belief; the old value stays readable as history with a recorded end date.";
-    case "re-authority":
-      return "The claim's authority was re-anchored on you — it now carries your confirmation as its freshest evidence.";
-    case "pin":
-      return "The fact was pinned: your confirmation is recorded as fresh evidence, resetting its staleness clock.";
-    default: {
-      const unexpected: never = result.verb;
-      throw new Error(`Unhandled correction verb: ${JSON.stringify(unexpected)}`);
-    }
-  }
-}

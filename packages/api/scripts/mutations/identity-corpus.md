@@ -43,7 +43,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `predicate_key =` dropped from the collision join | 1 | 0 |
 | `comparableDifferentSql` loses its `split_part` tag equality arm | 1 | 0 |
 
-Suite sizes: **identity-consumers-pg.test.ts** 85 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`) · **reconcile.test.ts** 79 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
+Suite sizes: **identity-consumers-pg.test.ts** 85 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`) · **reconcile.test.ts** 81 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
 
 ## Notes
 

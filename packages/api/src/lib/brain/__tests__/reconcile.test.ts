@@ -1473,6 +1473,47 @@ describe("advisory contradiction edges", () => {
     ).toBe("number");
   });
 
+  test("⭐ the anchor arm's licence is bound TENTH, and defaults to the producer's hint (#5467)", async () => {
+    // `$10` — see the lexical half in `segmentation.test.ts`. TRUE means *this
+    // producer's per-claim `single` licenses the ANCHOR arm as well as its own
+    // slot*, which is what every producer got between #5438 and #5467 and what
+    // all but one still gets. Asserted for a producer that says nothing, because
+    // that is the case the whole ingest path is: an absent field must not
+    // silently acquire the bound. A widening default subtracts edges from
+    // producers that never asked, and a missing advisory edge is
+    // indistinguishable from agreement.
+    const store = new FakeBrainStore();
+    await run(store, { candidates: [candidate({ ...single, object: "Grace" })] });
+
+    const binds = store.bindsFor("tensionScan");
+    expect(binds, "the rival scan was never issued").toHaveLength(1);
+    expect(binds[0]![8], "the episode moved off index 8").toBe("ep-1");
+    expect(
+      binds[0]![9],
+      "a producer that declared no `anchorReach` lost the anchor arm it had before #5467",
+    ).toBe(true);
+  });
+
+  test("⭐ …and a `curated-only` producer binds FALSE, so the arm must find an approved entry", async () => {
+    // The correction lane's declaration, exercised through the same seam it
+    // travels — `correction.ts` sets this field and nothing else in the tree
+    // does. The BIND is what a unit fake can prove; that the statement then
+    // consults `brain_predicate_cardinality` is the lexical assertion, and that
+    // the two together mint nothing for an uncurated predicate is
+    // `correction-anchor-reach-pg.test.ts` against real Postgres.
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [candidate({ ...single, object: "Grace", anchorReach: "curated-only" })],
+    });
+
+    const binds = store.bindsFor("tensionScan");
+    expect(binds, "the rival scan was never issued").toHaveLength(1);
+    expect(
+      binds[0]![9],
+      "a `curated-only` producer still licenses the anchor arm from its own hint",
+    ).toBe(false);
+  });
+
   test("…and the fake HONOURS that exclusion, so no self-edge is ever observed", async () => {
     // The bind assertion above proves the stage passes the right id; it says
     // nothing about whether the fake's `id <> $7` model reads it at the right

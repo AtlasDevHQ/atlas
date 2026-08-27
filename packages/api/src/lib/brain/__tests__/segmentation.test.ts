@@ -30,6 +30,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   exactSlotFirstSql,
+  exactSlotSql,
   subjectAnchorSql,
   tensionReachSql,
 } from "@atlas/api/lib/brain/segmentation";
@@ -38,6 +39,7 @@ import {
   TENSION_CANDIDATES_SQL,
 } from "@atlas/api/lib/brain/reconcile";
 import { TENSION_SWEEP_SQL } from "@atlas/api/lib/brain/tension-sweep";
+import { cardinalitySingleSql } from "@atlas/api/lib/brain/cardinality";
 
 /** Whitespace-insensitive containment — the builders wrap and indent. */
 const flat = (sql: string): string => sql.replace(/\s+/g, " ");
@@ -269,5 +271,92 @@ describe("both tension statements carry the reach — and no other consumer does
     expect(TENSION_SWEEP_SQL).not.toMatch(/\bUPDATE\s+brain_facts\b/i);
     expect(TENSION_CANDIDATES_SQL).not.toContain("valid_to =");
     expect(TENSION_SWEEP_SQL).not.toContain("valid_to =");
+  });
+});
+
+describe("⭐ the anchor arm's coverage bound on the correction lane (#5467)", () => {
+  /**
+   * The gate as `reconcile.ts` builds it: the workspace's approved entry for the
+   * INCOMING claim's predicate (`$3`), read off the scanned row's workspace.
+   *
+   * Built from `cardinalitySingleSql` rather than retyped, for the reason this
+   * file already gives about `exactSlotFirstSql`: a hand-written copy would be a
+   * second spelling that could agree with itself while disagreeing with the
+   * sweep, and the sweep is the whole reason the gate is this expression.
+   */
+  const gate = flat(cardinalitySingleSql("f", "$3"));
+
+  const exactArm = flat(
+    exactSlotSql(
+      { subjectKeyExpr: "subject_key", predicateKeyExpr: "predicate_key" },
+      { subjectKeyExpr: "$2", predicateKeyExpr: "$3" },
+    ),
+  );
+
+  test("the ingest scan carries the APPROVED-entry gate the sweep already had", () => {
+    // #5450 measured that "approved-predicate coverage" bounded the sweep lane
+    // and nothing else; the correction lane minted a false prod edge
+    // (`e78de65d`) with no cardinality entry anywhere in the loop. This is that
+    // bound arriving on the ingest statement.
+    expect(flat(TENSION_CANDIDATES_SQL)).toContain(gate);
+    // …asking about the INCOMING claim's predicate. Binding the ROW's
+    // `predicate_key` would ask whether some OTHER slot is single-valued, which
+    // under the anchor arm is a different predicate every time — the gate would
+    // then be answered by the rival rather than about the claim being scanned
+    // for, and the sweep's `cardinalitySingleSql("a")` asks about its driving
+    // side for exactly this reason.
+    expect(flat(TENSION_CANDIDATES_SQL)).not.toContain(
+      flat(cardinalitySingleSql("f", "f.predicate_key")),
+    );
+  });
+
+  test("⭐ the EXACT SLOT is exempt — the bound is on the ANCHOR arm alone", () => {
+    // The load-bearing half. A correction's `single` is an assertion about the
+    // slot the human corrected, and that assertion is not what #5467 withdrew:
+    // gating the whole scan would stop the correction lane minting the true
+    // exact-slot edge it has minted since #4912, on every uncurated predicate —
+    // which in a workspace that has curated nothing is every predicate. A
+    // missing advisory edge is indistinguishable from agreement, so nothing
+    // downstream would report the subtraction.
+    //
+    // Asserted as the STRUCTURE `(exact OR $10 OR gate)`, not merely as "both
+    // strings appear": the statement already contains the exact arm twice (the
+    // reach and the ORDER BY), so a containment pair stays green against a gate
+    // that is ANDed on and subtracts the slot.
+    const sql = flat(TENSION_CANDIDATES_SQL);
+    expect(sql).toContain(`AND (${exactArm} OR $10::boolean OR ${gate})`);
+  });
+
+  test("the producer's own licence is the TENTH bind, after the episode", () => {
+    // `reconcile.ts`'s `agreementBinds` docstring: the spread sits in the MIDDLE
+    // of this statement's bind list, so every trailing placeholder moves when
+    // the tuple widens. `$9` was appended after the cap for that reason and
+    // `$10` after `$9` for the same one. A stale index here binds a comparable
+    // value into `::boolean`, which pg rejects at runtime and no unit fake would
+    // notice.
+    expect(TENSION_CANDIDATES_SQL).toContain("$10::boolean");
+    expect(TENSION_CANDIDATES_SQL.indexOf("$10")).toBeGreaterThan(
+      TENSION_CANDIDATES_SQL.indexOf("$9"),
+    );
+    // `::boolean` and never a bare `$10`: the bind reaches an `OR` arm directly,
+    // where an untyped parameter is one pg has to infer from context.
+    expect(TENSION_CANDIDATES_SQL).not.toMatch(/\$10(?!::boolean)/);
+  });
+
+  test("⚠️ the SWEEP is untouched — it neither grew a bind nor lost its gate", () => {
+    // The sweep's radius was already approved-predicate coverage. #5467 does not
+    // change it, and the two statements must still agree about what "in tension"
+    // means — `tensionReachSql`'s output is byte-identical at both call sites
+    // precisely because the gate went BESIDE the reach rather than inside it.
+    expect(TENSION_SWEEP_SQL).not.toContain("$10");
+    expect(flat(TENSION_SWEEP_SQL)).toContain(flat(cardinalitySingleSql("a")));
+  });
+
+  test("⚠️ CORROBORATION acquired no cardinality arm on the way past", () => {
+    // `segmentation.ts` calls corroboration "the one consumer with no grant arm
+    // and no cardinality arm". Adding one here would look conservative and be
+    // the opposite: it would make a MERGE — the ACL-widening direction —
+    // conditional on curation, which is not a bound anyone argued for.
+    expect(CORROBORATION_LOOKUP_SQL).not.toContain("brain_predicate_cardinality");
   });
 });

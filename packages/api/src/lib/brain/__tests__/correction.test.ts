@@ -232,6 +232,19 @@ class FakeCorrectionStore {
   readonly episodes: StoredEpisode[] = [];
   readonly edges: StoredEdge[] = [];
   /**
+   * Every bind list `TENSION_CANDIDATES_SQL` was issued with (#5467).
+   *
+   * The scan's REACH is a SQL arm this fake does not model — it filters on the
+   * exact slot and nothing else — so the only thing this lane can say about the
+   * anchor arm is what the verb ASKED for. That is exactly the claim worth
+   * pinning here: `correction.ts` is the one call site in the tree that declares
+   * `anchorReach`, and whether the declaration survives the trip through
+   * `reconcileFacts` to the statement's tenth placeholder is a property of this
+   * path rather than of the statement. What the database then does with it is
+   * `correction-anchor-reach-pg.test.ts`.
+   */
+  readonly tensionScanBinds: (readonly unknown[])[] = [];
+  /**
    * Cardinality proposals this store accepted (#5027) — `pending` rows, never
    * approved ones, because the correction-event source may only propose.
    */
@@ -513,6 +526,7 @@ class FakeCorrectionStore {
     // replacement BEFORE stamping the target, the target would show up here
     // and the supersede test's no-tension-edge assertion would fail.
     if (sql === TENSION_CANDIDATES_SQL) {
+      this.tensionScanBinds.push([...params]);
       const slot = slotParams(params, 1);
       const selfId = params[4];
       const rivals = this.facts.filter(
@@ -1206,6 +1220,53 @@ describe("supersede", () => {
       toEpisodeId: null,
     });
     expect(store.fact("third").validTo).toBeNull();
+    // ⭐ …and it earned it WITHOUT any cardinality entry in this workspace,
+    // which is the half #5467 had to leave alone. The verb's `single` is an
+    // assertion about the slot the human corrected, and `third` is in that slot.
+    // Gating the whole scan on curation — the reading of "a predicate with no
+    // approved entry mints nothing" that takes the exact arm with it — deletes
+    // this edge, and every edge like it, in every workspace that has curated
+    // nothing. Nothing downstream reports a missing advisory edge.
+    expect(store.cardinalityProposals.every((p) => p.cardinality === "single")).toBe(true);
+    expect(
+      store.cardinalityProposals.some((p) => p.sourceClass === "human"),
+      "an APPROVED-looking entry appeared, which would make the edge above prove nothing",
+    ).toBe(false);
+  });
+
+  test("⭐ the verb declares `curated-only`, so the ANCHOR arm must earn itself (#5467)", async () => {
+    // The decision, at the bind. `correction.ts` hard-codes
+    // `predicateCardinality: "single"` from the human's VERB, and until #5438
+    // that assertion could only reach the slot the human touched. The anchor arm
+    // took the same hard-code and spent it on every live claim under the
+    // subject's prefix — one spurious prod edge exists (`e78de65d`, a raise
+    // target flagged against a post-money valuation, on a predicate with no row
+    // in `brain_predicate_cardinality` at all).
+    //
+    // So the claim still says `single` (the assertion about its own slot stands)
+    // and now also says how far that carries. `$10 = false` is what makes the
+    // statement's anchor arm look for an approved entry instead.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Bo" },
+    });
+    if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
+
+    const binds = store.tensionScanBinds;
+    expect(binds, "the correction never issued the rival scan at all").toHaveLength(1);
+    // Asserted with the EPISODE beside it, because both are trailing binds after
+    // the `agreementBinds` spread and a renumbering moves them together — an
+    // index-9 assertion alone would go green against a list that had shifted by
+    // one and put the episode where the licence belongs.
+    expect(typeof binds[0]![8], "the episode moved off index 8").toBe("string");
+    expect(
+      binds[0]![9],
+      "the correction let its own per-claim hint license the anchor arm — the #5467 bound is gone",
+    ).toBe(false);
   });
 
   test("an invalid replacement.validFrom degrades to the correction time, never an invalid write", async () => {

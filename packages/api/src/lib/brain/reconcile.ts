@@ -305,7 +305,6 @@ import {
 } from "@atlas/api/lib/brain/subject-cmp";
 import { notAnObservationSql } from "@atlas/api/lib/brain/observation";
 import { isWarehouseDerivedSource } from "@atlas/api/lib/brain/sources";
-import { distinctSourceSql } from "@atlas/api/lib/brain/actor-identity";
 import type {
   BrainFactProvenance,
   EntityRole,
@@ -1082,85 +1081,54 @@ export const INSERT_FACT_SQL = `INSERT INTO brain_facts
        RETURNING id`;
 
 /**
- * The evidence pointer, fact → episode. `WHERE NOT EXISTS` is what makes a
- * re-observed claim's edge idempotent, so a repeated pass strengthens once and
- * not twice; the enclosing advisory lock is what makes the guard sound under
- * concurrency. `RETURNING id` is how the caller learns whether the edge was new.
+ * The evidence pointer, fact → episode. `WHERE NOT EXISTS` makes a re-observed
+ * claim's edge idempotent, so a repeated pass strengthens once and not twice;
+ * the enclosing advisory lock is what makes the guard sound under concurrency.
+ * `RETURNING id` is how the caller learns whether the edge was new.
  *
- * ## The guard has TWO arms since #5487, and the second one is the lock
+ * ## Why lock 5's *distinct source* rule is NOT enforced here (#5487)
  *
  * ADR-0036 §T9 lock 5: *"re-proposal strengthens (adds a provenance edge,
- * weighting **distinct** sources so self-echo is idempotent), never
- * duplicates."*
+ * **weighting** distinct sources so self-echo is idempotent), never duplicates;
+ * the distinct-source count is surfaced to the reviewer."*
  *
- * The episode arm alone delivers a strictly weaker property, and the header
- * here used to claim the stronger one. `(from_fact_id, to_episode_id)` makes a
- * repeated **pass** idempotent — run the same episode through reconcile twice
- * and it strengthens once. It does NOT make a repeated **source** idempotent:
- * two episodes from one actor are two `to_episode_id` values, so the same
- * person saying the same thing on Monday and again on Friday counted twice.
- * That is the self-echo lock 5 names, and it was mostly masked only because
- * connector episodes dedupe upstream on stable source ids.
+ * The obvious reading is that this guard should also refuse an episode whose
+ * AUTHOR already backs the claim — the same person saying the same thing on
+ * Monday and again on Friday. #5487 was written in that reading, and it is the
+ * wrong lever. Lock 5 says the edge IS added and the WEIGHTING is by source;
+ * suppressing the edge would not weight anything, it would destroy evidence —
+ * and a provenance edge is load-bearing three times over beyond the count:
  *
- * The second arm is {@link distinctSourceSql} on both sides — the newcomer's
- * principal read from its own episode row, compared against the principal of
- * every episode already on an edge from this fact. `actor-identity.ts` carries
- * the definition, the three-way choice behind it, and the argument for the
- * machine exemption that keeps warehouse re-reads counting.
+ * 1. **The decay anchor.** `staleness.ts`'s `LAST_OBSERVED_AT_SELECT` is a MAX
+ *    over the episodes on these edges. For `correction.ts`'s `re-authority` and
+ *    `pinned` verbs the anchor reset is the *only* observable effect the verb
+ *    has — the marker it writes has no reader — so a second attestation by the
+ *    same admin would write nothing, move nothing, and report success. #4939
+ *    refuses exactly that state by name: *"the verb would report an effect
+ *    nobody can observe."*
+ * 2. **Grant widening.** `promotion.ts`'s `widenGrantFromEvidence` unions the
+ *    grants of every episode on an edge. A claim restated by one person in a
+ *    wider channel would keep the narrower grant.
+ * 3. **The audit record.** The edge set is what says WHICH episodes back a
+ *    claim. "Two people" and "one person, twice" are different facts about the
+ *    world and both are worth being able to read back.
  *
- * ⚠️ **The newcomer's principal is read from the EPISODE ROW, deliberately not
- * from `ctx.sourcePrincipal`.** {@link resolvedPrincipal} prefers an explicit
- * caller-supplied principal, and that value is the right ATTRIBUTION — it is
- * what lands in `provenance.actor` — but it is the wrong DEDUPE KEY, because
- * two of its three producers bind it to a constant:
- * `warehouse-producer.ts` passes `WAREHOUSE_PRODUCER_PRINCIPAL` for every
- * snapshot in every workspace, and `correction.ts` passes one `user:<id>` per
- * human. Keying on it would collapse an entire producer's evidence into a
- * single corroboration. Reading both sides off `brain_episodes` keeps the
- * comparison like-for-like, and it is the only form available for the PRIOR
- * episodes anyway: nothing records a per-edge principal.
- *
- * ⚠️ **The episode arm is kept, not replaced.** It is what the statement
- * degrades to whenever a principal is NULL — a machine, an unattributed row —
- * so on that whole population the behaviour is byte-for-byte today's. A change
- * to the fact-level property has to be strictly additive on a corpus nobody is
- * backfilling.
- *
- * ## What this deliberately does NOT do
- *
- * It records no principal ON the edge. That would be a stored second copy of a
- * value `brain_episodes` already holds — the *"second truth nothing reads and
- * nothing keeps in step"* that {@link INSERT_FACT_SQL}'s header refuses for
- * `entityIds` on the same grounds — and it would need a backfill to mean
- * anything on the existing corpus. The join is one indexed lookup
- * (`idx_brain_edges_from_fact`, then the episodes PK) inside a transaction that
- * already holds an advisory lock.
- *
- * ⚠️ One accepted consequence, stated rather than discovered: a second edge
- * suppressed here is a second edge `promotion.ts`'s `widenGrantFromEvidence`
- * never sees, so a claim restated by the SAME person in a WIDER channel keeps
- * the narrower grant. That is the fail-closed direction — information withheld,
- * never disclosed — which is the direction the corroboration branch's own grant
- * note (#4823) already accepts for the same reason.
+ * So this statement is UNCHANGED, and lock 5's residue lives one layer up in
+ * {@link corroborationCountSql} — the number a reviewer actually reads, which
+ * is now a count of distinct SOURCES over exactly these edges. The edge set
+ * stays complete; the weighting stops double-counting a voice. Every writer of
+ * this statement (`extract.ts`, `warehouse-producer.ts`, `correction.ts`)
+ * therefore behaves precisely as it did.
  */
 export const INSERT_PROVENANCE_EDGE_SQL = `INSERT INTO brain_edges
          (workspace_id, edge_type, from_fact_id, to_episode_id)
        SELECT $1, 'provenance', $2::uuid, $3::uuid
         WHERE NOT EXISTS (
-          SELECT 1
-            FROM brain_edges prior
-            JOIN brain_episodes prior_ep
-              ON prior_ep.workspace_id = prior.workspace_id
-             AND prior_ep.id = prior.to_episode_id
-           WHERE prior.workspace_id = $1
-             AND prior.edge_type = 'provenance'
-             AND prior.from_fact_id = $2::uuid
-             AND (prior.to_episode_id = $3::uuid
-                  OR ${distinctSourceSql("prior_ep")} = (
-                       SELECT ${distinctSourceSql("newcomer")}
-                         FROM brain_episodes newcomer
-                        WHERE newcomer.workspace_id = $1
-                          AND newcomer.id = $3::uuid)))
+          SELECT 1 FROM brain_edges
+           WHERE workspace_id = $1
+             AND edge_type = 'provenance'
+             AND from_fact_id = $2::uuid
+             AND to_episode_id = $3::uuid)
        RETURNING id`;
 
 /**

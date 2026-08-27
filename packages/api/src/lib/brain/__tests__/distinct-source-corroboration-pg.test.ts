@@ -1,61 +1,65 @@
 /**
  * **Corroboration weights distinct SOURCES, not distinct episodes** (#5487,
- * [ADR-0036](../../../../../../docs/adr/0036-company-brain-substrate.md) §T9
+ * [ADR-0036](../../../../../../docs/adr/0036-atlas-as-company-brain.md) §T9
  * lock 5).
  *
- * Lock 5: *"re-proposal strengthens (adds a provenance edge, weighting
- * **distinct** sources so self-echo is idempotent), never duplicates; the
+ * Lock 5: *"re-proposal strengthens (adds a provenance edge, **weighting**
+ * distinct sources so self-echo is idempotent), never duplicates; the
  * distinct-source count is surfaced to the reviewer."*
  *
- * What shipped delivered the weaker half. `INSERT_PROVENANCE_EDGE_SQL` guarded
- * on `(workspace_id, edge_type, from_fact_id, to_episode_id)`, which makes a
- * repeated **pass** idempotent and says nothing about a repeated **source**:
- * two episodes from one actor are two `to_episode_id` values, so the same
- * person saying the same thing on Monday and again on Friday strengthened the
- * claim twice. Every renderer meanwhile labelled the number *"sources"*.
+ * The number that shipped was `COUNT(DISTINCT ed.to_episode_id)` — a count of
+ * EPISODES — written out at three call sites and rendered to humans as
+ * **"Sources"** in five, including the review queue's own column header. Two
+ * messages from one person are two episodes and one source, so a reviewer read
+ * *"2 corroborating sources"* over one voice.
  *
- * ## The four cells, and why three of them are the guard against over-correction
+ * ## What this file pins, and what it deliberately does NOT
  *
- * | second episode | verdict | what breaks if it flips |
- * |---|---|---|
- * | same actor, same claim | **one edge** | ⭐ #5487 — the self-echo |
- * | different actor, same claim | two edges | independent testimony erased — the fix becomes a worse bug than the defect |
- * | warehouse producer, twice | two edges | ⚠️ `observation-reap.ts` deletes the live comparison surface (below) |
- * | same episode, twice | one edge | the property that already shipped, unchanged |
+ * ⚠️ **Every cell asserts the EDGE COUNT is unchanged.** Lock 5 says the edge is
+ * added and the *weighting* is by source, and the edge set is load-bearing three
+ * times over beyond the count — it is `staleness.ts`'s decay anchor, it is
+ * `promotion.ts`'s grant-widening input, and it is the audit record of which
+ * episodes back a claim. An earlier draft of this fix put the rule in
+ * `INSERT_PROVENANCE_EDGE_SQL`'s guard instead; that would have made a second
+ * `re-authority` vouch by one admin write no edge, move no anchor, and report
+ * success — *"the verb would report an effect nobody can observe"*, which #4939
+ * refuses by name. The edge assertions below are what keep this fix from
+ * drifting back into that.
  *
- * ⚠️ **Row 3 is the cell a principal-keyed dedupe destroys by default, and it
- * is not a hypothetical.** `warehouse-producer.ts` stamps EVERY snapshot
- * episode with the same `source_actor` — the constant
- * `WAREHOUSE_PRODUCER_PRINCIPAL` — so a fix that keys on the principal with no
- * machine arm collapses every warehouse reading a workspace has ever taken into
- * one corroboration, permanently and silently. `observation-reap.ts` measures an
- * observation's freshness by exactly these edges, so its `last_seen` would
- * collapse to the creating episode and the reaper would delete the live
- * comparison surface. That is why `distinctSourceSql` exempts machines, and why
- * the exemption has a cell here rather than only a docstring.
+ * ## The six cells
  *
- * Row 4 is the shipped property. It is asserted because the new arm is
- * ADDITIVE: whenever a principal is NULL the statement must degrade to exactly
- * the guard it replaced, and a test that only proves the new behaviour cannot
- * see that it stopped proving the old one.
+ * | second episode | edges | sources | what breaks if the source count flips |
+ * |---|---|---|---|
+ * | same actor, same claim | 2 | **1** | ⭐ #5487 — the self-echo, inflated |
+ * | two different actors | 2 | 2 | independent testimony erased — worse than the defect |
+ * | one actor, two connectors | 2 | 2 | a merge Atlas cannot prove (`slack:U1` ≠ `zoom:U1`) |
+ * | warehouse producer, twice | 2 | 2 | ⚠️ every warehouse reading ever taken reads as ONE (below) |
+ * | no `source_actor`, twice | 2 | 2 | an unattributable episode suppressing a real one |
+ * | the same episode, twice | 1 | 1 | the shipped idempotence, lost |
  *
- * ## The count and the guard are one rule, so they are asserted together
+ * ⚠️ **Row 4 is the cell a principal-keyed count destroys by default, and it is
+ * not hypothetical.** `warehouse-producer.ts` stamps EVERY snapshot episode with
+ * the same `source_actor` — the constant `WAREHOUSE_PRODUCER_PRINCIPAL` — so a
+ * count keyed on the principal with no machine arm reports one corroboration for
+ * a workspace's entire warehouse history, permanently and silently. That is why
+ * `distinctSourceSql` exempts machines, and why the exemption has a cell here
+ * rather than only a docstring.
  *
- * `corroborationCountSql` (the reviewer's number, three call sites) and
- * `INSERT_PROVENANCE_EDGE_SQL`'s guard both read `distinctSourceSql`: the guard
- * admits an edge exactly when it would raise the count. Every cell below
- * asserts BOTH, because two expressions that agree today and are pinned
- * separately are two expressions that drift — and the drift is invisible, since
- * a reviewer reading an inflated number has nothing to compare it to.
+ * Row 3 is the one whose verdict surprises: the principal is `source:actor`, so
+ * one vendor id under two connectors is two handles. Atlas cannot prove they are
+ * one person, and abstaining OUT keeps evidence rather than merging it away.
+ *
+ * Row 6 is the shipped property, asserted because the change must be ADDITIVE:
+ * a test that only proves the new behaviour cannot see that it stopped proving
+ * the old one.
  *
  * ## Why `-pg` and not the unit lane
  *
  * `reconcile.test.ts`'s fake dispatches on each SQL constant's string identity
  * and reads its binds positionally, so it *"cannot tell which COLUMNS a
- * statement names"* (#5021) — and this change adds no bind at all. The
- * newcomer's principal is read by a correlated subquery over `brain_episodes`,
- * which is invisible to a fake that never has a database. This file is the
- * proof.
+ * statement names"* (#5021) — and the count is a spliced sub-SELECT with no bind
+ * at all, evaluated entirely by Postgres. A fake that never has a database
+ * cannot see it. This file is the proof.
  *
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
  */
@@ -230,7 +234,6 @@ describeIfPg("corroboration weights distinct sources (#5487)", () => {
    */
   async function reviewerCount(workspaceId: string): Promise<number> {
     const page = await loadFactCandidates(pool, {
-      workspaceId,
       ctx: {
         origin: "authenticated",
         workspaceId,
@@ -269,10 +272,10 @@ describeIfPg("corroboration weights distinct sources (#5487)", () => {
     return rows[0]!.n;
   }
 
-  // ── the four cells ──────────────────────────────────────────────────────
+  // ── the six cells ───────────────────────────────────────────────────────
 
   it(
-    "⭐ the SAME actor restating the same claim strengthens it ONCE",
+    "⭐ the SAME actor restating the same claim weighs ONCE, and both episodes stay on the record",
     async () => {
       const ws = `ws-self-echo-${Date.now()}`;
       await land(ws, await seedEpisode(ws, SLACK_SOURCE, "U-alice"));
@@ -281,9 +284,13 @@ describeIfPg("corroboration weights distinct sources (#5487)", () => {
       expect(await factCount(ws), "corroboration must never duplicate the fact").toBe(1);
       expect(
         await edgeCount(ws),
-        "two episodes from one actor are one source — this is the #5487 defect and it fails before the fix",
+        "BOTH episodes stay on the record — the edge is the decay anchor and the audit trail, " +
+          "and #5487 changes the weighting, never the evidence",
+      ).toBe(2);
+      expect(
+        await reviewerCount(ws),
+        "two episodes from one actor are ONE source — this is the #5487 defect and it fails before the fix",
       ).toBe(1);
-      expect(await reviewerCount(ws), "the reviewer must read one source, not two").toBe(1);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -296,11 +303,11 @@ describeIfPg("corroboration weights distinct sources (#5487)", () => {
       await land(ws, await seedEpisode(ws, SLACK_SOURCE, "U-bob"));
 
       expect(await factCount(ws)).toBe(1);
+      expect(await edgeCount(ws)).toBe(2);
       expect(
-        await edgeCount(ws),
-        "Alice and Bob are independent testimony — a fix that dedupes them is worse than the defect",
+        await reviewerCount(ws),
+        "Alice and Bob are independent testimony — a fix that merges them is worse than the defect",
       ).toBe(2);
-      expect(await reviewerCount(ws)).toBe(2);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -313,12 +320,12 @@ describeIfPg("corroboration weights distinct sources (#5487)", () => {
       await land(ws, await seedEpisode(ws, "zoom", "U-alice"));
 
       expect(await factCount(ws)).toBe(1);
+      expect(await edgeCount(ws)).toBe(2);
       expect(
-        await edgeCount(ws),
+        await reviewerCount(ws),
         "the principal is `source:actor`, so one vendor id under two connectors is two handles — " +
           "Atlas cannot prove they are one person, and abstaining OUT keeps evidence rather than merging it away",
       ).toBe(2);
-      expect(await reviewerCount(ws)).toBe(2);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -342,13 +349,11 @@ describeIfPg("corroboration weights distinct sources (#5487)", () => {
       );
 
       expect(await factCount(ws)).toBe(1);
-      expect(
-        await edgeCount(ws),
-        "collapsing these is what would make `observation-reap.ts` delete the live comparison surface",
-      ).toBe(2);
+      expect(await edgeCount(ws)).toBe(2);
       expect(
         await countExpressionValue(ws),
-        "the count must agree with the guard on the machine cell too",
+        "a machine re-reading the world is a fresh reading — merging these would report a " +
+          "workspace's entire warehouse history as one corroboration",
       ).toBe(2);
     },
     PG_TEST_TIMEOUT_MS,
@@ -366,17 +371,18 @@ describeIfPg("corroboration weights distinct sources (#5487)", () => {
       await land(ws, await seedEpisode(ws, SLACK_SOURCE, null), "user:carol");
 
       expect(await factCount(ws)).toBe(1);
+      expect(await edgeCount(ws)).toBe(2);
       expect(
-        await edgeCount(ws),
-        "NULL = NULL is NULL, so an unattributable episode never suppresses another — today's behaviour, unchanged",
+        await reviewerCount(ws),
+        "a source-less episode is keyed on ITSELF, so it never merges with another — and never " +
+          "reports zero, which would read as unsupported",
       ).toBe(2);
-      expect(await reviewerCount(ws)).toBe(2);
     },
     PG_TEST_TIMEOUT_MS,
   );
 
   it(
-    "the SAME episode reconciled twice is still one edge — the shipped property, unchanged",
+    "the SAME episode reconciled twice is still one edge — the shipped idempotence, unchanged",
     async () => {
       const ws = `ws-same-episode-${Date.now()}`;
       const episode = await seedEpisode(ws, SLACK_SOURCE, "U-alice");
@@ -386,7 +392,7 @@ describeIfPg("corroboration weights distinct sources (#5487)", () => {
       expect(await factCount(ws)).toBe(1);
       expect(
         await edgeCount(ws),
-        "the episode arm is kept, not replaced — a repeated PASS was already idempotent and must stay so",
+        "`INSERT_PROVENANCE_EDGE_SQL` is untouched — a repeated PASS was already idempotent and stays so",
       ).toBe(1);
       expect(await reviewerCount(ws)).toBe(1);
     },

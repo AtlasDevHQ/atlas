@@ -318,6 +318,10 @@ describe("captureAuthoringIdentities — the bound is authorship", () => {
     // builder is what makes THAT the thing being pinned.
     expect(AUTHORING_PRINCIPALS_SQL).toContain(authoringPrincipalSql("e"));
     expect(authoringPrincipalSql("e")).toContain("e.source || ':' || btrim(e.source_actor)");
+    // The column ALIAS is pinned separately, because the builder does not carry
+    // it: `projectIdentityRow` reads `row.actor`, so a renamed alias is a silent
+    // null on every captured identity.
+    expect(AUTHORING_PRINCIPALS_SQL).toContain("AS actor");
     expect(AUTHORING_PRINCIPALS_SQL).toContain("FROM brain_episodes e");
     // ⚠️ `btrim`, because agreeing about the separator is not enough — the two
     // also have to agree about WHITESPACE. `resolvedPrincipal` trims, so an

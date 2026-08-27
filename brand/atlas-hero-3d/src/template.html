@@ -1,0 +1,823 @@
+<title>Atlas in Bronze</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
+
+<style>
+:root{
+  /* Mirrored from the repo's brand.css (ADR-0023: forest is the brand, teal is
+   * the spark). oklch is kept alongside each hex so these stay traceable to the
+   * source of truth. The ground is --code-bg: Atlas sanctions exactly one
+   * always-dark surface, so a dark hero belongs on that one rather than
+   * inventing a fifth. */
+  --ground:#070A09;      /* --code-bg     oklch(0.14  0.006 167) */
+  --ground-2:#101816;    /* between bg and chrome, for the hero wash  */
+  --chrome:#101412;      /* --code-chrome oklch(0.185 0.006 167) */
+  --well:#020403;        /* --code-well   oklch(0.1   0.006 167) */
+
+  --brand:#1F5C45;       /* --atlas-brand oklch(0.4   0.115 158) */
+  /* Forest lightened for a dark surface — ADR-0023 §4: in dark the primary
+   * "stays forest, lightened for contrast, never teal". */
+  --accent:#389C6A;      /*               oklch(0.62  0.12  158) */
+  --accent-deep:#2A7350;
+  --spark:#23CE9E;       /* --atlas-spark oklch(0.759 0.148 167.71) — sparks only */
+
+  --paper:#F6EFE4;       /* --atlas-paper oklch(0.955 0.017 83)  */
+  --muted:#868686;       /* --code-muted  oklch(0.62  0     0)   */
+
+  --hair:rgba(56,156,106,.22);
+  --panel:rgba(16,20,18,.72);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  background:radial-gradient(120% 90% at 50% 6%, var(--ground-2) 0%, var(--ground) 46%, var(--well) 100%);
+  color:var(--paper);
+  font-family:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+
+.stage{position:relative;height:100svh;width:100%;overflow:hidden;touch-action:none}
+#gl{position:absolute;inset:0;width:100%;height:100%;display:block}
+.vignette{
+  position:absolute;inset:0;pointer-events:none;
+  background:
+    linear-gradient(180deg, rgba(2,4,3,.72) 0%, rgba(2,4,3,.28) 7%, transparent 15%),
+    linear-gradient(0deg, rgba(2,4,3,.66) 0%, rgba(2,4,3,.2) 11%, transparent 22%),
+    radial-gradient(105% 78% at 50% 42%, transparent 40%, rgba(2,4,3,.5) 80%, rgba(2,4,3,.88) 100%);
+}
+
+/* ---------- loading ---------- */
+.boot{
+  position:absolute;inset:0;display:grid;place-content:center;gap:14px;
+  justify-items:center;background:var(--well);z-index:20;
+  transition:opacity .7s ease;
+}
+.boot.gone{opacity:0;pointer-events:none}
+.boot .bar{width:150px;height:1px;background:rgba(56,156,106,.22);overflow:hidden}
+.boot .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s ease}
+.boot p{
+  margin:0;font:400 10px/1 "IBM Plex Mono",monospace;
+  letter-spacing:.22em;text-transform:uppercase;color:var(--muted);
+}
+
+/* ---------- plate labels ---------- */
+.labels{position:absolute;inset:0;pointer-events:none;z-index:5}
+.lbl{
+  position:absolute;top:0;left:0;display:flex;align-items:center;gap:8px;
+  transform-origin:0 50%;will-change:transform,opacity;opacity:0;
+}
+.lbl i{
+  width:5px;height:5px;flex:none;border-radius:50%;
+  background:var(--spark);box-shadow:0 0 0 3px rgba(35,206,158,.18);
+}
+.lbl span{display:block;width:30px;height:1px;flex:none;
+  background:linear-gradient(90deg,var(--accent),rgba(56,156,106,0))}
+.lbl b{
+  font:500 10px/1 "IBM Plex Mono",ui-monospace,monospace;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--paper);
+  white-space:nowrap;text-shadow:0 1px 6px rgba(2,4,3,.95);
+}
+.lbl em{
+  font:400 10px/1 "IBM Plex Mono",ui-monospace,monospace;font-style:normal;
+  color:var(--muted);margin-left:7px;letter-spacing:.06em;
+}
+
+/* ---------- chrome ---------- */
+.chrome{position:absolute;inset:0;pointer-events:none;z-index:10}
+.chrome > *{pointer-events:auto}
+
+.mark{position:absolute;top:26px;left:28px;display:flex;align-items:baseline;gap:10px}
+.mark strong{
+  font:500 15px/1 "Fraunces",Georgia,serif;
+  letter-spacing:.34em;text-transform:uppercase;color:var(--paper);
+}
+.mark small{
+  font:400 10px/1 "IBM Plex Mono",monospace;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--muted);
+}
+
+.beat{position:absolute;left:28px;bottom:34px;max-width:33ch}
+.beat .n{
+  font:400 10px/1 "IBM Plex Mono",monospace;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--accent);
+  display:block;margin-bottom:12px;
+}
+.beat h1{
+  margin:0 0 8px;
+  font:300 clamp(25px,3.3vw,40px)/1.07 "Fraunces",Georgia,serif;
+  letter-spacing:-.01em;text-wrap:balance;color:var(--paper);
+}
+.beat p{margin:0;font-size:13.5px;line-height:1.55;color:var(--muted);max-width:34ch}
+
+.deck{
+  position:absolute;right:28px;bottom:34px;display:flex;align-items:center;gap:14px;
+  padding:11px 14px;background:var(--panel);border:1px solid var(--hair);
+  border-radius:2px;backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+}
+.deck label{
+  font:400 10px/1 "IBM Plex Mono",monospace;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--muted);
+}
+input[type=range]{
+  -webkit-appearance:none;appearance:none;width:168px;height:14px;background:transparent;cursor:ew-resize;
+}
+input[type=range]::-webkit-slider-runnable-track{height:1px;background:rgba(56,156,106,.30)}
+input[type=range]::-moz-range-track{height:1px;background:rgba(56,156,106,.30)}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;width:9px;height:9px;border-radius:50%;
+  background:var(--spark);margin-top:-4px;border:none;
+}
+input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;background:var(--spark);border:none}
+input[type=range]:focus-visible{outline:1px solid var(--accent);outline-offset:5px}
+.readout{
+  font:500 10px/1 "IBM Plex Mono",monospace;color:var(--paper);
+  font-variant-numeric:tabular-nums;min-width:4ch;text-align:right;
+}
+.stylebtn{
+  font:500 10px/1 "IBM Plex Mono",monospace;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--paper);background:transparent;border:1px solid var(--hair);
+  border-radius:2px;padding:8px 11px;cursor:pointer;transition:border-color .2s,color .2s;
+}
+.stylebtn:hover{border-color:var(--accent)}
+.stylebtn[aria-pressed=true]{color:var(--spark);border-color:rgba(35,206,158,.45)}
+.stylebtn:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+
+/* ---------- lighting lab ---------- */
+.lab{
+  position:absolute;right:28px;bottom:92px;width:250px;
+  display:none;flex-direction:column;gap:13px;padding:15px 15px 16px;
+  background:var(--panel);border:1px solid var(--hair);border-radius:2px;
+  backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+}
+.lab.open{display:flex}
+.lab h3{
+  margin:0;font:400 10px/1 "IBM Plex Mono",monospace;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--accent);
+}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{
+  font:400 10px/1 "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);background:transparent;border:1px solid var(--hair);
+  border-radius:2px;padding:7px 9px;cursor:pointer;transition:color .18s,border-color .18s;
+}
+.chip:hover{color:var(--paper)}
+.chip[aria-pressed=true]{color:var(--paper);background:var(--brand);border-color:var(--accent)}
+.chip:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+.row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:4px 8px}
+.row label{
+  font:400 9.5px/1 "IBM Plex Mono",monospace;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--muted);
+}
+.row .v{
+  font:500 9.5px/1 "IBM Plex Mono",monospace;color:var(--paper);
+  font-variant-numeric:tabular-nums;
+}
+.row input[type=range]{grid-column:1 / -1;width:100%}
+.labfoot{
+  display:flex;justify-content:space-between;align-items:center;gap:8px;
+  border-top:1px solid rgba(56,156,106,.16);padding-top:11px;
+}
+.labfoot button{
+  font:400 9.5px/1 "IBM Plex Mono",monospace;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);background:transparent;border:none;padding:4px 0;cursor:pointer;
+}
+.labfoot button:hover{color:var(--accent)}
+.labfoot button:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+
+@media (max-width:720px){
+  .lab{left:28px;right:28px;width:auto;bottom:86px}
+}
+
+.warn{
+  position:absolute;left:28px;top:64px;margin:0;max-width:44ch;
+  font:400 10px/1.6 "IBM Plex Mono",monospace;letter-spacing:.08em;
+  color:var(--accent);z-index:12;
+}
+.hint{
+  position:absolute;top:28px;right:28px;text-align:right;
+  font:400 10px/1.7 "IBM Plex Mono",monospace;
+  letter-spacing:.13em;text-transform:uppercase;color:var(--muted);opacity:.75;
+}
+
+.err{
+  position:absolute;inset:0;display:grid;place-content:center;padding:32px;
+  text-align:center;gap:10px;background:var(--well);z-index:30;
+}
+.err h2{margin:0;font:300 22px/1.2 "Fraunces",Georgia,serif;color:var(--paper)}
+.err p{margin:0;font-size:13px;color:var(--muted);max-width:44ch;line-height:1.6}
+
+@media (max-width:720px){
+  .beat{right:28px;bottom:108px;max-width:none}
+  .beat p{max-width:none}
+  .deck{left:28px;right:28px;bottom:28px;justify-content:space-between;gap:10px}
+  .deck label{display:none}
+  input[type=range]{width:100%;flex:1}
+  .hint{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms !important;transition-duration:.01ms !important}
+}
+</style>
+
+<div class="stage">
+  <canvas id="gl"></canvas>
+  <div class="vignette"></div>
+  <div class="labels" id="labels"></div>
+
+  <div class="chrome">
+    <div class="mark"><strong>Atlas</strong><small id="markFinish">hero study 03 &middot; patina</small></div>
+
+    <div class="hint">drag to orbit<br>scroll to descend</div>
+
+    <div class="beat">
+      <span class="n" id="beatN">Beat 01 &mdash; the titan</span>
+      <h1 id="beatH">He carries the whole thing.</h1>
+      <p id="beatP">One sphere, one silhouette. Everything the company knows, held up at arm's length.</p>
+    </div>
+
+    <div class="deck">
+      <button id="light" class="stylebtn" aria-pressed="false" aria-controls="lab">Light</button>
+      <button id="style" class="stylebtn" aria-pressed="true">Patina</button>
+      <label for="scrub">Descent</label>
+      <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="Descend from the titan to the plates">
+      <span class="readout" id="pct">0%</span>
+    </div>
+  </div>
+
+  <div class="lab" id="lab" role="group" aria-label="Lighting">
+    <h3>Lighting</h3>
+    <div class="chips" id="chips"></div>
+    <div class="row"><label for="l_exp">Exposure</label><span class="v" id="v_exp">1.05</span>
+      <input id="l_exp" type="range" min="30" max="220" value="105" aria-label="Exposure"></div>
+    <div class="row"><label for="l_env">Environment</label><span class="v" id="v_env">0.85</span>
+      <input id="l_env" type="range" min="0" max="250" value="85" aria-label="Environment intensity"></div>
+    <div class="row"><label for="l_key">Key</label><span class="v" id="v_key">2.40</span>
+      <input id="l_key" type="range" min="0" max="600" value="240" aria-label="Key light intensity"></div>
+    <div class="row"><label for="l_rim">Rim</label><span class="v" id="v_rim">2.00</span>
+      <input id="l_rim" type="range" min="0" max="600" value="200" aria-label="Rim light intensity"></div>
+    <div class="row"><label for="l_up">Face light</label><span class="v" id="v_up">1.30</span>
+      <input id="l_up" type="range" min="0" max="500" value="130" aria-label="Face uplight intensity"></div>
+    <div class="row"><label for="l_pat">Patina</label><span class="v" id="v_pat">0.26</span>
+      <input id="l_pat" type="range" min="0" max="100" value="26" aria-label="Patina depth"></div>
+    <div class="row"><label for="l_rough">Roughness</label><span class="v" id="v_rough">0.44</span>
+      <input id="l_rough" type="range" min="2" max="100" value="44" aria-label="Metal roughness"></div>
+    <div class="labfoot">
+      <button id="l_reset" type="button">Reset preset</button>
+      <button id="l_copy" type="button">Copy values</button>
+    </div>
+  </div>
+
+  <p class="warn" id="warn" hidden></p>
+
+  <div class="boot" id="boot">
+    <div class="bar"><i id="bootbar"></i></div>
+    <p id="bootmsg">Casting the titan</p>
+  </div>
+</div>
+
+<script>/*__THREE__*/</script>
+<script>
+(function(){
+"use strict";
+var GLB_B64 = "/*__GLB__*/";
+var TEX_B64 = /*__TEX__*/;
+
+var boot=document.getElementById('boot'), bootbar=document.getElementById('bootbar'), bootmsg=document.getElementById('bootmsg');
+var canvas=document.getElementById('gl'), stage=document.querySelector('.stage');
+var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function fail(title,msg){
+  var d=document.createElement('div'); d.className='err';
+  var h=document.createElement('h2'); h.textContent=title;
+  var p=document.createElement('p'); p.textContent=msg;
+  d.appendChild(h); d.appendChild(p); stage.appendChild(d);
+  boot.classList.add('gone');
+}
+
+var renderer;
+try{
+  renderer=new THREE.WebGLRenderer({canvas:canvas,antialias:true,alpha:false,powerPreference:'high-performance'});
+}catch(e){
+  fail('This browser can\u2019t start WebGL.','The scene needs hardware 3D. Try Chrome, Edge, Safari, or Firefox with hardware acceleration enabled.');
+  return;
+}
+renderer.setPixelRatio(Math.min(devicePixelRatio||1,2));
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.05;
+
+var scene=new THREE.Scene();
+var camera=new THREE.PerspectiveCamera(38,1,0.01,200);
+
+/* ================= lighting =================
+   Bronze is a metal, so nearly everything you see on it is REFLECTION, not
+   diffuse shading. That makes the environment map the primary light source:
+   these emissive panels are literally what the surface mirrors back. three's
+   stock RoomEnvironment is a white product-photography box, which is why the
+   first pass read as an asset-store render. This builds a dark vitrine
+   instead; the directional lights only add the specular hits on top.      */
+
+var PRESETS=[
+  // Brand-true: paper-cream key, an --atlas-spark teal rim (a spark on a dark
+  // green surface is exactly the role ADR-0023 gives it), forest fill.
+  {id:'vitrine', name:'Vitrine',
+   shell:0x070a09, shellI:0.20, warm:0xf6efe4, warmI:2.9, cool:0x23ce9e, coolI:1.5,
+   top:0xf6efe4, topI:0.95, keyC:0xf6efe4, keyI:2.50, rimC:0x23ce9e, rimI:1.90,
+   fillC:0x1f5c45, fillI:0.30, upC:0xf6efe4, up:1.35, env:0.88, exp:1.06, rough:0.46},
+  {id:'foundry', name:'Foundry',
+   shell:0x180c07, shellI:0.22, warm:0xff9440, warmI:5.0, cool:0x4a2413, coolI:1.1,
+   top:0xffb066, topI:0.7, keyC:0xffa657, keyI:3.60, rimC:0xff6a2a, rimI:1.40,
+   fillC:0x7a2f10, fillI:0.45, upC:0xff8c3c, up:1.70, env:1.05, exp:0.94, rough:0.30},
+  {id:'moonlit', name:'Moonlit',
+   shell:0x070d16, shellI:0.13, warm:0xc9dcff, warmI:2.3, cool:0x5f8dd6, coolI:2.2,
+   top:0xdce8ff, topI:0.8, keyC:0xd6e6ff, keyI:2.10, rimC:0x6fa8ff, rimI:2.90,
+   fillC:0x1d3a5c, fillI:0.30, upC:0xbcd4ff, up:1.15, env:0.72, exp:1.18, rough:0.52},
+  {id:'atrium', name:'Atrium',
+   shell:0x1a2028, shellI:0.42, warm:0xfff4e2, warmI:2.2, cool:0xdfe9f5, coolI:1.8,
+   top:0xffffff, topI:1.6, keyC:0xfff2e0, keyI:1.60, rimC:0xe6f0ff, rimI:1.10,
+   fillC:0x9aa9b5, fillI:0.40, upC:0xfff6e8, up:0.85, env:1.35, exp:1.00, rough:0.38}
+];
+
+var pmrem=new THREE.PMREMGenerator(renderer);
+var envRT=null;
+
+function buildEnvScene(P){
+  var s=new THREE.Scene();
+  function mat(hex,i,side){
+    return new THREE.MeshStandardMaterial({
+      color:0x000000, emissive:new THREE.Color(hex), emissiveIntensity:i,
+      side:side||THREE.FrontSide, roughness:1, metalness:0
+    });
+  }
+  s.add(new THREE.Mesh(new THREE.BoxGeometry(26,17,26), mat(P.shell,P.shellI,THREE.BackSide)));
+  var kp=new THREE.Mesh(new THREE.PlaneGeometry(12,10), mat(P.warm,P.warmI,THREE.DoubleSide));
+  kp.position.set(7.0,3.4,3.6); kp.rotation.y=-Math.PI*0.42; s.add(kp);
+  var rp=new THREE.Mesh(new THREE.PlaneGeometry(12,10), mat(P.cool,P.coolI,THREE.DoubleSide));
+  rp.position.set(-7.2,2.6,-4.0); rp.rotation.y=Math.PI*0.40; s.add(rp);
+  var tp=new THREE.Mesh(new THREE.PlaneGeometry(10,10), mat(P.top,P.topI,THREE.DoubleSide));
+  tp.position.set(0,8.0,0); tp.rotation.x=Math.PI*0.5; s.add(tp);
+  return s;
+}
+
+function applyEnv(P){
+  var sc=buildEnvScene(P);
+  var rt=pmrem.fromScene(sc,0.03);
+  if(envRT) envRT.dispose();
+  envRT=rt; scene.environment=rt.texture;
+  sc.traverse(function(o){
+    if(o.geometry) o.geometry.dispose();
+    if(o.material) o.material.dispose();
+  });
+}
+
+/* The lights live on a rig that follows the camera's azimuth. World-fixed
+   lights meant orbiting to the back half put you on the unlit side and the
+   titan fell to a black silhouette. The environment stays world-fixed, so
+   reflections still travel across the bronze as you turn it. */
+var rig=new THREE.Group(); scene.add(rig);
+var aim=new THREE.Object3D(); rig.add(aim);
+
+function rigLight(x,y,z){
+  var l=new THREE.DirectionalLight(0xffffff,1);
+  l.position.set(x,y,z); l.target=aim; rig.add(l);
+  return l;
+}
+var key =rigLight( 2.6, 4.2, 3.0);
+var rim =rigLight(-3.2, 1.6,-2.8);
+var fill=rigLight(-1.2,-2.0, 1.8);
+// The head is tucked under the globe between the arms, so no light from above
+// can reach the face. This one comes from below-front, the way a museum
+// uplights a statue.
+var up  =rigLight( 0.5,-2.4, 2.6);
+
+var L={patina:0.26}, preset=PRESETS[0];
+
+/* Patina is not a flat tint — on a real bronze it collects in the recesses and
+   wears off the high points. This albedo carries its shading baked in, so its
+   own luminance works as a cavity mask: dark = deep = green, bright = proud =
+   bronze. Injected into MeshStandardMaterial rather than shipped as an extra
+   texture, so it costs no payload. */
+/* Forest itself (#1F5C45) is too dark to use here: painting it into recesses
+   that are already dark makes it invisible. Real verdigris is a PALE mint
+   crust, lighter than the bronze around it — so the titan takes --accent, the
+   forest lightened for dark surfaces that ADR-0023 §4 already sanctions, and
+   the globe takes --atlas-spark, which reads oceanic against it. */
+/* One colour, laid in by the cavity mask only. Forest itself is too dark to
+   read in a recess, so this is --accent: the forest lightened for dark
+   surfaces that ADR-0023 §4 sanctions. At low amounts it reads as bronze with
+   a brand hue settled into the crevices, which is the point. */
+var PATINA_HEX = 0x389C6A;
+
+function installPatina(mat, amount){
+  var u={
+    uPatAmt:{value:amount},
+    uPatCol:{value:new THREE.Color(PATINA_HEX)},
+    uPatLo:{value:0.10}, uPatHi:{value:0.54}
+  };
+  mat.userData.pat=u;
+  mat.onBeforeCompile=function(sh){
+    Object.assign(sh.uniforms,u);
+    sh.fragmentShader=
+      'uniform float uPatAmt;\nuniform vec3 uPatCol;\n'+
+      'uniform float uPatLo;\nuniform float uPatHi;\nfloat patMask;\n'+
+      sh.fragmentShader;
+    sh.fragmentShader=sh.fragmentShader.replace(
+      '#include <map_fragment>',
+      '#include <map_fragment>\n'+
+      '  float patLum = dot(diffuseColor.rgb, vec3(0.2126,0.7152,0.0722));\n'+
+      '  patMask = smoothstep(uPatHi, uPatLo, patLum) * uPatAmt;\n'+
+      '  diffuseColor.rgb = mix(diffuseColor.rgb,\n'+
+      '      uPatCol * (0.62 + 0.70 * patLum), patMask);\n');
+    sh.fragmentShader=sh.fragmentShader.replace(
+      '#include <roughnessmap_fragment>',
+      '#include <roughnessmap_fragment>\n'+
+      '  roughnessFactor = mix(roughnessFactor, min(1.0, roughnessFactor*1.9), patMask);\n');
+    sh.fragmentShader=sh.fragmentShader.replace(
+      '#include <metalnessmap_fragment>',
+      '#include <metalnessmap_fragment>\n'+
+      '  metalnessFactor = mix(metalnessFactor, metalnessFactor*0.18, patMask);\n');
+  };
+  // Without a distinct cache key three reuses the un-patched program.
+  mat.customProgramCacheKey=function(){ return 'atlas-patina'; };
+  mat.needsUpdate=true;
+}
+
+function applyMaterials(){
+  var base=L.rough!==undefined?L.rough:0.44;
+  bronzeMats.forEach(function(r){
+    // The base material is always clean bronze; the shader lays the green in.
+    if(r.color) r.mat.color.copy(r.color);
+    r.mat.roughness=Math.min(1,base*(r.isSphere?0.77:1));
+    r.mat.metalness=1.0;
+    var u=r.mat.userData.pat;
+    if(u && typeof L.patina==='number') u.uPatAmt.value=L.patina;
+  });
+}
+function applyLightValues(){
+  // A NaN or undefined intensity poisons the shader and blacks out the whole
+  // frame with no error, so every value is forced finite before it is used.
+  function num(v,d){ return (typeof v==='number' && isFinite(v)) ? v : d; }
+  renderer.toneMappingExposure=num(L.exp,1.05);
+  scene.environmentIntensity=num(L.env,0.85);
+  key.intensity=num(L.key,2.4); rim.intensity=num(L.rim,2.0); up.intensity=num(L.up,1.3);
+  applyMaterials();
+  syncLab();
+}
+function applyPreset(P,keepManual){
+  preset=P;
+  if(!keepManual){ L.exp=P.exp; L.env=P.env; L.key=P.keyI; L.rim=P.rimI; L.up=P.up; L.rough=P.rough; }
+  key.color.setHex(P.keyC); rim.color.setHex(P.rimC); fill.color.setHex(P.fillC);
+  up.color.setHex(P.upC); fill.intensity=P.fillI;
+  applyEnv(P);
+  applyLightValues();
+}
+
+/* ================= the descent ================= */
+var BEATS=[
+  [0.00,"Beat 01 \u2014 the titan","He carries the whole thing.",
+   "One sphere, one silhouette. Everything the company knows, held up at arm's length."],
+  [0.34,"Beat 02 \u2014 the descent","The surface stops being a picture.",
+   "Coastlines were never texture. Every cell is a real record, packed tight enough to read as a world."],
+  [0.68,"Beat 03 \u2014 the plates","Countries become plates.",
+   "An atlas is a book of plates. Each one lifts off the sphere as a page of the company's own atlas."]
+];
+var DOMAINS=[
+  ["Revenue","1.4M rows",   0.28,  0.62],
+  ["Pipeline","312K rows",  1.15,  0.30],
+  ["Customers","88K rows",  2.05,  0.70],
+  ["Churn","24K rows",      2.85, -0.15],
+  ["Support","640K rows",   3.75,  0.42],
+  ["Product Usage","9.1M rows", 4.55, -0.40],
+  ["Headcount","2.3K rows", 5.40,  0.12]
+];
+
+var labelEls=DOMAINS.map(function(d){
+  var el=document.createElement('div'); el.className='lbl';
+  var dot=document.createElement('i'), ln=document.createElement('span');
+  var b=document.createElement('b'); b.textContent=d[0];
+  var em=document.createElement('em'); em.textContent=d[1];
+  b.appendChild(em);
+  el.appendChild(dot); el.appendChild(ln); el.appendChild(b);
+  document.getElementById('labels').appendChild(el);
+  return el;
+});
+
+var beatN=document.getElementById('beatN'), beatH=document.getElementById('beatH'), beatP=document.getElementById('beatP');
+var scrub=document.getElementById('scrub'), pct=document.getElementById('pct');
+
+var t=0, tTarget=0, curBeat=-1;
+var az=1.30, azTarget=1.30, el=0.06, elTarget=0.06;
+var dragging=false, lastX=0, lastY=0, idle=0;
+
+function setBeat(i){
+  if(i===curBeat) return; curBeat=i;
+  beatN.textContent=BEATS[i][1]; beatH.textContent=BEATS[i][2]; beatP.textContent=BEATS[i][3];
+}
+
+/* ================= model ================= */
+/* Textures are decoded straight from bytes to an ImageBitmap. The obvious
+   routes all go through the page CSP and die silently behind it: GLTFLoader
+   unpacks embedded GLB images by minting blob: URLs, and three's WebP support
+   probe loads a data: URI through an <img>. When those are blocked the mesh
+   still arrives but every map is missing, so the material falls back to white
+   and — at metalness 1 — renders as a blank mirror ball. createImageBitmap
+   takes a Blob object directly, so no URL is ever created. */
+function b64ToBytes(s){
+  var bin=atob(s), n=bin.length, u=new Uint8Array(n);
+  for(var i=0;i<n;i++) u[i]=bin.charCodeAt(i);
+  return u;
+}
+function decodeImage(b64){
+  var blob=new Blob([b64ToBytes(b64)],{type:'image/webp'});
+  if(typeof createImageBitmap==='function'){
+    return createImageBitmap(blob).catch(function(err){
+      console.debug('createImageBitmap failed, falling back to <img>:',
+        err && err.message ? err.message : String(err));
+      return imgDecode(blob);
+    });
+  }
+  return imgDecode(blob);
+}
+function imgDecode(blob){
+  return new Promise(function(res,rej){
+    var url=URL.createObjectURL(blob), im=new Image();
+    im.onload=function(){ URL.revokeObjectURL(url); res(im); };
+    im.onerror=function(){ URL.revokeObjectURL(url); rej(new Error('image decode failed')); };
+    im.src=url;
+  });
+}
+function makeTexture(src,srgb){
+  var t=new THREE.Texture(src);
+  t.flipY=false;                                    // glTF UV convention
+  t.colorSpace=srgb?THREE.SRGBColorSpace:THREE.NoColorSpace;
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  t.anisotropy=renderer.capabilities.getMaxAnisotropy();
+  t.needsUpdate=true;
+  return t;
+}
+function b64ToBuf(s){
+  var bin=atob(s), n=bin.length, u=new Uint8Array(n);
+  for(var i=0;i<n;i++) u[i]=bin.charCodeAt(i);
+  return u.buffer;
+}
+
+var root=null, sphere=null, body=null;
+var sphereCenter=new THREE.Vector3(), sphereRadius=1, modelCenter=new THREE.Vector3(), modelRadius=1;
+var bronzeMats=[], patina=true;
+
+bootbar.style.width='35%';
+
+var loader=new GLTFLoader();
+var buf;
+try{ buf=b64ToBuf(GLB_B64); }
+catch(e){ fail('The model didn\u2019t decode.','The embedded geometry is malformed. Re-publish the page from a clean export.'); return; }
+
+bootbar.style.width='62%';
+bootmsg.textContent='Raising the globe';
+
+loader.parse(buf,'',function(gltf){
+  root=gltf.scene;
+
+  root.traverse(function(o){
+    if(!o.isMesh) return;
+    if(/sphere/i.test(o.name)) sphere=o;
+    else body=o;
+    var m=o.material;
+    if(m){
+      // Fab's FBX conversion emitted a corrupt metallicRoughness map (a halftone
+      // dither that made both values strobe across the surface). It is stripped
+      // from the asset; cast bronze is uniform anyway.
+      m.envMapIntensity=1.15;
+      var isSphere=/sphere/i.test(o.name);
+      installPatina(m, L.patina);
+      bronzeMats.push({mat:m, color:m.color?m.color.clone():null, isSphere:isSphere});
+    }
+  });
+
+  // Frame from the real bounds rather than guessing the export's scale or origin.
+  var box=new THREE.Box3().setFromObject(root);
+  var size=box.getSize(new THREE.Vector3());
+  var s=2.0/Math.max(size.x,size.y,size.z);
+  root.scale.setScalar(s);
+
+  box.setFromObject(root);
+  box.getCenter(modelCenter);
+  modelRadius=box.getSize(new THREE.Vector3()).length()*0.5;
+
+  if(sphere){
+    var sb=new THREE.Box3().setFromObject(sphere);
+    sb.getCenter(sphereCenter);
+    sphereRadius=sb.getSize(new THREE.Vector3()).length()*0.29;
+  }else{
+    sphereCenter.copy(modelCenter); sphereRadius=modelRadius*0.4;
+  }
+
+  scene.add(root);
+
+
+  applyPreset(PRESETS[0]);
+  resize(); render();
+
+  bootbar.style.width='82%';
+  bootmsg.textContent='Casting the surface';
+
+  var jobs=[['body_base',body,'map',true],['body_norm',body,'normalMap',false],
+            ['sphere_base',sphere,'map',true],['sphere_norm',sphere,'normalMap',false]];
+  Promise.all(jobs.map(function(j){
+    var b64=TEX_B64[j[0]];
+    if(!b64 || !j[1] || !j[1].material) return Promise.resolve(false);
+    return decodeImage(b64).then(function(img){
+      j[1].material[j[2]]=makeTexture(img,j[3]);
+      j[1].material.needsUpdate=true;
+      return true;
+    },function(err){
+      console.debug('texture '+j[0]+' failed:', err && err.message ? err.message : String(err));
+      return false;
+    });
+  })).then(function(ok){
+    var missing=ok.filter(function(v){ return !v; }).length;
+    if(missing){
+      // Degraded, not broken: say so rather than shipping a white mirror ball
+      // that reads as a lighting problem.
+      var w=document.getElementById('warn');
+      w.textContent=missing+' of 4 surface maps failed to decode — showing untextured metal.';
+      w.hidden=false;
+    }
+    bootbar.style.width='100%';
+    setTimeout(function(){ boot.classList.add('gone'); },140);
+  });
+}, function(err){
+  fail('The model failed to load.', 'glTF parsing reported: ' + (err && err.message ? err.message : 'unknown error') + '. The page needs a re-publish with a valid export.');
+});
+
+/* ================= camera path ================= */
+var _p=new THREE.Vector3(), _look=new THREE.Vector3();
+function updateCamera(){
+  var e=t*t*(3-2*t);                       // smoothstep: ease the whole descent
+  var look=_look.copy(modelCenter).lerp(sphereCenter,e);
+  var dist=THREE.MathUtils.lerp(modelRadius*2.58, sphereRadius*2.15, e);
+  var elev=el + THREE.MathUtils.lerp(0.10,-0.02,e);
+  var ca=Math.cos(elev), sa=Math.sin(elev);
+  _p.set(Math.sin(az)*ca, sa, Math.cos(az)*ca).multiplyScalar(dist).add(look);
+  camera.position.copy(_p);
+  camera.lookAt(look);
+  rig.rotation.y=az;
+  camera.fov=THREE.MathUtils.lerp(38,52,e);
+  camera.updateProjectionMatrix();
+}
+
+/* ================= labels ================= */
+var _v=new THREE.Vector3();
+function updateLabels(w,h){
+  var vis=THREE.MathUtils.smoothstep(t,0.30,0.58);
+  for(var i=0;i<DOMAINS.length;i++){
+    var d=DOMAINS[i], e=labelEls[i];
+    if(vis<=0.001){ e.style.opacity='0'; continue; }
+    var lon=d[2]+az*0.5, lat=d[3];
+    _v.set(Math.cos(lat)*Math.sin(lon), Math.sin(lat), Math.cos(lat)*Math.cos(lon))
+      .multiplyScalar(sphereRadius*1.02).add(sphereCenter);
+    var facing=_v.clone().sub(sphereCenter).normalize()
+      .dot(camera.position.clone().sub(sphereCenter).normalize());
+    _v.project(camera);
+    var x=(_v.x*0.5+0.5)*w, y=(-_v.y*0.5+0.5)*h;
+    var front=THREE.MathUtils.smoothstep(facing,0.02,0.42);
+    e.style.transform='translate('+x.toFixed(1)+'px,'+y.toFixed(1)+'px)';
+    e.style.opacity=(vis*front).toFixed(3);
+  }
+}
+
+/* ================= interaction ================= */
+function setT(v){
+  tTarget=Math.max(0,Math.min(1,v));
+  scrub.value=String(Math.round(tTarget*1000));
+  pct.textContent=Math.round(tTarget*100)+'%';
+}
+scrub.addEventListener('input',function(){ setT(+scrub.value/1000); });
+stage.addEventListener('wheel',function(ev){
+  ev.preventDefault(); setT(tTarget+ev.deltaY*0.0009); idle=0;
+},{passive:false});
+
+stage.addEventListener('pointerdown',function(ev){
+  if(ev.target.closest('.deck')) return;
+  dragging=true; lastX=ev.clientX; lastY=ev.clientY; idle=0;
+  stage.setPointerCapture(ev.pointerId);
+});
+stage.addEventListener('pointermove',function(ev){
+  if(!dragging) return;
+  azTarget -= (ev.clientX-lastX)*0.0062;
+  elTarget = Math.max(-0.5,Math.min(0.62, elTarget + (ev.clientY-lastY)*0.0035));
+  lastX=ev.clientX; lastY=ev.clientY; idle=0;
+});
+function endDrag(ev){ if(!dragging) return; dragging=false;
+  try{ stage.releasePointerCapture(ev.pointerId); }catch(e){ /* pointer already released */ } }
+stage.addEventListener('pointerup',endDrag);
+stage.addEventListener('pointercancel',endDrag);
+
+document.getElementById('style').addEventListener('click',function(){
+  patina=!patina;
+  L.patina = patina?0.26:0;
+  this.setAttribute('aria-pressed',String(patina));
+  this.textContent=patina?'Patina':'Bronze';
+  document.getElementById('markFinish').textContent=
+    'hero study 03 \u00b7 '+(patina?'patina':'bronze');
+  applyMaterials();
+});
+
+/* ================= lighting lab ================= */
+var chipsEl=document.getElementById('chips'), labEl=document.getElementById('lab');
+var SLIDERS=[
+  ['exp','l_exp','v_exp',100],
+  ['env','l_env','v_env',100],
+  ['key','l_key','v_key',100],
+  ['rim','l_rim','v_rim',100],
+  ['up',   'l_up',   'v_up',   100],
+  ['patina', 'l_pat',  'v_pat',  100],
+  ['rough',   'l_rough','v_rough',100]
+];
+
+PRESETS.forEach(function(P){
+  var b=document.createElement('button');
+  b.type='button'; b.className='chip'; b.textContent=P.name;
+  b.setAttribute('aria-pressed',String(P===PRESETS[0]));
+  b.addEventListener('click',function(){ applyPreset(P); });
+  chipsEl.appendChild(b);
+});
+
+function syncLab(){
+  Array.prototype.forEach.call(chipsEl.children,function(b,i){
+    b.setAttribute('aria-pressed',String(PRESETS[i]===preset));
+  });
+  SLIDERS.forEach(function(sl){
+    var v=L[sl[0]];
+    if(v===undefined) return;
+    document.getElementById(sl[1]).value=String(Math.round(v*sl[3]));
+    document.getElementById(sl[2]).textContent=v.toFixed(2);
+  });
+}
+
+SLIDERS.forEach(function(sl){
+  document.getElementById(sl[1]).addEventListener('input',function(){
+    L[sl[0]]=(+this.value)/sl[3];
+    applyLightValues();
+  });
+});
+
+document.getElementById('light').addEventListener('click',function(){
+  var open=labEl.classList.toggle('open');
+  this.setAttribute('aria-pressed',String(open));
+});
+document.getElementById('l_reset').addEventListener('click',function(){
+  applyPreset(preset);
+});
+document.getElementById('l_copy').addEventListener('click',function(){
+  var txt='// '+preset.name+'\nexposure '+L.exp.toFixed(2)+
+          '  env '+L.env.toFixed(2)+'  key '+L.key.toFixed(2)+
+          '  rim '+L.rim.toFixed(2)+'  face '+L.up.toFixed(2)+
+          '  roughness '+L.rough.toFixed(2)+
+          '  patina '+L.patina.toFixed(2);
+  var btn=this;
+  function done(ok){ btn.textContent=ok?'Copied':'Press to select'; setTimeout(function(){ btn.textContent='Copy values'; },1600); }
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(function(){done(true);},function(err){
+      console.debug('clipboard write refused:',err&&err.message?err.message:String(err)); done(false);
+    });
+  } else { console.debug('clipboard API unavailable'); done(false); }
+});
+
+/* ================= loop ================= */
+var W=1,H=1;
+function resize(){
+  var r=stage.getBoundingClientRect();
+  W=Math.max(1,r.width|0); H=Math.max(1,r.height|0);
+  renderer.setSize(W,H,false);
+  camera.aspect=W/H; camera.updateProjectionMatrix();
+}
+addEventListener('resize',resize);
+
+function render(){
+  requestAnimationFrame(render);
+  if(!root) return;
+
+  t += (tTarget-t)*0.105;
+  az += (azTarget-az)*0.085;
+  el += (elTarget-el)*0.085;
+
+  if(!dragging && !reduced){
+    idle++;
+    if(idle>150) azTarget += 0.00042;      // a slow turn once the viewer settles
+  }
+
+  var bi=0;
+  for(var k=0;k<BEATS.length;k++) if(t>=BEATS[k][0]) bi=k;
+  setBeat(bi);
+
+  updateCamera();
+  updateLabels(W,H);
+  renderer.render(scene,camera);
+}
+setBeat(0);
+})();
+</script>

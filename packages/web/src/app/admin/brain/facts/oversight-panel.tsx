@@ -9,6 +9,7 @@ import {
   History,
   Info,
   Lock,
+  Scale,
   ShieldAlert,
   Users,
 } from "lucide-react";
@@ -17,6 +18,7 @@ import type {
   BrainFactOversightBucket,
   BrainFactWillSupersede,
   BrainFactWillWiden,
+  BrainFactGateAnalytics,
 } from "@/ui/lib/types";
 import { BrainFactOversightClientSchema } from "@/ui/lib/admin-schemas";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -225,6 +227,8 @@ export function OversightPanel() {
             widen when you publish.
           </p>
         )}
+
+      {data.gateAnalytics && <GateAnalyticsBlock analytics={data.gateAnalytics} />}
 
       <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger asChild>
@@ -506,6 +510,67 @@ function WillWidenNotice({ willWiden }: { willWiden: BrainFactWillWiden }) {
  * whatever the API sent or an explanation of why it sent none — never a
  * reconstruction.
  */
+
+/**
+ * How the review gate has been deciding (#5335).
+ *
+ * ⚠️ Reader-scoped, and the copy says so rather than leaving the admin to
+ * assume otherwise. The buckets above this block are workspace-wide; these
+ * counts are not, because a COUNT is not exempt from a visibility predicate —
+ * an admin who cannot read a private claim must not learn it exists by
+ * watching a total move. The consequence an admin can actually hit: these
+ * numbers can be smaller than an operator's unscoped export of the same
+ * workspace, and that is correct rather than a bug to report.
+ *
+ * `approvalRate === null` renders as prose, never as 0%. An unstarted queue
+ * and a reviewer who rejects everything are different states, and the second
+ * one is alarming — showing it where the first is true would send an admin
+ * after a problem that does not exist.
+ */
+function GateAnalyticsBlock({ analytics }: { analytics: BrainFactGateAnalytics }) {
+  const decided = analytics.positives + analytics.rejected;
+  return (
+    <div className="rounded-md border p-3">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <Scale className="h-4 w-4" aria-hidden="true" />
+        Review gate decisions
+      </div>
+      {decided === 0 ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          No decisions yet among the claims you can see. Publish a candidate or retract
+          one and this fills in.
+        </p>
+      ) : (
+        <>
+          <dl className="mt-2 grid grid-cols-3 gap-3 text-sm">
+            <div>
+              <dt className="text-xs text-muted-foreground">Approved</dt>
+              <dd className="font-medium tabular-nums">{analytics.positives}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">Retracted</dt>
+              <dd className="font-medium tabular-nums">{analytics.rejected}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">Approval rate</dt>
+              <dd className="font-medium tabular-nums">
+                {analytics.approvalRate === null
+                  ? "\u2014"
+                  : `${(analytics.approvalRate * 100).toFixed(1)}%`}
+              </dd>
+            </div>
+          </dl>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Counts the decided claims you can see, so they may be lower than the
+            workspace totals above. A retraction is the gate&apos;s negative verb — the
+            claim is tombstoned, not deleted, and stays readable to an as-of query.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 function BucketRow({ bucket }: { bucket: BrainFactOversightBucket }) {
   return (
     <TableRow>

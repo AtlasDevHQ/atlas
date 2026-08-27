@@ -105,7 +105,17 @@ export type BrainReadSurface =
    * them separate, and an operator who cannot reach the retirement listing must
    * not be handed a message naming the review queue they were not using.
    */
-  | "retirement";
+  | "retirement"
+  /**
+   * The review gate's decision counts (#5335). Its own member rather than
+   * reusing `"oversight"`, on `"vocabulary-preview"`'s reasoning: the oversight
+   * RESPONSE is assembled from four loaders, so a refusal labelled
+   * `"oversight"` names the bucket counts an operator would then go and check —
+   * and find working. The message has to name the loader that actually refused
+   * or it sends the reader to the wrong query. Diagnostics only, never branched
+   * on.
+   */
+  | "gate-analytics";
 
 /**
  * The reader's identity could not be turned into a usable principal set, so

@@ -324,6 +324,42 @@ void mock.module("@atlas/api/lib/brain/oversight", () => ({
   },
 }));
 
+const gateAnalyticsResponse = { positives: 3, rejected: 1, approvalRate: 0.75 };
+let gateAnalyticsCalls = 0;
+let gateAnalyticsCtx: unknown;
+// EVERY named export, on the oversight stub's terms: `mock.module` is
+// file-global, so a partial factory link-fails the moment anything else in the
+// graph imports one of the omitted names.
+void mock.module("@atlas/api/lib/brain/gate-export", () => ({
+  EVALUATION_ONLY_NOTICE: "EVALUATION ONLY",
+  GATE_DECISION_CLASSES: ["positive", "rejected", "negative"],
+  GATE_EXPORT_REFUSALS: {
+    regionBoundary: "region-boundary",
+    unrepresentableGrant: "unrepresentable-grant",
+    unknownWorkspace: "unknown-workspace",
+  },
+  GATE_POSITIVE_PREDICATE: "(f.status = 'published' AND f.invalidated_at IS NULL)",
+  GATE_REJECTED_PREDICATE: "(f.invalidated_at IS NOT NULL)",
+  TOP_REJECTED_PREDICATE_MAX: 20,
+  GATE_EXPORT_ROW_MAX: 5_000,
+  loadGateDecisions: async () => ({ ok: true, decisions: [], capped: false }),
+  summarizeGateDecisions: () => ({
+    positives: 0,
+    rejected: 0,
+    negatives: 0,
+    approvalRate: null,
+    topRejectedPredicates: [],
+    medianHoursToDecision: null,
+  }),
+  checkRegionContainment: () => null,
+  buildGateExportBundle: async () => ({ ok: true, capped: false, bundle: null }),
+  loadGateAnalytics: async (_db: unknown, ctx: unknown) => {
+    gateAnalyticsCalls++;
+    gateAnalyticsCtx = ctx;
+    return gateAnalyticsResponse;
+  },
+}));
+
 /**
  * The sweep (#5029), stubbed on the same terms as everything else here: what
  * this file owns is the ROUTE's obligations — the §6 entitlement bar, the
@@ -494,6 +530,8 @@ beforeEach(() => {
   supersessionPreviewResponse = { total: 0, pairs: [], withheld: 0, truncated: false };
   wideningPreviewCalls = 0;
   wideningPreviewCtx = undefined;
+  gateAnalyticsCalls = 0;
+  gateAnalyticsCtx = undefined;
   wideningPreviewResponse = { total: 0, entries: [], truncated: false, incomplete: false };
   oversightResponse = {
     buckets: [],
@@ -780,6 +818,23 @@ describe("GET /oversight", () => {
     const body = (await res.json()) as { willWiden: unknown };
     expect(body.willWiden).toEqual(wideningPreviewResponse);
     expect(wideningPreviewCalls).toBe(1);
+  });
+
+  it("merges the gate-decision counts into the same response (#5335)", async () => {
+    // The fourth section, on the will-widen test's terms: the strict schema
+    // requires it, so dropping the merge is a 500 rather than a silently
+    // retired panel.
+    const res = await adminBrainFacts.request("/oversight");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { gateAnalytics: unknown };
+    expect(body.gateAnalytics).toEqual(gateAnalyticsResponse);
+    expect(gateAnalyticsCalls).toBe(1);
+    // READER-SCOPED, like the two previews and unlike the workspace buckets: it
+    // is handed the same reader context, not a widened one. A COUNT is not
+    // exempt from a visibility predicate — an admin who cannot read a private
+    // claim must not learn it exists by watching a total move.
+    expect(gateAnalyticsCtx).toEqual(oversightCtx);
+    expect(JSON.stringify(gateAnalyticsCtx)).not.toContain("override");
   });
 
   it("hands the will-widen loader the SAME reviewer context as the counts", async () => {

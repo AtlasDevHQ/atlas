@@ -290,6 +290,10 @@ export async function handleOps(args: string[]): Promise<void> {
     const { handleTeardownVerifyAccounts } = await import("./ops-teardown-verify");
     return handleTeardownVerifyAccounts(args);
   }
+  if (subcommand === "gate-export") {
+    const { handleGateExport } = await import("./ops-gate-export");
+    return handleGateExport(args);
+  }
   if (subcommand === "sweep-residue") {
     const { handleSweepResidue } = await import("./ops-residue");
     return handleSweepResidue(args);

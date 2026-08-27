@@ -57,6 +57,7 @@ import {
   parseChatChannelAudienceId,
 } from "@atlas/api/lib/brain/ingest/grant";
 import { BrainFactOversightSchema } from "@useatlas/schemas";
+import { loadGateAnalytics } from "@atlas/api/lib/brain/gate-export";
 
 const WS = "ws-oversight-test";
 /** The private channel from the 2026-07-26 soak — configured, so nameable. */
@@ -599,10 +600,19 @@ describe("loadFactOversight", () => {
     // no-content sweep below still covers the whole payload.
     const willSupersede = await loadSupersessionPreview(db, ctx());
     const willWiden = await loadWideningPreview(db, ctx());
+    // The third merged section (#5335). Numbers only by construction, so it
+    // joins the sweep below rather than being exempted from it — which is the
+    // point of merging it here instead of stubbing it.
+    const gateAnalytics = await loadGateAnalytics(db, ctx());
 
     // Parses against the strict wire schema, so an extra key is a failure here
     // and not a silent strip.
-    const parsed = BrainFactOversightSchema.parse({ ...result, willSupersede, willWiden });
+    const parsed = BrainFactOversightSchema.parse({
+      ...result,
+      willSupersede,
+      willWiden,
+      gateAnalytics,
+    });
     const COUNTERS = ["awaitingReview", "published", "retracted", "provisional", "inTension"];
     for (const bucket of parsed.buckets) {
       // Exhaustive, per arm — a new key on either is a failure rather than

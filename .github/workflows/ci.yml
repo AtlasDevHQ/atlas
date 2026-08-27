@@ -763,7 +763,28 @@ jobs:
         # positions — verified by nobody, four green jobs — which is the same
         # defect the round-robin exists to prevent, moved from spec names to a
         # hand-copied integer.
-        shard: [1, 2, 3, 4]
+        #
+        # SIX, not four, since 2026-08-26. Measured across 12 runs: a full sweep's
+        # longest shard was 660-690s at four, against ~50s of fixed overhead
+        # (checkout at depth 0, install, the two package builds, the selection
+        # pass). That puts the sweep's mutation work near 2000s, so four shards
+        # left the long pole carrying ~32% of it.
+        #
+        # ⚠️ Six is the useful ceiling, not a number picked for being bigger. A
+        # single spec cannot be split, so the floor is the heaviest one --
+        # `vocabulary-decide`, ~18% of the sweep, ~360s. Six shards reach that
+        # floor (2000/6 = 333 < 360); eight would cost four more runners and four
+        # more Postgres services to arrive at the identical ~410s. Going BELOW the
+        # floor needs `mutate.ts` to partition its own mutation list, which the
+        # note above already books as its own PR.
+        #
+        # ⚠️ The 32%/18% split is derived from generated table ROW COUNTS, and the
+        # note above says plainly that row count is the wrong unit --
+        # `warehouse-producer` is 22 rows but runs five target suites per
+        # mutation. So ~410s is an estimate carrying that error, not a
+        # measurement. Re-read the job timings on the next push to `main` before
+        # treating it as one.
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -819,9 +840,21 @@ jobs:
             echo "::error::matrix.shard $SHARD does not match job-index $SHARD_JOB_INDEX + 1"
             exit 1
           fi
+          # Announce WHICH MODE ran, in the step summary rather than only in the
+          # log. This job is bimodal and the two modes differ by ~13x -- measured
+          # 2026-08-26 across 12 runs: 50-57s when `--affected` selects nothing,
+          # 660-690s on `--all`. Both are normal, but the job list shows only a
+          # duration, so the slow mode reads as the job "randomly" hanging. The
+          # script already prints "N of M spec(s) affected by this branch" -- this
+          # puts the reason where someone scanning the checks will see it.
+          #
+          # Written BEFORE the run, deliberately: a summary emitted afterwards is
+          # lost on the failure path, which is when the reason matters most.
           if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "shard $SHARD/$SHARD_TOTAL — \`--affected\` against \`$BASE_SHA\`: only specs whose targets this branch touched. Expect well under a minute unless the diff reaches one." >> "$GITHUB_STEP_SUMMARY"
             bash scripts/check-mutation-tables.sh --affected "$BASE_SHA" --shard "$SHARD/$SHARD_TOTAL"
           else
+            echo "shard $SHARD/$SHARD_TOTAL — \`--all\`: the full sweep, which is what keeps #5077 closed on every push. Expect ~10 minutes." >> "$GITHUB_STEP_SUMMARY"
             bash scripts/check-mutation-tables.sh --all --shard "$SHARD/$SHARD_TOTAL"
           fi
     services:

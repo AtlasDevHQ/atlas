@@ -185,12 +185,12 @@ describe("isSCIMProvisioned", () => {
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
-  it("returns false when the scimProvider table does not exist (42P01 message + table name)", async () => {
+  it("returns false when the scimUser table does not exist (42P01 message + table name)", async () => {
     // EE flag flipped on but the @better-auth/scim plugin migration hasn't
     // run — common during staged rollouts. Treat as "no SCIM contract"
     // rather than fail closed; admins can still mutate users.
     mockInternalQuery.mockImplementationOnce(async () => {
-      throw new Error('relation "scimProvider" does not exist');
+      throw new Error('relation "scimUser" does not exist');
     });
     const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(result).toBe(false);
@@ -243,7 +243,7 @@ describe("isSCIMProvisioned", () => {
     expect(result).toBe(true);
   });
 
-  it("returns false when the join finds no rows", async () => {
+  it("returns false when the lookup finds no rows", async () => {
     mockInternalQuery.mockImplementationOnce(async () => []);
     const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(result).toBe(false);
@@ -254,7 +254,10 @@ describe("isSCIMProvisioned", () => {
     await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
     const [sql, params] = mockInternalQuery.mock.calls[0]!;
-    expect(sql).toContain('"organizationId" = $2');
+    // 1.7 names the org boundary `provisioningDomainId` on the scimUser
+    // projection; the scoping intent is unchanged (a user provisioned in
+    // workspace A must not read as SCIM-managed in workspace B).
+    expect(sql).toContain('"provisioningDomainId" = $2');
     expect(params).toEqual(["user-1", "org-1"]);
   });
 
@@ -263,7 +266,7 @@ describe("isSCIMProvisioned", () => {
     await runEnterprise(isSCIMProvisioned("user-1"));
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
     const [sql, params] = mockInternalQuery.mock.calls[0]!;
-    expect(sql).not.toContain('"organizationId" =');
+    expect(sql).not.toContain('"provisioningDomainId" =');
     expect(params).toEqual(["user-1"]);
   });
 

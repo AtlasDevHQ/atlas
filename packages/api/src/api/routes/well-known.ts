@@ -439,10 +439,11 @@ const handleProtectedResourceMetadata = async (c: Context): Promise<Response> =>
           "offline_access",
         ] satisfies readonly (typeof ATLAS_OAUTH_SCOPES)[number][],
       },
-      // Silence the OIDC-scopes warning — the MCP resource server
-      // intentionally omits the sign-in scopes (openid/profile/email);
-      // the auth server advertises those separately.
-      { silenceWarnings: { oidcScopes: true } },
+      // The MCP resource server intentionally omits the sign-in scopes
+      // (openid/profile/email); the auth server advertises those separately.
+      // 1.6.x warned about that and took a `silenceWarnings.oidcScopes`
+      // opt-out; 1.7 dropped both the warning and the option, so there is
+      // nothing left to silence and the second argument is gone.
     );
 
     return new Response(JSON.stringify(metadata), {

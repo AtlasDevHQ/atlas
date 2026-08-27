@@ -12,8 +12,8 @@
  *   - `override`          — let the mutation proceed and stamp the audit row
  *                           with `metadata.scim_override = true`.
  *
- * Detection mirrors the `account` ↔ `scimProvider` join used by
- * `ee/src/auth/scim.ts:198-205` (getSyncStatus). When EE is disabled, no
+ * Detection reads the `scimUser` projection that @better-auth/scim writes
+ * on every provisioning sync (see `ee/src/auth/scim.ts`). When EE is disabled, no
  * internal DB is configured, or the SCIM tables haven't been migrated, the
  * helper returns `false` (no SCIM contract → mutation proceeds unchanged).
  *
@@ -68,7 +68,7 @@ export function getSCIMOverridePolicy(orgId: string | undefined): SCIMOverridePo
  * Returns `false` (treat as non-SCIM) when:
  *   - enterprise mode is disabled,
  *   - the internal DB is not configured,
- *   - the `scimProvider` table does not exist (EE flag flipped on but the
+ *   - the `scimUser` table does not exist (EE flag flipped on but the
  *     better-auth/scim plugin migration hasn't run yet — common during
  *     staged rollouts).
  *
@@ -97,14 +97,23 @@ export const isSCIMProvisioned = (
     if (!provenance.available) return false;
     if (!hasInternalDB()) return false;
 
+    // #5493: @better-auth/scim 1.7 replaced `scimProvider` with a catalog,
+    // and `scimUser` carries BOTH `userId` and `provisioningDomainId`
+    // directly. That collapses the old two-table join through
+    // `account."providerId"` into a single-table lookup.
+    //
+    // This is a strict narrowing, not just a simplification. The 1.6 join
+    // matched any `account` row whose `providerId` string happened to equal
+    // a provider's — `account` also holds OAuth/credential rows, so a
+    // collision between an unrelated provider id and a SCIM one would have
+    // read as "SCIM-provisioned". `scimUser` rows are written only by the
+    // provisioning path, so membership is now exact.
     const sql = orgId
-      ? `SELECT 1 FROM account a
-         JOIN "scimProvider" sp ON a."providerId" = sp."providerId"
-         WHERE a."userId" = $1 AND sp."organizationId" = $2
+      ? `SELECT 1 FROM "scimUser"
+         WHERE "userId" = $1 AND "provisioningDomainId" = $2
          LIMIT 1`
-      : `SELECT 1 FROM account a
-         JOIN "scimProvider" sp ON a."providerId" = sp."providerId"
-         WHERE a."userId" = $1
+      : `SELECT 1 FROM "scimUser"
+         WHERE "userId" = $1
          LIMIT 1`;
     const params = orgId ? [userId, orgId] : [userId];
 
@@ -130,11 +139,11 @@ export const isSCIMProvisioned = (
         const msg = err.message ?? String(err);
         const isMissingScimProvider =
           code === "42P01" ||
-          (msg.includes("does not exist") && msg.includes("scimProvider"));
+          (msg.includes("does not exist") && msg.includes("scimUser"));
         if (isMissingScimProvider) {
           log.warn(
             { err: msg, userId, orgId },
-            "scimProvider table missing — treating user as non-SCIM",
+            "scimUser table missing — treating user as non-SCIM",
           );
           return Effect.succeed([] as Record<string, unknown>[]);
         }

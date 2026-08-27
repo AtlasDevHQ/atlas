@@ -11,6 +11,7 @@
  * subpackage out of the bundle for non-managed deployments.
  */
 
+import crypto from "node:crypto";
 import { betterAuth, type Session, type User } from "better-auth";
 import { APIError } from "better-auth/api";
 import {
@@ -1108,6 +1109,63 @@ export function parseAuthSecret(raw: string | undefined): AuthSecret {
     );
   }
   return raw as AuthSecret;
+}
+
+/**
+ * HKDF-style info string for the SCIM credential-hash derivation. Bumping
+ * the `v1` suffix invalidates every stored credential digest, so treat it
+ * as a schema version, not a tunable.
+ */
+const SCIM_CREDENTIAL_HASH_INFO = "atlas:scim:credential-hash:v1";
+
+/**
+ * Resolve the HMAC secret `@better-auth/scim` uses to digest managed bearer
+ * credentials (`managedConnections.credentialHashSecret`, ≥32 chars).
+ *
+ * Prefers an explicit `ATLAS_SCIM_CREDENTIAL_HASH_SECRET` so an operator CAN
+ * rotate SCIM credentials independently, but does NOT require one. Absent
+ * that, it is derived from `BETTER_AUTH_SECRET` via HMAC-SHA256 under a
+ * fixed info string.
+ *
+ * Deriving rather than demanding a new env var is deliberate. A new required
+ * secret would have to reach three SaaS regions, every self-hosted deploy and
+ * both `create-atlas` templates before SCIM could boot anywhere — and a
+ * deploy that missed it would fail closed at startup on an enterprise SSO
+ * path. Derivation also matches how `db/encryption-keys.ts` already falls
+ * back to `BETTER_AUTH_SECRET` for at-rest keys.
+ *
+ * Domain separation matters: the value handed to the plugin is HMAC output,
+ * never `BETTER_AUTH_SECRET` itself, so a credential digest cannot be
+ * replayed against session signing or the at-rest encryption keyset.
+ *
+ * ⚠️ Consequence, and it is the same one rotation already has for sessions:
+ * rotating `BETTER_AUTH_SECRET` without setting an explicit override changes
+ * this derived secret, and every existing SCIM credential digest stops
+ * verifying. Customers' IdPs would need re-issued tokens. Set
+ * `ATLAS_SCIM_CREDENTIAL_HASH_SECRET` before rotating to pin it.
+ */
+export function resolveScimCredentialHashSecret(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const explicit = env.ATLAS_SCIM_CREDENTIAL_HASH_SECRET?.trim();
+  if (explicit) {
+    if (explicit.length < 32) {
+      throw new Error(
+        `ATLAS_SCIM_CREDENTIAL_HASH_SECRET must be at least 32 characters (got ${explicit.length}). `
+          + "Use a cryptographically random string, e.g. `openssl rand -base64 33`.",
+      );
+    }
+    return explicit;
+  }
+  // Reuse the same validation the session secret gets — this throws with an
+  // actionable message when BETTER_AUTH_SECRET is missing or too short,
+  // rather than handing the plugin a weak key.
+  const root = parseAuthSecret(env.BETTER_AUTH_SECRET);
+  // 64 hex chars, comfortably over the plugin's 32-character floor.
+  return crypto
+    .createHmac("sha256", root)
+    .update(SCIM_CREDENTIAL_HASH_INFO)
+    .digest("hex");
 }
 
 /**
@@ -2946,45 +3004,44 @@ export function buildPlugins() {
   if (isEnterpriseEnabled()) {
     plugins.push(
       scim({
-        storeSCIMToken: "encrypted",
-        // GHSA-j8v8-g9cx-5qf4 (HIGH) — without this, a non-organization
-        // ("personal") SCIM provider is created with no owner, and the
-        // plugin's management access check is
+        // GHSA-j8v8-g9cx-5qf4 (HIGH) is closed STRUCTURALLY in 1.7, which is
+        // why this config no longer carries a mitigation for it.
+        //
+        // In 1.6 the plugin exposed four management routes over HTTP
+        // (`/scim/generate-token`, `/scim/{get,list,delete}-provider-
+        // connection`), and their access check was
         //
         //   } else if (provider.userId && provider.userId !== userId) throw
         //
-        // so a NULL `userId` short-circuits and ANY authenticated user can
-        // read, list, delete, or regenerate the token of someone else's
-        // provider. `organizationId` is `.optional()` on the plugin's
-        // generate-token body, so personal providers are reachable here even
-        // though the Atlas admin surface is org-scoped.
+        // so a NULL `userId` short-circuited the `&&` and ANY authenticated
+        // user could read, list, delete or REGENERATE the token of someone
+        // else's personal provider. We held that door shut with
+        // `providerOwnership` (stamp an owner at creation) plus migration
+        // 0184 (seal the pre-existing ownerless rows with a sentinel).
         //
-        // The 1.6.x stable line is NOT patched — the only upstream fix is the
-        // breaking 1.7.0-beta.4+ (removes this option, makes binding
-        // mandatory, adds a permanent column). This flag is the advisory's
-        // supported workaround: it stamps `userId` on every personal provider
-        // at creation, so the check above actually fires.
+        // 1.7 removes all four HTTP routes. The equivalent operations are
+        // now `serverOnly` endpoints — reachable from application code, not
+        // from the wire — so there is no longer an unauthenticated surface
+        // to own. `providerOwnership` and `storeSCIMToken` are gone with it,
+        // and `scimManagedConnection.createdBy` / `scimManagedCredential.
+        // createdBy` are non-null columns, which is what 0184's nullable
+        // column plus sentinel convention was approximating.
         //
-        // It is only HALF the fix. The column is nullable and nothing
-        // backfills it, so providers created before this flag stay ownerless
-        // forever — migration 0184 seals those, and explains why it stamps a
-        // sentinel rather than deleting. Both halves are required.
+        // The authorization control that `beforeSCIMTokenGenerated` carried
+        // did NOT disappear — it moved outward, to the Atlas admin route
+        // that wraps `rotateSCIMManagedCredential`. See
+        // `api/routes/admin-scim.ts`; `canGenerateSCIMToken` is still the
+        // predicate, now guarding an endpoint that is server-only underneath
+        // rather than a public one.
         //
-        // Enabling this adds `scimProvider.userId`; Better Auth's schema-diff
-        // auto-migrate creates it at boot, before the Atlas migration runner,
-        // so 0184 can rely on it being present.
-        providerOwnership: { enabled: true },
-        async beforeSCIMTokenGenerated(data) {
-          // Cast needed: the admin plugin adds `role` to the user
-          // object but the SCIM plugin's hook type only includes base
-          // user fields.
-          const user = data.user as Record<string, unknown> | undefined;
-          // #2890: resolve the EFFECTIVE grant (user.role only holds
-          // platform_admin now; org admins/owners live in member.role).
-          const userId = typeof user?.id === "string" ? user.id : undefined;
-          if (!(await canGenerateSCIMToken(user?.role, userId))) {
-            throw new Error("Only admin, owner, or platform-admin users can generate SCIM tokens.");
-          }
+        // `connections` is required by the plugin's option schema. Ours is
+        // empty deliberately: entries here are STATIC, code-defined
+        // connections, and Atlas provisions per-organization connections at
+        // runtime from the admin surface. `managedConnections` is the
+        // catalog that models exactly that.
+        connections: [],
+        managedConnections: {
+          credentialHashSecret: resolveScimCredentialHashSecret(),
         },
       }),
     );

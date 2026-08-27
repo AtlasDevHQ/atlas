@@ -136,64 +136,17 @@ function buildSocialProviders(): Record<string, { clientId: string; clientSecret
 const log = createLogger("auth:server");
 const billingLog = createLogger("billing");
 
-/**
- * Role gate for SCIM token generation. SCIM tokens are bearer tokens an
- * external IdP uses to provision/deprovision users in the workspace, so
- * minting one is an admin-level action.
- *
- * Mirrors the canonical `ADMIN_ROLES` triple used by every other admin
- * gate (middleware.ts:adminAuth, admin-auth.ts:requireAdminAuth,
- * admin-router.ts:createAdminRouter). #2242 — pre-fix this set was
- * {admin, platform_admin} which bombed org owners with "Only admin users
- * can generate SCIM tokens" even though they could manage SCIM
- * connections at `/api/v1/admin/scim/*`.
- *
- * Note: SCIM token-generation lives on Better Auth's catch-all
- * (`POST /api/auth/scim/generate-token`), NOT under `createAdminRouter()`
- * — so the `beforeSCIMTokenGenerated` hook that calls this predicate IS
- * the role gate, not a defense-in-depth guard.
- *
- * Hardcoded literal (not imported from `@useatlas/types/auth:ADMIN_ROLES`)
- * because this file is template-synced to create-atlas; see the same
- * pattern in `api/routes/middleware.ts`.
- */
-export function canMintSCIMToken(role: unknown): boolean {
-  return role === "admin" || role === "owner" || role === "platform_admin";
-}
 
 /**
- * Effective authorization for SCIM token generation (#2890).
+ * SCIM credential-issuance authorization.
  *
- * The `beforeSCIMTokenGenerated` hook only receives the user object, whose
- * raw `user.role` post-#2890 only ever carries `platform_admin` — tenant
- * admin-ness now lives in `member.role`. A raw-role check ({@link
- * canMintSCIMToken}) alone would therefore deny every org owner/admin, who
- * are exactly the people that set up SCIM. Resolve the effective grant:
- * `platform_admin` via user.role, OR an `admin`/`owner` member row in any of
- * the user's orgs (the same intent the `ADMIN_ROLES` triple encodes).
- *
- * Fails CLOSED on a member-table lookup error — minting an IdP provisioning
- * token is high-privilege, so a transient DB blip denies rather than grants.
- * Without an internal DB (single-tenant self-hosted with no member table)
- * falls back to the raw-role predicate.
+ * Moved to `auth/scim-authz.ts` in #5493 so the admin route that now owns
+ * the check does not have to import this module (and with it the whole
+ * Better Auth graph) to run it. Re-exported here because `effective-role`
+ * tests and other callers import them from this path.
  */
-export async function canGenerateSCIMToken(role: unknown, userId: string | undefined): Promise<boolean> {
-  if (role === "platform_admin") return true;
-  if (!userId || !hasInternalDB()) return canMintSCIMToken(role);
-  try {
-    const rows = await internalQuery<{ ok: number }>(
-      `SELECT 1 AS ok FROM member WHERE "userId" = $1 AND role IN ('admin', 'owner') LIMIT 1`,
-      [userId],
-    );
-    return rows.length > 0;
-  } catch (err) {
-    log.warn(
-      { err: errorMessage(err), userId },
-      "SCIM token authorization member lookup failed — denying (fail closed)",
-    );
-    return false;
-  }
-}
+export { canMintSCIMToken, canGenerateSCIMToken } from "./scim-authz";
+
 
 // #2890 removed `promoteOrgOwnerToAdmin`. The org plugin already inserts the
 // creator as a member with `member.role='owner'` (Better Auth `creatorRole`

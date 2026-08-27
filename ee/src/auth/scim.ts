@@ -14,6 +14,7 @@
  * skips the gate, returning null when no mapping exists.
  */
 
+import crypto from "node:crypto";
 import { Effect, Layer } from "effect";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { eeRead, eeWrite } from "../lib/ee-query";
@@ -251,6 +252,180 @@ export const deleteConnection = (orgId: string, connectionId: string): Effect.Ef
     return true;
   }));
 
+// ── Credential minting (the GHSA-j8v8-g9cx-5qf4 operation) ──────────
+//
+// In 1.6 this was `POST /api/auth/scim/generate-token`, a PUBLIC plugin
+// route whose ownership check fell open on a NULL `userId`. 1.7 withdraws
+// the route and exposes the operation as a SERVER_ONLY endpoint, so the
+// only way to reach it is from application code — which means Atlas now
+// owns the authorization for it. That check lives on the admin route in
+// `api/routes/admin-scim.ts` (`canGenerateSCIMToken`); these helpers
+// deliberately do NOT re-implement it, so there is exactly one place where
+// the policy is decided.
+
+/** Scopes every Atlas-issued SCIM credential carries. */
+const ATLAS_SCIM_SCOPES = [
+  "scim.users.read",
+  "scim.users.write",
+  "scim.groups.read",
+  "scim.groups.write",
+] as const;
+
+/** Credential lifetime. Matches the one-year default the admin UI documents. */
+const CREDENTIAL_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+
+interface IssuedCredential {
+  connectionId: string;
+  credentialId: string;
+  token: string;
+  expiresAt: string;
+}
+
+/**
+ * Resolve the plugin's server-only API off the auth singleton.
+ *
+ * The SCIM plugin is pushed conditionally in `buildPlugins()` (enterprise
+ * only), so the singleton's inferred `api` type cannot name its endpoints.
+ * Callers reach this only behind `eeRead`/`eeWrite`'s enterprise gate — the
+ * same condition that registers the plugin.
+ */
+async function scimApi(): Promise<{
+  createSCIMManagedConnection?: (input: { body: Record<string, unknown> }) => Promise<unknown>;
+  rotateSCIMManagedCredential?: (input: { body: Record<string, unknown> }) => Promise<unknown>;
+}> {
+  const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
+  return getAuthInstance().api as unknown as Awaited<ReturnType<typeof scimApi>>;
+}
+
+/**
+ * Read the plaintext token out of a mint/rotate response.
+ *
+ * The plugin returns it once and stores only an HMAC digest, so a shape
+ * change upstream must fail loudly here rather than yield an empty string
+ * that the admin UI would render as a valid-looking token.
+ */
+function readIssued(result: unknown, fallbackConnectionId: string): IssuedCredential {
+  const r = (result ?? {}) as Record<string, unknown>;
+  const token = typeof r.token === "string" ? r.token : undefined;
+  const credentialId = typeof r.credentialId === "string" ? r.credentialId : undefined;
+  if (!token || !credentialId) {
+    throw new Error(
+      "SCIM credential mint returned no token — @better-auth/scim response shape changed. "
+        + "Refusing to report a successful issue without a credential.",
+    );
+  }
+  const connectionId = typeof r.connectionId === "string" ? r.connectionId : fallbackConnectionId;
+  const expiresAt = typeof r.expiresAt === "string"
+    ? r.expiresAt
+    : r.expiresAt instanceof Date
+      ? r.expiresAt.toISOString()
+      : new Date(Date.now() + CREDENTIAL_TTL_MS).toISOString();
+  return { connectionId, credentialId, token, expiresAt };
+}
+
+/**
+ * Create a SCIM connection for an organization and mint its first credential.
+ *
+ * `actorUserId` lands in the connection's `createdBy`, which 1.7 declares
+ * NOT NULL — the ownerless-row state the advisory turned on cannot be
+ * represented any more.
+ */
+export const createConnection = (
+  orgId: string,
+  actorUserId: string,
+): Effect.Effect<IssuedCredential, SCIMError | EnterpriseError | Error> =>
+  eeWrite("scim", "create SCIM connection", Effect.gen(function* () {
+    const api = yield* Effect.promise(() => scimApi());
+    if (typeof api.createSCIMManagedConnection !== "function") {
+      return yield* Effect.fail(new Error(
+        "SCIM plugin is not registered on the auth instance — cannot create a connection. "
+          + "This indicates the enterprise gate and plugin registration have diverged.",
+      ));
+    }
+    // `creationRequestId` is the plugin's idempotency key (UNIQUE). A fresh
+    // uuid per attempt means a retry creates a new connection rather than
+    // silently colliding — the admin sees two and can decommission one,
+    // which is safer than a retry quietly returning someone else's row.
+    const creationRequestId = crypto.randomUUID();
+    const result = yield* Effect.tryPromise({
+      try: () => api.createSCIMManagedConnection!({
+        body: {
+          creationRequestId,
+          provisioningDomainId: orgId,
+          actorId: actorUserId,
+          scopes: [...ATLAS_SCIM_SCOPES],
+          expiresAt: new Date(Date.now() + CREDENTIAL_TTL_MS).toISOString(),
+        },
+      }),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
+    const issued = readIssued(result, creationRequestId);
+    // Never log `issued.token`.
+    log.info(
+      { orgId, actorUserId, connectionId: issued.connectionId, credentialId: issued.credentialId },
+      "SCIM connection created and credential issued",
+    );
+    return issued;
+  }));
+
+/**
+ * Rotate the bearer credential on an existing connection.
+ *
+ * Scoped to the caller's org before touching the plugin: the endpoint is
+ * server-only and takes the connection id at face value, so this lookup is
+ * what stops one org rotating another's credential — the same containment
+ * the 1.6 route was missing.
+ */
+export const rotateCredential = (
+  orgId: string,
+  connectionId: string,
+  actorUserId: string,
+): Effect.Effect<IssuedCredential, SCIMError | EnterpriseError | Error> =>
+  eeWrite("scim", "rotate SCIM credential", Effect.gen(function* () {
+    const owned = yield* Effect.promise(() => internalQuery<{ connectionId: string; [key: string]: unknown }>(
+      `SELECT "connectionId"
+       FROM "scimManagedConnection"
+       WHERE id = $1
+         AND "provisioningDomainId" = $2
+         AND status = 'active'
+       LIMIT 1`,
+      [connectionId, orgId],
+    ));
+    const target = owned[0]?.connectionId;
+    if (!target) {
+      return yield* Effect.fail(new SCIMError({
+        code: "not_found" satisfies SCIMErrorCode,
+        message: "SCIM connection not found.",
+      }));
+    }
+
+    const api = yield* Effect.promise(() => scimApi());
+    if (typeof api.rotateSCIMManagedCredential !== "function") {
+      return yield* Effect.fail(new Error(
+        "SCIM plugin is not registered on the auth instance — cannot rotate a credential. "
+          + "This indicates the enterprise gate and plugin registration have diverged.",
+      ));
+    }
+    const result = yield* Effect.tryPromise({
+      try: () => api.rotateSCIMManagedCredential!({
+        body: {
+          connectionId: target,
+          provisioningDomainId: orgId,
+          actorId: actorUserId,
+          scopes: [...ATLAS_SCIM_SCOPES],
+          expiresAt: new Date(Date.now() + CREDENTIAL_TTL_MS).toISOString(),
+        },
+      }),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
+    const issued = readIssued(result, target);
+    log.info(
+      { orgId, actorUserId, connectionId: issued.connectionId, credentialId: issued.credentialId },
+      "SCIM credential rotated",
+    );
+    return issued;
+  }));
+
 // ── Sync Status ─────────────────────────────────────────────────────
 
 /**
@@ -423,6 +598,8 @@ export const makeSCIMProvenanceLive = (): SCIMProvenanceShape => ({
   listConnections,
   deleteConnection,
   getSyncStatus,
+  createConnection,
+  rotateCredential,
   listGroupMappings,
   createGroupMapping,
   deleteGroupMapping,

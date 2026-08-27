@@ -92,6 +92,20 @@ const mockGetSyncStatus: Mock<(orgId: string) => Effect.Effect<any, any>> = mock
   () => Effect.succeed({ connections: 0, provisionedUsers: 0, lastSyncAt: null }),
 );
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+const mockCreateConnection: Mock<(orgId: string, actorUserId: string) => Effect.Effect<any, any>> = mock(
+  () => Effect.succeed({
+    connectionId: "conn_new", credentialId: "cred_1",
+    token: "scim_tok_PLAINTEXT", expiresAt: "2027-01-01T00:00:00.000Z",
+  }),
+);
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+const mockRotateCredential: Mock<(orgId: string, connectionId: string, actorUserId: string) => Effect.Effect<any, any>> = mock(
+  () => Effect.succeed({
+    connectionId: "conn_abc123", credentialId: "cred_2",
+    token: "scim_tok_ROTATED", expiresAt: "2027-01-01T00:00:00.000Z",
+  }),
+);
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockListGroupMappings: Mock<(orgId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed([]),
 );
@@ -111,6 +125,8 @@ void mock.module("@atlas/ee/auth/scim", () => ({
   listConnections: mockListConnections,
   deleteConnection: mockDeleteConnection,
   getSyncStatus: mockGetSyncStatus,
+  createConnection: mockCreateConnection,
+  rotateCredential: mockRotateCredential,
   listGroupMappings: mockListGroupMappings,
   createGroupMapping: mockCreateGroupMapping,
   deleteGroupMapping: mockDeleteGroupMapping,
@@ -118,6 +134,22 @@ void mock.module("@atlas/ee/auth/scim", () => ({
   resolveGroupToRole: mock(() => Effect.succeed(null)),
   isValidScimGroupName: () => true,
   _resetTableEnsured: () => {},
+}));
+
+// SCIM authorization predicate (#5493). Mocked as a WHOLE module — it has
+// exactly two exports, so this is a complete stand-in rather than a partial
+// `mock.module()`. Extracting it out of `auth/server.ts` is what makes that
+// possible: mocking the old location would have stubbed the entire Better
+// Auth server module.
+//
+// Default DENY. Each test opts in, so a future route that forgets the guard
+// fails these tests rather than silently inheriting an allow.
+const mockCanGenerateSCIMToken: Mock<(role: unknown, userId: string | undefined) => Promise<boolean>> =
+  mock(async () => false);
+void mock.module("@atlas/api/lib/auth/scim-authz", () => ({
+  canGenerateSCIMToken: mockCanGenerateSCIMToken,
+  canMintSCIMToken: (role: unknown) =>
+    role === "admin" || role === "owner" || role === "platform_admin",
 }));
 
 // Core error stubs — `EnterpriseLayer`'s no-op defaults lazy-require these.
@@ -160,6 +192,8 @@ void mock.module("@atlas/ee/layers", () => {
           listConnections: mockListConnections as never,
           deleteConnection: mockDeleteConnection as never,
           getSyncStatus: mockGetSyncStatus as never,
+          createConnection: mockCreateConnection as never,
+          rotateCredential: mockRotateCredential as never,
           listGroupMappings: mockListGroupMappings as never,
           createGroupMapping: mockCreateGroupMapping as never,
           deleteGroupMapping: mockDeleteGroupMapping as never,
@@ -745,5 +779,99 @@ describe("admin SCIM — non-admin callers don't emit audit", () => {
     // Also asserts the service was never invoked — otherwise an
     // unauthenticated caller could still trip a downstream side-effect.
     expect(mockDeleteConnection).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC 1 (#5493) — a non-admin cannot mint a SCIM credential
+// ---------------------------------------------------------------------------
+//
+// This is the control that `beforeSCIMTokenGenerated` used to carry inside
+// @better-auth/scim. 1.7 removed that hook along with the public
+// `/scim/generate-token` route the advisory (GHSA-j8v8-g9cx-5qf4) was
+// about, so the check now lives on these Atlas routes. These tests are what
+// stop the migration from quietly dropping it: the plugin no longer enforces
+// anything here, so if the guard were removed, nothing else would fail.
+
+describe("admin SCIM — credential minting is gated on canGenerateSCIMToken", () => {
+  beforeEach(() => {
+    mockCanGenerateSCIMToken.mockReset();
+    mockCreateConnection.mockClear();
+    mockRotateCredential.mockClear();
+    mockLogAdminAction.mockClear();
+  });
+
+  it("POST /connections is refused when the predicate denies — and never reaches the service", () => {
+    return (async () => {
+      mocks.setOrgAdmin("org-alpha");
+      mockCanGenerateSCIMToken.mockImplementation(async () => false);
+
+      const res = await app.fetch(
+        scimRequest("/api/v1/admin/scim/connections", "POST"),
+      );
+
+      expect(res.status).toBe(403);
+      // The point of the test: a denied caller must not mint. If the guard
+      // is dropped, this is the assertion that fails — the service would be
+      // invoked and a live IdP credential issued.
+      expect(mockCreateConnection).not.toHaveBeenCalled();
+    })();
+  });
+
+  it("POST /connections/:id/rotate is refused when the predicate denies", () => {
+    return (async () => {
+      mocks.setOrgAdmin("org-alpha");
+      mockCanGenerateSCIMToken.mockImplementation(async () => false);
+
+      const res = await app.fetch(
+        scimRequest("/api/v1/admin/scim/connections/conn_abc123/rotate", "POST"),
+      );
+
+      expect(res.status).toBe(403);
+      expect(mockRotateCredential).not.toHaveBeenCalled();
+    })();
+  });
+
+  it("a plain member is refused by the admin router before the predicate is consulted", () => {
+    return (async () => {
+      mocks.setMember("org-alpha");
+      // Allow at the predicate level to prove the 403 comes from the router:
+      // the two gates are independent, and this pins that BOTH are in play.
+      mockCanGenerateSCIMToken.mockImplementation(async () => true);
+
+      const res = await app.fetch(
+        scimRequest("/api/v1/admin/scim/connections", "POST"),
+      );
+
+      expect(res.status).toBe(403);
+      expect(mockCreateConnection).not.toHaveBeenCalled();
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    })();
+  });
+
+  it("an authorized admin mints, and the plaintext token never reaches the audit row", () => {
+    return (async () => {
+      mocks.setOrgAdmin("org-alpha");
+      mockCanGenerateSCIMToken.mockImplementation(async () => true);
+
+      const res = await app.fetch(
+        scimRequest("/api/v1/admin/scim/connections", "POST"),
+      );
+
+      expect(res.status).toBe(201);
+      const body = await res.json() as { token: string; credentialId: string };
+      // Returned once to the caller...
+      expect(body.token).toBe("scim_tok_PLAINTEXT");
+      expect(mockCreateConnection).toHaveBeenCalledTimes(1);
+
+      // ...and never persisted. Audit rows are readable by every workspace
+      // admin, so a token in metadata would hand them a live IdP credential.
+      const audited = mockLogAdminAction.mock.calls.map(([entry]) => JSON.stringify(entry));
+      expect(audited.length).toBeGreaterThan(0);
+      for (const entry of audited) {
+        expect(entry).not.toContain("scim_tok_PLAINTEXT");
+      }
+      expect(audited.join(" ")).toContain("cred_1");
+    })();
   });
 });

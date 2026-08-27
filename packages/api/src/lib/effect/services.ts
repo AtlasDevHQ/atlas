@@ -2455,6 +2455,21 @@ type SCIMGroupMappingShape = {
   readonly createdAt: string;
 };
 
+/**
+ * A SCIM bearer credential at the one moment its plaintext exists.
+ *
+ * `@better-auth/scim` 1.7 stores only an HMAC digest (`tokenDigest`), so the
+ * token is returned exactly once, by the call that mints it, and is
+ * unrecoverable afterwards. Never persist or log it.
+ */
+type SCIMIssuedCredentialShape = {
+  readonly connectionId: string;
+  readonly credentialId: string;
+  /** Plaintext bearer token — show once to the admin, then discard. */
+  readonly token: string;
+  readonly expiresAt: string;
+};
+
 export interface SCIMProvenanceShape {
   /** False when EE SCIM is not loaded — `isSCIMProvisioned` short-circuits to "non-SCIM" without hitting the DB. */
   readonly available: boolean;
@@ -2468,6 +2483,29 @@ export interface SCIMProvenanceShape {
   readonly getSyncStatus: (
     orgId: string,
   ) => Effect.Effect<SCIMSyncStatusShape, EnterpriseErrorForAuth>;
+  /**
+   * Mint a new SCIM connection plus its first bearer credential.
+   *
+   * `actorUserId` is recorded as the connection's `createdBy` — a REQUIRED
+   * column in 1.7, which is what the retired `providerOwnership` flag and
+   * migration 0184's sentinel were approximating. Authorization is the
+   * CALLER's job: this is the operation GHSA-j8v8-g9cx-5qf4 was about, and
+   * the route that reaches it gates on `canGenerateSCIMToken`.
+   */
+  readonly createConnection: (
+    orgId: string,
+    actorUserId: string,
+  ) => Effect.Effect<SCIMIssuedCredentialShape, SCIMError | EnterpriseErrorForAuth | Error>;
+  /**
+   * Rotate the bearer credential on an existing connection, returning the
+   * new plaintext once. The previous credential is retired by the plugin.
+   * Same authorization note as {@link createConnection}.
+   */
+  readonly rotateCredential: (
+    orgId: string,
+    connectionId: string,
+    actorUserId: string,
+  ) => Effect.Effect<SCIMIssuedCredentialShape, SCIMError | EnterpriseErrorForAuth | Error>;
   readonly listGroupMappings: (
     orgId: string,
   ) => Effect.Effect<SCIMGroupMappingShape[], EnterpriseErrorForAuth>;
@@ -2507,6 +2545,11 @@ export const NoopSCIMProvenanceLayer: Layer.Layer<SCIMProvenance> = Layer.sync(
           provisionedUsers: 0,
           lastSyncAt: null,
         }),
+      // Minting is destructive-adjacent: a silent no-op would hand the
+      // admin UI an empty token and look like a successful issue. Fail
+      // loudly, same pattern as deleteConnection.
+      createConnection: () => Effect.fail(notAvailable()),
+      rotateCredential: () => Effect.fail(notAvailable()),
       listGroupMappings: () => Effect.succeed([]),
       createGroupMapping: () => Effect.fail(notAvailable()),
       // Same destructive-noop pattern as deleteConnection — fail loudly.

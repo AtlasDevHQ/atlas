@@ -10,11 +10,30 @@
  * stay in sync; promote both mirrors together when a types release is cut for
  * another reason.
  */
+import type { BrainCorrectionVerb } from "@useatlas/types";
 
-/** The correction verbs, mirroring `CORRECTION_VERBS` in `lib/brain/correction.ts`. */
-export const BRAIN_CORRECTION_VERBS = ["retract", "supersede", "re-authority", "pin"] as const;
-
-export type BrainCorrectionVerb = (typeof BRAIN_CORRECTION_VERBS)[number];
+/**
+ * The correction verbs, as a runtime list so the guard below can check
+ * MEMBERSHIP rather than `typeof === "string"`.
+ *
+ * The TYPE is imported, not re-declared: `@useatlas/types` already publishes
+ * `BrainCorrectionVerb`, and a second declaration of a `Brain*` name fails
+ * `scripts/check-docs-brain-snippets.ts` — that gate compares a published doc
+ * snippet against ONE declaration per name, so a duplicate makes the comparison
+ * depend on scan order.
+ *
+ * Importing the type costs nothing here even though the VALUE constants further
+ * down are deliberately mirrored: a type-only import is erased at build time, so
+ * it cannot hit the published-package problem that forced those to be local.
+ * `satisfies` ties the runtime list to the published union, so dropping a verb
+ * from either side is a compile error rather than a guard that silently narrows.
+ */
+export const BRAIN_CORRECTION_VERBS = [
+  "retract",
+  "supersede",
+  "re-authority",
+  "pin",
+] as const satisfies readonly BrainCorrectionVerb[];
 
 /** The replay payload the confirm card POSTs to the confirm endpoint. */
 export interface CorrectFactConfirmRequest {

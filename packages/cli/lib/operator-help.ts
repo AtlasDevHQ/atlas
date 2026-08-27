@@ -195,7 +195,7 @@ export const OPERATOR_SUBCOMMAND_HELP = {
     description:
       "Operator-only tools that touch tenant data. Destructive subcommands require an explicit double-confirm flag.",
     usage:
-      "ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts|sweep-residue> [options]",
+      "ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts|sweep-residue|gate-export> [options]",
     subcommands: [
       {
         name: "wipe",
@@ -216,6 +216,11 @@ export const OPERATOR_SUBCOMMAND_HELP = {
         name: "teardown-verify-accounts",
         description:
           "Surgically delete throwaway /verify-prod-signup accounts (user + org + Stripe customer) from one region's internal DB. DRY RUN by default; EXECUTE requires ATLAS_TEARDOWN_OK=1 + --confirm. Flags: --email <addr[,addr]> (required, repeatable), --region <us|eu|apac> OR --database-url <url>, --dry-run, --force (allow non-plus-addressed emails).",
+      },
+      {
+        name: "gate-export",
+        description:
+          "Cut an EVALUATION bundle of one workspace's review-gate decisions — (episode, decision, fact?) triples, with positives (published), rejected (retracted via the retract verb, which stamps invalidated_at and never status) and negatives (an extracted episode that yielded no claim) distinguishable. Warehouse observations are excluded: the publish gate refuses them, so no human ever ruled on one. ⚠️ EVALUATION ONLY — never a training corpus (ADR-0043, issue 5339); a bundle is outside purge-scope.ts, so cut it for a named evaluation and destroy it after. Refuses to cross a region boundary and refuses a workspace carrying a grant token outside the ACL grammar. DRY RUN by default (the query still runs and the reported counts are exact); EXECUTE requires ATLAS_GATE_EXPORT_OK=1 + --confirm. Every run, refusals and dry runs included, lands in admin_action_log. Flags: --workspace <orgId> (required), --region <us|eu|apac> OR --database-url <url>, --output <path>, --confirm, --dry-run.",
       },
       {
         name: "sweep-residue",

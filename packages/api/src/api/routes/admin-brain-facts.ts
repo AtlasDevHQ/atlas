@@ -124,6 +124,7 @@ import {
   loadSupersessionPreview,
   loadWideningPreview,
 } from "@atlas/api/lib/brain/oversight";
+import { loadGateAnalytics } from "@atlas/api/lib/brain/gate-export";
 // Both caps come from the sweep module, including `TENSION_EDGE_CAP`, which it
 // RE-EXPORTS from `reconcile.ts`. Reaching past it to the declaration site would
 // give this route a direct edge onto the reconcile stage for an integer it only
@@ -376,6 +377,7 @@ const oversightRoute = createRoute({
     "⚠️ The counters do NOT count the same population on every arm, and the asymmetry is deliberate (ADR-0042). A warehouse OBSERVATION is a machine reading of a column, never reviewed and never publishable, so `awaitingReview`, `provisional` and `inTension` exclude observations on both halves — reporting them as review backlog would name work no reviewer can do, since publish refuses every one of them unconditionally. `published` and `retracted` KEEP counting observations, because those are the already-published stragglers `GET /retirable` exists to enumerate and the completed retirements that clear them; hiding them would strand the retirement flow behind a panel reading zero. " +
     "`reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. It carries the same observation exclusion as the workspace `awaitingReview` it is subtracted from, so the delta reports only backlog a reader genuinely cannot see — narrowing one half alone would report observations as backlog federated to somebody else. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped. " +
     "`willSupersede` discloses what the next publish will supersede (#4912): promoting a single-cardinality draft that collides with a live published fact stamps the old fact's `valid_to` atomically with the promotion. Not every same-slot disagreement collides — publish stamps only where the two values are PROVABLY different, and never where either side is warehouse-derived or carries a source kind this region cannot classify (a warehouse-derived fact is never superseded by review, and never itself supersedes anything); those pairs coexist in visible tension instead, and are absent here because this disclosure is built from the same rule the transaction runs. The pairs list both claims and is gated by the reader's own visibility predicate on BOTH sides; supersessions the reader may not see travel as `willSupersede.withheld` — a count, never content. " +
+    "`gateAnalytics` reports how the review gate has been DECIDING (#5335) — approvals, rejections, and the rate between them. Reader-scoped, unlike the workspace buckets beside it: a COUNT is not exempt from a visibility predicate, so these answer \"of the decided claims you can see\" and can be smaller than an operator's unscoped export of the same workspace. A rejection is a RETRACTION (`invalidated_at`), never a status — the gate's negative verb is a tombstone, not a demotion. `approvalRate` is null rather than 0 when nothing has been decided, because an unstarted queue and a reviewer who rejects everything are different states. Only the two decided classes are served: the third class an export carries (an extracted episode that yielded no claim) is per-episode and cannot be counted on this fact-grained join, and reporting it as 0 would be a false claim about the extractor's silence. " +
     "`willWiden` discloses what the next publish will make VISIBLE TO MORE PEOPLE (#5032): publishing a draft unions in the grant of every episode already recorded as evidence for it, so a claim first seen privately and restated publicly stops being served only to the private audience. That is usually right, and it is wrong when two different entities share a name — corroboration matches on identity derived from the surface, so a public episode about one `Acme Corp` can become evidence for a private fact about another, and the widening then discloses the private claim's body. An entry appears ONLY where the widening actually adds a grant token (an ordinary corroboration between equally-granted episodes adds none and is not listed), and `added` is a syntactic upper bound on readers gained rather than a reader count. A WAREHOUSE episode is not widening evidence at all and never appears here (ADR-0042): the union's warrant is that a person restated the claim in a wider room, and a machine reading a column satisfies no part of that sentence — publish applies the identical exclusion, so this notice and the act cannot disagree. ⚠️ Reader-scoped with NO withheld counterpart: an empty `entries` means \"none that you can see\", never \"none\".",
   responses: {
     200: {
@@ -816,12 +818,17 @@ adminBrainFacts.openapi(oversightRoute, async (c) => {
           // inside the counts loader so the counts aggregate keeps its
           // numbers-only contract and its own tests.
           const db = getInternalDB();
-          const [counts, willSupersede, willWiden] = await Promise.all([
+          const [counts, willSupersede, willWiden, gateAnalytics] = await Promise.all([
             loadFactOversight(db, ctx, requestId),
             loadSupersessionPreview(db, ctx, requestId),
             loadWideningPreview(db, ctx, requestId),
+            // The gate-decision counts (#5335). Reader-scoped like the two
+            // previews above and unlike the workspace buckets, so this number
+            // can legitimately be smaller than an operator's unscoped export
+            // of the same workspace — see `lib/brain/gate-export.ts`.
+            loadGateAnalytics(db, ctx, requestId),
           ]);
-          return { ...counts, willSupersede, willWiden };
+          return { ...counts, willSupersede, willWiden, gateAnalytics };
         },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });

@@ -827,6 +827,51 @@ export interface BrainFactOversight {
    * required by the server-side wire schema for the same one.
    */
   readonly willWiden?: BrainFactWillWiden;
+  /**
+   * How the review gate has been DECIDING (#5335) — the analytics half of the
+   * gate-decision export, surfaced here so the ticket delivers value before any
+   * model work exists.
+   *
+   * Optional on the TYPE for {@link willSupersede}'s deploy-skew reason, and
+   * required by the server-side wire schema for the same one.
+   */
+  readonly gateAnalytics?: BrainFactGateAnalytics;
+}
+
+/**
+ * The review gate's decision record, as counts (#5335).
+ *
+ * ⚠️ **Reader-scoped, unlike the workspace-wide oversight buckets beside it.**
+ * A COUNT is not exempt from a visibility predicate: an admin who cannot read
+ * a private claim must not learn it exists by watching a total move. So these
+ * numbers answer *"of the decided claims YOU can see"*, and they can
+ * legitimately be smaller than what an operator's unscoped export reports.
+ *
+ * The classes come from `lib/brain/gate-export.ts`, which the operator bundle
+ * builds from too — one definition of what an approval and a rejection ARE, so
+ * this panel and the evaluation corpus cannot drift.
+ */
+export interface BrainFactGateAnalytics {
+  /** Published, non-retracted claims — gate APPROVALS. */
+  readonly positives: number;
+  /**
+   * Retracted claims — gate REJECTIONS.
+   *
+   * On `invalidated_at`, never on `status`: the gate's negative verb is a
+   * tombstone rather than a demotion (ADR-0036, #4915), so there is no
+   * `rejected` status to count.
+   */
+  readonly rejected: number;
+  /**
+   * Approvals over all decided claims, 0–1, or null when nothing has been
+   * decided.
+   *
+   * Null and NOT zero, deliberately: a workspace whose reviewer has not
+   * started reads "no decisions yet", and rendering that as a 0% approval rate
+   * would report a reviewer who rejects everything — a different and alarming
+   * state.
+   */
+  readonly approvalRate: number | null;
 }
 
 /**

@@ -147,7 +147,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the unreadable-settings-tier latch dropped (#5162) | 2 | 0 | 0 |
 | the settings-unreadable refusal message replaced by the policy one (#5162) | 1 | 0 | 0 |
 
-Suite sizes: **decide-pg** 85 tests (`src/lib/brain/__tests__/vocabulary-decide-pg.test.ts`) · **correct-fact-tool** 15 tests (`src/lib/tools/__tests__/correct-fact-tool.test.ts`) · **admin-route** 65 tests (`src/api/routes/__tests__/admin-brain-facts.test.ts`).
+Suite sizes: **decide-pg** 85 tests (`src/lib/brain/__tests__/vocabulary-decide-pg.test.ts`) · **correct-fact-tool** 15 tests (`src/lib/tools/__tests__/correct-fact-tool.test.ts`) · **admin-route** 66 tests (`src/api/routes/__tests__/admin-brain-facts.test.ts`).
 
 ## Notes
 

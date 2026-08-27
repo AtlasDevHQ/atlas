@@ -76,6 +76,7 @@ import type {
   BrainFactWillSupersede,
   BrainFactWillSupersedePair,
   BrainFactWillWiden,
+  BrainFactGateAnalytics,
   BrainFactWillWidenEntry,
   BrainResultTier,
   BrainSearchTensionView,
@@ -921,6 +922,44 @@ const OVERSIGHT_ENVELOPE_FIELDS = {
 } as const;
 
 /**
+ * The review gate's decision counts (#5335), reader-scoped.
+ *
+ * `approvalRate` is `.nullable()` and NOT defaulted to 0 — "nothing decided
+ * yet" and "every claim rejected" are different states, and a schema that
+ * collapsed the first into the second would make the panel report an alarming
+ * reviewer where there is simply a new workspace. The refinement pins the
+ * arithmetic rather than trusting the producer: a rate that disagrees with the
+ * counts beside it is a producer bug whose only symptom would otherwise be a
+ * number an admin acts on.
+ */
+export const BrainFactGateAnalyticsSchema = z
+  .strictObject({
+    positives: z.number().int().nonnegative(),
+    rejected: z.number().int().nonnegative(),
+    approvalRate: z.number().min(0).max(1).nullable(),
+  })
+  .superRefine((value, ctx) => {
+    const decided = value.positives + value.rejected;
+    if (decided === 0 && value.approvalRate !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["approvalRate"],
+        message:
+          "approvalRate is a number with nothing decided — an unstarted queue must read null, not a rate",
+      });
+      return;
+    }
+    if (decided > 0 && value.approvalRate === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["approvalRate"],
+        message:
+          "approvalRate is null with decided claims present — the rate this panel exists to show would render as 'no decisions yet'",
+      });
+    }
+  }) satisfies z.ZodType<BrainFactGateAnalytics, unknown>;
+
+/**
  * The strict server-side contract. `admin-brain-facts.ts` parses every response
  * through this before it goes out, so a producer that broke the no-content rule
  * gets a 500 with a requestId instead of shipping.
@@ -952,6 +991,10 @@ export const BrainFactOversightSchema = z
     // the only thing standing between an unresolvable subject homonym and a
     // private claim's body reaching a public audience.
     willWiden: BrainFactWillWidenSchema,
+    // Required server-side on `willSupersede`'s argument (#5335): a server that
+    // stopped emitting this silently retires the gate-decision panel, which is
+    // the only thing this ticket ships before any model work exists.
+    gateAnalytics: BrainFactGateAnalyticsSchema,
   })
   .superRefine((value, ctx) => {
     if (
@@ -1015,6 +1058,11 @@ export const BrainFactOversightClientSchema = z.object({
   // headline. The refinements are server-side on purpose — see
   // `BrainFactWillWidenEnvelopeSchema`.
   willWiden: BrainFactWillWidenEnvelopeSchema.optional(),
+  // Optional HERE and only here, for `willSupersede`'s reason: during a deploy
+  // window an older API omits it and the panel renders no gate-decision block
+  // rather than losing the whole oversight surface — and with it the
+  // hidden-backlog alert, which is the costlier loss.
+  gateAnalytics: BrainFactGateAnalyticsSchema.optional(),
 }) satisfies z.ZodType<BrainFactOversight, unknown>;
 
 

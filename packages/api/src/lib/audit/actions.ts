@@ -621,6 +621,16 @@ export const ADMIN_ACTIONS = {
    */
   brain: {
     extractionCycle: "brain.extraction_cycle",
+    /**
+     * `atlas-operator ops gate-export` — an operator cut an EVALUATION bundle
+     * of a workspace's review-gate decisions (#5335). Emitted on EVERY
+     * terminal path, including the DRY RUN and the refusal: a preview reads
+     * the same tenant content the export would write, so an audit trail that
+     * recorded only the file-writing runs would leave the reads invisible.
+     * `targetId` is the workspace (org) id; metadata carries the row count and
+     * the class counts, never a row's contents.
+     */
+    gateExport: "brain.gate_export",
   },
   /**
    * Without these entries a compromised admin could shrink retentionDays

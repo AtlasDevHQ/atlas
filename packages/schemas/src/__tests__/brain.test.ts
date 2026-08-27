@@ -21,6 +21,7 @@ import {
   BrainSearchTensionViewSchema,
   BRAIN_CENSUS_ISSUES,
   BrainEntityEdgeOutcomeSchema,
+  BrainFactGateAnalyticsSchema,
 } from "../brain";
 
 const visibleCounterpart = {
@@ -154,6 +155,7 @@ const oversightEnvelope = {
   distinctAudiences: 1,
   bucketsTruncated: false,
   willSupersede: { total: 0, pairs: [], withheld: 0, truncated: false },
+  gateAnalytics: { positives: 12, rejected: 4, approvalRate: 0.75 },
 };
 const willWiden = { total: 1, entries: [willWidenEntry], truncated: false, incomplete: false };
 
@@ -182,6 +184,57 @@ describe("BrainFactWillWidenSchema — the headline may not understate a visible
         entries: [{ ...willWidenEntry, added: [] }],
       }),
     ).toThrow();
+  });
+});
+
+describe("BrainFactGateAnalyticsSchema — an unstarted queue is not a 0% approval rate", () => {
+  test("parses a decided queue", () => {
+    const decided = { positives: 3, rejected: 1, approvalRate: 0.75 };
+    expect(BrainFactGateAnalyticsSchema.parse(decided)).toEqual(decided);
+  });
+
+  test("requires null — not 0 — when nothing has been decided", () => {
+    // The two states this refinement keeps apart: "no decisions yet" and "the
+    // reviewer rejects everything". Only the second is alarming, and an admin
+    // sent after the second where the first is true is chasing nothing.
+    expect(
+      BrainFactGateAnalyticsSchema.parse({ positives: 0, rejected: 0, approvalRate: null }),
+    ).toMatchObject({ approvalRate: null });
+    expect(() =>
+      BrainFactGateAnalyticsSchema.parse({ positives: 0, rejected: 0, approvalRate: 0 }),
+    ).toThrow();
+  });
+
+  test("refuses a null rate when claims HAVE been decided", () => {
+    // The opposite skew, and the one that renders a working gate as "no
+    // decisions yet" — the panel silently reporting nothing where there is
+    // something.
+    expect(() =>
+      BrainFactGateAnalyticsSchema.parse({ positives: 3, rejected: 1, approvalRate: null }),
+    ).toThrow();
+  });
+
+  test("refuses a rate outside 0–1", () => {
+    expect(() =>
+      BrainFactGateAnalyticsSchema.parse({ positives: 3, rejected: 1, approvalRate: 75 }),
+    ).toThrow();
+  });
+});
+
+describe("the gate-decision counts are REQUIRED server-side and OPTIONAL client-side", () => {
+  test("the server schema refuses a response that dropped them", () => {
+    // Same enforcement shape as the two disclosures above: a server that stops
+    // emitting this silently retires the panel #5335 ships, and deleting a line
+    // must not be enough to do that.
+    const { gateAnalytics: _dropped, ...without } = oversightEnvelope;
+    expect(() => BrainFactOversightSchema.parse({ ...without, willWiden })).toThrow();
+  });
+
+  test("the client schema accepts the same response — the deploy-skew window", () => {
+    const { gateAnalytics: _dropped, ...without } = oversightEnvelope;
+    expect(BrainFactOversightClientSchema.parse(without)).toMatchObject({
+      countsConsistent: true,
+    });
   });
 });
 

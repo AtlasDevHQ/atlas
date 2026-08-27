@@ -37,7 +37,7 @@ gh issue view <N> -R AtlasDevHQ/atlas --comments
 ```
 
 Read the `## Acceptance criteria` block. That is the fixed point the Spec axis of the
-review will score against in step 5, so if it is empty or vague, say so now — a review
+review will score against in step 6, so if it is empty or vague, say so now — a review
 against an absent spec reports "no spec available" and this lane loses half its value.
 
 Stop and report if any row holds. Do not continue.
@@ -45,9 +45,10 @@ Stop and report if any row holds. Do not continue.
 | Condition | Why it stops here |
 |---|---|
 | The issue is closed, or already has a linked PR | Someone else is on it. Name the PR. |
-| `## Acceptance criteria` is missing or empty | Offer to write it into the issue first. A spec-less lane is an implement-only lane; say that out loud rather than discovering it in step 5. |
+| `## Acceptance criteria` is missing or empty | Offer to write it into the issue first. A spec-less lane is an implement-only lane; say that out loud rather than discovering it in step 6. |
 | `## Dependencies` names an open issue | The dependency decides the shape. Name it and ask. |
 | The issue asks for a change to `prod`, a release tag, or a fork PR | Out of scope — `/release`, and CLAUDE.md's merge discipline. |
+| **This session cannot delegate step 6's review** | Say so **now** and ask whether to run the lane without it. A lane whose review cannot run is half a lane, and the worst moment to say so is step 8 — after the work is done and the PR is ready to merge, when the information is worth nothing (#5468). ⚠️ **A standing guardrail against spawning sub-agents is not this row.** `/ship` prescribes the review, so invoking `/ship` *is* the user requesting it. This row is for a session that genuinely cannot, never one that could and hesitated. |
 
 ## Step 2 — A fresh worktree
 
@@ -224,7 +225,7 @@ from step 1 as the spec. It spawns a **Standards** and a **Spec** sub-agent in p
 reports them side by side without merging the findings — the separation is the point, so
 do not rerank them into one list.
 
-Two things about sub-agents on this box:
+Three things about sub-agents on this box:
 
 - **Tell the reviewers not to run tests.** They are reading a diff. The bun-test guard
   counts live workers across every session and denies once the fleet total would exceed
@@ -237,6 +238,16 @@ Two things about sub-agents on this box:
   review yourself: a self-review by the code's author is exactly the independence the
   delegation bought. In a worktree the transcript directory is named after the **worktree**
   path, not the repo root.
+- ⚠️ **If you conclude you may not delegate at all, that is a step-1 report, not a step-8
+  footnote** — and check the conclusion before you act on it. **A standing instruction not
+  to spawn sub-agents unprompted does not outrank the user's `/ship`**: this step is what
+  they invoked, so the request is already made. The delegation is the command's substance,
+  not an optimization it chose. #5468 is the case — the lane read a general guardrail as a
+  veto, skipped the review, self-checked instead, and reported it only in the final table.
+  The self-check happened to be the right instrument for that diff (prose asserting things
+  about code, where only grepping the tree catches a false claim), which is why it went
+  unnoticed until after the merge. **A substitution that works is still a substitution: say
+  which axis went unrun, in step 1.**
 
 ## Step 7 — Collect CI, then one batched fix pass
 

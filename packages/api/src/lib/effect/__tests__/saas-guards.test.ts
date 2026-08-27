@@ -2593,7 +2593,7 @@ describe("McpSpineGuardLive", () => {
       expect(warn).toBeDefined();
       // The underlying cause must ride along on the warn — it's the
       // operator-actionable part of the signal, not just the event tag.
-      const cause = (warn?.obj as { err?: unknown }).err;
+      const cause = (warn!.obj as { err?: unknown }).err;
       expect(cause).toBeInstanceOf(Error);
       expect((cause as Error).message).toContain("mcp_action_policy");
     });

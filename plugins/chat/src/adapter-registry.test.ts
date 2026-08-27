@@ -114,7 +114,7 @@ describe("buildChatAdapterRegistry — missing env vars", () => {
       expect(result.adapters.slack).toBeUndefined();
       expect(errors).toHaveLength(1);
       expect(errors[0]?.msg).toContain("required env vars missing");
-      expect((errors[0]?.payload.requiredEnv as string[]).includes(missing)).toBe(true);
+      expect((errors[0]!.payload.requiredEnv as string[]).includes(missing)).toBe(true);
       // No warn for this case — the missing-creds line is the only
       // log emitted, and it MUST be at error level.
       expect(warns.some((l) => l.msg.includes("required env vars missing"))).toBe(false);
@@ -204,7 +204,7 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
     expect(result.diagnostics.missingCredSlugs).toEqual(["telegram"]);
     const missingErr = errors.find((l) => l.msg.includes("required env vars missing"));
     expect(missingErr).toBeDefined();
-    expect((missingErr?.payload.requiredEnv as string[]).includes("TELEGRAM_WEBHOOK_SECRET")).toBe(true);
+    expect((missingErr!.payload.requiredEnv as string[]).includes("TELEGRAM_WEBHOOK_SECRET")).toBe(true);
   });
 
   it("registers Discord when DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID + DISCORD_PUBLIC_KEY are present (Phase D — #2749)", () => {

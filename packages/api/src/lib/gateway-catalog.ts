@@ -383,7 +383,6 @@ function applyRecommended(
 ): GatewayCatalogModel[] {
   const ids = recommendedModelIds();
   if (ids.length === 0) return models;
-  const idSet = new Set(ids);
 
   // A curated ID the gateway no longer serves can't be caught by a type-check
   // or a unit test — it only shows up against the live catalog, and it fails

@@ -443,7 +443,7 @@ describe("wizard two-phase generate via the mock-LLM test layer (#3621 AC#6, cli
       // prefixes the operation name.
       expect(warnCall?.[1]).toStartWith("Wizard enrich: ");
       expect(warnCall?.[0]).toMatchObject({ connectionId: "analytics", tableName: "orders" });
-      expect((warnCall?.[0] as { requestId?: string }).requestId).toBeDefined();
+      expect((warnCall![0] as { requestId?: string }).requestId).toBeDefined();
     } finally {
       mockResponseText = ENRICH_RESPONSE;
       consoleWarnSpy.mockRestore();

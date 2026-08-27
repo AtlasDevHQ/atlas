@@ -105,7 +105,6 @@ import { chatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
 import {
   runAudienceSyncCycle,
   type AudienceSyncCycleResult,
-  type AudienceSyncDeps,
 } from "@atlas/api/lib/brain/audience/sync";
 import { resolvePrincipals } from "@atlas/api/lib/brain/audience/resolver";
 import { reconcileAudienceMembership } from "@atlas/api/lib/brain/audience/membership";

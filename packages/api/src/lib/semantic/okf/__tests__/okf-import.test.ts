@@ -158,7 +158,7 @@ describe("importOkfBundle (foreign bundle)", () => {
     const purchase = doc.metrics.find((m) => m.id === "purchase_count");
     expect(purchase).toBeDefined();
     expect(String(purchase?.sql)).toContain("COUNT(*)");
-    expect((purchase?.okf as Record<string, unknown>).unverified_sql).toBe(true);
+    expect((purchase!.okf as Record<string, unknown>).unverified_sql).toBe(true);
     expect(
       report.lossy.some((l) => l.includes("metric authority cannot travel through OKF")),
     ).toBe(true);

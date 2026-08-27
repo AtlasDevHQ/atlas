@@ -569,8 +569,9 @@ describe("the import's error responses — both handlers", () => {
       ).toBe("import_failed");
 
       const failureLine = logged.find((e) => e.message.includes("import failed"));
+      expect(failureLine).toBeDefined();
       expect(
-        (failureLine?.payload as { rolledBack?: boolean }).rolledBack,
+        (failureLine!.payload as { rolledBack?: boolean }).rolledBack,
         "the log and the body disagreed about the same transaction",
       ).toBe(true);
       // The client is still destroyed — the socket is untrustworthy either way.
@@ -753,7 +754,7 @@ describe("the import's error responses — both handlers", () => {
       // reads `c.get("requestId")`, while the internal route has no middleware and
       // mints its own `crypto.randomUUID()`. What must hold in both is that it is a
       // real value and that the same one appears on the WILL-DROP line.
-      const token = (confirmation?.payload as { correlationId: unknown }).correlationId;
+      const token = (confirmation!.payload as { correlationId: unknown }).correlationId;
       expect(typeof token).toBe("string");
       expect(token).not.toBe("");
       // The payloads are REPEATED rather than referenced: the per-refusal warns
@@ -761,7 +762,7 @@ describe("the import's error responses — both handlers", () => {
       // confirmation saying "the lines above are real" is unreadable once they
       // are not above it.
       expect(
-        (confirmation?.payload as { refusalDetails: Array<{ existingTarget: string }> })
+        (confirmation!.payload as { refusalDetails: Array<{ existingTarget: string }> })
           .refusalDetails[0].existingTarget,
       ).toBe("cost");
 
@@ -770,7 +771,7 @@ describe("the import's error responses — both handlers", () => {
       // the confirmation is a second, unrelated line about the same event.
       const willDrop = logged.find((l) => l.message.includes(WILL_DROP));
       expect(willDrop).toBeDefined();
-      expect((willDrop?.payload as { correlationId: unknown }).correlationId).toBe(token);
+      expect((willDrop!.payload as { correlationId: unknown }).correlationId).toBe(token);
 
       // ⚠️ AND, where the handler has one, the token IS the request's own id. Asserted
       // per-handler rather than globally because the two mint differently and both are

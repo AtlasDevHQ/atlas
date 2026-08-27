@@ -65,7 +65,6 @@ import {
   type PromotionReport,
 } from "@atlas/api/lib/content-mode";
 import { Effect } from "effect";
-import type { PoolClient } from "pg";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;

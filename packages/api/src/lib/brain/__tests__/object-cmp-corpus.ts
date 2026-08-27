@@ -12,7 +12,7 @@
  */
 
 import type { DeclaredObjectType } from "@atlas/api/lib/brain/object-cmp";
-import { comparableTag, comparableValue } from "@atlas/api/lib/brain/object-cmp";
+import { comparableTag } from "@atlas/api/lib/brain/object-cmp";
 
 // ---------------------------------------------------------------------------
 // The TypeScript twin of the two SQL builders

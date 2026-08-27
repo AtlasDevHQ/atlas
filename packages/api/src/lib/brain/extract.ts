@@ -101,7 +101,6 @@
  */
 
 import { Effect } from "effect";
-import { z } from "zod";
 import { generateObject, type LanguageModel } from "ai";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
@@ -117,7 +116,6 @@ import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { getBatchApiKey, getExtractionModel } from "@atlas/api/lib/providers";
 import type { RawWorkspaceModelConfig } from "@atlas/api/lib/auth/credentials";
-import { PREDICATE_CARDINALITIES } from "@atlas/api/lib/brain/types";
 import {
   classifyEpisodeForReconcile,
   reconcileFacts,
@@ -146,7 +144,6 @@ import {
   ExtractionSchema,
   extractionExcerpt,
   extractionPrompt,
-  toDate,
   toEpisodeRef,
   toFactCandidates,
   type BrainExtractionBatchTally,

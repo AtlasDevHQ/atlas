@@ -31,12 +31,6 @@ const log = createLogger("conversations");
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Convert a DB timestamp value (Date or string) to ISO 8601 for use in SQL parameters. */
-function toISOTimestamp(value: unknown): string {
-  if (value instanceof Date) return value.toISOString();
-  return String(value);
-}
-
 /**
  * Build a parameterized WHERE-suffix that scopes a conversation query to the
  * caller's auth context.

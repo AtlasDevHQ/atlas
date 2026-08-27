@@ -82,7 +82,13 @@ export function corsResponseHeaders(requestOrigin: string): Record<string, strin
     // `fetch` throws a TypeError and the form reports "Unable to reach the
     // server". The failure is invisible to anything that doesn't mint a token:
     // same-origin local dev, and any automation where the widget never loads.
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-captcha-response",
+    // `x-atlas-surface` (#5496) identifies WHICH first-party client is calling
+    // `/api/v1/chat`. It must be listed here or a cross-origin preflight fails
+    // outright and chat breaks — a rejected preflight blocks the request, it
+    // does not drop the offending header. Allowing it grants nothing: the
+    // server treats it as a UX capability hint, never as authorization.
+    "Access-Control-Allow-Headers":
+      "Content-Type, Authorization, x-captcha-response, x-atlas-surface",
     "Access-Control-Expose-Headers": "Retry-After, x-conversation-id, x-run-id, X-Atlas-Export-Partial, X-Atlas-Truncated, X-Atlas-Row-Count, Content-Disposition",
   };
 

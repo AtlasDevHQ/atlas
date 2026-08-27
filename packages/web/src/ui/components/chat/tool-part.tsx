@@ -12,6 +12,7 @@ import { CreateDashboardCard } from "./create-dashboard-card";
 import { DashboardEditCard, DASHBOARD_EDIT_TOOL_NAMES } from "./dashboard-edit-card";
 import { DraftEditUndoCard } from "./draft-edit-undo-card";
 import { RestWriteConfirmCard } from "./rest-write-confirm-card";
+import { CorrectFactConfirmCard } from "./correct-fact-confirm-card";
 import { SearchBrainCard } from "./search-brain-card";
 import type { PreviousExecution } from "./result-card-types";
 
@@ -73,6 +74,14 @@ export const ToolPart = memo(function ToolPart({
     // the confirm-before-write banner (and a compact line for read results).
     case "executeRestOperation":
       return <RestWriteConfirmCard part={part} />;
+    // #5496 — brain corrections stage the same way. The tool is registered ONLY
+    // on this surface (`confirmCapableRegistry`), precisely because this case
+    // exists here and nowhere else: the widget's own `tool-part.tsx` has no
+    // `correct_fact` arm, so a correction staged there could never be
+    // confirmed. If you add the case there, flip the widget's registry claim in
+    // the same change — the two are one decision.
+    case "correct_fact":
+      return <CorrectFactConfirmCard part={part} />;
     default: {
       // #4322 — bound editor building + inspection tools get a first-class
       // receipt line (icon + what the tool did) instead of the gray

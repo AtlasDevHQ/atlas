@@ -39,6 +39,7 @@ void mock.module("@atlas/api/lib/tools/actions", () => ({
 const {
   ToolRegistry,
   defaultRegistry,
+  confirmCapableRegistry,
   nonDashboardRegistry,
   buildRegistry,
   buildHeadlessRegistry,
@@ -230,14 +231,26 @@ describe("defaultRegistry", () => {
     expect(defaultRegistry.get("executeSQL")).toBeDefined();
     expect(defaultRegistry.get("createDashboard")).toBeDefined();
     expect(defaultRegistry.get("searchBrain")).toBeDefined();
-    // #4915 — the four correction verbs, under the ADR's own spelling.
-    expect(defaultRegistry.get("correct_fact")).toBeDefined();
+    // #5496 — `correct_fact` is NO LONGER here. It stages onto a confirm card,
+    // so it registers only where that card is rendered, and `defaultRegistry`
+    // is what the embeddable widget gets: same `/api/v1/chat` route, same
+    // dashboards resolver, no card. The first-party web app opts up to
+    // `confirmCapableRegistry`.
+    expect(defaultRegistry.get("correct_fact")).toBeUndefined();
+    expect(confirmCapableRegistry.get("correct_fact")).toBeDefined();
+  });
+
+  it("confirmCapableRegistry is defaultRegistry plus exactly correct_fact", () => {
+    // The two singletons must differ by ONE verb. A drift here means a surface
+    // silently gained or lost something other than the confirm-gated write.
+    const base = Object.keys(defaultRegistry.getAll()).sort();
+    const confirmable = Object.keys(confirmCapableRegistry.getAll()).sort();
+    expect(confirmable).toEqual([...base, "correct_fact"].sort());
   });
 
   it("getAll returns exactly the core tools", () => {
     const all = defaultRegistry.getAll();
     expect(Object.keys(all).sort()).toEqual([
-      "correct_fact",
       "createDashboard",
       "createLinearIssue",
       "executeSQL",
@@ -253,7 +266,11 @@ describe("defaultRegistry", () => {
     expect(text).toContain("### 3. Write and Execute SQL");
     expect(text).toContain("### Create a Dashboard");
     expect(text).toContain("### Search the Company Atlas");
-    expect(text).toContain("### Correct a Company-Brain Fact");
+    // #5496 — the correction guidance travels with the tool, so it is absent
+    // here and present on the confirm-capable surface. A prompt that described
+    // a verb the surface does not carry is the #4941 wrong-explanation bug.
+    expect(text).not.toContain("### Correct a Company-Brain Fact");
+    expect(confirmCapableRegistry.describe()).toContain("### Correct a Company-Brain Fact");
   });
 
   it("is frozen — cannot register additional tools", () => {
@@ -291,8 +308,9 @@ describe("buildRegistry", () => {
       process.env.ATLAS_SANDBOX_URL = "http://localhost:8080";
       const { registry } = await buildRegistry();
       const names = Object.keys(registry.getAll()).sort();
+      // #5496 — `rendersConfirmations` defaults to false, so a builder that
+      // does not CLAIM the capability gets no `correct_fact`. Fail-closed.
       expect(names).toEqual([
-        "correct_fact",
         "createDashboard",
         "createLinearIssue",
         "executePython",
@@ -314,7 +332,6 @@ describe("buildRegistry", () => {
     const { registry } = await buildRegistry();
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
-      "correct_fact",
       "createDashboard",
       "createLinearIssue",
       "executeSQL",
@@ -324,11 +341,28 @@ describe("buildRegistry", () => {
     ]);
   });
 
+  it("registers correct_fact only when the surface claims it can render confirmations", async () => {
+    // #5496 — the signal split. `dashboardUrlResolver` alone no longer decides
+    // this: the widget and the web app share it, and only one has a card.
+    const { registry: withCard } = await buildRegistry({ rendersConfirmations: true });
+    expect(Object.keys(withCard.getAll())).toContain("correct_fact");
+
+    const { registry: withoutCard } = await buildRegistry({ rendersConfirmations: false });
+    expect(Object.keys(withoutCard.getAll())).not.toContain("correct_fact");
+
+    // …and claiming the card without owning a dashboards route still omits it:
+    // a headless surface has nowhere to render one, whatever it claims.
+    const { registry: headless } = await buildRegistry({
+      dashboardUrlResolver: null,
+      rendersConfirmations: true,
+    });
+    expect(Object.keys(headless.getAll())).not.toContain("correct_fact");
+  });
+
   it("with includeActions includes createJiraTicket and sendEmailReport alongside core tools", async () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
-      "correct_fact",
       "createDashboard",
       "createJiraTicket",
       "createLinearIssue",

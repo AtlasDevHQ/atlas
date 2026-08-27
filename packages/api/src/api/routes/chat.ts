@@ -80,6 +80,7 @@ import { getSetting } from "@atlas/api/lib/settings";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema } from "./shared-schemas";
 import { RunStatusResponseSchema } from "@useatlas/schemas";
+import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "@useatlas/types/auth";
 
 const DEFAULT_CONVERSATION_STEP_CAP = 500;
 const DEFAULT_AGENT_MAX_STEPS = 25;
@@ -833,6 +834,31 @@ chat.openapi(chatRoute, async (c) => {
       authResult,
     );
 
+    // #5496 — which SURFACE this turn came from, for the one decision that
+    // depends on it: whether `correct_fact` is offered.
+    //
+    // This route serves two clients — the first-party web app
+    // (`packages/web`) and the embeddable widget (`@useatlas/react`) — and
+    // until now nothing told them apart server-side. Same URL, same auth
+    // modes, same `dashboardUrlResolver`. Only the web app renders the
+    // correction confirm card, so only the web app may be offered a verb that
+    // stages onto one; the widget would show a gray `Tool: correct_fact` box
+    // and the correction could never be completed.
+    //
+    // Absent header ⇒ NOT confirm-capable, which is the fail-closed direction:
+    // every existing client (the widget, an SDK caller, anything bespoke) keeps
+    // working and simply is not offered the verb. `packages/web`'s transport is
+    // what sets it.
+    //
+    // Client-supplied, and that is sound HERE because it is not a privilege
+    // grant: forging it yields a STAGED correction and nothing else. The write
+    // happens at `POST /api/v1/brain-corrections/confirm`, which re-runs
+    // authority, ACL visibility, the tier-1 refusal and vocabulary closure
+    // against a single-use, workspace-bound token. See the `correct_fact` gate
+    // comment in lib/tools/registry.ts.
+    const rendersConfirmations =
+      req.headers.get(ATLAS_SURFACE_HEADER) === ATLAS_WORKSPACE_SURFACE;
+
     // Bind user to AsyncLocalStorage so downstream code (logQueryAudit, etc.)
     // has access to user identity. The middleware already set up requestId context;
     // this nested call adds the user after inline auth completes.
@@ -1513,7 +1539,7 @@ chat.openapi(chatRoute, async (c) => {
           if (includeActions) {
             try {
               const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
-              const result = await buildRegistry({ includeActions });
+              const result = await buildRegistry({ includeActions, rendersConfirmations });
               toolRegistry = result.registry;
               warnings.push(...result.warnings);
             } catch (err) {
@@ -1586,8 +1612,15 @@ chat.openapi(chatRoute, async (c) => {
           // (actions off, no plugin tools, not bound), which is exactly why it
           // cannot be left implicit. Rationale: the `correct_fact` gate comment
           // in lib/tools/registry.ts.
-          const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
-          const resolvedToolRegistry = toolRegistry ?? defaultRegistry;
+          // #5496 — two dashboards-owning singletons now, differing by
+          // `correct_fact` alone. The widget lands on `defaultRegistry`; the
+          // first-party web app opts up. Fail-closed: an unrecognized or absent
+          // surface header takes the left branch.
+          const { defaultRegistry, confirmCapableRegistry } = await import(
+            "@atlas/api/lib/tools/registry"
+          );
+          const resolvedToolRegistry =
+            toolRegistry ?? (rendersConfirmations ? confirmCapableRegistry : defaultRegistry);
 
           // #1988 B5 — out-array the agent's preflight loaders push into
           // when the org semantic layer or learned-patterns lookup fail.
@@ -2037,6 +2070,17 @@ chat.openapi(chatResumeRoute, async (c) => {
     }
 
     const atlasMode = resolveMode(req.headers.get("cookie"), req.headers.get("x-atlas-mode"), authResult);
+
+    // #5496 — the resume path resolves the surface signal independently of the
+    // initial turn, because it IS an independent request: the client re-sends
+    // its own headers. Resolving it here rather than reading it off the
+    // checkpoint is deliberate — a resume must not widen the tool surface
+    // relative to the turn it resumes, and a checkpointed capability claim
+    // would survive a client that no longer makes it. Fail-closed on absence,
+    // exactly as the initial turn is. See the initial-turn comment for why a
+    // client-supplied header is sound for this decision.
+    const rendersConfirmations =
+      req.headers.get(ATLAS_SURFACE_HEADER) === ATLAS_WORKSPACE_SURFACE;
     const conversationId = c.req.param("conversationId");
 
     return withRequestContext(
@@ -2172,7 +2216,7 @@ chat.openapi(chatResumeRoute, async (c) => {
           if (includeActions) {
             try {
               const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
-              const result = await buildRegistry({ includeActions });
+              const result = await buildRegistry({ includeActions, rendersConfirmations });
               toolRegistry = result.registry;
               resumeWarnings.push(...result.warnings);
             } catch (err) {
@@ -2218,10 +2262,14 @@ chat.openapi(chatResumeRoute, async (c) => {
           // resolves `buildHeadlessRegistry()`. The two resume paths must not
           // share one implicit default — that is how the widening went
           // unnoticed.
-          const { defaultRegistry: workspaceRegistry } = await import(
+          // #5496 — same two-singleton choice as the initial turn above. A
+          // resume must not widen the tool surface relative to the turn it
+          // resumes, which is exactly the widening #4936 caught one level up.
+          const { defaultRegistry: workspaceRegistry, confirmCapableRegistry } = await import(
             "@atlas/api/lib/tools/registry"
           );
-          const resolvedToolRegistry = toolRegistry ?? workspaceRegistry;
+          const resolvedToolRegistry =
+            toolRegistry ?? (rendersConfirmations ? confirmCapableRegistry : workspaceRegistry);
 
           // Re-enter the agent loop from the checkpoint. `messages: []` is inert
           // — the `resume.transcript` is the model input; the loop continues from

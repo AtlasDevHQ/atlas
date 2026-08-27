@@ -47,6 +47,36 @@ export const ATLAS_MODES = ["developer", "published"] as const;
 export type AtlasMode = (typeof ATLAS_MODES)[number];
 
 /**
+ * The `x-atlas-surface` header a chat client sends to identify WHICH client it
+ * is (#5496).
+ *
+ * `POST /api/v1/chat` serves two first-party clients — the workspace web app
+ * (`packages/web`) and the embeddable widget (`@useatlas/react`) — over the same
+ * URL, the same auth modes and the same request shape. Nothing distinguished
+ * them server-side, which is fine until a tool's availability depends on what
+ * the client can RENDER: `correct_fact` stages a correction onto a confirm card,
+ * and only the web app has one.
+ *
+ * Sent by the web app's transport; absent everywhere else. The server treats
+ * absence and any unrecognized value as "not this surface", so adding a client
+ * never silently grants it a capability — the fail-closed direction.
+ *
+ * ⚠️ It is a UX capability HINT, never an authorization input. Forging it can
+ * only get a write STAGED; every correction is still gated server-side at
+ * `POST /api/v1/brain-corrections/confirm` (authority, ACL visibility, the
+ * tier-1 refusal, vocabulary closure, a single-use workspace-bound token). Do
+ * not grow a permission check that reads this header.
+ *
+ * It lives in `@useatlas/types` rather than in either package because both ends
+ * must spell it identically and neither may import the other — the same reason
+ * {@link ATLAS_MODES} is here.
+ */
+export const ATLAS_SURFACE_HEADER = "x-atlas-surface";
+
+/** The workspace web app (`packages/web`) — the surface that renders confirm cards. */
+export const ATLAS_WORKSPACE_SURFACE = "workspace";
+
+/**
  * Roles that qualify for admin-level features (developer mode, admin console, etc.).
  *
  * Single-sourced as of #2890: `owner` and `admin` are the org-plugin

@@ -334,7 +334,7 @@ beforeEach(() => {
 describe("the correction audit row", () => {
   test("retract emits exactly one brain_fact.retract row, from the machinery", async () => {
     const outcome = await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-1" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-1" },
       fakeTransaction({ dependents: ["dep-1"] }),
     );
 
@@ -346,6 +346,8 @@ describe("the correction audit row", () => {
       targetId: FACT,
       metadata: {
         verb: "retract",
+        // #5496 — how the human's intent was established, second by design.
+        intent: "admin-ui",
         flaggedForReReview: ["dep-1"],
         workspaceId: WS,
         correctionEpisodeId: EPISODE,
@@ -360,11 +362,22 @@ describe("the correction audit row", () => {
     // record, since no queue lists them. Nothing else in the metadata has that
     // property: every other key is recoverable from the response, the fact
     // row, or the request context.
+    //
+    // #5496 added `intent` to the contested first three, AHEAD of
+    // `flaggedForReReview`: it is the only key that says whether an admin
+    // DECIDED to retract or an agent decided while an admin was authenticated,
+    // and its ABSENCE on rows predating #5496 is the signal an operator reads
+    // when auditing a suspected injected correction. Both must be visible; the
+    // preview holds exactly three, and `verb` takes the first.
     const keys = Object.keys(committed[0]?.metadata ?? {});
-    expect(
-      keys.indexOf("flaggedForReReview"),
-      `\`flaggedForReReview\` is at index ${keys.indexOf("flaggedForReReview")} of ${JSON.stringify(keys)} — the action-log preview shows only the first three, so it would not be visible where an operator looks for it`,
-    ).toBeLessThan(3);
+    for (const key of ["verb", "intent", "flaggedForReReview"]) {
+      expect(
+        keys.indexOf(key),
+        `\`${key}\` is at index ${keys.indexOf(key)} of ${JSON.stringify(keys)} — the action-log preview shows only the first three, so it would not be visible where an operator looks for it`,
+      ).toBeLessThan(3);
+    }
+    // …and in that order, which is the ranking argued in `emitCorrectionAudit`.
+    expect(keys.slice(0, 3)).toEqual(["verb", "intent", "flaggedForReReview"]);
 
     // The FIRE-AND-FORGET variant is the one that silently drops rows when the
     // internal-DB breaker is open. Nothing on this path may reach for it.
@@ -375,7 +388,7 @@ describe("the correction audit row", () => {
     for (const verb of ["pin", "re-authority"] as const) {
       committed.length = 0;
       const outcome = await correctFact(
-        { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb, requestId: "req-2" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb, requestId: "req-2" },
         fakeTransaction(),
       );
       expect(outcome.kind).toBe("corrected");
@@ -387,14 +400,14 @@ describe("the correction audit row", () => {
         // The conditional keys stay OFF when there is nothing to say — a `pin`
         // neither tombstones, supersedes, nor closes a validity window, and a
         // row asserting `invalidatedAt: null` reads as a decision that was made.
-        metadata: { verb, workspaceId: WS, correctionEpisodeId: EPISODE },
+        metadata: { verb, intent: "admin-ui", workspaceId: WS, correctionEpisodeId: EPISODE },
       });
     }
   });
 
   test("a retract with no dependents omits flaggedForReReview rather than logging an empty list", async () => {
     await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-3" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-3" },
       fakeTransaction(),
     );
     expect(committed).toHaveLength(1);
@@ -412,7 +425,7 @@ describe("the correction audit row", () => {
     // non-emission follows by equivalence — but this file's whole argument is
     // that each distinct path is WALKED rather than reasoned about.
     const outcome = await correctFact(
-      {
+      { intent: "admin-ui",
         vocabulary: identityVocabulary,
         ctx: { ...admin, userId: "member-1", role: "member" },
         factId: FACT,
@@ -424,7 +437,7 @@ describe("the correction audit row", () => {
     expect(outcome.kind).toBe("refused");
 
     const rolledBack = await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4b" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4b" },
       fakeTransaction({ warehouseDerived: true }),
     );
     expect(rolledBack.kind).toBe("refused");
@@ -434,7 +447,7 @@ describe("the correction audit row", () => {
     // `info`; the assertions below filter on `warn` for that reason.)
     logCalls.length = 0;
     const quarantined = await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4c" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4c" },
       fakeTransaction({ source: "warehouse:prod" }),
     );
     expect(quarantined.kind).toBe("refused");
@@ -471,7 +484,7 @@ describe("the correction audit row", () => {
     // for one, because the same gate also blocks `retract`.
     logCalls.length = 0;
     const outcome = await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4e" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4e" },
       // `null` rather than a string — the shape the import can restore because
       // its fact validator never inspects `provenance.source`.
       fakeTransaction({ source: null }),
@@ -499,7 +512,7 @@ describe("the correction audit row", () => {
     logCalls.length = 0;
     const huge = "x".repeat(5000);
     await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4f" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4f" },
       fakeTransaction({ source: huge }),
     );
     const logged = logCalls.filter((c) => c.level === "warn")[0]?.payload as { source: string };
@@ -513,7 +526,7 @@ describe("the correction audit row", () => {
     // the product.
     logCalls.length = 0;
     const outcome = await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4d" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4d" },
       fakeTransaction(),
     );
     expect(outcome.kind).toBe("corrected");
@@ -528,7 +541,7 @@ describe("the correction audit row", () => {
       ): Promise<T> => fn({ query: async () => ({ rows: [] }) }),
     };
     const outcome = await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-5" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-5" },
       deps,
     );
     expect(outcome.kind).toBe("not-found");
@@ -556,7 +569,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
       });
 
     const outcome = await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-6" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-6" },
       fakeTransaction(),
     );
 
@@ -570,7 +583,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     };
 
     const outcome = await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-7" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-7" },
       fakeTransaction(),
     );
 
@@ -616,7 +629,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     auditBehaviour = () => new Promise<void>(() => {});
 
     const outcome = await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-8" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-8" },
       { ...fakeTransaction(), auditWriteTimeoutMs: 20 },
     );
 
@@ -638,7 +651,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
       });
 
     await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-late" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-late" },
       { ...fakeTransaction(), auditWriteTimeoutMs: 10 },
     );
     // Polled, not slept. A fixed sleep couples the assertion to the scheduler:
@@ -675,7 +688,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     breakAdminActions = true;
 
     const outcome = await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-break" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-break" },
       fakeTransaction(),
     );
 
@@ -708,7 +721,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     };
 
     await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-pg" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-pg" },
       fakeTransaction(),
     );
 
@@ -740,7 +753,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
         throw thrown;
       };
       await correctFact(
-        { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-pg" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-pg" },
         fakeTransaction(),
       );
       const errors = logCalls.filter((c) => c.level === "error");
@@ -839,7 +852,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
         });
 
       await correctFact(
-        { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: `req-${label}` },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: `req-${label}` },
         { ...fakeTransaction(), auditWriteTimeoutMs: ms },
       );
 
@@ -869,7 +882,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
       logCalls.length = 0;
       requestContext = ctxShape;
       await correctFact(
-        { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-noactor" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-noactor" },
         fakeTransaction(),
       );
       const warns = logCalls.filter(
@@ -887,7 +900,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     // Without this the warn test above passes on a guard that fires
     // unconditionally, which would be alert fatigue on every single correction.
     await correctFact(
-      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-ok" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-ok" },
       fakeTransaction(),
     );
     expect(logCalls.filter((c) => c.level === "warn")).toHaveLength(0);
@@ -909,7 +922,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     } as const;
 
     const outcome = await correctFact(
-      { vocabulary: identityVocabulary, ctx: localOperator, factId: FACT, verb: "pin", requestId: "req-local" },
+      { intent: "admin-ui", vocabulary: identityVocabulary, ctx: localOperator, factId: FACT, verb: "pin", requestId: "req-local" },
       fakeTransaction(),
     );
 
@@ -944,7 +957,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
 
     try {
       await correctFact(
-        { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-9" },
+        { intent: "admin-ui", vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-9" },
         fakeTransaction(),
       );
     } finally {
@@ -1131,6 +1144,12 @@ describe("source guard: the machinery is the ONLY audit-writing layer for correc
   });
 
   test("correctFact's DIRECT callers are discovered, and the known two are among them", () => {
+    // #5496 moved one of them. `lib/tools/correct-fact.ts` used to call the
+    // machinery from inside the agent loop; it now STAGES a correction for a
+    // human to confirm, and the write happens at the confirm endpoint. So the
+    // two entry points are both ROUTES now — the admin one and the chat-confirm
+    // one — which is a stronger position for this guard, not a weaker one: both
+    // callers sit behind an explicit human act.
     const files: string[] = [];
     for (const root of ROOTS) walk(join(REPO_ROOT, root), files);
 
@@ -1142,7 +1161,15 @@ describe("source guard: the machinery is the ONLY audit-writing layer for correc
     // Discovery must actually find the known entry points, or the sweep is
     // vacuous and would pass on an empty result set.
     expect(callers).toContain("packages/api/src/api/routes/admin-brain-facts.ts");
-    expect(callers).toContain("packages/api/src/lib/tools/correct-fact.ts");
+    expect(callers).toContain("packages/api/src/api/routes/brain-corrections.ts");
+    // …and the agent tool is NOT among them any more. This is the source-level
+    // twin of `correct-fact-tool.test.ts`'s runtime assertion: #5496's first
+    // acceptance criterion is that the agent loop cannot mutate the fact graph,
+    // and a re-added call here would restore exactly that.
+    expect(
+      callers,
+      "lib/tools/correct-fact.ts calls correctFact again — the agent tool must STAGE, never apply (#5496)",
+    ).not.toContain("packages/api/src/lib/tools/correct-fact.ts");
   });
 
   test("lib/brain/correction.ts is the ONLY file that reaches for the correction vocabulary", () => {

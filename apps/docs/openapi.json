@@ -12004,6 +12004,327 @@
         "operationId": "postRestOperationsConfirm"
       }
     },
+    "/api/v1/brain-corrections/confirm": {
+      "post": {
+        "tags": [
+          "Company Brain"
+        ],
+        "summary": "Apply a confirmed brain-fact correction",
+        "description": "Applies a previously-staged correction after the user confirms it in the chat surface. Re-runs the full correction gate server-side — authority, ACL visibility, the tier-1 refusal, the temporal gates and vocabulary closure — before applying the verb. The staged payload is never trusted.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "factId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "verb": {
+                    "type": "string",
+                    "enum": [
+                      "retract",
+                      "supersede",
+                      "re-authority",
+                      "pin"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "replacement": {
+                    "type": "object",
+                    "properties": {
+                      "object": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      },
+                      "validFrom": {
+                        "type": "string",
+                        "format": "date-time"
+                      }
+                    },
+                    "required": [
+                      "object"
+                    ]
+                  },
+                  "token": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "factId",
+                  "verb",
+                  "token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Correction applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "corrected"
+                      ]
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "retract",
+                        "supersede",
+                        "re-authority",
+                        "pin"
+                      ]
+                    },
+                    "factId": {
+                      "type": "string"
+                    },
+                    "correctionEpisodeId": {
+                      "type": "string"
+                    },
+                    "invalidatedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "supersededBy": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "validTo": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "flaggedForReReviewCount": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "verb",
+                    "factId",
+                    "correctionEpisodeId",
+                    "invalidatedAt",
+                    "supersededBy",
+                    "validTo",
+                    "flaggedForReReviewCount"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request / no active workspace / missing-invalid-expired-replayed confirm token / a request-shape refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — the actor does not carry the correction verb",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Fact absent, already retracted, or not visible to this actor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The verb cannot apply to this target",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "array",
+                      "items": {}
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server / configuration error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The brain store is unavailable for this deployment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postBrainCorrectionsConfirm"
+      }
+    },
     "/api/v1/prompts": {
       "get": {
         "tags": [
@@ -94821,6 +95142,9 @@
     },
     {
       "name": "Chat"
+    },
+    {
+      "name": "Company Brain"
     },
     {
       "name": "Contact"

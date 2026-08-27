@@ -1,20 +1,30 @@
 /**
- * Execute-wrapper coverage for the `correct_fact` tool (#4915) — the guards
- * and context wiring that live OUTSIDE the verb machinery (unit-tested against
- * a fake store in `lib/brain/__tests__/correction.test.ts`):
+ * Execute-wrapper coverage for the `correct_fact` tool (#4915, restaged by
+ * #5496) — the guards and context wiring that live OUTSIDE the verb machinery
+ * (unit-tested against a fake store in `lib/brain/__tests__/correction.test.ts`):
  *
+ *   - ⭐ THE INVARIANT: the tool STAGES and never applies. `correctFact` is
+ *     stubbed here and asserted UNCALLED on every path, which is the test
+ *     #5496's first acceptance criterion asks for — "a test fails if it can"
+ *     mutate the fact graph from inside the agent loop;
  *   - the degraded paths, each carrying a machine-readable `reason`: no
- *     internal DB / no workspace / unresolvable actor / thrown failure ⇒
+ *     internal DB / no workspace / unresolvable actor / unmintable token ⇒
  *     `{ error, reason }` — never a bare throw reaching the agent loop;
- *   - outcome mapping: `corrected` ships the correction payload plus a
- *     relayable summary, `refused` carries the machinery's own refusal code
- *     beside the prose, `not-found` tells the agent to re-search;
+ *   - the staged payload: a `needs_confirmation` result whose `confirm` block
+ *     carries the token and echoes the caller's inputs unchanged;
+ *   - the prompt refusal: an actor without authority is refused at staging
+ *     rather than shown a card that would be refused on click;
  *   - the error catch is secret-free (CLAUDE.md: no stack/connection string).
+ *
+ * What moved OUT of this file: outcome mapping. The tool no longer maps a
+ * correction outcome at all — the confirm endpoint does, and
+ * `api/routes/__tests__/brain-corrections.test.ts` covers it there.
  *
  * Kept in its own file — mock.module is file-global under the isolated runner.
  */
 
 import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -91,6 +101,33 @@ void mock.module("@atlas/api/lib/logger", () => ({
 // left this module in #5340 — they became one reading in
 // `lib/brain/observation.ts`, which this file has no reason to stub because
 // the wrapper never calls it.)
+// The actor resolver, stubbed so the degraded paths are reachable without a
+// real principal query. The error CLASSES are defined here rather than
+// re-exported from the real module on purpose: the tool imports them from this
+// same mocked specifier, so its `instanceof` checks and the throws below are
+// the same constructors. Re-exporting the real ones would work too, but only by
+// accident of module identity — this way the relationship is stated.
+class MockBrainReaderIdentityError extends Error {}
+class MockBrainReaderUnresolvedError extends MockBrainReaderIdentityError {}
+class MockBrainRoleUnresolvedError extends MockBrainReaderIdentityError {}
+
+const READER_CTX = {
+  origin: "authenticated" as const,
+  workspaceId: "org-1",
+  userId: "u1",
+  role: "admin" as const,
+  audienceIds: ["org"] as readonly string[],
+};
+let readerContextResult: () => unknown = () => READER_CTX;
+void mock.module("@atlas/api/lib/brain/reader-context", () => ({
+  BrainReaderIdentityError: MockBrainReaderIdentityError,
+  BrainReaderUnresolvedError: MockBrainReaderUnresolvedError,
+  BrainRoleUnresolvedError: MockBrainRoleUnresolvedError,
+  resolveBrainReaderContext: async () => readerContextResult(),
+}));
+
+/** What the shared authority gate answers this turn — `null` = the actor may correct. */
+let authorityRefusal: { kind: "refused"; reason: string; message: string } | null = null;
 let correctCalls: Array<Record<string, unknown>> = [];
 let correctionResult: () => unknown = () => ({ kind: "not-found" });
 void mock.module("@atlas/api/lib/brain/correction", () => ({
@@ -121,16 +158,51 @@ void mock.module("@atlas/api/lib/brain/correction", () => ({
   PROMOTE_CORRECTION_FACT_SQL: "UPDATE",
   REPLACEMENT_ROW_SQL: "SELECT",
   correctionTargetSql: () => "SELECT",
+  // #5496 — the SHARED authority predicate. Stubbed rather than reimplemented:
+  // this file tests that the wrapper CONSULTS the one gate and relays its
+  // refusal, not that the gate is right (that is `correction.test.ts`).
+  correctionAuthorityRefusal: () => authorityRefusal,
   correctFact: async (request: Record<string, unknown>) => {
     correctCalls.push(request);
     return correctionResult();
   },
 }));
 
+/**
+ * The signing keyset, stubbed explicitly.
+ *
+ * Staging mints a SIGNED confirm token, so this suite needs key material — and
+ * setting `BETTER_AUTH_SECRET` is NOT enough here. `buildInternalDbMockDefaults`
+ * (spread into the `db/internal` mock above) carries
+ * `getEncryptionKeyset: () => null`, and under that stub the real resolver never
+ * answers however the env is arranged. Chasing it with env vars produces a suite
+ * whose green depends on a stub two files away; declaring the keyset outright
+ * says what this file actually needs.
+ *
+ * `keysetConfigured` is the switch the fail-loud test flips: mint MUST refuse
+ * rather than fall through to an unsigned (forgeable) token, and that arm is
+ * only reachable with no key.
+ */
+let keysetConfigured = true;
+const TEST_KEY = createHash("sha256").update("correct-fact-confirm-test-key").digest();
+void mock.module("@atlas/api/lib/db/encryption-keys", () => ({
+  getEncryptionKeyset: () =>
+    keysetConfigured
+      ? {
+          active: { version: 1, key: TEST_KEY },
+          byVersion: new Map([[1, TEST_KEY]]),
+          decrypt: [{ version: 1, key: TEST_KEY }],
+          source: "BETTER_AUTH_SECRET" as const,
+        }
+      : null,
+  getEncryptionKey: () => (keysetConfigured ? TEST_KEY : null),
+  activeKeyVersion: () => 1,
+  _resetEncryptionKeyCache: () => {},
+}));
+
 const { correctFactTool, CORRECT_FACT_DESCRIPTION, CORRECT_FACT_TOOL_REASONS } = await import(
   "@atlas/api/lib/tools/correct-fact"
 );
-const { BrainReaderUnresolvedError } = await import("@atlas/api/lib/brain/reader-context");
 
 function run(input: Record<string, unknown>) {
   return correctFactTool.execute!(
@@ -152,6 +224,17 @@ const CORRECTED = {
   },
 };
 
+/**
+ * The invariant, as a one-liner every test can restate: `correctFact` is the
+ * only path to a mutation, and the agent loop must never reach it.
+ */
+function expectNoWrite() {
+  expect(
+    correctCalls,
+    "correct_fact reached the verb machinery from inside the agent loop — it must stage and let the confirm endpoint apply (#5496)",
+  ).toHaveLength(0);
+}
+
 beforeEach(() => {
   mockRequestContext = {
     requestId: "req-1",
@@ -161,7 +244,10 @@ beforeEach(() => {
   mockAuthMode = "none";
   correctCalls = [];
   correctionResult = () => CORRECTED;
+  readerContextResult = () => READER_CTX;
+  authorityRefusal = null;
   loggedError = undefined;
+  keysetConfigured = true;
 });
 
 describe("degraded paths", () => {
@@ -181,16 +267,17 @@ describe("degraded paths", () => {
   });
 
   it("maps an identity failure to reader_unresolved — a refusal, never applied", async () => {
-    correctionResult = () => {
-      throw new BrainReaderUnresolvedError("org-1", "unresolved", "correction");
+    readerContextResult = () => {
+      throw new MockBrainReaderUnresolvedError("could not resolve principals");
     };
     const out = await run({});
     expect(out.reason).toBe(CORRECT_FACT_TOOL_REASONS.readerUnresolved);
     expect(String(out.error)).toContain("was not changed");
+    expectNoWrite();
   });
 
   it("maps any other throw to a secret-free correction_failed with the requestId", async () => {
-    correctionResult = () => {
+    readerContextResult = () => {
       throw new Error("connection to postgresql://user:hunter2@db failed");
     };
     const out = await run({});
@@ -199,132 +286,94 @@ describe("degraded paths", () => {
     expect(String(out.error)).toContain("req-1");
     // …but the operator's log line keeps the real cause.
     expect(loggedError).toBeDefined();
+    expectNoWrite();
   });
 });
 
-describe("outcome mapping", () => {
-  it("hands correctFact the WORKSPACE'S vocabulary, not an identity stand-in (#5023)", async () => {
-    // See the twin in `admin-brain-facts.test.ts`. The source-level tripwire in
-    // `vocabulary-decide-pg.test.ts` only catches a reverted IMPORT; an inline
-    // identity vocabulary at the call site passes it. This asserts the value.
-    await run({ reason: "wrong" });
-    expect(correctCalls).toHaveLength(1);
-    const vocabulary = correctCalls[0]!.vocabulary as {
-      predicate: (n: string) => string;
-      object: (n: string) => string;
-    };
-    expect(vocabulary.predicate("is priced at")).toBe("priced at");
-    expect(vocabulary.object("is priced at")).toBe("is priced at");
-  });
-
-  it("ships the correction payload plus a relayable summary on success", async () => {
+describe("staging — the tool never writes", () => {
+  // ⭐ #5496's first acceptance criterion, as a test. `correctFact` is the ONLY
+  // way this process mutates the fact graph, and it is stubbed here — so an
+  // assertion that it was never called is exactly "the agent loop cannot
+  // mutate". Every other test in this file re-asserts it via `expectNoWrite`.
+  it("returns needs_confirmation and does not apply the correction", async () => {
     const out = await run({ reason: "wrong" });
-    expect(out.corrected).toBe(true);
-    expect(out.factId).toBe("6f2c0000-0000-4000-8000-000000000000");
-    expect(out.correctionEpisodeId).toBe("ep-1");
-    expect(String(out.summary)).toContain("2 derived fact(s)");
-    // The wrapper passed the caller's inputs through unchanged.
-    expect(correctCalls[0]).toMatchObject({
-      factId: "6f2c0000-0000-4000-8000-000000000000",
-      verb: "retract",
-      reason: "wrong",
-    });
-  });
 
-  // #4939. `DEPENDENT_FACTS_SQL` is deliberately un-ACL-gated — it flags every
-  // dependent, including ones this actor cannot read — so its ids are handles
-  // to rows the LLM has no entitlement to. `searchBrain` collapses withheld
-  // tension rivals to a bare count for exactly this reason, on exactly this
-  // surface; the spread that used to build this result did the opposite.
-  it("reports flagged dependents as a COUNT and leaks no dependent id", async () => {
-    const out = await run({});
-    expect(out.flaggedForReReviewCount).toBe(2);
-    expect(out).not.toHaveProperty("flaggedForReReview");
-
-    // The rule, not the field name: NO id from the un-ACL-gated set may appear
-    // anywhere in what the model receives, under any key. A rename that
-    // re-introduced the ids as `dependents` would pass the two assertions
-    // above and fail this one.
-    const serialized = JSON.stringify(out);
-    for (const id of CORRECTED.result.flaggedForReReview) {
-      expect(
-        serialized,
-        `the agent-facing result contains dependent id "${id}" — those come from a query with no ACL, so a subset names facts this actor cannot read`,
-      ).not.toContain(id);
-    }
-    // And the summary — the one string the agent is told to relay verbatim —
-    // states the number rather than enumerating.
-    expect(String(out.summary)).toContain("2 derived fact(s)");
-    expect(String(out.summary)).not.toContain("dep-1");
-    // …and obeys the rule `MERGE_PROVENANCE_MARKER_SQL`'s header states for
-    // every string about these markers: say what is RECORDED, never imply a
-    // place to go look. Reverting to the pre-#4939 "were flagged for human
-    // re-review" — the wording that header calls out as implying a queue —
-    // passes every other assertion here.
+    expect(out.status).toBe("needs_confirmation");
     expect(
-      String(out.summary),
-      "the retract summary must say the count IS the report — no queue lists the flagged facts, so an unqualified 'flagged for re-review' sends the user looking for one",
-    ).toMatch(/no queue|whole report/i);
+      correctCalls,
+      "correct_fact called the verb machinery from inside the agent loop — #5496 requires it to stage and let the confirm endpoint apply",
+    ).toHaveLength(0);
+    // Nothing shaped like an applied correction reaches the model.
+    expect(out).not.toHaveProperty("corrected");
+    expect(out).not.toHaveProperty("correctionEpisodeId");
   });
 
-  // The count is only a disclosure fix if everything ELSE still arrives: a
-  // projection is where fields get silently dropped, and the correction
-  // episode id is the caller's audit handle.
-  it("still projects every non-id field a correction carries", async () => {
-    correctionResult = () => ({
-      kind: "corrected",
-      result: {
-        ...CORRECTED.result,
-        verb: "supersede",
-        invalidatedAt: null,
-        supersededBy: "new-1",
-        validTo: "2026-07-30T12:00:00.000Z",
-      },
-    });
-    const out = await run({ verb: "supersede", replacement: { object: "Bo" } });
-    expect(out).toMatchObject({
-      corrected: true,
-      verb: "supersede",
-      factId: "6f2c0000-0000-4000-8000-000000000000",
-      correctionEpisodeId: "ep-1",
-      invalidatedAt: null,
-      supersededBy: "new-1",
-      validTo: "2026-07-30T12:00:00.000Z",
-      flaggedForReReviewCount: 2,
-    });
+  it("stages a confirm payload carrying the token and the caller's inputs", async () => {
+    const out = await run({ reason: "wrong" });
+    const confirm = out.confirm as Record<string, unknown>;
+
+    expect(confirm.factId).toBe("6f2c0000-0000-4000-8000-000000000000");
+    expect(confirm.verb).toBe("retract");
+    expect(confirm.reason).toBe("wrong");
+    // Three dot-separated base64url segments — the signed token shape.
+    expect(String(confirm.token).split(".")).toHaveLength(3);
+    expectNoWrite();
   });
 
-  it("carries the machinery's refusal code beside the prose", async () => {
-    correctionResult = () => ({
-      kind: "refused",
-      reason: "WAREHOUSE_TARGET",
-      message: "Tier-1 has no correction path — fix the data or the semantic layer.",
-    });
-    const out = await run({});
-    expect(out.reason).toBe(CORRECT_FACT_TOOL_REASONS.refused);
-    expect(out.refusal).toBe("WAREHOUSE_TARGET");
-    expect(String(out.error)).toContain("semantic layer");
-  });
-
-  it("tells the agent to re-search on not-found", async () => {
-    correctionResult = () => ({ kind: "not-found" });
-    const out = await run({});
-    expect(out.reason).toBe(CORRECT_FACT_TOOL_REASONS.notFound);
-    expect(String(out.error)).toContain("searchBrain");
-  });
-
-  it("threads a supersede replacement through, parsing validFrom", async () => {
-    correctionResult = () => ({
-      kind: "corrected",
-      result: { ...CORRECTED.result, verb: "supersede", supersededBy: "new-1", validTo: "x" },
-    });
-    await run({
+  it("threads a supersede replacement through as ISO strings, not Dates", async () => {
+    // The wire shape is what the token binds, and a `Date` would serialize one
+    // way at staging and another after the browser's JSON round-trip — so the
+    // binding check would reject every supersede. Kept as the string it arrived
+    // as; the confirm endpoint parses it once, past the gate.
+    const out = await run({
       verb: "supersede",
       replacement: { object: "Bo", validFrom: "2026-01-01T00:00:00.000Z" },
     });
-    const replacement = correctCalls[0]?.replacement as { object: string; validFrom: Date };
-    expect(replacement.object).toBe("Bo");
-    expect(replacement.validFrom.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+    const confirm = out.confirm as { replacement: { object: string; validFrom: unknown } };
+
+    expect(confirm.replacement.object).toBe("Bo");
+    expect(confirm.replacement.validFrom).toBe("2026-01-01T00:00:00.000Z");
+    expect(typeof confirm.replacement.validFrom).toBe("string");
+    expectNoWrite();
+  });
+
+  it("summarizes from the verb and replacement alone — never from agent prose", async () => {
+    const out = await run({ verb: "supersede", replacement: { object: "Bo" } });
+    // The summary is what the human reads before consenting, so it must be
+    // derivable without trusting anything the model wrote around the call.
+    expect(String(out.summary)).toContain("supersede");
+    expect(String(out.summary)).toContain("Bo");
+  });
+
+  it("refuses an unauthorized actor at staging, with the shared gate's own code", async () => {
+    // Prompt refusal, not a card the user would be told "no" on after clicking.
+    authorityRefusal = {
+      kind: "refused",
+      reason: "NOT_AUTHORIZED",
+      message: "Corrections are an admin verb: ask a workspace owner or admin.",
+    };
+    const out = await run({});
+
+    expect(out.reason).toBe(CORRECT_FACT_TOOL_REASONS.refused);
+    expect(out.refusal).toBe("NOT_AUTHORIZED");
+    expect(String(out.error)).toContain("admin verb");
+    expect(out).not.toHaveProperty("confirm");
+    expectNoWrite();
+  });
+
+  it("refuses to stage when no signing key is configured, rather than mint an unsigned token", async () => {
+    // The fail-loud stance `mintOAuthStateToken` and the REST write gate take:
+    // an unverifiable confirm is worse than no confirm, because the server
+    // could not later prove a human approved the write. The tool must surface
+    // that as a clean refusal — never a throw escaping into the agent loop.
+    keysetConfigured = false;
+    const out = await run({});
+
+    expect(out.reason).toBe(CORRECT_FACT_TOOL_REASONS.correctionFailed);
+    expect(String(out.error)).toContain("signing key");
+    expect(String(out.error)).toContain("Nothing was changed");
+    expect(out).not.toHaveProperty("confirm");
+    expectNoWrite();
   });
 });
 
@@ -344,8 +393,13 @@ describe("the documented disclosure split", () => {
   // was filed for, and a hardcoded literal here would go green through it.
   it("names both wire fields, in whatever spelling the tool actually emits", () => {
     const repo = join(import.meta.dir, "..", "..", "..", "..", "..", "..");
+    // #5496 — the projection MOVED. The agent tool no longer returns a
+    // correction result at all (it stages), so the count is derived at the
+    // confirm endpoint, which is now the surface a correction result reaches.
+    // The disclosure rule is unchanged and so is this test's shape; only the
+    // file it reads moved with the code.
     const toolSource = readFileSync(
-      join(repo, "packages", "api", "src", "lib", "tools", "correct-fact.ts"),
+      join(repo, "packages", "api", "src", "api", "routes", "brain-corrections.ts"),
       "utf8",
     );
     const guide = readFileSync(
@@ -359,7 +413,7 @@ describe("the documented disclosure split", () => {
       // narrow through an assertion, and the non-null assertion it would
       // otherwise need is exactly the thing CLAUDE.md asks to minimize.
       throw new Error(
-        "correct-fact.ts no longer derives a count field from `flaggedForReReview.length` — either the agent path went back to shipping ids (which #4939 forbids) or this parse needs re-pointing",
+        "brain-corrections.ts no longer derives a count field from `flaggedForReReview.length` — either the chat path went back to shipping ids (which #4939 forbids) or this parse needs re-pointing",
       );
     }
 
@@ -393,7 +447,7 @@ describe("the documented disclosure split", () => {
       "atlas-corrections.mdx names `flaggedForReReview` but never in the same sentence as the admin surface that returns it — a reader cannot tell which surface gives ids and which gives a count",
     ).toBe(true);
     expect(
-      attributed(countKey, /correct_fact|tool\b/i),
+      attributed(countKey, /correct_fact|confirm|tool\b/i),
       `atlas-corrections.mdx names \`${countKey}\` but never in the same sentence as the agent tool that returns it — see above`,
     ).toBe(true);
   });

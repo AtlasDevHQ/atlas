@@ -68,6 +68,7 @@ void mock.module("@atlas/api/lib/durable-resume", () => ({
 // --- Latest-run-status probe (#3749) ---
 import type { LatestRunStatus } from "@atlas/api/lib/durable-session";
 import * as realDurableSession from "@atlas/api/lib/durable-session";
+import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "@useatlas/types/auth";
 const mockLoadLatestRunStatus: Mock<() => Promise<LatestRunStatus>> = mock(() =>
   Promise.resolve({ status: "running" as const, runId: "run-abc", parkedReason: null }),
 );
@@ -194,10 +195,19 @@ const { app } = await import("../index");
 // route's `.uuid()` path-param validation passes and we exercise the handler.
 const CONV_ID = "11111111-1111-4111-8111-111111111111";
 
-function resumeRequest(): Request {
+/**
+ * `surface: "workspace"` sends the `x-atlas-surface` header the first-party web
+ * app sends (#5496). It is what separates a web-app resume from an embeddable
+ * widget resume — they hit the same route with the same body, and only the web
+ * app renders the correction confirm card.
+ */
+function resumeRequest(opts: { surface?: "workspace" } = {}): Request {
   return new Request(`http://localhost/api/v1/chat/${CONV_ID}/resume`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(opts.surface ? { [ATLAS_SURFACE_HEADER]: ATLAS_WORKSPACE_SURFACE } : {}),
+    },
   });
 }
 
@@ -282,7 +292,11 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     // correction from a resumed web turn. The structural guard pins the
     // variable NAME at this call site, not the registry it resolves to, so only
     // this assertion catches that.
-    const res = await app.fetch(resumeRequest());
+    //
+    // #5496 — the web-app surface has to be CLAIMED now, so this sends the
+    // header the web transport sends. Without it the route resolves the
+    // widget's registry, which is the next test.
+    const res = await app.fetch(resumeRequest({ surface: "workspace" }));
     expect(res.status).toBe(200);
     expect(mockRunAgent).toHaveBeenCalledTimes(1);
 
@@ -294,6 +308,28 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     const names = Object.keys(arg.tools!.getAll());
     expect(names).toContain("createDashboard");
     expect(names).toContain("correct_fact");
+    expect(names).toContain("executeSQL");
+  });
+
+  it("#5496 — a resume with no surface claim gets the widget registry, without correct_fact", async () => {
+    // A resume must not WIDEN the tool surface relative to the turn it resumes,
+    // and the surface claim is re-read from THIS request rather than restored
+    // from the checkpoint — so a client that no longer claims the capability
+    // does not keep it. Fail-closed: absence of the header is the widget.
+    const res = await app.fetch(resumeRequest());
+    expect(res.status).toBe(200);
+    expect(mockRunAgent).toHaveBeenCalledTimes(1);
+
+    const arg = (mockRunAgent.mock.calls as unknown as Array<
+      [{ tools?: { getAll(): Record<string, unknown> } }]
+    >)[0]![0];
+    const names = Object.keys(arg.tools!.getAll());
+    expect(
+      names,
+      "a resume with no `x-atlas-surface: workspace` claim was offered correct_fact — the embeddable widget renders no confirm card, so it could stage a correction nobody can confirm (#5496)",
+    ).not.toContain("correct_fact");
+    // …and loses nothing else: dashboards and SQL are unaffected.
+    expect(names).toContain("createDashboard");
     expect(names).toContain("executeSQL");
   });
 

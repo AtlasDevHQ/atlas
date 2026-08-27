@@ -246,6 +246,12 @@ Use the createDashboard tool when the user wants a dashboard, not just a single 
 function registerCoreTools(
   registry: ToolRegistry,
   dashboardUrlResolver: DashboardUrlResolver | null,
+  /**
+   * Whether this surface can RENDER a confirm-before-write card (#5496). Gates
+   * `correct_fact` — see the registration block below for why it is a separate
+   * signal from `dashboardUrlResolver` rather than a second reading of it.
+   */
+  rendersConfirmations: boolean,
 ): void {
   registry.register({
     name: "explore",
@@ -305,12 +311,36 @@ function registerCoreTools(
   // that operation is admitted to READ-SAFE Agent-Auth keys on a read-only-
   // engine guarantee (#4707, pinned by `agent-auth-read-safe-engine.test.ts`'s
   // tool-surface tripwire). A brain-mutating tool on that surface would break
-  // the admission however well execute-time gating held. The dashboard-URL
-  // resolver is the existing headless-vs-interactive signal (`null` = SDK /
-  // Slack / MCP / scheduler via `executeAgentQuery`; non-null = a workspace
-  // surface with a human in the loop), and today those classes coincide
-  // exactly with where a correction verb belongs — if they ever diverge,
-  // split the signal rather than re-globalizing this tool.
+  // the admission however well execute-time gating held.
+  //
+  // #5496 — THE SIGNAL SPLIT. This gate used to read `dashboardUrlResolver`,
+  // and the note here said: "today those classes coincide exactly with where a
+  // correction verb belongs — if they ever diverge, split the signal rather
+  // than re-globalizing this tool." They diverged, and this is that split.
+  //
+  // What diverged: `correct_fact` now STAGES a correction for a human to
+  // confirm on a card (`lib/brain/correction-confirm.ts`), so it belongs only
+  // where that card is RENDERED. `dashboardUrlResolver` cannot answer that.
+  // It is non-null for `POST /api/v1/chat`, and the embeddable widget
+  // (`@useatlas/react`) reaches the very same route — same resolver, same
+  // registry, no card. `packages/react`'s `tool-part.tsx` has no
+  // `correct_fact` case and would render the gray `Tool: correct_fact` box, so
+  // the widget would stage corrections that can never be confirmed. That is
+  // the "stage and never confirm" shape, tracked separately as #5495, and it
+  // is exactly what `executeRestOperation` does on the widget today.
+  //
+  // So the widget LOSES this verb, and that is a deliberate capability
+  // removal, not a regression to fix in passing. Offering a write nobody can
+  // complete is worse than not offering it.
+  //
+  // `rendersConfirmations` defaults to FALSE at every builder, so a new
+  // surface has to claim the capability rather than inherit it. Note what the
+  // claim is and is not: it is a UX capability assertion, NOT a privilege
+  // grant. A caller that forges it gains only a STAGED correction — nothing is
+  // written, and `POST /api/v1/brain-corrections/confirm` still re-runs
+  // authority, ACL, the tier-1 refusal and vocabulary closure server-side
+  // against a single-use token. The security boundary is that endpoint; this
+  // gate only decides who is offered the affordance.
   //
   // #4936 — this gate only decides what each REGISTRY contains; the surface a
   // given turn actually gets is decided by which registry its `runAgent` call
@@ -321,7 +351,7 @@ function registerCoreTools(
   // registry each production call site must resolve to. This is the canonical
   // account of the GATE; each call site narrates only its own surface-specific
   // exposure rather than restating this.
-  if (dashboardUrlResolver) {
+  if (dashboardUrlResolver && rendersConfirmations) {
     registry.register({
       name: "correct_fact",
       description: CORRECT_FACT_DESCRIPTION,
@@ -374,22 +404,42 @@ function registerCoreTools(
 }
 
 // --- Default registry ---
-// The workspace surface (self-hosted single-tenant + SaaS web) — it owns
-// `/dashboards/[id]`, so `createDashboard` registers with the workspace resolver.
-
+// A dashboards-owning surface that CANNOT render a confirm card — it owns
+// `/dashboards/[id]`, so `createDashboard` registers with the workspace
+// resolver, but `correct_fact` does not (#5496).
+//
+// That combination is the embeddable widget, and naming it here matters because
+// the name `defaultRegistry` reads like "the full set" and no longer is. Both
+// `POST /api/v1/chat` callers — the first-party web app and `@useatlas/react` —
+// reach the same route with the same resolver, and only the first renders the
+// correction confirm card. This singleton is what the widget gets; the web app
+// opts up to {@link confirmCapableRegistry}. Fail-closed by construction: a
+// surface that never claims the capability lands here.
 const defaultRegistry = new ToolRegistry();
-registerCoreTools(defaultRegistry, WORKSPACE_DASHBOARD_URL_RESOLVER);
+registerCoreTools(defaultRegistry, WORKSPACE_DASHBOARD_URL_RESOLVER, false);
 defaultRegistry.freeze();
 
+// --- Confirm-capable workspace registry (#5496) ---
+// {@link defaultRegistry} PLUS `correct_fact`, for the one surface that renders
+// the confirm-before-write card: the first-party web chat. It is a separate
+// frozen singleton rather than an option on the shared one because the two
+// differ by a single write verb, and the difference has to be visible at the
+// call site that chooses between them.
+const confirmCapableRegistry = new ToolRegistry();
+registerCoreTools(confirmCapableRegistry, WORKSPACE_DASHBOARD_URL_RESOLVER, true);
+confirmCapableRegistry.freeze();
+
 // --- Non-dashboard registry (#4566) ---
-// Core tools MINUS createDashboard AND correct_fact (both gate on the same
-// `dashboardUrlResolver` signal), for surfaces that own no dashboards route
-// (SDK / Slack / MCP / scheduler via `executeAgentQuery`). Also the
-// guaranteed-safe fallback when `buildRegistry` throws — so BOTH omissions hold
-// even on the error path instead of falling through to the dashboards-owning
-// `defaultRegistry`.
+// Core tools MINUS createDashboard AND correct_fact, for surfaces that own no
+// dashboards route (SDK / Slack / MCP / scheduler via `executeAgentQuery`).
+// Both omissions used to follow from the one `dashboardUrlResolver` signal;
+// since #5496 they are two signals, and this registry declines BOTH — a
+// headless surface has neither a dashboards route nor anywhere to render a
+// card. Also the guaranteed-safe fallback when `buildRegistry` throws, so both
+// omissions hold on the error path instead of falling through to a
+// dashboards-owning registry.
 const nonDashboardRegistry = new ToolRegistry();
-registerCoreTools(nonDashboardRegistry, null);
+registerCoreTools(nonDashboardRegistry, null, false);
 nonDashboardRegistry.freeze();
 
 // ---------------------------------------------------------------------------
@@ -573,6 +623,17 @@ export async function buildRegistry(options?: {
    *   (embed / SDK / Slack / scheduler).
    */
   dashboardUrlResolver?: DashboardUrlResolver | null;
+  /**
+   * Whether this surface renders the confirm-before-write card that
+   * `correct_fact` stages onto (#5496). Defaults to `false` — a surface must
+   * CLAIM the capability, so a new caller that never thought about it does not
+   * silently inherit a write verb whose confirmation it cannot show.
+   *
+   * See the registration block in `registerCoreTools`: this is a UX capability
+   * assertion, not a privilege grant. The security boundary is
+   * `POST /api/v1/brain-corrections/confirm`, which re-runs the whole gate.
+   */
+  rendersConfirmations?: boolean;
 }): Promise<BuildRegistryResult> {
   const registry = new ToolRegistry();
   const warnings: string[] = [];
@@ -584,7 +645,7 @@ export async function buildRegistry(options?: {
     options?.dashboardUrlResolver === undefined
       ? WORKSPACE_DASHBOARD_URL_RESOLVER
       : options.dashboardUrlResolver;
-  registerCoreTools(registry, dashboardUrlResolver);
+  registerCoreTools(registry, dashboardUrlResolver, options?.rendersConfirmations === true);
 
   if (isPythonToolRequested()) {
     if (isPythonSandboxMisconfigured()) {
@@ -703,4 +764,4 @@ export async function buildHeadlessRegistry(): Promise<BuildRegistryResult> {
   }
 }
 
-export { defaultRegistry, nonDashboardRegistry };
+export { defaultRegistry, confirmCapableRegistry, nonDashboardRegistry };

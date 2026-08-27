@@ -255,7 +255,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
 
       const outcome = await asRequest("req-retract-1", () =>
         correctFact(
-          { vocabulary: identityVocabulary, ctx: reviewer(), factId, verb: "retract", reason: "wrong on arrival" },
+          { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId, verb: "retract", reason: "wrong on arrival" },
           { withTransaction: poolTx },
         ),
       );
@@ -304,7 +304,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
 
       const outcome = await asRequest("req-supersede-1", () =>
         correctFact(
-          {
+          { intent: "admin-ui",
             vocabulary: identityVocabulary,
             ctx: reviewer(),
             factId,
@@ -364,7 +364,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
       // `brain_facts.id`. The emitter uses `result.factId` for exactly this.
       const outcome = await asRequest("req-pin-1", () =>
         correctFact(
-          { vocabulary: identityVocabulary, ctx: reviewer(), factId: factId.toUpperCase(), verb: "pin" },
+          { intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId: factId.toUpperCase(), verb: "pin" },
           { withTransaction: poolTx },
         ),
       );
@@ -412,7 +412,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
       );
 
       const outcome = await asRequest("req-refused-1", () =>
-        correctFact({ vocabulary: identityVocabulary, ctx: reviewer(), factId, verb: "pin" }, { withTransaction: poolTx }),
+        correctFact({ intent: "admin-ui", vocabulary: identityVocabulary, ctx: reviewer(), factId, verb: "pin" }, { withTransaction: poolTx }),
       );
       expect(outcome).toMatchObject({
         kind: "refused",

@@ -5,6 +5,7 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
 import type { AnswerStyle } from "@useatlas/types/conversation";
 import { applyBrandColor, OKLCH_RE } from "./use-dark-mode";
+import { ATLAS_SURFACE_HEADER, ATLAS_WORKSPACE_SURFACE } from "@useatlas/types/auth";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
 
@@ -445,7 +446,23 @@ export function useAtlasTransport(
   const transport = useMemo(() => {
     // #4018 — see `buildAuthHeaders`: managed mode rides the cookie (no bearer),
     // so a stale `atlas-api-key` can't 401 the chat while REST stays authed.
-    const headers = buildAuthHeaders(authMode, apiKey);
+    // #5496 — identify this client as the workspace web app. It is the surface
+    // that renders the correction confirm card, and the server offers
+    // `correct_fact` only where that card exists: the embeddable widget
+    // (`@useatlas/react`) reaches the SAME `/api/v1/chat` route and has no such
+    // card, so without this header nothing could tell the two apart.
+    //
+    // The resume path below rewrites the URL and body but not these headers, so
+    // a resumed turn claims the same surface as the turn it resumes — which is
+    // required: a resume must not widen the tool surface.
+    //
+    // ⚠️ A capability hint, never a credential. It gets a correction STAGED and
+    // nothing more; the write is gated server-side at
+    // `POST /api/v1/brain-corrections/confirm`.
+    const headers = {
+      ...buildAuthHeaders(authMode, apiKey),
+      [ATLAS_SURFACE_HEADER]: ATLAS_WORKSPACE_SURFACE,
+    };
     return new DefaultChatTransport({
       api: `${apiUrl}/api/v1/chat`,
       headers,

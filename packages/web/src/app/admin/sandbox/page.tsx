@@ -771,6 +771,23 @@ function ProviderRow({
             {connection.validatedAt && (
               <DetailRow label="Validated" value={formatDateTime(connection.validatedAt)} />
             )}
+            {/* Which of the two tools this connection actually covers (#4665).
+                Python is the tool that ships raw query-result rows, so a
+                provider chosen for region control that can't run it leaves the
+                largest data exposure elsewhere — stating "explore + Python" vs
+                "explore only" is the difference between a residency answer and
+                half of one. `undefined` means an API build predating the field:
+                say nothing rather than guess in either direction. */}
+            {connection.pythonSupported !== undefined && (
+              <DetailRow
+                label="Tools covered"
+                value={
+                  connection.pythonSupported
+                    ? "explore + Python"
+                    : "explore only — Python runs on Atlas Cloud Sandbox (US)"
+                }
+              />
+            )}
           </DetailList>
           {needsReconnect && (
             <p className="text-xs text-muted-foreground">

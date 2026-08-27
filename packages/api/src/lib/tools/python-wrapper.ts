@@ -127,3 +127,129 @@ if _charts:
     _result["charts"] = _charts
 
 print(_marker + json.dumps(_result), file=_old_stdout)`;
+
+/**
+ * Complete, self-contained Python wrapper using **file transport** for both
+ * the data payload in and the structured result out (#3414).
+ *
+ * This is the wrapper the Vercel Python backend has always used; it is hoisted
+ * here because the BYOC plugin providers (e2b, daytona — #4665) must run the
+ * *same* script. A plugin that shipped its own copy would be shipping its own
+ * copy of the in-sandbox import guard, and the copies would drift silently:
+ * the host is the only place that can guarantee every provider executes the
+ * identical guard, so the host hands the source down rather than trusting each
+ * plugin to carry it (`PluginPythonOptions.wrapperSource`).
+ *
+ * Result transport diverges from {@link PYTHON_EXEC_AND_COLLECT} (used by the
+ * nsjail and sidecar backends): instead of smuggling the structured result back
+ * through a `__ATLAS_RESULT_<id>__` stdout marker, this wrapper writes result
+ * JSON to `$ATLAS_RESULT_FILE` and leaves chart PNGs as `chart_*.png` files in
+ * `$ATLAS_CHART_DIR`. The host reads both off the sandbox filesystem and
+ * base64-encodes charts host-side. That split is what lets a provider whose
+ * shell surface mangles or truncates stdout still return charts intact.
+ *
+ * **Invocation contract** — a backend running this wrapper MUST:
+ *
+ *   `python3 <wrapper.py> <user_code.py> [<data.json>]`
+ *
+ * with `ATLAS_RESULT_FILE` (absolute path to write result JSON to) and
+ * `ATLAS_CHART_DIR` (absolute path of the chart output directory) set in the
+ * environment, plus `MPLBACKEND=Agg` for headless matplotlib. `data.json`, when
+ * present, holds `{ columns, rows }`. The wrapper always exits 0 on a Python-level
+ * error — the error rides in the result JSON — so a non-zero exit code from the
+ * interpreter means the process died before the wrapper could report, and the
+ * backend should fall back to stderr.
+ */
+export const PYTHON_FILE_TRANSPORT_WRAPPER = `
+import sys, json, io, os, ast
+
+_chart_dir = os.environ.get("ATLAS_CHART_DIR", "/tmp/charts")
+_result_file = os.environ["ATLAS_RESULT_FILE"]
+
+def _report_error(msg):
+    with open(_result_file, "w") as _rf:
+        _rf.write(json.dumps({"success": False, "error": msg}))
+    sys.exit(0)
+
+${PYTHON_SECURITY_AND_SETUP}
+
+# --- Data injection (from file, not stdin) ---
+_atlas_data = None
+if len(sys.argv) > 2:
+    _data_file = sys.argv[2]
+    if os.path.exists(_data_file):
+        with open(_data_file) as f:
+            _raw = f.read().strip()
+            if _raw:
+                _atlas_data = json.loads(_raw)
+
+data = None
+df = None
+if _atlas_data:
+    try:
+        import pandas as pd
+        df = pd.DataFrame(_atlas_data["rows"], columns=_atlas_data["columns"])
+        data = df
+    except ImportError:
+        data = _atlas_data
+
+# --- Execute user code in isolated namespace ---
+_old_stdout = sys.stdout
+sys.stdout = _captured = io.StringIO()
+
+_user_ns = {"chart_path": chart_path, "data": data, "df": df}
+_atlas_error = None
+try:
+    exec(_user_code, _user_ns)
+except Exception as e:
+    _atlas_error = f"{type(e).__name__}: {e}"
+
+_output = _captured.getvalue()
+sys.stdout = _old_stdout
+
+# --- Build structured result (charts stay as PNG files, read host-side) ---
+_result = {"success": _atlas_error is None}
+if _output.strip():
+    _result["output"] = _output.strip()
+if _atlas_error:
+    _result["error"] = _atlas_error
+
+if "_atlas_table" in _user_ns:
+    _result["table"] = _user_ns["_atlas_table"]
+
+if "_atlas_chart" in _user_ns:
+    _ac = _user_ns["_atlas_chart"]
+    if isinstance(_ac, dict):
+        _result["rechartsCharts"] = [_ac]
+    elif isinstance(_ac, list):
+        _result["rechartsCharts"] = _ac
+
+with open(_result_file, "w") as _rf:
+    _rf.write(json.dumps(_result))
+`;
+
+/**
+ * Environment variable names and the chart filename pattern that
+ * {@link PYTHON_FILE_TRANSPORT_WRAPPER} reads and writes. Exported so the
+ * backends that run the wrapper — in-tree and plugin-provided alike — bind to
+ * one definition instead of three string literals that can drift apart.
+ */
+export const PYTHON_FILE_TRANSPORT = {
+  /** Env var naming the absolute path the wrapper writes result JSON to. */
+  resultFileEnv: "ATLAS_RESULT_FILE",
+  /** Env var naming the absolute chart output directory. */
+  chartDirEnv: "ATLAS_CHART_DIR",
+  /** Charts the host collects from the chart directory, in sorted order. */
+  chartPattern: /^chart_.*\.png$/,
+  /**
+   * Environment every backend running this wrapper must set beyond the two
+   * path vars: headless matplotlib, a writable HOME, and a UTF-8 locale.
+   * Defined once so a backend cannot get the trio subtly wrong — a missing
+   * MPLBACKEND turns every chart into a crash inside a sandbox with no display.
+   */
+  baseEnv: {
+    MPLBACKEND: "Agg",
+    HOME: "/tmp",
+    LANG: "C.UTF-8",
+  },
+} as const;

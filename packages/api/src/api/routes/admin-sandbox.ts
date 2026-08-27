@@ -39,6 +39,7 @@ import { validateCredentials } from "@atlas/api/lib/sandbox/validate";
 import {
   getProviderRuntimeAvailability,
   missingCredentialFields,
+  providerSupportsPython,
 } from "@atlas/api/lib/sandbox/runtime";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
@@ -363,6 +364,9 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
             usableByocBackendIds.has(backendId),
           needsReconnect:
             missingCredentialFields(cred.provider, cred.credentials).length > 0,
+          // Derived from the same runtime table the Python tool consults, so
+          // the card cannot claim coverage the tool does not have (#4665).
+          pythonSupported: providerSupportsPython(cred.provider),
         };
       });
 

@@ -355,7 +355,7 @@
     },
     "packages/plugin-sdk": {
       "name": "@useatlas/plugin-sdk",
-      "version": "0.0.17",
+      "version": "0.0.18",
       "devDependencies": {
         "@types/node": "^25.9.5",
         "@typescript/native-preview": "7.0.0-dev.20260623.1",
@@ -611,7 +611,7 @@
       },
       "peerDependencies": {
         "@daytonaio/sdk": ">=0.1.0",
-        "@useatlas/plugin-sdk": ">=0.0.1",
+        "@useatlas/plugin-sdk": ">=0.0.18",
       },
       "optionalPeers": [
         "@daytonaio/sdk",
@@ -644,7 +644,7 @@
         "zod": "^4.4.3",
       },
       "peerDependencies": {
-        "@useatlas/plugin-sdk": ">=0.0.1",
+        "@useatlas/plugin-sdk": ">=0.0.18",
         "e2b": ">=1.0.0",
       },
       "optionalPeers": [

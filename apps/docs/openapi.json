@@ -59866,6 +59866,9 @@
                           },
                           "needsReconnect": {
                             "type": "boolean"
+                          },
+                          "pythonSupported": {
+                            "type": "boolean"
                           }
                         },
                         "required": [

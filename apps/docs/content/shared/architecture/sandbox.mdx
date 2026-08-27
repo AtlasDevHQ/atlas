@@ -162,7 +162,7 @@ At startup, the explore tool selects the highest-priority backend available. The
 
 | Priority | Backend | Condition |
 |----------|---------|-----------|
-| 0 | **Sandbox plugin** | A sandbox plugin is registered via `atlas.config.ts` (skipped when `ATLAS_SANDBOX=nsjail`). **Explore tool only** — `executePython` does not check plugin backends |
+| 0 | **Sandbox plugin** | A sandbox plugin is registered via `atlas.config.ts` (skipped when `ATLAS_SANDBOX=nsjail`). **Explore tool only** — `executePython` does not check the operator's plugin chain. A plugin reached through a *workspace BYOC selection* can run Python; see [Python Execution](#python-execution-executepython) |
 | 1 | **Vercel Sandbox** | `ATLAS_RUNTIME=vercel` or `VERCEL` env var is present |
 | 2 | **nsjail (explicit)** | `ATLAS_SANDBOX=nsjail` is set. Hard-fails if the nsjail binary is not found — no fallback |
 | 3 | **Sidecar** | `ATLAS_SANDBOX_URL` is set. Skips nsjail auto-detection entirely |
@@ -216,6 +216,8 @@ Shell commands and Python execution have separate timeout configurations:
 The `executePython` tool runs agent-generated Python code for data analysis and visualization. It uses a different backend selection priority than the explore tool:
 
 ```
+Priority 0: BYOC provider (workspace override) -- the org's own account; fails
+                                                  closed, never falls through
 Priority 1: Sidecar (ATLAS_SANDBOX_URL)      -- POST /exec-python
 Priority 2: Vercel Sandbox                    -- Python 3.13 Firecracker microVM
 Priority 3: nsjail (explicit, ATLAS_SANDBOX=nsjail) -- hard-fail if unavailable
@@ -226,8 +228,9 @@ Priority 5: No backend — error                -- just-bash is NOT a fallback
 Key differences from the explore tool's priority chain:
 
 - **Sidecar is priority 1** (not priority 3). When `ATLAS_SANDBOX_URL` is set, Python uses the sidecar immediately without checking for Vercel sandbox first.
-- **Plugin sandbox backends are not checked.** Python only uses built-in backends.
+- **The operator's plugin sandbox backends are not checked.** Priorities 1–5 are built-in backends only. This is *not* the same statement as "plugin providers can't run Python": priority 0 is the per-workspace BYOC path, where a connected E2B or Daytona provider runs Python on the **org's own account** through the plugin SDK's Python surface. What is excluded here is the operator-configured plugin chain, not the org's own selection.
 - **just-bash is not a fallback.** If no sandbox backend is available, `executePython` returns an error rather than running Python in the host process.
+- **Priority 0 does not fall through.** Once a workspace selects a Python-capable BYOC provider, a failure there is an error, not a demotion to priority 1 — the org chose isolation on its own infrastructure, and `executePython` is the tool that carries raw query-result rows.
 
 Python execution has two layers of defense: an AST-based import guard (defense-in-depth, runs before execution) and the sandbox backend itself (the actual security boundary). The import guard blocks dangerous modules (`subprocess`, `os`, `socket`, etc.) and builtins (`exec`, `eval`, `open`, `__import__`, etc.). If `python3` is not available locally for AST validation, the guard is skipped -- the sandbox enforces isolation regardless.
 

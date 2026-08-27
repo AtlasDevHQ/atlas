@@ -99,6 +99,7 @@ describe("plugin shape", () => {
     const plugin = buildE2BSandboxPlugin({
       apiKey: "k",
       timeoutSec: 30,
+      pythonPackages: [],
     });
     const validated = definePlugin(plugin);
     expect(validated).toBe(plugin);

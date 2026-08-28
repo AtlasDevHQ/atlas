@@ -123,6 +123,17 @@ const RECONCILED_SECTIONS = [
   // people. The section also carries operator ERASURES as tombstones, so
   // silently dropping it would additionally undo them.
   "brainActorIdentities",
+  // #5113. The alias queue's permanent rejection memory. Reconciled because a
+  // target that quietly landed none of them reports a clean cutover while the
+  // one state that stops a producer re-writing what a human removed is gone —
+  // and the producer's next run then re-proposes (and for a warehouse-derived
+  // entity edge, AUTO-APPROVES) exactly that pair (#4507).
+  "brainVocabularyProposals",
+  // #5113. Cardinality decisions on the canonical predicate. Reconciled for
+  // `brainEnrollments`' reason: an uncurated predicate never supersedes, so a
+  // target that landed none of them is byte-identical to a workspace nobody
+  // has curated and would otherwise report a clean cutover.
+  "brainPredicateCardinalities",
 ] as const satisfies readonly (keyof ExportManifest["counts"] & keyof ImportResult)[];
 
 type RefusalCapableSection = {
@@ -140,6 +151,14 @@ const REFUSAL_ACCOUNTING = [
   // NARROWING and must count toward the reconciled total, so a future conflict
   // rule cannot fail a cutover merely by exercising itself.
   "brainSlackChannelExclusions",
+  // #5113. Both sections refuse BY DESIGN — a decided arriving row that
+  // contradicts a decided destination row, and (cardinality only) an entry
+  // whose predicate the destination's vocabulary canonicalizes differently.
+  // Each refusal is deliberate destination-wins policy with its own log line,
+  // so it counts toward the reconciled total: a genuinely conflicting decision
+  // must not fail a whole cutover merely by being surfaced.
+  "brainVocabularyProposals",
+  "brainPredicateCardinalities",
 ] as const satisfies readonly RefusalCapableSection[];
 
 const REFUSAL_ACCOUNTING_SECTIONS: ReadonlySet<string> = new Set(REFUSAL_ACCOUNTING);
@@ -627,8 +646,9 @@ async function transferBundleToTarget(
     // abort an entire cutover and blame an old target build.
     //
     // ⚠️ ADDING IT FOR EVERY SECTION IS THE WRONG FIX, and it was this slice's
-    // own first cut. `brainVocabularyEdges` is the only section whose import can
-    // refuse anything. A blanket `+ (got?.refused ?? 0)` means a target that
+    // own first cut. Only the sections in `REFUSAL_ACCOUNTING` can refuse —
+    // `brainVocabularyEdges` when this was written; the two #5113 vocabulary-
+    // memory sections since. A blanket `+ (got?.refused ?? 0)` means a target that
     // answers `brainFacts: {imported: 0, skipped: 0, refused: 40}` — through a
     // bug, a proxy, or a future section half-implemented in one region —
     // reconciles CLEAN, cuts over, and the source cleanup then deletes 40 facts

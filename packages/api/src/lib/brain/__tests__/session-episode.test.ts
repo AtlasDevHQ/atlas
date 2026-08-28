@@ -259,13 +259,20 @@ describe("materialization", () => {
 });
 
 describe("⭐ lazy-only: nothing outside the propose path materializes a session", () => {
-  it("source scan: the materializer and its SQL are referenced only by session-episode.ts and proposal.ts", () => {
+  it("source scan: the materializer and its SQL are referenced only by session-episode.ts, proposal.ts and suggester.ts", () => {
     // Lock 3 rejected eager per-session episoding, and this scan is the test
     // the acceptance criterion asks for: an eager caller — a chat-turn hook, a
     // scheduler sweep, an ingest pass — has to reference the function or its
     // statement by name, and any file doing so outside the propose path fails
     // here. Roots and skip rules mirror `correction.test.ts`'s sole-writer
     // scan; test files are excluded (they exercise the path deliberately).
+    //
+    // `suggester.ts` (#5488) joined the allowlist as PROPOSE-TIME
+    // materialization, not as the scheduler-sweep exception it superficially
+    // resembles: the suggester mints the episode only inside the transaction
+    // that files a claim FROM the session — a session it found nothing in
+    // materializes nothing — so the lazy property the scan protects ("an
+    // episode exists only because something derives from it") still holds.
     //
     // KNOWN RESIDUAL, recorded so this is not read as totality: a hand-copied
     // `INSERT INTO brain_episodes … 'session:'` that spells neither identifier
@@ -277,6 +284,7 @@ describe("⭐ lazy-only: nothing outside the propose path materializes a session
     const ALLOWED = new Set([
       "packages/api/src/lib/brain/session-episode.ts",
       "packages/api/src/lib/brain/proposal.ts",
+      "packages/api/src/lib/brain/suggester.ts",
     ]);
 
     const repoRoot = join(import.meta.dir, "..", "..", "..", "..", "..", "..");

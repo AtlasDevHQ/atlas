@@ -334,6 +334,12 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   // watching: sustained non-zero means runs are overrunning the cadence, and it
   // is the only signal that separates that from a quiet warehouse.
   brain_warehouse_cadence: "atlas.scheduler.brain_warehouse_cadence",
+  // #5488 — the autonomous suggester (ADR-0036 §T9 lock 1's permitted
+  // autonomy). Files drafts into the review queue like `brain_extraction` and
+  // `brain_warehouse_cadence` above, so like them it defaults OFF — but the
+  // dial is per-WORKSPACE (the promote_decay model, not the two-switch one):
+  // the fiber always runs and resolves the opted-in workspaces per tick.
+  brain_suggester: "atlas.scheduler.brain_suggester",
   // #4457 — internal-DB scheduled backups. The tick claims the current
   // cadence window atomically (partial UNIQUE index on
   // `backups.scheduled_window`), then create→verify→purge through the
@@ -2805,6 +2811,35 @@ export function makeSchedulerLive(
           message: "Company-brain warehouse cadence tick failed — will retry next interval",
         },
         startLog: "Company-brain warehouse cadence scheduler started",
+      });
+
+      // ── Periodic fiber: company-brain autonomous suggester (#5488) ───────
+      // ADR-0036 §T9 lock 1's permitted autonomy: the opt-in, off-by-default,
+      // per-workspace, draft-only suggester. NO platform enable gate, on the
+      // promote_decay precedent (#4582) rather than the warehouse cadence's
+      // two-switch model: the dial is the WORKSPACE's own trust decision, read
+      // per tick, so opting in takes effect on the next tick with no redeploy —
+      // a boot-consumed platform gate would un-hot-reload exactly the knob the
+      // lock says belongs to the workspace. The tick no-ops cheaply when no
+      // workspace opted in or there is no internal DB, and on SaaS enrollment
+      // reads explicit workspace overrides only (a platform `true` enrolls
+      // nobody — the enumeration in lib/brain/suggester.ts states why).
+      yield* registerPeriodicFiber({
+        name: "brain_suggester",
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval synchronously at fiber-registration time (same pattern as promote_decay)
+          const { getSuggesterIntervalMs } = require("@atlas/api/lib/brain/suggester") as typeof import("@atlas/api/lib/brain/suggester");
+          return getSuggesterIntervalMs();
+        },
+        tick: Effect.tryPromise({
+          try: async () => {
+            const { runSuggesterTick } = await import("@atlas/api/lib/brain/suggester");
+            await runSuggesterTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "warn", message: "Brain suggester tick failed" },
+        startLog: "Company-brain autonomous suggester scheduler started",
       });
 
       // ── Periodic fiber: malformed-grant sweep (#4797, ADR-0036) ──────────

@@ -6,11 +6,20 @@ import type {
   BrainFactDecayLevel,
   BrainFactReviewStatus,
 } from "@/ui/lib/types";
-import { BRAIN_PROPOSAL_PRODUCER } from "@useatlas/schemas";
+import { BRAIN_PROPOSAL_PRODUCER, BRAIN_SUGGESTER_PRODUCER } from "@useatlas/schemas";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
-import { AlertTriangle, Clock, HelpCircle, Link2, PenLine, ShieldAlert, Split } from "lucide-react";
+import {
+  AlertTriangle,
+  Clock,
+  HelpCircle,
+  Link2,
+  PenLine,
+  ShieldAlert,
+  Sparkles,
+  Split,
+} from "lucide-react";
 import { isFullyArbitrated, isTensionOpen } from "./tension-state";
 
 /**
@@ -103,6 +112,34 @@ export const proposedBadge = {
 /** The predicate behind {@link proposedBadge}, shared with the detail sheet. */
 export function isProposedCandidate(candidate: BrainFactCandidate): boolean {
   return candidate.provenance.producer === BRAIN_PROPOSAL_PRODUCER;
+}
+
+/**
+ * Origin label for a machine-suggested claim (#5488, ADR-0036 §T9 lock 1).
+ *
+ * A claim whose `provenance.producer` is {@link BRAIN_SUGGESTER_PRODUCER} was
+ * inferred by the autonomous suggester from a conversation — nobody proposed
+ * it and nobody confirmed it — and the issue's acceptance criterion is
+ * exactly this line: a reviewer must be able to tell a machine's guess from a
+ * person's testimony. The proposal badge cannot carry that weight for it
+ * (both rows say `human` for `provenance.source`), so the suggester gets its
+ * own chip.
+ *
+ * Violet — a hue neither the proposal's teal nor any warning badge uses, and
+ * NOT amber or red for the proposal badge's own reason: origin is
+ * information, not an alarm. A suggestion is not less reviewable for being a
+ * machine's; it is differently evidenced (a model's reading of a conversation
+ * rather than anyone's word), and the reviewer weighs that.
+ */
+export const suggestedBadge = {
+  variant: "outline" as const,
+  className: "border-violet-300 text-violet-700 dark:border-violet-700 dark:text-violet-400",
+  label: "Suggested",
+};
+
+/** The predicate behind {@link suggestedBadge}, shared with the detail sheet. */
+export function isSuggestedCandidate(candidate: BrainFactCandidate): boolean {
+  return candidate.provenance.producer === BRAIN_SUGGESTER_PRODUCER;
 }
 
 /** Provisional entity resolution — THE quality queue. */
@@ -267,6 +304,16 @@ export function getBrainFactColumns(
               <Badge variant={proposedBadge.variant} className={proposedBadge.className}>
                 <PenLine className="mr-1 size-3" aria-hidden />
                 {proposedBadge.label}
+              </Badge>
+            )}
+            {/* Same cell, same reasoning, opposite epistemic standing: a
+                suggestion is where the claim came from too — a machine's
+                inference, not a person's word — and §T9's acceptance criterion
+                is that the reviewer can tell the two apart here (#5488). */}
+            {isSuggestedCandidate(row.original) && (
+              <Badge variant={suggestedBadge.variant} className={suggestedBadge.className}>
+                <Sparkles className="mr-1 size-3" aria-hidden />
+                {suggestedBadge.label}
               </Badge>
             )}
             {/* Evidence withheld is stated, never blank: a reviewer who cannot

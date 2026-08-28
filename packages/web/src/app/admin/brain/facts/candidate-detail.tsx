@@ -10,14 +10,16 @@ import type {
 import { Badge } from "@/components/ui/badge";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { AlertTriangle, Clock, PenLine, ShieldAlert, Split } from "lucide-react";
+import { AlertTriangle, Clock, PenLine, ShieldAlert, Sparkles, Split } from "lucide-react";
 import {
   blockedBadge,
   decayBadge,
   isProposedCandidate,
+  isSuggestedCandidate,
   proposedBadge,
   provisionalBadge,
   statusBadge,
+  suggestedBadge,
 } from "./columns";
 import { isTensionOpen, isTensionSuperseded, isTensionWithdrawn } from "./tension-state";
 
@@ -500,6 +502,26 @@ export function CandidateDetail({ candidate }: { candidate: BrainFactCandidate }
             <p className="text-xs text-muted-foreground">
               A person offered this claim directly to Atlas and confirmed it. It was not
               extracted from a connected source — the evidence below is their testimony.
+            </p>
+          </div>
+        )}
+        {/* The suggester's sentence is the proposal's inverted (#5488): same
+            `human`-class session evidence, but NOBODY offered or confirmed
+            this claim — a model read the conversation and guessed. The trust
+            call must weigh a machine's inference as a machine's inference,
+            which is ADR-0036 §T9's distinguishability criterion verbatim.
+            Keyed on the queue chip's own predicate so the two surfaces cannot
+            disagree about which rows are suggestions. */}
+        {isSuggestedCandidate(candidate) && (
+          <div className="flex items-start gap-2 rounded-md border border-dashed p-3">
+            <Badge variant={suggestedBadge.variant} className={suggestedBadge.className}>
+              <Sparkles className="mr-1 size-3" aria-hidden />
+              {suggestedBadge.label}
+            </Badge>
+            <p className="text-xs text-muted-foreground">
+              Atlas suggested this claim on its own, from a conversation in this workspace.
+              No person proposed or confirmed it — the evidence below is the conversation a
+              model drew it from, and publishing it is entirely this review&apos;s call.
             </p>
           </div>
         )}

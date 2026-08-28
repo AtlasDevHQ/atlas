@@ -493,6 +493,12 @@ describe("makeSchedulerLive", () => {
         // broken page but a warehouse whose claims are as fresh as the last time
         // somebody remembered to press a button.
         "brain_warehouse_cadence",
+        // #5488 — the autonomous suggester (ADR-0036 §T9 lock 1's permitted
+        // autonomy). Files drafts like the two above and so defaults OFF — but
+        // per WORKSPACE on the promote_decay model: the fiber always runs and
+        // resolves the opted-in workspaces per tick, so opting in needs no
+        // redeploy.
+        "brain_suggester",
       ],
     },
   ] as const;

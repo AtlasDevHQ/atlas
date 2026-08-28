@@ -24,10 +24,21 @@ These are recommendations — the simplified stroke variant may be preferred for
 
 ## Colors
 
+> ⚠️ **These are the mark's own colours, not the brand palette.** This table
+> called teal `#23CE9E` "Primary" — the exact vocabulary
+> [ADR-0023](../docs/adr/0023-brand-color-system.md) retired. Since that ADR the
+> committed brand colour is forest `#1F5C45` (`--atlas-brand`), and teal is
+> `--atlas-spark`: a rare highlight on dark or green surfaces, **never a
+> primary**. [`brand.css`](../brand.css) at the repo root is the source of truth
+> for tokens; nothing here overrides it.
+>
+> The mark itself is still drawn in the teal hue. Whether it should follow
+> forest is an open brand question, not settled by this file.
+
 | Name | Hex | Usage |
 |------|-----|-------|
-| Primary | `#23CE9E` | Default mark color |
-| Primary Dark | `#1A9B76` | Light-bg variant, gradient end |
+| Mark teal | `#23CE9E` | Default mark colour — the `--atlas-spark` hue |
+| Mark teal, deep | `#1A9B76` | Light-bg variant, gradient end |
 | Deep | `#148060` | Accent/hover states (UI only — not used in logo SVGs) |
 | Dark Surface | `#0C0C10` | Recommended dark background |
 | Light Surface | `#F6F6F8` | Recommended light background |

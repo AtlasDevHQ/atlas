@@ -1096,7 +1096,7 @@ var plates=[], platesGroup=null;
 /* When each card is born (staggered): the labels key off the same schedule,
    each one fading exactly as its card — carrying the same title — condenses
    out of the spot it was marking. Two titles at once was the ghosting. */
-var PLATE_T0=0.65, PLATE_DT0=0.024;
+var PLATE_T0=0.64, PLATE_DT0=0.022;
 
 /* ================= the unrolling (beat 03) ================= */
 /* The globe opens flat, in place, into a RECTANGULAR chart — the unrolled
@@ -1368,7 +1368,9 @@ function buildPlates(){
       p0.clone().addScaledVector(F0,modelRadius*0.08),
       hover.clone().addScaledVector(F0,-modelRadius*0.05),
       hover);
-    P.t0=PLATE_T0+i*PLATE_DT0; P.t1=0.79+i*0.018;
+    // Condensation is fully settled before any flight begins — a card still
+    // condensing when the flight takes it reads as being yanked.
+    P.t0=PLATE_T0+i*PLATE_DT0; P.t1=0.765+i*0.014;
     plates.push(P);
   }
   scene.add(platesGroup);
@@ -1384,15 +1386,17 @@ function updatePlates(){
      white card at half opacity over a dark scene is grey fog, so the cover
      is quick — then the survey revealing itself on the sheet. */
   var e5base=t;
-  /* Tightened against the washout: the paper ground and the card arrive fast
-     (a half-opaque paper over a dark scene is grey fog), and the sheet starts
-     inking itself while the aligned cards still cover it — so when they fade
-     there is already a drawn survey underneath, never white-on-white. */
-  groundEl.style.opacity=sm(t,0.868,0.902).toFixed(3);
-  sheetCardEl.style.opacity=sm(t,0.874,0.908).toFixed(3);
+  /* The turn to paper is a dawn, not a curtain: the GL scene's own exposure
+     floods up first (in the render loop), so by the time this paper ground
+     eases in over the flying cards the frame is already luminous — a slow
+     ramp without the grey fog a veil over a dark scene makes. The sheet
+     still starts inking itself while the aligned cards cover it, so when
+     they fade there is a drawn survey underneath, never white-on-white. */
+  groundEl.style.opacity=sm(t,0.855,0.92).toFixed(3);
+  sheetCardEl.style.opacity=sm(t,0.868,0.905).toFixed(3);
   if(sheetDom) redrawSheet(sm(t,0.885,0.98));
 
-  var flip=t>0.80&&sheetDom;
+  var flip=t>0.77&&sheetDom;
   var D=0, wpp=0;
   if(flip){
     camera.getWorldDirection(_f);
@@ -1418,7 +1422,9 @@ function updatePlates(){
       // the rect pixel for pixel. The bow flattens with the z scale.
       // Arrivals cascade left-to-right — papers being laid on a desk in
       // order, not a formation snapping to a grid.
-      var e5=sm(e5base,0.80+i*0.008,0.868+i*0.008);
+      // Longer, more cascaded flights: papers laid on the desk one after
+      // another, all landed before the sheet takes over at 0.906.
+      var e5=sm(e5base,0.785+i*0.009,0.878+i*0.006);
       if(e5>0){
         var rect=landingRect(i);
         var cardHpx=CARD_H*rect.h/CARD_QH;
@@ -1894,7 +1900,13 @@ function render(){
     mapMesh.visible=lifted;
     if(sphere) sphere.visible=!lifted;
   }
-  stage.classList.toggle('lit', t>0.895);
+  // The dawn: the vitrine floods with light while the cards fly, BEFORE the
+  // paper ground arrives — the turn out of the dark is continuous brightness,
+  // not a theme swap. Set per-frame so it composes with the lab's exposure.
+  var dawn=THREE.MathUtils.smoothstep(t,0.80,0.895);
+  renderer.toneMappingExposure=
+    ((typeof L.exp==='number'&&isFinite(L.exp))?L.exp:1.05)*(1+0.9*dawn);
+  stage.classList.toggle('lit', t>0.88);
 
   var bi=0;
   for(var k=0;k<BEATS.length;k++) if(t>=BEATS[k][0]) bi=k;

@@ -116,7 +116,7 @@ export function createMockConnection(
     closed: false,
 
     async query(sql: string, timeoutMs?: number): Promise<PluginQueryResult> {
-      queryCalls.push({ sql, timeoutMs });
+      queryCalls.push({ sql, ...(timeoutMs !== undefined ? { timeoutMs } : {}) });
       if (nextError) {
         const err = nextError;
         // Reset so subsequent calls don't re-throw unless explicitly set

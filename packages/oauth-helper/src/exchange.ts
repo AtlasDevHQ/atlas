@@ -113,9 +113,9 @@ export async function exchangeCode(
   }
   return {
     access_token: data.access_token,
-    refresh_token: typeof data.refresh_token === "string" ? data.refresh_token : undefined,
-    token_type: typeof data.token_type === "string" ? data.token_type : undefined,
-    expires_in: typeof data.expires_in === "number" ? data.expires_in : undefined,
-    scope: typeof data.scope === "string" ? data.scope : undefined,
+    ...(typeof data.refresh_token === "string" ? { refresh_token: data.refresh_token } : {}),
+    ...(typeof data.token_type === "string" ? { token_type: data.token_type } : {}),
+    ...(typeof data.expires_in === "number" ? { expires_in: data.expires_in } : {}),
+    ...(typeof data.scope === "string" ? { scope: data.scope } : {}),
   };
 }

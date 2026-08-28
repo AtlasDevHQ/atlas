@@ -116,7 +116,9 @@ export class AtlasError extends Error {
       this.retryAfterSeconds = opts;
       this.retryable = SDK_RETRYABLE_CODES.has(code) || (isChatErrorCode(code) && isRetryableError(code));
     } else {
-      this.retryAfterSeconds = opts?.retryAfterSeconds;
+      if (opts?.retryAfterSeconds !== undefined) {
+        this.retryAfterSeconds = opts.retryAfterSeconds;
+      }
       // Use server value when provided, otherwise compute from code
       this.retryable = opts?.retryable ?? (SDK_RETRYABLE_CODES.has(code) || (isChatErrorCode(code) && isRetryableError(code)));
     }
@@ -520,7 +522,10 @@ export function createAtlasClient(options: AtlasClientOptions) {
       } catch {
         // Could not read body at all
       }
-      throw new AtlasError(code, msg, res.status, { retryAfterSeconds, retryable });
+      throw new AtlasError(code, msg, res.status, {
+        ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+        ...(retryable !== undefined ? { retryable } : {}),
+      });
     }
   }
 
@@ -548,7 +553,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
           Authorization: authHeader,
         },
         body: JSON.stringify(body),
-        signal: opts?.signal,
+        signal: opts?.signal ?? null,
       });
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") throw err;
@@ -781,7 +786,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
       const res = await post("/api/v1/chat", {
         messages,
         conversationId: opts?.conversationId,
-      }, { signal: opts?.signal });
+      }, { ...(opts?.signal !== undefined ? { signal: opts.signal } : {}) });
 
       await throwIfNotOk(res);
 

@@ -18,5 +18,17 @@
     "types": ["bun", "node"],
     "tsBuildInfoFile": "./tsconfig.exact-optional.tsbuildinfo"
   },
-  "include": ["packages/types/src", "packages/schemas/src"]
+  "include": [
+    "packages/types/src",
+    "packages/schemas/src",
+    "packages/sdk/src",
+    "packages/plugin-sdk/src",
+    "packages/webhook-publisher/src",
+    // oauth-helper graduated with stage 2 (#5522) whether listed or not: its
+    // package.json exports raw src/*.ts, so packages/sdk's imports pull its
+    // source into this program transitively. Listed so the manifest states
+    // what the gate enforces; __tests__ sits outside src in this package.
+    "packages/oauth-helper/src",
+    "packages/oauth-helper/__tests__"
+  ]
 }

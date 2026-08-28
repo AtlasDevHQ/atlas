@@ -50,7 +50,7 @@ export async function fetchStarterPrompts(
     res = await fetch(`${apiUrl}/api/v1/starter-prompts?limit=${limit}`, {
       credentials,
       headers,
-      signal,
+      signal: signal ?? null,
     });
   } catch (err) {
     // Normal React Query cancellation / unmount fires AbortError here. That

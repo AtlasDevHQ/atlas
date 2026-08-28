@@ -1,7 +1,7 @@
 /* oxlint-disable @typescript-eslint/no-explicit-any -- tests deliberately pass invalid config to verify runtime validation */
 import { describe, test, expect } from "bun:test";
 import { z } from "zod";
-import { tool } from "ai";
+import { tool, type ToolSet } from "ai";
 import {
   definePlugin,
   createPlugin,
@@ -19,8 +19,8 @@ import type {
   AtlasSandboxPlugin,
 } from "../types";
 
-/** Minimal AI SDK tool for use in tests. */
-const mockTool = tool({ description: "mock", inputSchema: z.object({}) });
+/** Minimal AI SDK tool for use in tests, typed as the registry slot it fills. */
+const mockTool: ToolSet[string] = tool({ description: "mock", inputSchema: z.object({}) });
 
 describe("definePlugin", () => {
   test("returns input unchanged for datasource plugin", () => {

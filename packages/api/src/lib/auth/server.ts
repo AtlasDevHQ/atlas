@@ -1110,10 +1110,22 @@ export function resolveScimCredentialHashSecret(
     }
     return explicit;
   }
-  // Reuse the same validation the session secret gets — this throws with an
-  // actionable message when BETTER_AUTH_SECRET is missing or too short,
-  // rather than handing the plugin a weak key.
-  const root = parseAuthSecret(env.BETTER_AUTH_SECRET);
+  // Reuse the same validation the session secret gets rather than handing the
+  // plugin a weak key. Re-thrown with SCIM context: `parseAuthSecret`'s own
+  // message is accurate but arrives from inside `buildPlugins()`, where an
+  // operator has no clue why enabling SCIM demanded a session secret.
+  let root: AuthSecret;
+  try {
+    root = parseAuthSecret(env.BETTER_AUTH_SECRET);
+  } catch (err) {
+    throw new Error(
+      "SCIM is enabled but its credential-hash secret cannot be resolved: "
+        + (err instanceof Error ? err.message : String(err))
+        + " Set BETTER_AUTH_SECRET (it is required for managed auth anyway), or set "
+        + "ATLAS_SCIM_CREDENTIAL_HASH_SECRET to a dedicated value of at least 32 characters.",
+      { cause: err },
+    );
+  }
   // 64 hex chars, comfortably over the plugin's 32-character floor.
   return crypto
     .createHmac("sha256", root)

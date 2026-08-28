@@ -203,6 +203,18 @@ function authDeps(plugins: ReturnType<typeof buildPlugins>) {
 }
 
 const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
+const ORIGINAL_AUTH_SECRET = process.env.BETTER_AUTH_SECRET;
+
+// #5493 — `buildPlugins()` derives @better-auth/scim 1.7's
+// `credentialHashSecret` from `BETTER_AUTH_SECRET` (see
+// `resolveScimCredentialHashSecret`). A real managed deploy always has it —
+// it is the session-signing secret, and `getAuthInstance()` requires it
+// regardless — but this file drives `buildPlugins()` directly with the
+// enterprise seams mocked on, so it has to supply one. `??=` so a caller that
+// already set a real secret keeps it; restored in `afterAll` alongside
+// DATABASE_URL, since a leaked value would change what sibling files see
+// under a shared-process `bun test`.
+process.env.BETTER_AUTH_SECRET ??= "test-auth-secret-at-least-32-chars-long!!";
 
 beforeEach(() => {
   queries = [];
@@ -230,6 +242,11 @@ afterAll(() => {
     delete process.env.DATABASE_URL;
   } else {
     process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
+  }
+  if (ORIGINAL_AUTH_SECRET === undefined) {
+    delete process.env.BETTER_AUTH_SECRET;
+  } else {
+    process.env.BETTER_AUTH_SECRET = ORIGINAL_AUTH_SECRET;
   }
 });
 

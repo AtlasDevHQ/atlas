@@ -421,7 +421,16 @@ describe("runMigrations", () => {
     //   rather than a nullable resolved-user-id, which would attribute the
     //   minority and collapse "not yet resolved" with "resolved, no Atlas
     //   account") = 209.
-    expect(count).toBe(209);
+    //   Plus 0209 (scimProvider -> scimManagedConnection — #5493: @better-auth/scim
+    //   1.7 replaced the single `scimProvider` table with a managed-connection
+    //   catalog, and nothing backfills it, so an upgrading deploy reads an empty
+    //   admin surface while the legacy rows still describe real directory
+    //   connections. Carries connections only: 1.6 stored bearer tokens
+    //   reversibly encrypted and 1.7 stores HMAC digests under a different
+    //   secret, so credentials are ROTATED rather than migrated — decrypting
+    //   live customer secrets to re-digest them is the one failure mode that
+    //   would break provisioning silently) = 210.
+    expect(count).toBe(210);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -741,6 +750,7 @@ describe("runMigrations", () => {
         "0206_brain_warehouse_entity_success.sql",
         "0207_brain_extraction_batch.sql",
         "0208_brain_actor_identity.sql",
+        "0209_scim_provider_to_managed_connection.sql",
       ],
     });
 

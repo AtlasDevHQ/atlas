@@ -487,6 +487,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // predicate narrows this section: an erasure that failed to cross would
         // be undone by the destination's first audience cycle.
         brainActorIdentities: 3,
+        // #5113 — this suite seeds neither vocabulary memory table, so both
+        // export empty; `migrate-vocab-memory-pg.test.ts` owns the seeded arm.
+        brainVocabularyProposals: 0,
+        brainPredicateCardinalities: 0,
       });
 
       // ── Simulate the cross-region hop on one DB: preserved UUIDs would

@@ -202,6 +202,20 @@ body{
 .stage.lit .beat .n{color:var(--brand)}
 .stage.lit .beat h1{color:var(--plate-ink)}
 .stage.lit .beat p{color:var(--plate-ink-soft)}
+/* Where color-mix exists, the relight rides the scroll itself (--litf, set
+   per frame) instead of snapping at a threshold with a time-eased transition
+   — scrubbed backwards it un-dawns just as smoothly. The .lit rules above
+   stay as the fallback; the render loop drives exactly one of the two. */
+@supports (color: color-mix(in oklab, red 50%, blue)) {
+  .stage.mix .mark strong,.stage.mix .mark small,.stage.mix .hint,
+  .stage.mix .beat .n,.stage.mix .beat h1,.stage.mix .beat p{transition:none}
+  .stage.mix .mark strong{color:color-mix(in oklab, var(--paper), var(--plate-ink) calc(var(--litf,0)*100%))}
+  .stage.mix .mark small{color:color-mix(in oklab, var(--muted), var(--plate-ink-soft) calc(var(--litf,0)*100%))}
+  .stage.mix .hint{color:color-mix(in oklab, var(--muted), var(--plate-ink-soft) calc(var(--litf,0)*100%))}
+  .stage.mix .beat .n{color:color-mix(in oklab, var(--accent), var(--brand) calc(var(--litf,0)*100%))}
+  .stage.mix .beat h1{color:color-mix(in oklab, var(--paper), var(--plate-ink) calc(var(--litf,0)*100%))}
+  .stage.mix .beat p{color:color-mix(in oklab, var(--muted), var(--plate-ink-soft) calc(var(--litf,0)*100%))}
+}
 
 /* ---------- chrome ---------- */
 .chrome{position:absolute;inset:0;pointer-events:none;z-index:10}
@@ -343,7 +357,7 @@ input[type=range]:focus-visible{outline:1px solid var(--accent);outline-offset:5
 <div class="track">
 <div class="stage">
   <canvas id="gl"></canvas>
-  <div class="vignette"></div>
+  <div class="vignette" id="vignette"></div>
   <div class="labels" id="labels"></div>
 
   <div class="handoff" aria-hidden="true">
@@ -422,7 +436,13 @@ var TEX_B64 = /*__TEX__*/;
 
 var boot=document.getElementById('boot'), bootbar=document.getElementById('bootbar'), bootmsg=document.getElementById('bootmsg');
 var canvas=document.getElementById('gl'), stage=document.querySelector('.stage');
+var vignette=document.getElementById('vignette');
 var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+/* Scroll-driven relight where color-mix is available (the .mix rules); the
+   .lit threshold + CSS transition is the fallback. One mechanism at a time. */
+var litMix = !!(window.CSS && CSS.supports &&
+                CSS.supports('color','color-mix(in oklab, red 50%, blue)'));
+if(litMix) stage.classList.add('mix');
 
 function fail(title,msg){
   var d=document.createElement('div'); d.className='err';
@@ -1386,13 +1406,15 @@ function updatePlates(){
      white card at half opacity over a dark scene is grey fog, so the cover
      is quick — then the survey revealing itself on the sheet. */
   var e5base=t;
-  /* The turn to paper is a dawn, not a curtain: the GL scene's own exposure
-     floods up first (in the render loop), so by the time this paper ground
-     eases in over the flying cards the frame is already luminous — a slow
-     ramp without the grey fog a veil over a dark scene makes. The sheet
+  /* The turn to paper is a dawn, not a curtain: the GL scene's exposure AND
+     its field flood up first (render loop: the exposure ramp plus the
+     scene.background night→ember→paper warm-up), so by the time this paper
+     ground eases in over the flying cards the whole frame is already
+     luminous — a slow ramp without the grey fog a veil over a dark scene
+     makes. The sheet
      still starts inking itself while the aligned cards cover it, so when
      they fade there is a drawn survey underneath, never white-on-white. */
-  groundEl.style.opacity=sm(t,0.855,0.92).toFixed(3);
+  groundEl.style.opacity=sm(t,0.845,0.925).toFixed(3);
   sheetCardEl.style.opacity=sm(t,0.868,0.905).toFixed(3);
   if(sheetDom) redrawSheet(sm(t,0.885,0.98));
 
@@ -1858,6 +1880,14 @@ document.getElementById('l_copy').addEventListener('click',function(){
 });
 
 /* ================= loop ================= */
+/* The dawn's field ramp. Night matches the untouched clear; ember is the warm
+   dark the light comes up through (a straight black→paper lerp passes through
+   the grey the dawn exists to avoid); paper is the CSS ground's outer tone,
+   pre-tonemap — ACES at the flooded exposure lands it on the real thing. */
+var DAWN_NIGHT=new THREE.Color(0x000000),
+    DAWN_EMBER=new THREE.Color(0x2A1C10),
+    DAWN_PAPER=new THREE.Color(0xEFE6D6),
+    dawnBg=new THREE.Color();
 var W=1,H=1;
 function resize(){
   var r=stage.getBoundingClientRect();
@@ -1903,10 +1933,34 @@ function render(){
   // The dawn: the vitrine floods with light while the cards fly, BEFORE the
   // paper ground arrives — the turn out of the dark is continuous brightness,
   // not a theme swap. Set per-frame so it composes with the lab's exposure.
-  var dawn=THREE.MathUtils.smoothstep(t,0.80,0.895);
+  // An exposure flood alone lit the OBJECTS and left the FIELD black, so the
+  // paper still arrived as a curtain (mean frame luminance stepped 0.47→0.86
+  // inside t 0.86..0.90). Now the field itself dawns: scene.background warms
+  // night → ember → paper under the rising exposure, and the vignette lifts
+  // with it, so the DOM ground eases in over an already-luminous frame.
+  var dawn=THREE.MathUtils.smoothstep(t,0.775,0.90);
   renderer.toneMappingExposure=
     ((typeof L.exp==='number'&&isFinite(L.exp))?L.exp:1.05)*(1+0.9*dawn);
-  stage.classList.toggle('lit', t>0.88);
+  var d1=THREE.MathUtils.smoothstep(t,0.775,0.845);
+  // The paper phase is shaped perceptually: the lerp runs in linear light,
+  // where the first few percent toward paper read as a leap — ^1.6 spends
+  // the scroll where the eye needs it.
+  var d2=Math.pow(THREE.MathUtils.smoothstep(t,0.815,0.895),1.6);
+  if(d1>0){
+    // Pre-tonemap values: ACES + the flooded exposure carry the ramp the rest
+    // of the way, so by full opacity the field meets the CSS paper ground.
+    dawnBg.lerpColors(DAWN_NIGHT,DAWN_EMBER,d1).lerp(DAWN_PAPER,d2);
+    scene.background=dawnBg;
+  }else{
+    scene.background=null;               // the vitrine's own dark, untouched
+  }
+  vignette.style.opacity=(1-dawn).toFixed(3);
+  // The relight rides the field: its 50% crossing sits where the dawning
+  // ground passes mid-luminance, so the text is never paper-on-paper or
+  // ink-on-night.
+  if(litMix) stage.style.setProperty('--litf',
+    THREE.MathUtils.smoothstep(t,0.82,0.90).toFixed(3));
+  else stage.classList.toggle('lit', t>0.86);
 
   var bi=0;
   for(var k=0;k<BEATS.length;k++) if(t>=BEATS[k][0]) bi=k;

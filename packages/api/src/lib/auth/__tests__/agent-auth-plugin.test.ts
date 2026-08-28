@@ -721,11 +721,30 @@ describe("agent-auth per-org token minting (#4410)", () => {
       // 1-DAY default minimum rejects the agent TTL with EXPIRES_IN_IS_TOO_SMALL
       // — the exact production regression this test exists to catch).
       plugins: [
+        // Structural cast, same pattern as `api/routes/well-known.ts`.
+        //
+        // bun installs one directory per distinct PEER resolution, so a
+        // single `@better-auth/core@1.7.1` in the lockfile still lands as
+        // several install dirs — `better-auth` binds one and
+        // `@better-auth/api-key` another. TypeScript treats the
+        // `BetterAuthPlugin` declared in each as a distinct nominal type, so
+        // passing the plugin straight in fails to typecheck from 1.7 onward
+        // (1.6's `PluginContext` was loose enough to stay structurally
+        // compatible). Nothing is wrong at runtime — there is exactly one
+        // core version — and an `overrides` entry does NOT fix it: the split
+        // is peer-resolution, not version, so pinning the version is a no-op.
+        //
+        // Production is unaffected: `buildPlugins()` accumulates into a
+        // `BetterAuthPlugin[]`, which erases the instance identity before
+        // `betterAuth()` sees it. Only an inline literal like this one, where
+        // the argument type is checked directly, hits it.
         apiKeyPlugin({
           enableMetadata: true,
           enableSessionForAPIKeys: true,
           keyExpiration: { minExpiresIn: 15 / (60 * 24) },
-        }),
+        }) as unknown as NonNullable<
+          NonNullable<Parameters<typeof betterAuth>[0]>["plugins"]
+        >[number],
       ],
     });
     const rawCreate = (instance.api as { createApiKey?: unknown }).createApiKey;

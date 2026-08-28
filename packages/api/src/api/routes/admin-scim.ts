@@ -18,6 +18,7 @@ import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitl
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { SCIMError } from "@atlas/api/lib/auth/auth-errors";
+import { canGenerateSCIMToken } from "@atlas/api/lib/auth/scim-authz";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -49,6 +50,15 @@ const SCIMGroupMappingSchema = z.object({
   scimGroupName: z.string(),
   roleName: z.string(),
   createdAt: z.string(),
+});
+
+const SCIMIssuedCredentialSchema = z.object({
+  connectionId: z.string(),
+  credentialId: z.string(),
+  // Returned ONCE. @better-auth/scim stores only an HMAC digest, so this
+  // plaintext is unrecoverable after the response is sent.
+  token: z.string(),
+  expiresAt: z.string(),
 });
 
 const ConnectionIdParamSchema = createIdParamSchema("conn_abc123");
@@ -107,6 +117,43 @@ const deleteConnectionRoute = createRoute({
     400: { description: "Invalid connection ID or no active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Connection not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const createConnectionRoute = createRoute({
+  method: "post",
+  path: "/connections",
+  tags: ["Admin — SCIM"],
+  summary: "Create SCIM connection and issue its bearer token",
+  description:
+    "Creates a SCIM provisioning connection for the admin's active organization and returns "
+    + "its bearer token. The token is shown ONCE — only an HMAC digest is stored.",
+  responses: {
+    201: { description: "Connection created and credential issued", content: { "application/json": { schema: SCIMIssuedCredentialSchema } } },
+    400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin, owner or platform-admin required, plus enterprise license", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const rotateCredentialRoute = createRoute({
+  method: "post",
+  path: "/connections/{id}/rotate",
+  tags: ["Admin — SCIM"],
+  summary: "Rotate a SCIM connection's bearer token",
+  description:
+    "Issues a fresh bearer token for an existing connection and retires the previous one. "
+    + "The new token is shown ONCE.",
+  request: { params: ConnectionIdParamSchema },
+  responses: {
+    200: { description: "Credential rotated", content: { "application/json": { schema: SCIMIssuedCredentialSchema } } },
+    400: { description: "Invalid connection ID or no active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin, owner or platform-admin required, plus enterprise license", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Connection not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -247,6 +294,187 @@ adminScim.openapi(deleteConnectionRoute, async (c) => {
       );
     }),
   ), { label: "delete SCIM connection", domainErrors: [scimDomainError] });
+});
+
+// ---------------------------------------------------------------------------
+// Credential minting — the GHSA-j8v8-g9cx-5qf4 operation
+// ---------------------------------------------------------------------------
+//
+// In @better-auth/scim 1.6 this was `POST /api/auth/scim/generate-token`, a
+// PUBLIC plugin route, and the advisory was that its ownership check fell
+// open on a NULL `userId`. We held it shut with the `providerOwnership` flag
+// plus a `beforeSCIMTokenGenerated` hook that called `canGenerateSCIMToken`.
+//
+// 1.7 withdraws that route entirely and exposes the operation as a
+// SERVER_ONLY endpoint, so the plugin no longer has a hook to run our check
+// in — the authorization moved OUT to here. The predicate is unchanged; what
+// changed is that it now guards an Atlas route sitting in front of an
+// endpoint that is unreachable over the wire, rather than a public one.
+//
+// `createAdminRouter()` already rejects non-admins, so this is defence in
+// depth AND a narrowing: `canGenerateSCIMToken` resolves the EFFECTIVE grant
+// (#2890 — platform_admin via user.role, org admin/owner via member.role)
+// and fails CLOSED on a member-lookup error, which minting an IdP
+// provisioning token warrants.
+
+/**
+ * Shared guard for both minting routes.
+ *
+ * Returns a boolean rather than failing, so the caller can answer 403 —
+ * `scimDomainError` maps SCIMError codes to 400/404/409 only, and an
+ * authorization denial is structurally a 403 (the caller authenticated
+ * fine; they simply lack the grant).
+ */
+const canMintHere = (
+  role: unknown,
+  userId: string | undefined,
+) => Effect.tryPromise({
+  try: () => canGenerateSCIMToken(role, userId),
+  // `canGenerateSCIMToken` already fails closed internally on a DB error;
+  // this catch covers an unexpected throw. Either way the failure
+  // propagates as a 500 rather than being read as "allowed" — never let a
+  // lookup failure mint a provisioning token.
+  catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+});
+
+/** 403 body shared by both minting routes. */
+const MINT_FORBIDDEN = {
+  error: "forbidden",
+  message: "Only admin, owner, or platform-admin users can issue SCIM tokens.",
+} as const;
+
+/**
+ * Record a REFUSED attempt to issue a SCIM credential.
+ *
+ * A 403 returns as a successful Effect, so the `tapErrorCause` handlers on
+ * these routes never see it. Without this an attempt to mint an IdP
+ * provisioning credential that the authorization check turned away would
+ * leave no trace at all, while a transient DB fault would be audited — the
+ * refusal is the more interesting event of the two.
+ */
+function auditMintRefused(args: {
+  actionType: (typeof ADMIN_ACTIONS)["scim"][keyof (typeof ADMIN_ACTIONS)["scim"]];
+  targetId: string;
+  ipAddress: string | null;
+  userId: string | undefined;
+  metadata?: Record<string, unknown>;
+}): void {
+  logAdminAction({
+    actionType: args.actionType,
+    targetType: "scim",
+    targetId: args.targetId,
+    status: "failure",
+    ipAddress: args.ipAddress,
+    metadata: {
+      ...args.metadata,
+      reason: "not_authorized_to_mint",
+      attemptedBy: args.userId ?? "unknown",
+    },
+  });
+}
+
+// POST /connections — create a connection and issue its first token
+adminScim.openapi(createConnectionRoute, async (c) => {
+  const ipAddress = clientIP(c);
+
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId, user } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "scim");
+    if (!(yield* canMintHere(user?.role, user?.id))) {
+      auditMintRefused({
+        actionType: ADMIN_ACTIONS.scim.connectionCreate,
+        targetId: "unissued",
+        ipAddress,
+        userId: user?.id,
+      });
+      return c.json(MINT_FORBIDDEN, 403);
+    }
+
+    const issued = yield* (yield* SCIMProvenance).createConnection(orgId!, user!.id);
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.scim.connectionCreate,
+      targetType: "scim",
+      targetId: issued.connectionId,
+      ipAddress,
+      // NEVER put `issued.token` in metadata — audit rows are readable by
+      // every workspace admin, which would hand them a live IdP credential.
+      metadata: {
+        connectionId: issued.connectionId,
+        credentialId: issued.credentialId,
+        expiresAt: issued.expiresAt,
+      },
+    });
+
+    return c.json(issued, 201);
+  }).pipe(
+    Effect.tapErrorCause((cause) => {
+      const err = causeToError(cause);
+      if (err === undefined) return Effect.void;
+      return Effect.sync(() =>
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.scim.connectionCreate,
+          targetType: "scim",
+          targetId: "unknown",
+          status: "failure",
+          ipAddress,
+          metadata: { error: errorMessage(err) },
+        }),
+      );
+    }),
+  ), { label: "create SCIM connection", domainErrors: [scimDomainError] });
+});
+
+// POST /connections/:id/rotate — issue a fresh token, retire the old one
+adminScim.openapi(rotateCredentialRoute, async (c) => {
+  const ipAddress = clientIP(c);
+  const { id: connectionId } = c.req.valid("param");
+
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId, user } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "scim");
+    if (!(yield* canMintHere(user?.role, user?.id))) {
+      auditMintRefused({
+        actionType: ADMIN_ACTIONS.scim.credentialRotate,
+        targetId: connectionId,
+        ipAddress,
+        userId: user?.id,
+        metadata: { connectionId },
+      });
+      return c.json(MINT_FORBIDDEN, 403);
+    }
+
+    const issued = yield* (yield* SCIMProvenance).rotateCredential(orgId!, connectionId, user!.id);
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.scim.credentialRotate,
+      targetType: "scim",
+      targetId: issued.connectionId,
+      ipAddress,
+      metadata: {
+        connectionId: issued.connectionId,
+        credentialId: issued.credentialId,
+        expiresAt: issued.expiresAt,
+      },
+    });
+
+    return c.json(issued, 200);
+  }).pipe(
+    Effect.tapErrorCause((cause) => {
+      const err = causeToError(cause);
+      if (err === undefined) return Effect.void;
+      return Effect.sync(() =>
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.scim.credentialRotate,
+          targetType: "scim",
+          targetId: connectionId,
+          status: "failure",
+          ipAddress,
+          metadata: { connectionId, error: errorMessage(err) },
+        }),
+      );
+    }),
+  ), { label: "rotate SCIM credential", domainErrors: [scimDomainError] });
 });
 
 // GET /group-mappings — list group→role mappings

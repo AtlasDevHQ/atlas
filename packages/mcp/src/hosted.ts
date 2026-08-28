@@ -60,14 +60,37 @@
 
 import { Hono } from "hono";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-// `better-auth/oauth2` exposes the `verifyAccessToken` helper that this
-// route's bearer middleware relies on. Static import (rather than the
-// dynamic import other Better-Auth-touching modules use) is fine here —
-// the hosted MCP path is SaaS-only, and the only deployment shape that
-// loads `@atlas/mcp/hosted` already has Better Auth in its module graph
-// via `@atlas/api`. Keeping the import static gives us proper type
+// `better-auth/oauth2` exposes the access-token verifier this route's
+// bearer middleware relies on. Static import (rather than the dynamic
+// import other Better-Auth-touching modules use) is fine here — the
+// hosted MCP path is SaaS-only, and the only deployment shape that loads
+// `@atlas/mcp/hosted` already has Better Auth in its module graph via
+// `@atlas/api`. Keeping the import static gives us proper type
 // resolution at the call site below.
-import { verifyAccessToken } from "better-auth/oauth2";
+//
+// ⚠️ TWO traps here, both of which typecheck clean. Read before editing.
+//
+// 1. This was `verifyAccessToken` until Better Auth 1.7, which removed it.
+//    When it disappears, `tsc` suggests `verifyJwsAccessToken` — DO NOT take
+//    that suggestion. It is a near-spelling, not the replacement:
+//    `verifyJwsAccessToken` takes only `JwksFetchOptions & { verifyOptions }`
+//    and has NO scope parameter, so switching to it (and dropping the
+//    now-invalid `scopes` property to make the file compile) would silently
+//    stop enforcing `mcp:read` on every hosted MCP request — with a green
+//    typecheck AND a green test run, because the 403 branch below simply
+//    stops being reachable. The replacement is `verifyAccessTokenRequest`,
+//    where `scopes` is spelled `requiredScopes`.
+//
+// 2. Import it from `@better-auth/core/oauth2`, NOT `better-auth/oauth2`.
+//    In 1.6 the latter re-exported the verifiers at runtime via
+//    `export * from "@better-auth/core/oauth2"`. 1.7 dropped that star from
+//    `dist/oauth2/index.mjs` but LEFT it in `dist/oauth2/index.d.mts`, so
+//    the type surface still promises symbols the runtime no longer provides.
+//    Importing from `better-auth/oauth2` compiles and then dies at module
+//    load with `SyntaxError: Export named 'verifyAccessTokenRequest' not
+//    found`. `@better-auth/core` is declared in this package's manifest for
+//    exactly this reason — it is not an accidental transitive import.
+import { verifyAccessTokenRequest } from "@better-auth/core/oauth2";
 import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { getWorkspaceRegion } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";
@@ -245,9 +268,9 @@ function brandedMcpHost(base: string): string | null {
 }
 
 /**
- * Build the token issuer URL. `verifyAccessToken` requires `issuer` to
- * be set so a leaked token from a different OAuth server can't replay
- * against us — the issuer claim has to match exactly.
+ * Build the token issuer URL. `verifyAccessTokenRequest` requires
+ * `issuer` to be set so a leaked token from a different OAuth server
+ * can't replay against us — the issuer claim has to match exactly.
  */
 function tokenIssuer(req: Request): string {
   const base =
@@ -390,16 +413,32 @@ async function verifyMcpBearer(
     };
   }
 
-  let payload: Awaited<ReturnType<typeof verifyAccessToken>>;
+  let payload: Awaited<ReturnType<typeof verifyAccessTokenRequest>>;
   try {
-    payload = await verifyAccessToken(token, {
-      verifyOptions: {
-        audience: resourceAudience(req),
-        issuer: tokenIssuer(req),
+    // `dpop` is deliberately not configured. Leaving it unset keeps this a
+    // plain bearer check, exactly as before. Enabling it would default to
+    // an in-process replay store for DPoP proof `jti` values, which
+    // upstream documents as unsafe for multi-instance deployments — and
+    // Atlas SaaS runs multiple instances per region (ADR-0024), so a
+    // captured proof could be replayed against a sibling instance.
+    payload = await verifyAccessTokenRequest(
+      {
+        authorizationHeader: auth,
+        method: req.method,
+        url: req.url,
       },
-      scopes: [...REQUIRED_SCOPES],
-      jwksUrl: jwksUrl(req),
-    });
+      {
+        verifyOptions: {
+          audience: resourceAudience(req),
+          issuer: tokenIssuer(req),
+        },
+        // 1.6's `scopes`. Load-bearing: the 403 `insufficient_scope`
+        // branch below only fires because verification rejects a token
+        // that authenticated but lacks `mcp:read`.
+        requiredScopes: [...REQUIRED_SCOPES],
+        jwksUrl: jwksUrl(req),
+      },
+    );
   } catch (err) {
     // JWKS infrastructure failures → 503. Logging at error so the
     // operator paging path fires; this is genuinely "auth server side

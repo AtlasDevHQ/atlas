@@ -556,7 +556,9 @@ export const ADMIN_ACTIONS = {
     restore: "mode.restore",
   },
   scim: {
+    connectionCreate: "scim.connection_create",
     connectionDelete: "scim.connection_delete",
+    credentialRotate: "scim.credential_rotate",
     groupMappingCreate: "scim.group_mapping_create",
     groupMappingDelete: "scim.group_mapping_delete",
   },

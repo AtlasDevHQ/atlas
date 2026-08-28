@@ -12,8 +12,8 @@
  *   - `override`          — let the mutation proceed and stamp the audit row
  *                           with `metadata.scim_override = true`.
  *
- * Detection mirrors the `account` ↔ `scimProvider` join used by
- * `ee/src/auth/scim.ts:198-205` (getSyncStatus). When EE is disabled, no
+ * Detection reads the `scimUser` projection that @better-auth/scim writes
+ * on every provisioning sync (see `ee/src/auth/scim.ts`). When EE is disabled, no
  * internal DB is configured, or the SCIM tables haven't been migrated, the
  * helper returns `false` (no SCIM contract → mutation proceeds unchanged).
  *
@@ -68,7 +68,7 @@ export function getSCIMOverridePolicy(orgId: string | undefined): SCIMOverridePo
  * Returns `false` (treat as non-SCIM) when:
  *   - enterprise mode is disabled,
  *   - the internal DB is not configured,
- *   - the `scimProvider` table does not exist (EE flag flipped on but the
+ *   - the `scimUser` table does not exist (EE flag flipped on but the
  *     better-auth/scim plugin migration hasn't run yet — common during
  *     staged rollouts).
  *
@@ -97,7 +97,42 @@ export const isSCIMProvisioned = (
     if (!provenance.available) return false;
     if (!hasInternalDB()) return false;
 
-    const sql = orgId
+    // #5493: @better-auth/scim 1.7 replaced `scimProvider` with a catalog,
+    // and `scimUser` carries BOTH `userId` and `provisioningDomainId`
+    // directly. That collapses the old two-table join through
+    // `account."providerId"` into a single-table lookup.
+    //
+    // This is a strict narrowing, not just a simplification. The 1.6 join
+    // matched any `account` row whose `providerId` string happened to equal
+    // a provider's — `account` also holds OAuth/credential rows, so a
+    // collision between an unrelated provider id and a SCIM one would have
+    // read as "SCIM-provisioned". `scimUser` rows are written only by the
+    // provisioning path, so membership is now exact.
+    //
+    // ⚠️ BOTH models are consulted, and that is load-bearing until the
+    // `scimProvider` -> managed-connection data migration lands.
+    //
+    // On a deploy that is UPGRADING, `scimUser` is empty — nothing has
+    // backfilled it — while the legacy `scimProvider` rows still describe
+    // real directory-managed users. Reading only the new table would return
+    // `false` for every one of them, and this predicate FAILS OPEN by
+    // contract: `false` means "no SCIM contract, mutation proceeds". So an
+    // admin could edit a directory-managed user the IdP still owns, which
+    // is precisely the F-57 guarantee this module exists to hold. That is a
+    // security regression, not a cosmetic gap, so the legacy read stays
+    // until the migration makes it redundant.
+    //
+    // Each side is independently guarded on its own table being absent, so
+    // a fresh install (no `scimProvider`) and a fully-migrated install
+    // (no rows) both cost one extra indexed lookup that finds nothing.
+    const newSql = orgId
+      ? `SELECT 1 FROM "scimUser"
+         WHERE "userId" = $1 AND "provisioningDomainId" = $2
+         LIMIT 1`
+      : `SELECT 1 FROM "scimUser"
+         WHERE "userId" = $1
+         LIMIT 1`;
+    const legacySql = orgId
       ? `SELECT 1 FROM account a
          JOIN "scimProvider" sp ON a."providerId" = sp."providerId"
          WHERE a."userId" = $1 AND sp."organizationId" = $2
@@ -108,41 +143,55 @@ export const isSCIMProvisioned = (
          LIMIT 1`;
     const params = orgId ? [userId, orgId] : [userId];
 
-    const rows = yield* Effect.tryPromise({
-      try: () => internalQuery<Record<string, unknown>>(sql, params),
-      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-    }).pipe(
-      Effect.catchAll((err) => {
-        // 42P01 — relation does not exist. SCIM tables are owned by the
-        // @better-auth/scim plugin and only exist after its migration runs.
-        // EE flag flipped on but migration pending → treat the user as
-        // non-SCIM rather than fail closed; callers will re-evaluate after
-        // the migration lands.
-        //
-        // Pin on the SQLSTATE first (pg's DatabaseError carries `.code`).
-        // Fall back to a tightened message check requiring BOTH the table
-        // name AND "does not exist" — bare "does not exist" matches
-        // 42704 (undefined role), 42883 (undefined function), 3F000
-        // (schema does not exist), and friends, none of which mean SCIM
-        // is uninstalled. Any of those would let an admin mutate a SCIM
-        // user — exactly the silent failure F-57 forbids.
-        const code = (err as { code?: unknown }).code;
-        const msg = err.message ?? String(err);
-        const isMissingScimProvider =
-          code === "42P01" ||
-          (msg.includes("does not exist") && msg.includes("scimProvider"));
-        if (isMissingScimProvider) {
-          log.warn(
-            { err: msg, userId, orgId },
-            "scimProvider table missing — treating user as non-SCIM",
-          );
-          return Effect.succeed([] as Record<string, unknown>[]);
-        }
-        return Effect.fail(err);
-      }),
+    /**
+     * Run one provenance lookup, tolerating ONLY "that table does not
+     * exist" and failing closed on everything else.
+     *
+     * 42P01 — relation does not exist. SCIM tables are owned by the
+     * @better-auth/scim plugin and only exist after its migration runs (and
+     * `scimProvider` ceases to exist once 1.7 has replaced it). EE flag
+     * flipped on but migration pending → treat as "this model says nothing"
+     * rather than fail closed; the other model still gets its say.
+     *
+     * Pin on the SQLSTATE first (pg's DatabaseError carries `.code`). Fall
+     * back to a tightened message check requiring BOTH the table name AND
+     * "does not exist" — bare "does not exist" matches 42704 (undefined
+     * role), 42883 (undefined function), 3F000 (schema does not exist), and
+     * friends, none of which mean SCIM is uninstalled. Any of those would
+     * let an admin mutate a SCIM user — exactly the silent failure F-57
+     * forbids.
+     */
+    const probe = (sql: string, table: string) =>
+      Effect.tryPromise({
+        try: () => internalQuery<Record<string, unknown>>(sql, params),
+        catch: (err: unknown) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          const code = (err as { code?: unknown }).code;
+          const msg = err.message ?? String(err);
+          const isMissingTable =
+            code === "42P01" ||
+            (msg.includes("does not exist") && msg.includes(table));
+          if (isMissingTable) {
+            log.warn(
+              { err: msg, userId, orgId, table },
+              `${table} table missing — that model reports no SCIM provenance`,
+            );
+            return Effect.succeed([] as Record<string, unknown>[]);
+          }
+          return Effect.fail(err);
+        }),
+      );
+
+    // Independent reads — run together per CLAUDE.md's no-async-waterfalls
+    // rule. Neither short-circuits the other: a `true` from EITHER model
+    // means the user is directory-managed.
+    const [newRows, legacyRows] = yield* Effect.all(
+      [probe(newSql, "scimUser"), probe(legacySql, "scimProvider")],
+      { concurrency: "unbounded" },
     );
 
-    return rows.length > 0;
+    return newRows.length > 0 || legacyRows.length > 0;
   });
 };
 

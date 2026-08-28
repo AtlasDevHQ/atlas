@@ -2,7 +2,9 @@
  * Tests for the hosted MCP Hono router (#2024 PR C).
  *
  * Authentication path: OAuth 2.1 access tokens verified via
- * `verifyAccessToken` from `better-auth/oauth2`. We mock that helper so
+ * `verifyAccessTokenRequest` from `@better-auth/core/oauth2` (#5493 — 1.7
+ * removed `verifyAccessToken`, and the runtime re-export from
+ * `better-auth/oauth2` went with it). We mock that helper so
  * the test exercises the route's branching without standing up an OAuth
  * server, JWKS endpoint, or real Better Auth instance.
  *
@@ -50,16 +52,39 @@ interface FakeJwtPayload {
   [WORKSPACE_CLAIM]?: string;
 }
 
+/**
+ * Stand-in for `verifyAccessTokenRequest`. Takes the REQUEST shape 1.7 uses
+ * (`{ authorizationHeader, method, url }`) rather than a bare token, so the
+ * mock exercises the same call the route actually makes.
+ */
 const mockVerifyAccessToken: Mock<
-  (token: string, opts: unknown) => Promise<FakeJwtPayload>
+  (request: { authorizationHeader?: string | null }, opts: unknown) => Promise<FakeJwtPayload>
 > = mock(async () => {
-  throw new Error("verifyAccessToken called without a stub");
+  throw new Error("verifyAccessTokenRequest called without a stub");
 });
 
-void mock.module("better-auth/oauth2", () => ({
-  verifyAccessToken: (token: string, opts: unknown) =>
-    mockVerifyAccessToken(token, opts),
-  // Other re-exports from better-auth/oauth2 — none read by hosted.ts,
+/** Pull the bearer out of the request shape the verifier receives. */
+function bearerOf(request: { authorizationHeader?: string | null }): string {
+  const header = request?.authorizationHeader ?? "";
+  return header.toLowerCase().startsWith("bearer ")
+    ? header.slice("bearer ".length).trim()
+    : header;
+}
+
+void mock.module("@better-auth/core/oauth2", () => ({
+  verifyAccessTokenRequest: (request: { authorizationHeader?: string | null }, opts: unknown) =>
+    mockVerifyAccessToken(request, opts),
+  // `verifyJwsAccessToken` is deliberately a throw-on-call stub: hosted.ts
+  // must NOT use it (it enforces no scopes — see the import comment there),
+  // so a future edit that switches to it fails loudly here instead of
+  // silently dropping mcp:read enforcement.
+  verifyJwsAccessToken: () => {
+    throw new Error(
+      "verifyJwsAccessToken called from hosted test — hosted.ts must use "
+        + "verifyAccessTokenRequest, which enforces requiredScopes",
+    );
+  },
+  // Other re-exports — none read by hosted.ts,
   // but partial mocks leak across test files so include throw-on-call
   // stubs for everything we know is exported.
   authorizationCodeRequest: () => {
@@ -118,9 +143,6 @@ void mock.module("better-auth/oauth2", () => ({
   },
   validateToken: () => {
     throw new Error("validateToken called from hosted test");
-  },
-  verifyJwsAccessToken: () => {
-    throw new Error("verifyJwsAccessToken called from hosted test");
   },
 }));
 
@@ -383,12 +405,13 @@ async function startServer() {
   };
 }
 
-/** Stub `verifyAccessToken` to return a fixed payload for `token`. */
+/** Stub the verifier to return a fixed payload for `token`. */
 function bindToken(
   token: string,
   payload: Omit<FakeJwtPayload, "sub"> & { sub: string },
 ): void {
-  mockVerifyAccessToken.mockImplementation(async (incoming) => {
+  mockVerifyAccessToken.mockImplementation(async (request) => {
+    const incoming = bearerOf(request);
     if (incoming === token) return payload;
     throw new Error(`Unknown token in test: ${incoming}`);
   });
@@ -410,7 +433,8 @@ function bindTokensAB(): void {
     scope: "openid mcp:read",
     [WORKSPACE_CLAIM]: ORG_B,
   };
-  mockVerifyAccessToken.mockImplementation(async (incoming) => {
+  mockVerifyAccessToken.mockImplementation(async (request) => {
+    const incoming = bearerOf(request);
     if (incoming === TOKEN_A) return payloadA;
     if (incoming === TOKEN_B) return payloadB;
     throw new Error(`Unknown token in test: ${incoming}`);

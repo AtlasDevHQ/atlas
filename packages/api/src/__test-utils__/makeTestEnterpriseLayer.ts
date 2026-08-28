@@ -119,6 +119,10 @@ const scimDefaults: SCIMProvenanceShape = {
   deleteConnection: () => Effect.succeed(true),
   getSyncStatus: () =>
     Effect.die(new Error("test: SCIMProvenance.getSyncStatus not mocked")),
+  createConnection: () =>
+    Effect.die(new Error("test: SCIMProvenance.createConnection not mocked")),
+  rotateCredential: () =>
+    Effect.die(new Error("test: SCIMProvenance.rotateCredential not mocked")),
   listGroupMappings: () => Effect.succeed([]),
   createGroupMapping: () =>
     Effect.die(new Error("test: SCIMProvenance.createGroupMapping not mocked")),

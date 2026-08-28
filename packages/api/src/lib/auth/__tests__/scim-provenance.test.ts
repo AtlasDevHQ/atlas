@@ -185,12 +185,12 @@ describe("isSCIMProvisioned", () => {
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
-  it("returns false when the scimProvider table does not exist (42P01 message + table name)", async () => {
+  it("returns false when the scimUser table does not exist (42P01 message + table name)", async () => {
     // EE flag flipped on but the @better-auth/scim plugin migration hasn't
     // run — common during staged rollouts. Treat as "no SCIM contract"
     // rather than fail closed; admins can still mutate users.
     mockInternalQuery.mockImplementationOnce(async () => {
-      throw new Error('relation "scimProvider" does not exist');
+      throw new Error('relation "scimUser" does not exist');
     });
     const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(result).toBe(false);
@@ -243,7 +243,7 @@ describe("isSCIMProvisioned", () => {
     expect(result).toBe(true);
   });
 
-  it("returns false when the join finds no rows", async () => {
+  it("returns false when the lookup finds no rows", async () => {
     mockInternalQuery.mockImplementationOnce(async () => []);
     const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(result).toBe(false);
@@ -252,19 +252,33 @@ describe("isSCIMProvisioned", () => {
   it("scopes the query to orgId when provided", async () => {
     mockInternalQuery.mockImplementationOnce(async () => []);
     await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-    const [sql, params] = mockInternalQuery.mock.calls[0]!;
-    expect(sql).toContain('"organizationId" = $2');
-    expect(params).toEqual(["user-1", "org-1"]);
+    // Two probes since #5493: the new `scimUser` projection and the legacy
+    // `scimProvider` join, which is still consulted until the data migration
+    // lands. BOTH must carry the org bound — an unscoped probe on either
+    // side would report a user provisioned in workspace A as SCIM-managed
+    // in workspace B.
+    expect(mockInternalQuery).toHaveBeenCalledTimes(2);
+    const [newSql, newParams] = mockInternalQuery.mock.calls[0]!;
+    const [legacySql, legacyParams] = mockInternalQuery.mock.calls[1]!;
+    // 1.7 names the org boundary `provisioningDomainId` on the scimUser
+    // projection; 1.6 called it `organizationId` on scimProvider. The
+    // scoping intent is identical.
+    expect(newSql).toContain('"provisioningDomainId" = $2');
+    expect(legacySql).toContain('"organizationId" = $2');
+    expect(newParams).toEqual(["user-1", "org-1"]);
+    expect(legacyParams).toEqual(["user-1", "org-1"]);
   });
 
   it("omits the org filter when orgId is not provided (platform-admin path)", async () => {
     mockInternalQuery.mockImplementationOnce(async () => []);
     await runEnterprise(isSCIMProvisioned("user-1"));
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-    const [sql, params] = mockInternalQuery.mock.calls[0]!;
-    expect(sql).not.toContain('"organizationId" =');
-    expect(params).toEqual(["user-1"]);
+    expect(mockInternalQuery).toHaveBeenCalledTimes(2);
+    const [newSql, newParams] = mockInternalQuery.mock.calls[0]!;
+    const [legacySql, legacyParams] = mockInternalQuery.mock.calls[1]!;
+    expect(newSql).not.toContain('"provisioningDomainId" =');
+    expect(legacySql).not.toContain('"organizationId" =');
+    expect(newParams).toEqual(["user-1"]);
+    expect(legacyParams).toEqual(["user-1"]);
   });
 
   it("propagates genuine query errors so the route fails closed", async () => {
@@ -358,5 +372,64 @@ describe("scimManagedBlockBody", () => {
     expect(body.error).toBe("scim_managed");
     expect(body.requestId).toBe("req-1");
     expect(body.message).toContain("SCIM");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5493 — legacy provenance during the 1.6 -> 1.7 transition
+// ---------------------------------------------------------------------------
+//
+// The regression these pin: on an UPGRADING deploy `scimUser` is empty
+// (nothing backfills it until the data migration lands) while the legacy
+// `scimProvider` rows still describe real directory-managed users. Reading
+// only the new table returns `false`, and this predicate FAILS OPEN by
+// contract — `false` means "no SCIM contract, the mutation proceeds". An
+// admin could then edit a user the IdP still owns, which is exactly the F-57
+// guarantee this module exists to hold.
+
+describe("isSCIMProvisioned — transition across the 1.7 model change", () => {
+  it("returns true from the LEGACY table when the new one is empty", async () => {
+    // scimUser (first probe) empty, scimProvider (second) has the user.
+    mockInternalQuery
+      .mockImplementationOnce(async () => [])
+      .mockImplementationOnce(async () => [{ "?column?": 1 }]);
+
+    const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
+    expect(result).toBe(true);
+  });
+
+  it("returns true from the NEW table when the legacy one is gone", async () => {
+    mockInternalQuery
+      .mockImplementationOnce(async () => [{ "?column?": 1 }])
+      .mockImplementationOnce(async () => {
+        throw Object.assign(new Error('relation "scimProvider" does not exist'), {
+          code: "42P01",
+        });
+      });
+
+    const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
+    expect(result).toBe(true);
+  });
+
+  it("returns false only when BOTH models say the user is not SCIM-managed", async () => {
+    mockInternalQuery
+      .mockImplementationOnce(async () => [])
+      .mockImplementationOnce(async () => []);
+
+    const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
+    expect(result).toBe(false);
+  });
+
+  it("still fails CLOSED when the legacy probe errors for a non-missing-table reason", async () => {
+    // A connection drop must not read as "not SCIM-managed" just because the
+    // other probe came back empty — that is the fail-open this whole module
+    // is written against.
+    mockInternalQuery
+      .mockImplementationOnce(async () => [])
+      .mockImplementationOnce(async () => {
+        throw new Error("connection refused");
+      });
+
+    await expect(runEnterprise(isSCIMProvisioned("user-1", "org-1"))).rejects.toThrow();
   });
 });

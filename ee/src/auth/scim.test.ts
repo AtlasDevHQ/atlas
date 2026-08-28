@@ -26,6 +26,44 @@ mock.module("../lib/db-guard", () => ({
 
 mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
+// #5493 — `deleteConnection` / `createConnection` / `rotateCredential` reach
+// the plugin's SERVER_ONLY endpoints through the auth singleton, so the unit
+// tests need a stand-in rather than a real Better Auth instance. Recorded
+// calls let the assertions below check WHICH connection id was passed, which
+// is the cross-org containment these functions carry.
+const scimApiCalls: { name: string; body: Record<string, unknown> }[] = [];
+function resetScimApiCalls(): void {
+  scimApiCalls.length = 0;
+}
+mock.module("@atlas/api/lib/auth/server", () => ({
+  getAuthInstance: () => ({
+    api: {
+      decommissionSCIMManagedConnection: async (input: { body: Record<string, unknown> }) => {
+        scimApiCalls.push({ name: "decommission", body: input.body });
+        return {};
+      },
+      createSCIMManagedConnection: async (input: { body: Record<string, unknown> }) => {
+        scimApiCalls.push({ name: "create", body: input.body });
+        return {
+          connectionId: "conn-new",
+          credentialId: "cred-1",
+          token: "scim_tok_test",
+          expiresAt: "2027-01-01T00:00:00.000Z",
+        };
+      },
+      rotateSCIMManagedCredential: async (input: { body: Record<string, unknown> }) => {
+        scimApiCalls.push({ name: "rotate", body: input.body });
+        return {
+          connectionId: "conn-1",
+          credentialId: "cred-2",
+          token: "scim_tok_rotated",
+          expiresAt: "2027-01-01T00:00:00.000Z",
+        };
+      },
+    },
+  }),
+}));
+
 // Import after mocks
 const {
   listConnections,
@@ -49,6 +87,7 @@ const run = <A, E>(effect: Effect.Effect<A, E>) =>
 function resetMocks() {
   ee.reset();
   _resetTableEnsured();
+  resetScimApiCalls();
 }
 
 const ORG_ID = "org-test-123";
@@ -144,16 +183,29 @@ describe("listConnections", () => {
 describe("deleteConnection", () => {
   beforeEach(resetMocks);
 
-  it("returns true when connection deleted", async () => {
-    ee.queueMockRows([{ id: "conn-1" }]); // pool.query RETURNING
+  it("decommissions through the plugin and returns true", async () => {
+    // The org-scoped lookup resolves the plugin-facing connectionId...
+    ee.queueMockRows([{ connectionId: "okta-prod" }]);
     const result = await run(deleteConnection(ORG_ID, "conn-1"));
     expect(result).toBe(true);
+
+    // ...and THAT id — not the caller's row id — is what reaches the plugin.
+    // #5493 replaced the raw DELETE with a decommission lifecycle: a delete
+    // would orphan the connection's credentials, binding and user
+    // projection, silently.
+    expect(scimApiCalls).toHaveLength(1);
+    expect(scimApiCalls[0]!.name).toBe("decommission");
+    expect(scimApiCalls[0]!.body.connectionId).toBe("okta-prod");
   });
 
-  it("returns false when connection not found", async () => {
+  it("returns false when the org owns no such active connection", async () => {
     ee.queueMockRows([]); // no match
     const result = await run(deleteConnection(ORG_ID, "nonexistent"));
     expect(result).toBe(false);
+    // Containment: the plugin endpoint takes a connection id at face value,
+    // so a miss here must stop BEFORE it is called. If this ever regresses,
+    // one org could decommission another's connection.
+    expect(scimApiCalls).toHaveLength(0);
   });
 });
 

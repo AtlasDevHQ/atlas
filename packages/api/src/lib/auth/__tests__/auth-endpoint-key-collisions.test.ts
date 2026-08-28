@@ -161,6 +161,7 @@ function pluginIds(): string[] {
 
 describe("Better Auth plugin endpoint keys", () => {
   let priorEnterpriseFlag: string | undefined;
+  let priorAuthSecret: string | undefined;
 
   beforeAll(() => {
     // Pulls SCIM into `buildPlugins()` so it is actually examined rather than
@@ -168,6 +169,17 @@ describe("Better Auth plugin endpoint keys", () => {
     // testing rules; `buildPlugins()` reads the gate at CALL time.
     priorEnterpriseFlag = process.env.ATLAS_ENTERPRISE_ENABLED;
     process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
+    // #5493 — enabling SCIM now also requires a resolvable
+    // `credentialHashSecret`. @better-auth/scim 1.7 digests managed bearer
+    // credentials with an HMAC secret, and `buildPlugins()` derives it from
+    // `BETTER_AUTH_SECRET` (see `resolveScimCredentialHashSecret`). A real
+    // managed deploy always has that — it is the session-signing secret and
+    // `getAuthInstance()` requires it regardless — but this file calls
+    // `buildPlugins()` directly, so it has to supply one. Same set/restore
+    // discipline as the enterprise flag above, for the same reason.
+    priorAuthSecret = process.env.BETTER_AUTH_SECRET;
+    process.env.BETTER_AUTH_SECRET ??= "test-auth-secret-at-least-32-chars-long!!";
   });
 
   // `--parallel` already gives this file its own global, so under the mandated
@@ -184,6 +196,8 @@ describe("Better Auth plugin endpoint keys", () => {
   afterAll(() => {
     if (priorEnterpriseFlag === undefined) delete process.env.ATLAS_ENTERPRISE_ENABLED;
     else process.env.ATLAS_ENTERPRISE_ENABLED = priorEnterpriseFlag;
+    if (priorAuthSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
+    else process.env.BETTER_AUTH_SECRET = priorAuthSecret;
   });
 
   test("the collision check examines the plugins it claims to", () => {

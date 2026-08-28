@@ -26,7 +26,7 @@ import { parseChatError, authErrorMessage } from "@useatlas/types/errors";
 | Import path | Contents |
 |-------------|----------|
 | `@useatlas/types` | Barrel — re-exports everything below |
-| `@useatlas/types/auth` | `AuthMode`, `AtlasRole`, `AtlasUser` |
+| `@useatlas/types/auth` | `AuthMode`, `AtlasRole`, `AtlasUser`, `PERMISSIONS`, `Permission`, `isValidPermission` |
 | `@useatlas/types/conversation` | `Conversation`, `Message`, `ConversationWithMessages` |
 | `@useatlas/types/connection` | `DBType`, `ConnectionHealth`, `ConnectionInfo`, `ConnectionDetail` |
 | `@useatlas/types/action` | `ActionApprovalMode`, `ActionDisplayStatus`, `ActionToolResultShape` |

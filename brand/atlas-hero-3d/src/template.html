@@ -92,6 +92,11 @@ body{
   width:5px;height:5px;flex:none;border-radius:50%;
   background:var(--spark);box-shadow:0 0 0 3px rgba(35,206,158,.18);
 }
+/* The dot is the indicator and rides its region through the whole unroll;
+   the leader and text thin out (--tf) only while anchors are crossing each
+   other mid-morph, so the category's point of light is the continuity and
+   the words never ghost over one another. */
+.lbl span,.lbl b{opacity:var(--tf,1)}
 .lbl span{display:block;width:30px;height:1px;flex:none;
   background:linear-gradient(90deg,var(--accent),rgba(56,156,106,0))}
 .lbl b{
@@ -1644,14 +1649,18 @@ function updateCamera(){
 /* ================= labels ================= */
 var _v=new THREE.Vector3(), _sn=new THREE.Vector3(), _cn=new THREE.Vector3();
 function updateLabels(w,h){
-  // The labels ride their regions up through the lift, fade out before the
-  // heavy travel of the unroll (mid-morph anchors swing across each other,
-  // which is where the ghosted doubles came from), re-anchor cleanly on the
-  // settled chart, then hand off one by one as each card — carrying the same
-  // title — condenses out of the spot its label was marking.
+  // The labels ride their regions up through the lift and across the unroll:
+  // the spark dot is the indicator, and it stays pinned to its region for the
+  // whole transition — the continuity from globe to chart. Only the leader
+  // and text thin out, and only for the fold window of the unroll (the
+  // sheet's x is non-monotonic in longitude while more than half the band is
+  // still rolled, so seam-side anchors sweep across the others — where the
+  // ghosted doubles came from). The words return as the chart settles, and
+  // each label hands off whole as its card — carrying the same title —
+  // condenses out of the spot it was marking.
   var sm=THREE.MathUtils.smoothstep;
-  var gate=Math.min(1,(1-sm(t,0.44,0.505))+sm(t,0.585,0.635));
-  var vis=sm(t,0.20,0.30)*gate;
+  var tf=Math.min(1,(1-sm(t,0.52,0.555))+sm(t,0.60,0.64));
+  var vis=sm(t,0.20,0.30);
   var mNow=sm(t,MORPH_T0,MORPH_T1);
   for(var i=0;i<CLASSES.length;i++){
     var d=CLASSES[i], e=labelEls[i];
@@ -1668,6 +1677,7 @@ function updateLabels(w,h){
     _v.project(camera);
     var x=(_v.x*0.5+0.5)*w, y=(-_v.y*0.5+0.5)*h;
     e.style.transform='translate('+x.toFixed(1)+'px,'+y.toFixed(1)+'px)';
+    e.style.setProperty('--tf',tf.toFixed(3));
     e.style.opacity=(vi*front).toFixed(3);
   }
 }

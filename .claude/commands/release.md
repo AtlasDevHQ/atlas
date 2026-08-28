@@ -51,7 +51,7 @@ Every remote check must be green **on the exact SHA being tagged**: CI (includin
 >
 > Remote CI is the better gate because it runs `api-tests` **sharded four ways against a dedicated Postgres service container**, so each shard drives ~22 of the 87 `*-pg.test.ts` suites instead of all 87 against one local server contended by 32 bun workers — a smaller worker pool per database, on a machine doing nothing else. That structural difference is the *likely* reason remote CI was green on all 37 checks for a SHA a local run was red on; it is **not** established as the cause, and #5410 deliberately stops short of claiming it. What is established is the negative: the local wrapper's red does not track defects in the tree. See #5410 for the measurements, including five hypotheses tested and refuted.
 
-Run `/ci` anyway if you like — it is a fast, useful pre-flight and it catches drift gates remote CI also runs. But read its output as **advice**, and do not tag on a local green either: without `TEST_DATABASE_URL` a local run self-skips all 93 real-Postgres suites (1,432 assertions when last measured — 2026-08-24, at 87 suites), and since #5410 it reports `DECLINED`/exit 3 rather than a false PASS to say so.
+Run `/ci` anyway if you like — it is a fast, useful pre-flight and it catches drift gates remote CI also runs. But read its output as **advice**, and do not tag on a local green either: without `TEST_DATABASE_URL` a local run self-skips all 94 real-Postgres suites (1,432 assertions when last measured — 2026-08-24, at 87 suites), and since #5410 it reports `DECLINED`/exit 3 rather than a false PASS to say so.
 
 **Step 4: Draft the tag message**
 

@@ -10,8 +10,15 @@ import type {
 import { Badge } from "@/components/ui/badge";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { AlertTriangle, Clock, ShieldAlert, Split } from "lucide-react";
-import { blockedBadge, decayBadge, provisionalBadge, statusBadge } from "./columns";
+import { AlertTriangle, Clock, PenLine, ShieldAlert, Split } from "lucide-react";
+import {
+  blockedBadge,
+  decayBadge,
+  isProposedCandidate,
+  proposedBadge,
+  provisionalBadge,
+  statusBadge,
+} from "./columns";
 import { isTensionOpen, isTensionSuperseded, isTensionWithdrawn } from "./tension-state";
 
 /**
@@ -477,6 +484,25 @@ export function CandidateDetail({ candidate }: { candidate: BrainFactCandidate }
 
       <div className="space-y-3 border-t pt-4">
         <h3 className="text-sm font-medium">Provenance</h3>
+        {/* Origin, said in a sentence where the queue said it as a chip
+            (#5483, ADR-0036 §T9): the trust call on a proposal weighs one
+            person's offered word, not an observed message, and a reviewer must
+            know that before publishing. The evidence panel below still shows
+            the proposal episode itself — this names WHAT KIND of evidence that
+            is. Keyed on the same predicate as the queue badge so the two
+            surfaces cannot disagree about which rows are proposals. */}
+        {isProposedCandidate(candidate) && (
+          <div className="flex items-start gap-2 rounded-md border border-dashed p-3">
+            <Badge variant={proposedBadge.variant} className={proposedBadge.className}>
+              <PenLine className="mr-1 size-3" aria-hidden />
+              {proposedBadge.label}
+            </Badge>
+            <p className="text-xs text-muted-foreground">
+              A person offered this claim directly to Atlas and confirmed it. It was not
+              extracted from a connected source — the evidence below is their testimony.
+            </p>
+          </div>
+        )}
         {!provenance.payloadComplete && (
           <p className="text-xs text-muted-foreground">
             Some provenance fields are missing from the stored payload — what is shown below is

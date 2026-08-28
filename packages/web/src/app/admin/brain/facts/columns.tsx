@@ -6,10 +6,11 @@ import type {
   BrainFactDecayLevel,
   BrainFactReviewStatus,
 } from "@/ui/lib/types";
+import { BRAIN_PROPOSAL_PRODUCER } from "@useatlas/schemas";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
-import { AlertTriangle, Clock, HelpCircle, Link2, ShieldAlert, Split } from "lucide-react";
+import { AlertTriangle, Clock, HelpCircle, Link2, PenLine, ShieldAlert, Split } from "lucide-react";
 import { isFullyArbitrated, isTensionOpen } from "./tension-state";
 
 /**
@@ -77,6 +78,32 @@ export const blockedBadge = {
   className: "border-red-300 text-red-700 dark:border-red-700 dark:text-red-400",
   label: "Won't publish",
 };
+
+/**
+ * Origin label for an agent-proposed claim (#5483, ADR-0036 §T9).
+ *
+ * A claim whose `provenance.producer` is {@link BRAIN_PROPOSAL_PRODUCER}
+ * arrived as a person's own testimony through the `proposeFact` confirm flow —
+ * not from a connector's extraction pass — and §T9's review-gate-to-exit lock
+ * says a reviewer must be able to tell the two apart before making the trust
+ * call. `provenance.source` alone cannot draw the line: a proposal and a
+ * correction-authored replacement are both `human`.
+ *
+ * Teal, a hue no other badge here uses, and deliberately NOT amber or red:
+ * origin is information, not a warning — a proposal is no less trustworthy for
+ * being proposed, it is merely differently evidenced (one person's word rather
+ * than an observed message), and the reviewer weighs that.
+ */
+export const proposedBadge = {
+  variant: "outline" as const,
+  className: "border-teal-300 text-teal-700 dark:border-teal-700 dark:text-teal-400",
+  label: "Proposed",
+};
+
+/** The predicate behind {@link proposedBadge}, shared with the detail sheet. */
+export function isProposedCandidate(candidate: BrainFactCandidate): boolean {
+  return candidate.provenance.producer === BRAIN_PROPOSAL_PRODUCER;
+}
 
 /** Provisional entity resolution — THE quality queue. */
 export const provisionalBadge = {
@@ -231,6 +258,17 @@ export function getBrainFactColumns(
                 <span className="text-muted-foreground"> · {provenance.attribution.actor}</span>
               )}
             </p>
+            {/* Origin, in the evidence cell rather than among the flags: a
+                proposal is where the claim CAME FROM, not a state to remedy,
+                and the reviewer weighing evidence is the reader who needs it
+                (#5483). `source` alone cannot say it — `human` also covers
+                correction-authored replacements. */}
+            {isProposedCandidate(row.original) && (
+              <Badge variant={proposedBadge.variant} className={proposedBadge.className}>
+                <PenLine className="mr-1 size-3" aria-hidden />
+                {proposedBadge.label}
+              </Badge>
+            )}
             {/* Evidence withheld is stated, never blank: a reviewer who cannot
                 read the episode must know that is WHY they see nothing. */}
             {episode && !episode.visible && (

@@ -232,6 +232,24 @@ export function isBrainFactStatusFilter(value: unknown): value is BrainFactStatu
 }
 
 /**
+ * `provenance.producer` value stamped by the `proposeFact` entry point
+ * (#5482, #5483 — ADR-0036 §T9).
+ *
+ * The one producer value the review surface branches on: a claim carrying it
+ * arrived as a human's own proposal through the agent's confirm flow, not from
+ * a connector's extraction pass, and §T9's review-gate-to-exit lock says a
+ * reviewer must be able to tell the two apart at a glance. Here rather than in
+ * `@atlas/api` because both sides of that label need it — the API writer
+ * (`lib/brain/proposal.ts`) and the web queue's origin badge — and the frontend
+ * may not import `@atlas/api`, so a second spelling in the browser is how the
+ * badge and the writer would drift.
+ *
+ * `producer` stays `string | null` on the wire: this is not a closed
+ * vocabulary, merely the one member two packages must agree on.
+ */
+export const BRAIN_PROPOSAL_PRODUCER = "proposal";
+
+/**
  * Discriminated on `visible`, for {@link BrainFactEpisodeViewSchema}'s reason
  * and with the same `z.strictObject` on the withheld arm — this is an ACL
  * boundary (#4836), so the withheld shape must be incapable of carrying

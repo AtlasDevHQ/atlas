@@ -2421,3 +2421,74 @@ describe("staleness decay is surfaced, never alarming (#4914)", () => {
     expect(text).toContain("corroborating");
   });
 });
+
+describe("agent-proposed origin is labelled (#5483, ADR-0036 §T9)", () => {
+  /**
+   * The wire shape a `proposeFact` draft actually arrives with: `producer` is
+   * the discriminator the badge branches on, and `source`/episode are `human`
+   * — which is exactly why `source` alone cannot carry the label, since a
+   * correction-authored replacement is `human` too.
+   */
+  const PROPOSAL_PROVENANCE = {
+    ...PROVENANCE,
+    source: "human",
+    producer: "proposal",
+    attribution: {
+      visible: true,
+      sourceId: "proposal:1234",
+      actor: "U-proposer",
+      occurredAt: ISO,
+      actorIdentity: { state: "opaque" as const, erased: false },
+    },
+    extractedAt: null,
+  };
+
+  function proposalCandidate() {
+    return candidate({
+      provenance: PROPOSAL_PROVENANCE,
+      episode: {
+        visible: true,
+        id: "ep-1",
+        source: "human",
+        sourceId: "proposal:1234",
+        sourceActor: "U-proposer",
+        body: '{"kind":"proposal"}',
+        bodyTruncated: false,
+        locator: null,
+        occurredAt: ISO,
+        ingestedAt: ISO,
+      },
+    });
+  }
+
+  test("labels a proposal in the list", async () => {
+    const view = await renderPage([proposalCandidate()]);
+    // A reviewer must be able to tell agent-proposed from connector-extracted
+    // before opening the row — the trust call weighs one person's offered word
+    // differently from an observed message.
+    expect(view.container.textContent).toContain("Proposed");
+  });
+
+  test("does not label a connector-extracted claim as proposed", async () => {
+    // The baseline: the default fixture is extraction-produced, and a badge
+    // that rendered on every row would label nothing.
+    const view = await renderPage([candidate()]);
+    expect(view.container.textContent).not.toContain("Proposed");
+  });
+
+  test("says in the detail sheet what kind of evidence a proposal is", async () => {
+    const view = await renderPage([proposalCandidate()]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Provenance"));
+    // Not just the chip again: the sheet is where the trust call is made, so
+    // it states what the origin MEANS for the evidence below.
+    expect(document.body.textContent).toContain("their testimony");
+  });
+
+  test("keeps the sheet quiet about origin for an extracted claim", async () => {
+    const view = await renderPage([candidate()]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Provenance"));
+    expect(document.body.textContent).not.toContain("their testimony");
+  });
+});

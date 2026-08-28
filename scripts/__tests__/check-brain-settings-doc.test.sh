@@ -286,12 +286,12 @@ check fail "a registry brain key with no doc row is caught" \
 restore_doc
 
 # --- doc side: the hidden-count sentence -------------------------------------
-mutate "$DOC" "$DOC_BACKUP" 's/All nineteen are hidden/All fourteen are hidden/'
+mutate "$DOC" "$DOC_BACKUP" 's/All twenty are hidden/All fourteen are hidden/'
 check fail "a stale hidden-count is caught" \
   'but the table lists'
 restore_doc
 
-mutate "$DOC" "$DOC_BACKUP" 's/All nineteen are hidden from the generic settings page/All of them are concealed from the generic settings page/'
+mutate "$DOC" "$DOC_BACKUP" 's/All twenty are hidden from the generic settings page/All of them are concealed from the generic settings page/'
 check fail "REWORDING the hidden-count sentence fails loudly rather than going blind" \
   '"all N are hidden" sentence is gone'
 restore_doc
@@ -299,7 +299,7 @@ restore_doc
 # The hidden-count sentence's UNREADABLE arm. Its workspace twin has W-REWORD;
 # leaving this one unfixtured would recreate, inside the fixture suite, the very
 # asymmetry between the two checks that this suite exists because of.
-mutate "$DOC" "$DOC_BACKUP" 's/All nineteen are hidden from the generic settings page/All keys are hidden from the generic settings page/'
+mutate "$DOC" "$DOC_BACKUP" 's/All twenty are hidden from the generic settings page/All keys are hidden from the generic settings page/'
 check fail "an unreadable hidden-count fails loudly" \
   'as a number word in the hidden-count sentence'
 restore_doc

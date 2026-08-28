@@ -33,10 +33,19 @@
  * `staleness.ts`'s decay anchor.
  *
  * Nothing here chooses that: `reconcileFacts` writes `INSERT_PROVENANCE_EDGE_SQL`
- * for both the created and the corroborated arm, and this module reaches the
- * graph through no other statement. The edge type is therefore a consequence of
- * the seam, not a decision this file could get wrong — which is the reason the
- * seam was worth entering through.
+ * for both the created and the corroborated arm. The edge type is therefore a
+ * consequence of the seam, not a decision this file could get wrong — which is
+ * the reason the seam was worth entering through.
+ *
+ * Since #5486 there is ONE other edge statement on this path, and it is the
+ * other type on purpose: a session-carrying proposal writes `correction.ts`'s
+ * `DERIVES_FROM_EDGE_SQL` from the created fact to the lazily-materialized
+ * SESSION episode (ADR-0036 §T9 lock 3 — "the candidate derives-from it").
+ * Lineage, not evidence: the session is where the claim CAME FROM, while the
+ * proposal episode is the vouch — and if the session edge were `provenance`
+ * too, one act of testimony would feed the distinct-source corroboration count
+ * twice. `lib/brain/session-episode.ts` carries the materialization and the
+ * grant-seed derivation that arrives with it.
  *
  * ## ⚠️ "Draft-only" is the headline and it is not the whole truth
  *
@@ -82,12 +91,26 @@ import { BRAIN_PROPOSAL_PRODUCER } from "@useatlas/schemas";
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { ORG_PRINCIPAL, type BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
+// The lineage edge, imported rather than restated (the same
+// one-spelling-per-statement rule its own docstring carries). `derives-from`
+// and not `provenance`, deliberately: the proposal episode already carries the
+// provenance edge through the seam, and a session episode feeding the
+// corroboration count too would make one act of testimony count as two
+// sources — see `session-episode.ts`'s header.
+import { DERIVES_FROM_EDGE_SQL } from "@atlas/api/lib/brain/correction";
+import {
+  materializeSessionEpisode,
+  SessionEpisodeNotFoundError,
+  sessionGrantSeed,
+  type MaterializedSessionEpisode,
+} from "@atlas/api/lib/brain/session-episode";
 import { HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
 import {
   RECONCILE_BLOCK_REASONS,
   reconcileFacts,
   withBrainTransaction,
   type ReconcileExecutor,
+  type ReconcileReport,
   type ReconcileTransactionRunner,
   type UnkeyedSlot,
 } from "@atlas/api/lib/brain/reconcile";
@@ -140,6 +163,14 @@ export const PROPOSAL_REFUSAL_REASONS = {
    * where a supersession inherits its subject and predicate from the target row.
    */
   malformedClaim: "MALFORMED_CLAIM",
+  /**
+   * The proposal references a session (#5486) that does not exist in this
+   * workspace, is deleted, or is not the actor's own — three states kept
+   * deliberately indistinguishable, on `correction.ts`'s not-found reasoning:
+   * a distinct answer would confirm the existence of a conversation the
+   * caller may not see. Raised before ANY write, so nothing rolls back.
+   */
+  sessionNotFound: "SESSION_NOT_FOUND",
 } as const;
 
 export type ProposalRefusalReason =
@@ -156,9 +187,29 @@ export interface ProposalClaimInput {
   readonly reason?: string;
 }
 
+/**
+ * The session a proposal originated in (#5486, ADR-0036 §T9 lock 3) — the
+ * conversation whose lazy tier-3 episode the candidate derives from and whose
+ * ACL context seeds its grant. Ownership is verified in-transaction against
+ * the resolved principal, never trusted from the wire.
+ */
+export interface ProposalSessionRef {
+  readonly conversationId: string;
+}
+
 export interface ProposalRequest {
   readonly ctx: BrainPrincipalContext;
   readonly claim: ProposalClaimInput;
+  /**
+   * Present when the proposal originated in a chat session. Drives the three
+   * lock-3 behaviours: the session materializes as a tier-3 episode (lazily,
+   * at THIS moment and no earlier), the candidate takes a `derives-from` edge
+   * to it, and the grant seed becomes the actor plus what that episode
+   * already carried — instead of {@link proposalGrantTokens}' disclosed
+   * `[org]`, which remains the fallback for a proposal with no session to
+   * inherit from.
+   */
+  readonly session?: ProposalSessionRef;
   readonly requestId?: string;
   /**
    * The workspace's curated identity vocabulary. REQUIRED and never degraded,
@@ -261,8 +312,13 @@ export type ProposalOutcome =
  * gate the same section added. A disclosed grant a person consented to is the
  * thing lock 3 wants; an undisclosed default is what it rules out.
  *
- * When the session-episode path lands, it brings its own derivation and lock 3
- * governs it directly. This function is not it, and must not become its default.
+ * The session-episode path LANDED with #5486 and brought its own derivation:
+ * `sessionGrantSeed` (`lib/brain/session-episode.ts`), governed by lock 3
+ * directly — the actor plus what the session episode already carried, with
+ * `org` reachable only through a grant the episode already holds. This
+ * function is now exactly what it always claimed to be: the disclosed
+ * workspace grant for a proposal with NO session to inherit from, and it must
+ * not become the session path's default.
  */
 export function proposalGrantTokens(): readonly string[] {
   return [ORG_PRINCIPAL];
@@ -281,7 +337,7 @@ export async function proposeFact(
   request: ProposalRequest,
   deps: ProposalDeps = {},
 ): Promise<ProposalOutcome> {
-  const { ctx, claim, requestId, vocabulary } = request;
+  const { ctx, claim, session, requestId, vocabulary } = request;
   const now = deps.now ?? (() => new Date());
   const withTransaction = deps.withTransaction ?? withBrainTransaction;
   const newProposalId = deps.newProposalId ?? randomUUID;
@@ -305,113 +361,197 @@ export async function proposeFact(
   // attributable to one principal.
   const actor = ctx.userId ?? "local-operator";
   const sourcePrincipal = ctx.userId !== null ? `user:${ctx.userId}` : "human:local-operator";
-  const grantTokens = proposalGrantTokens();
 
   const at = now();
   const validFrom = claim.validFrom ?? at;
   const reason = claim.reason?.trim();
 
-  const report = await withTransaction(async (tx: ReconcileExecutor) => {
-    const proposalSourceId = `proposal:${newProposalId()}`;
-    const body = JSON.stringify({
-      kind: "proposal",
-      claim: { subject: claim.subject, predicate: claim.predicate, object: claim.object },
-      ...(reason ? { reason } : {}),
-      actor,
-      at: at.toISOString(),
-    });
-    const episodeInsert = await tx.query(PROPOSAL_EPISODE_INSERT_SQL, [
-      ctx.workspaceId,
-      proposalSourceId,
-      actor,
-      body,
-      at.toISOString(),
-      JSON.stringify(grantTokens),
-    ]);
-    const episodeId = firstId(episodeInsert.rows);
-    if (episodeId === null) {
-      throw new Error(
-        `brain proposal: episode insert returned no id (workspace ${ctx.workspaceId})`,
-      );
-    }
+  // Annotated rather than left to evolving-`let` inference, so the shape the
+  // catch-guarded assignment must produce is stated where a reader looks.
+  let report: {
+    readonly report: ReconcileReport;
+    readonly episodeId: string;
+    readonly sessionEpisodeId: string | null;
+    /** `true` = this propose minted the episode, `false` = reused, `null` = no session. */
+    readonly sessionEpisodeCreated: boolean | null;
+  };
+  try {
+    report = await withTransaction(async (tx: ReconcileExecutor) => {
+      // ── Lock 3, first half: the session becomes a tier-3 episode HERE ──
+      //
+      // Inside the transaction and before any other write, so the ownership
+      // gate's throw rolls nothing back and the episode + proposal + fact
+      // commit together. `materializeSessionEpisode` is idempotent on 0180's
+      // dedupe key — a second proposal from the same conversation reuses the
+      // episode the first one minted.
+      const sessionEpisode: MaterializedSessionEpisode | null =
+        session !== undefined
+          ? await materializeSessionEpisode(tx, {
+              workspaceId: ctx.workspaceId,
+              conversationId: session.conversationId,
+              ctx,
+              at,
+            })
+          : null;
 
-    const reconcileReport = await reconcileFacts(
-      {
-        episode: {
-          id: episodeId,
-          workspaceId: ctx.workspaceId,
-          source: HUMAN_SOURCE,
-          sourceId: proposalSourceId,
-          sourceActor: actor,
-          occurredAt: at,
-          visibleTo: grantTokens,
-        },
-        candidates: [
-          {
-            subject: claim.subject,
-            predicate: claim.predicate,
-            object: claim.object,
-            validFrom,
-            // NO `predicateCardinality`, and no `anchorReach` — the two are one
-            // decision and omitting both is the whole of it.
-            //
-            // `correction.ts`'s `supersede` hard-codes `single` because a human
-            // REPLACING a slot's value has asserted by their action that the
-            // slot holds one value. A proposal makes no such assertion: someone
-            // saying "Ana is on the billing team" has said nothing about
-            // whether anyone else is, and reading `single` off it would be the
-            // laundered-guess defect #5027 removed, re-made from a weaker
-            // premise. Omitting it takes reconcile's conservative default
-            // (`multi` — values coexist), so a proposal mints no advisory
-            // `in-tension-with` edge at its own slot.
-            //
-            // `anchorReach` then has nothing to carry: it bounds how far a
-            // cardinality hint reaches, and there is no hint. Its default
-            // (`producer-hint`) is byte-identical here for that reason, and it
-            // is left off rather than spelled `curated-only` so the absence
-            // reads as "this producer has no hint" instead of "this producer
-            // has a hint it is being careful with".
-            //
-            // The workspace's own curated `single` entries still fire through
-            // `TENSION_SWEEP_SQL`, which is the authority #5027 says may make a
-            // predicate-wide single-valuedness claim. A proposer is not it.
+      // ── Lock 3, second half: the grant seed ──
+      //
+      // With a session: the actor plus what the session episode already
+      // carried — never a silent `[org]` (`sessionGrantSeed` cannot introduce
+      // it; `org` appears only when the carried grant already holds it, or on
+      // the `unauthenticated-local` deployment whose declared principal set IS
+      // `[org]`). Without one: the disclosed workspace grant, unchanged, whose
+      // rationale {@link proposalGrantTokens} carries.
+      const grantTokens =
+        sessionEpisode !== null
+          ? sessionGrantSeed(ctx, sessionEpisode.visibleTo)
+          : proposalGrantTokens();
+
+      const proposalSourceId = `proposal:${newProposalId()}`;
+      const body = JSON.stringify({
+        kind: "proposal",
+        claim: { subject: claim.subject, predicate: claim.predicate, object: claim.object },
+        ...(reason ? { reason } : {}),
+        actor,
+        at: at.toISOString(),
+      });
+      const episodeInsert = await tx.query(PROPOSAL_EPISODE_INSERT_SQL, [
+        ctx.workspaceId,
+        proposalSourceId,
+        actor,
+        body,
+        at.toISOString(),
+        JSON.stringify(grantTokens),
+      ]);
+      const episodeId = firstId(episodeInsert.rows);
+      if (episodeId === null) {
+        throw new Error(
+          `brain proposal: episode insert returned no id (workspace ${ctx.workspaceId})`,
+        );
+      }
+
+      const reconcileReport = await reconcileFacts(
+        {
+          episode: {
+            id: episodeId,
+            workspaceId: ctx.workspaceId,
+            source: HUMAN_SOURCE,
+            sourceId: proposalSourceId,
+            sourceActor: actor,
+            occurredAt: at,
+            visibleTo: grantTokens,
           },
-        ],
-        vocabulary,
-        // The shared wire constant, not a local literal: the review surface's
-        // origin badge branches on this exact value (#5483), and the two
-        // packages sharing one spelling is what keeps the label from drifting
-        // off the writer.
-        producer: BRAIN_PROPOSAL_PRODUCER,
-        // An authored claim is not extracted from anything.
-        extractedAt: null,
-        sourcePrincipal,
-        // `resolveEntity` is deliberately OMITTED, which takes
-        // `passthroughEntityResolver`.
-        //
-        // Not an oversight and not laziness — it is forced. The store-backed
-        // resolver (`entityStoreResolver()`) checks out its OWN connection, and
-        // `reconcileFacts` calls it before opening its transaction precisely so
-        // that is safe. Here the transaction is ALREADY open — this call passes
-        // `withTransaction: fn => fn(tx)` below to keep the episode and the fact
-        // atomic — so a store lookup would be a nested checkout under a held
-        // connection, which is the bounded-pool starvation deadlock
-        // `withBrainTransaction` documents. `correction.ts` omits it for the
-        // same reason.
-        //
-        // The abstain is honest rather than degraded: with no comparables, an
-        // entity-valued object stays `unknown` and reaches a REVIEWER as tension
-        // instead of superseding something — which is exactly the right posture
-        // for a claim whose whole point is that a human will look at it.
-      },
-      // Reuse THIS transaction — the default runner would nest a second pool
-      // checkout under the held connection.
-      { withTransaction: (fn) => fn(tx), now: () => at },
-    );
-    return { report: reconcileReport, episodeId };
-  });
+          candidates: [
+            {
+              subject: claim.subject,
+              predicate: claim.predicate,
+              object: claim.object,
+              validFrom,
+              // NO `predicateCardinality`, and no `anchorReach` — the two are one
+              // decision and omitting both is the whole of it.
+              //
+              // `correction.ts`'s `supersede` hard-codes `single` because a human
+              // REPLACING a slot's value has asserted by their action that the
+              // slot holds one value. A proposal makes no such assertion: someone
+              // saying "Ana is on the billing team" has said nothing about
+              // whether anyone else is, and reading `single` off it would be the
+              // laundered-guess defect #5027 removed, re-made from a weaker
+              // premise. Omitting it takes reconcile's conservative default
+              // (`multi` — values coexist), so a proposal mints no advisory
+              // `in-tension-with` edge at its own slot.
+              //
+              // `anchorReach` then has nothing to carry: it bounds how far a
+              // cardinality hint reaches, and there is no hint. Its default
+              // (`producer-hint`) is byte-identical here for that reason, and it
+              // is left off rather than spelled `curated-only` so the absence
+              // reads as "this producer has no hint" instead of "this producer
+              // has a hint it is being careful with".
+              //
+              // The workspace's own curated `single` entries still fire through
+              // `TENSION_SWEEP_SQL`, which is the authority #5027 says may make a
+              // predicate-wide single-valuedness claim. A proposer is not it.
+            },
+          ],
+          vocabulary,
+          // The shared wire constant, not a local literal: the review surface's
+          // origin badge branches on this exact value (#5483), and the two
+          // packages sharing one spelling is what keeps the label from drifting
+          // off the writer.
+          producer: BRAIN_PROPOSAL_PRODUCER,
+          // An authored claim is not extracted from anything.
+          extractedAt: null,
+          sourcePrincipal,
+          // `resolveEntity` is deliberately OMITTED, which takes
+          // `passthroughEntityResolver`.
+          //
+          // Not an oversight and not laziness — it is forced. The store-backed
+          // resolver (`entityStoreResolver()`) checks out its OWN connection, and
+          // `reconcileFacts` calls it before opening its transaction precisely so
+          // that is safe. Here the transaction is ALREADY open — this call passes
+          // `withTransaction: fn => fn(tx)` below to keep the episode and the fact
+          // atomic — so a store lookup would be a nested checkout under a held
+          // connection, which is the bounded-pool starvation deadlock
+          // `withBrainTransaction` documents. `correction.ts` omits it for the
+          // same reason.
+          //
+          // The abstain is honest rather than degraded: with no comparables, an
+          // entity-valued object stays `unknown` and reaches a REVIEWER as tension
+          // instead of superseding something — which is exactly the right posture
+          // for a claim whose whole point is that a human will look at it.
+        },
+        // Reuse THIS transaction — the default runner would nest a second pool
+        // checkout under the held connection.
+        { withTransaction: (fn) => fn(tx), now: () => at },
+      );
 
-  const { report: reconcileReport, episodeId } = report;
+      // ── Lock 3's edge: the candidate derives-from the session episode ──
+      //
+      // The CREATED arm only. A corroborated fact existed before this session
+      // said anything, so a lineage edge from it would be false — the session
+      // still stands behind the ACT (the proposal episode's provenance edge
+      // records that); it is not where the belief CAME from. The statement is
+      // `correction.ts`'s own, idempotence guard included, so a re-run cannot
+      // double the edge.
+      const firstOutcome = reconcileReport.outcomes[0];
+      if (
+        sessionEpisode !== null &&
+        firstOutcome !== undefined &&
+        firstOutcome.kind === "created"
+      ) {
+        await tx.query(DERIVES_FROM_EDGE_SQL, [
+          ctx.workspaceId,
+          firstOutcome.factId,
+          sessionEpisode.episodeId,
+        ]);
+      }
+      return {
+        report: reconcileReport,
+        episodeId,
+        sessionEpisodeId: sessionEpisode?.episodeId ?? null,
+        sessionEpisodeCreated: sessionEpisode?.created ?? null,
+      };
+    });
+  } catch (err) {
+    if (err instanceof SessionEpisodeNotFoundError) {
+      // An ordinary refusal, not an incident: the wire can name any
+      // conversation, and "not yours / not here / deleted" must read the same.
+      log.warn(
+        { workspaceId: ctx.workspaceId, requestId },
+        "brain proposal refused: the referenced session was not found in this workspace",
+      );
+      return {
+        kind: "refused",
+        reason: PROPOSAL_REFUSAL_REASONS.sessionNotFound,
+        message:
+          "The conversation this proposal came from could not be found in this workspace, so its " +
+          "context could not be recorded as the claim's source — nothing was recorded. Ask Atlas to " +
+          "stage the proposal again from the conversation it belongs to.",
+      };
+    }
+    throw err;
+  }
+
+  const { report: reconcileReport, episodeId, sessionEpisodeId, sessionEpisodeCreated } = report;
   const outcome = reconcileReport.outcomes[0];
 
   if (outcome === undefined) {
@@ -460,7 +600,8 @@ export async function proposeFact(
     }
     // Every other block reason is about the EPISODE — provenance, grant, source
     // principal — and this function just wrote that episode itself, with a
-    // workspace-wide grant and a resolved principal. Reaching one means the
+    // usable grant (workspace-wide, or the actor-anchored session seed) and a
+    // resolved principal. Reaching one means the
     // seam's contract moved underneath this caller, which is an incident report
     // rather than a refusal. The transaction has already rolled back nothing
     // (reconcile blocks before writing), so no fact exists either way.
@@ -474,6 +615,11 @@ export async function proposeFact(
       {
         workspaceId: ctx.workspaceId,
         episodeId,
+        // Materialized (or reused) even on this arm — the corroborating act
+        // still happened in the session — but no lineage edge is written: the
+        // fact predates the session. `null` on a session-less proposal.
+        sessionEpisodeId,
+        sessionEpisodeCreated,
         factId: outcome.factId,
         evidenceAdded: outcome.evidenceAdded,
         requestId,
@@ -494,6 +640,12 @@ export async function proposeFact(
     {
       workspaceId: ctx.workspaceId,
       episodeId,
+      // The tier-3 session episode the draft derives from (#5486); `null` on a
+      // session-less proposal. `sessionEpisodeCreated` says whether THIS
+      // propose lazily minted it or reused the one an earlier propose did —
+      // the operator-visible half of the idempotence contract.
+      sessionEpisodeId,
+      sessionEpisodeCreated,
       factId: outcome.factId,
       provisional: outcome.provisional,
       tensionEdges: outcome.tensionEdges,

@@ -56,6 +56,15 @@ type CardState =
   | { phase: "error"; message: string; retrySafe: boolean };
 
 /** The compact line shown for any non-confirmation `proposeFact` result. */
+/**
+ * The half of the consent sentence that does not depend on where the proposal
+ * came from — shared by the session and session-less arms so the two cannot
+ * drift on what a confirmation means.
+ */
+const PROPOSAL_OUTCOME_TAIL =
+  " If the brain already holds this claim, your confirmation is recorded as further evidence for " +
+  "it instead. Nothing has been recorded yet.";
+
 function ProposeFactErrorLine({ result }: { result: unknown }) {
   const message = getProposeFactError(result);
   return (
@@ -209,11 +218,21 @@ export function ProposeFactConfirmCard({ part }: { part: unknown }) {
             <dt className="text-muted-foreground">Value</dt>
             <dd className="break-words text-foreground">{object}</dd>
           </dl>
+          {/* The visibility sentence is part of what the human consents to, so
+              it must state what actually lands (#5486): a proposal staged in a
+              conversation takes the session's narrow grant seed — visible to
+              you until a reviewer publishes it — where a session-less one
+              takes the disclosed workspace grant. Deliberately NOT "the
+              reviewer decides who sees it": the review gate's widening (issue
+              5483) is the evidence-grant union at publish, not a per-fact
+              audience picker, so this card must not promise a choice the
+              reviewer does not have. */}
           <p className="mb-2 text-xs text-muted-foreground">
-            This records a new claim in your company brain as a draft, visible to your workspace and
-            waiting for a reviewer to publish it. If the brain already holds this claim, your
-            confirmation is recorded as further evidence for it instead. Nothing has been recorded
-            yet.
+            {(confirmResult.confirm.session
+              ? "This records a new claim in your company brain as a draft, with this conversation " +
+                "recorded as its source. Until a reviewer publishes it, the draft is visible to you."
+              : "This records a new claim in your company brain as a draft, visible to your workspace " +
+                "and waiting for a reviewer to publish it.") + PROPOSAL_OUTCOME_TAIL}
           </p>
           {confirmResult.confirm.reason ? (
             <p className="mb-2 text-xs text-muted-foreground">

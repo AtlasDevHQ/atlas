@@ -107,14 +107,36 @@ export interface ProposalClaim {
 }
 
 /**
+ * The session a staged proposal originated in (#5486) — mirrored from
+ * `lib/brain/proposal.ts`'s `ProposalSessionRef` as a wire shape rather than
+ * imported, because THIS module is the wire contract and that one is the verb.
+ * Stamped by the staging tool from the request context (never by the model —
+ * the tool's `inputSchema` does not admit it), bound into the confirm token,
+ * and re-validated against the conversation's ownership at the write.
+ */
+export interface ProposalSessionWireRef {
+  /** The conversation the proposal was staged in. */
+  readonly conversationId: string;
+}
+
+/**
  * The replay payload for a staged proposal — the exact body the confirm card
  * POSTs to `POST /api/v1/brain-proposals/confirm`.
  *
  * Mirror this shape on the web-local types
  * (`packages/web/src/ui/lib/propose-fact-types.ts`); the card POSTs it verbatim
- * and never inspects `token`.
+ * and never inspects `token` (nor `session`).
  */
 export interface ProposeFactConfirmRequest extends ProposalClaim {
+  /**
+   * The originating session, when the proposal was staged in one (#5486).
+   * Travels so the confirm endpoint can hand `proposeFact` the session whose
+   * episode the fact derives from and whose ACL context seeds its grant.
+   * Bound in the token: a payload whose session was added, dropped, or
+   * swapped after staging fails verification, so the provenance the human
+   * consented to is the provenance that lands.
+   */
+  readonly session?: ProposalSessionWireRef;
   /**
    * Server-signed, single-use confirm token binding this exact staged claim to
    * `(workspace, canonical subject+predicate+object+validFrom+reason, nonce,
@@ -129,6 +151,13 @@ export interface ProposalConfirmBinding {
   readonly workspaceId: string;
   /** Bound via a canonical hash, so the token stays small and leaks nothing readable. */
   readonly claim: ProposalClaim;
+  /**
+   * The originating session, hashed into the same binding (#5486). Absent and
+   * `undefined` hash identically — a session-less proposal's token is
+   * byte-compatible with the pre-#5486 shape, so nothing staged before this
+   * landed fails its own confirm.
+   */
+  readonly session?: ProposalSessionWireRef;
 }
 
 export type MintProposalConfirmTokenOptions = MintConfirmTokenOptions;
@@ -161,13 +190,25 @@ function proposalClaims(binding: ProposalConfirmBinding): ConfirmClaims {
   return {
     /** Workspace (org) id. */
     w: binding.workspaceId,
-    /** sha256(canonical subject + predicate + object + validFrom + reason). */
+    /**
+     * sha256(canonical subject + predicate + object + validFrom + reason
+     * + sessionConversationId). The session id joins the one hash rather than
+     * travelling as a readable claim, on the same grounds as the claim text:
+     * every bound field is equally load-bearing — a swapped session changes
+     * whose conversation becomes the fact's provenance and whose ACL context
+     * seeds its grant, which changes what the human agreed to exactly as a
+     * swapped object would. Spread-when-present, so a session-less binding
+     * hashes byte-identically to the pre-#5486 shape.
+     */
     ch: claimsHash({
       subject,
       predicate,
       object,
       ...(validFrom !== undefined ? { validFrom } : {}),
       ...(reason !== undefined ? { reason } : {}),
+      ...(binding.session !== undefined
+        ? { sessionConversationId: binding.session.conversationId }
+        : {}),
     }),
   };
 }

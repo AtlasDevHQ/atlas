@@ -171,6 +171,17 @@ interface RequestContext {
    * Not a security control — see the note on the chat route's read of it.
    */
   restWriteConfirmationUi?: boolean;
+  /**
+   * #5486 — the conversation this turn belongs to, stamped by the chat route's
+   * agent frames (initial turn and resume alike). Read by the `proposeFact`
+   * staging tool so a confirmed proposal can name its originating session: the
+   * session then materializes lazily as the fact's tier-3 source episode and
+   * seeds its grant (ADR-0036 §T9 lock 3). Identity only — no consumer reads
+   * conversation CONTENT through this field. Undefined on surfaces with no
+   * conversation (MCP / scheduler / direct tool tests), which fall back to the
+   * session-less proposal shape.
+   */
+  conversationId?: string;
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

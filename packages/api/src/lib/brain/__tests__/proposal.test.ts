@@ -50,6 +50,12 @@ const {
   TENSION_CANDIDATES_SQL,
 } = await import("@atlas/api/lib/brain/reconcile");
 const { BrainReaderUnresolvedError } = await import("@atlas/api/lib/brain/reader-context");
+const {
+  CONVERSATION_OWNERSHIP_SQL,
+  SESSION_EPISODE_INSERT_SQL,
+  SESSION_EPISODE_SELECT_SQL,
+} = await import("@atlas/api/lib/brain/session-episode");
+const { DERIVES_FROM_EDGE_SQL } = await import("@atlas/api/lib/brain/correction");
 
 /** An identity vocabulary — every norm maps to itself. */
 const VOCABULARY = {
@@ -69,18 +75,41 @@ const CTX = {
 
 const CLAIM = { subject: "Ana", predicate: "is the DRI for", object: "billing" };
 const AT = new Date("2026-08-27T12:00:00.000Z");
+const CONVERSATION_ID = "11111111-2222-4333-8444-555555555555";
+const SESSION = { conversationId: CONVERSATION_ID };
 
 interface Executed {
   readonly sql: string;
   readonly params: readonly unknown[];
 }
 
-/** Answers the whole statement sequence; `corroborates` picks which arm reconcile takes. */
-function makeExecutor(options: { corroborates?: boolean } = {}) {
+/**
+ * Answers the whole statement sequence; `corroborates` picks which arm
+ * reconcile takes. The session statements (#5486) answer too: `sessionOwned`
+ * false refuses the ownership gate, `sessionExisting` makes the idempotent
+ * INSERT conflict so the path reuses the episode a previous propose minted.
+ */
+function makeExecutor(
+  options: {
+    corroborates?: boolean;
+    sessionOwned?: boolean;
+    sessionExisting?: { id: string; visible_to: unknown };
+  } = {},
+) {
   const executed: Executed[] = [];
   const tx = {
     query: async (sql: string, params: unknown[] = []) => {
       executed.push({ sql, params });
+      if (sql === CONVERSATION_OWNERSHIP_SQL) {
+        return { rows: options.sessionOwned === false ? [] : [{ id: CONVERSATION_ID }] };
+      }
+      if (sql === SESSION_EPISODE_INSERT_SQL) {
+        return { rows: options.sessionExisting ? [] : [{ id: "sess-ep-1" }] };
+      }
+      if (sql === SESSION_EPISODE_SELECT_SQL) {
+        return { rows: options.sessionExisting ? [options.sessionExisting] : [] };
+      }
+      if (sql === DERIVES_FROM_EDGE_SQL) return { rows: [{ id: "lineage-1" }] };
       if (sql === PROPOSAL_EPISODE_INSERT_SQL) return { rows: [{ id: "ep-1" }] };
       if (sql === RECONCILE_LOCK_SQL) return { rows: [] };
       if (sql === CORROBORATION_LOOKUP_SQL) {
@@ -318,6 +347,110 @@ describe("corroboration — the arm with no review gate behind it", () => {
     const edges = corroborating.executed.filter((e) => e.sql === INSERT_PROVENANCE_EDGE_SQL);
     expect(edges).toHaveLength(1);
     expect(edges[0]?.params).toEqual(["ws-1", "fact-existing", "ep-1"]);
+  });
+});
+
+describe("⭐ the session path (#5486, lock 3)", () => {
+  it("materializes the session episode lazily, inside the SAME transaction, before the proposal episode", async () => {
+    await proposeFact(
+      { ctx: CTX, claim: CLAIM, session: SESSION, vocabulary: VOCABULARY },
+      harness.deps,
+    );
+    const order = harness.executed.map((e) => e.sql);
+    expect(order.indexOf(CONVERSATION_OWNERSHIP_SQL)).toBe(0);
+    expect(order.indexOf(SESSION_EPISODE_INSERT_SQL)).toBeLessThan(
+      order.indexOf(PROPOSAL_EPISODE_INSERT_SQL),
+    );
+  });
+
+  it("⭐ seeds the grant from the session — the actor plus what the episode carried — and `org` appears NOWHERE", async () => {
+    // The acceptance criterion: a proposal cannot land at `[org]` without an
+    // explicit widening. Asserted over the WHOLE transcript rather than the
+    // one grant parameter, because any statement smuggling the workspace token
+    // in — the episode, the fact, an edge — would be the same defect.
+    await proposeFact(
+      { ctx: CTX, claim: CLAIM, session: SESSION, vocabulary: VOCABULARY },
+      harness.deps,
+    );
+    const proposalEpisode = harness.executed.find((e) => e.sql === PROPOSAL_EPISODE_INSERT_SQL);
+    expect(JSON.parse(String(proposalEpisode?.params[5]))).toEqual(["user:u-1"]);
+    for (const { sql, params } of harness.executed) {
+      for (const param of params) {
+        expect(
+          [sql, param, typeof param === "string" && /"org"|^org$/.test(param)],
+        ).toEqual([sql, param, false]);
+      }
+    }
+    // Not vacuous: the narrow grant really did reach the fact row.
+    expect(harness.executed.some((e) => e.sql === INSERT_FACT_SQL)).toBe(true);
+  });
+
+  it("passes `org` through only when the session episode already carried it — the explicit widening", async () => {
+    const widened = makeExecutor({
+      sessionExisting: { id: "sess-ep-0", visible_to: ["user:u-1", "org"] },
+    });
+    await proposeFact(
+      { ctx: CTX, claim: CLAIM, session: SESSION, vocabulary: VOCABULARY },
+      widened.deps,
+    );
+    const proposalEpisode = widened.executed.find((e) => e.sql === PROPOSAL_EPISODE_INSERT_SQL);
+    expect(JSON.parse(String(proposalEpisode?.params[5]))).toEqual(["user:u-1", "org"]);
+  });
+
+  it("writes the derives-from lineage edge from the created draft to the session episode", async () => {
+    // Lock 3's edge — and deliberately NOT `provenance`: the proposal episode
+    // already carries the vouch through the seam, and a session episode
+    // feeding the corroboration count too would make one act of testimony
+    // count as two distinct sources.
+    await proposeFact(
+      { ctx: CTX, claim: CLAIM, session: SESSION, vocabulary: VOCABULARY },
+      harness.deps,
+    );
+    const lineage = harness.executed.filter((e) => e.sql === DERIVES_FROM_EDGE_SQL);
+    expect(lineage).toHaveLength(1);
+    expect(lineage[0]?.params).toEqual(["ws-1", "fact-new", "sess-ep-1"]);
+    // The vouch is still the proposal episode's, untouched.
+    const vouch = harness.executed.filter((e) => e.sql === INSERT_PROVENANCE_EDGE_SQL);
+    expect(vouch).toHaveLength(1);
+    expect(vouch[0]?.params).toEqual(["ws-1", "fact-new", "ep-1"]);
+  });
+
+  it("writes NO lineage edge on the corroborated arm — the fact predates the session", async () => {
+    const corroborating = makeExecutor({ corroborates: true });
+    const outcome = await proposeFact(
+      { ctx: CTX, claim: CLAIM, session: SESSION, vocabulary: VOCABULARY },
+      corroborating.deps,
+    );
+    expect(outcome.kind).toBe("corroborated");
+    expect(corroborating.executed.some((e) => e.sql === DERIVES_FROM_EDGE_SQL)).toBe(false);
+    // The session episode still materialized — the act happened in it — so a
+    // later propose from this conversation reuses it.
+    expect(corroborating.executed.some((e) => e.sql === SESSION_EPISODE_INSERT_SQL)).toBe(true);
+  });
+
+  it("refuses a session the actor cannot claim, as an ordinary outcome, with nothing written", async () => {
+    const unowned = makeExecutor({ sessionOwned: false });
+    const outcome = await proposeFact(
+      { ctx: CTX, claim: CLAIM, session: SESSION, vocabulary: VOCABULARY },
+      unowned.deps,
+    );
+    expect(outcome.kind).toBe("refused");
+    if (outcome.kind !== "refused") throw new Error("expected a refusal");
+    expect(outcome.reason).toBe(PROPOSAL_REFUSAL_REASONS.sessionNotFound);
+    expect(outcome.message).toContain("nothing was recorded");
+    // The ownership SELECT is the only statement that ran.
+    expect(unowned.executed.map((e) => e.sql)).toEqual([CONVERSATION_OWNERSHIP_SQL]);
+  });
+
+  it("a session-LESS proposal still takes the disclosed workspace grant, unchanged", async () => {
+    // The fallback #5482 argued for survives the session path landing: with no
+    // session to inherit from, narrowing to the actor alone would be the dead
+    // draft `proposalGrantTokens`'s header rules out.
+    await proposeFact({ ctx: CTX, claim: CLAIM, vocabulary: VOCABULARY }, harness.deps);
+    const episode = harness.executed.find((e) => e.sql === PROPOSAL_EPISODE_INSERT_SQL);
+    expect(JSON.parse(String(episode?.params[5]))).toEqual(["org"]);
+    expect(harness.executed.some((e) => e.sql === CONVERSATION_OWNERSHIP_SQL)).toBe(false);
+    expect(harness.executed.some((e) => e.sql === SESSION_EPISODE_INSERT_SQL)).toBe(false);
   });
 });
 

@@ -19,6 +19,14 @@ export interface ProposeFactConfirmRequest {
   validFrom?: string;
   reason?: string;
   /**
+   * The session the proposal was staged in (#5486). Opaque to the card beyond
+   * one read: its PRESENCE switches the visibility sentence, because a
+   * session-carrying proposal lands with the session's narrow grant seed (the
+   * proposer, until a reviewer widens it) where a session-less one lands
+   * workspace-visible. POSTed back verbatim — the confirm token binds it.
+   */
+  session?: { conversationId: string };
+  /**
    * Server-signed, single-use confirm token. Opaque to the card — it POSTs the
    * whole `confirm` payload (including this token) verbatim; the confirm
    * endpoint re-derives the binding, verifies it, then burns it so a replay is

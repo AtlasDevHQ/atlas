@@ -7,11 +7,19 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 The Integrations page provides a central hub for connecting Atlas to external platforms. Manage Slack, Microsoft Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp, Email, and webhook delivery from a single admin page.
 
+<WhenSaaS>
+<Callout title="Prerequisites">
+- A user with the `admin` role in your workspace — managed auth and the internal database are built into the hosted platform
+</Callout>
+</WhenSaaS>
+
+<WhenSelfHosted>
 <Callout title="Prerequisites">
 - Managed auth enabled
 - A user with the `admin` role
 - `DATABASE_URL` configured (connection state is stored in the internal database)
 </Callout>
+</WhenSelfHosted>
 
 ---
 
@@ -25,7 +33,7 @@ The page shows a card for each integration with its connection status:
 - **Disconnected** — Integration is available but not connected
 - **Not Available** — Integration cannot be connected (no OAuth configured and no internal database for BYOT)
 
-A **Delivery Channels** card at the bottom summarizes all available notification channels (email, Slack, webhook) for use with [scheduled tasks](/guides/scheduled-tasks).
+A **Delivery Channels** card at the bottom summarizes all available notification channels (email, Slack, webhook) for use with <AudienceLink saas="/guides/scheduled-tasks">scheduled tasks</AudienceLink>.
 
 ---
 
@@ -47,7 +55,15 @@ A request to the wrong endpoint for a catalog entry's model returns `400 wrong_i
 
 The unified install pipeline splits the install responsibilities between two roles. This separation is what makes the SaaS deploy at `app.useatlas.dev` self-serve without per-tenant operator work.
 
-**Operator (you, once per Platform — at deploy time)**
+<WhenSaaS>
+On the hosted platform, **Atlas is the operator** — the App Registrations and credentials described below are already configured for every OAuth platform. Your part is the customer-admin half.
+</WhenSaaS>
+
+<WhenSelfHosted>
+On a self-hosted deployment, **you are the operator** — you create each provider App Registration under your own account and wire its credentials into the API service, once per platform.
+</WhenSelfHosted>
+
+**Operator (once per Platform — at deploy time)**
 
 - Create the Platform App Registration (Slack App / Atlassian Connected App / Salesforce Connected App / Azure Bot / etc.) under your own provider account.
 - Configure each App's Callback URL to your API's `/api/v1/integrations/<slug>/callback`.
@@ -84,9 +100,16 @@ Connect Slack to enable the `/atlas` slash command, `@atlas` mentions in channel
 
 ### Setup (canonical install router)
 
+<WhenSelfHosted>
 1. **Operator** — Create a [Slack app](https://api.slack.com/apps), configure its OAuth Redirect URL to `https://<your-api>/api/v1/integrations/slack/callback`, and set `SLACK_CLIENT_ID` + `SLACK_CLIENT_SECRET` on the API service. (`ATLAS_PUBLIC_API_URL` should be set so the callback URL is constructed correctly.)
 2. **Customer admin** — Click **Connect to Slack** on the Slack card in `/admin/integrations`. Atlas redirects to Slack's OAuth flow; on return the bot token is persisted via the chat-adapter store and the install metadata lands in `workspace_plugins` keyed to the caller's workspace.
+</WhenSelfHosted>
 
+<WhenSaaS>
+The Slack App Registration is already configured on the hosted platform — there is no operator step. Click **Connect to Slack** on the Slack card in `/admin/integrations`. Atlas redirects to Slack's OAuth flow; on return the bot token is persisted via the chat-adapter store and the install metadata lands in `workspace_plugins` keyed to your workspace.
+</WhenSaaS>
+
+<WhenSelfHosted>
 ### Self-hosted fallbacks
 
 Self-hosted deployments without `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` configured still have two fallback paths:
@@ -97,10 +120,13 @@ Self-hosted deployments without `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` config
 <Callout type="info">
 When using environment variables, the Slack card shows "Using environment variable (SLACK_BOT_TOKEN)" and the Disconnect button is hidden. To enable self-serve management, configure OAuth credentials or use the BYOT token form.
 </Callout>
+</WhenSelfHosted>
 
-### SaaS Mode
+<WhenSaaS>
+### If OAuth is unavailable
 
-In SaaS deployments, workspace admins see a **Connect to Slack** button — OAuth is always the path. If for some reason OAuth isn't configured on the deploy, the card falls back to the BYOT token form (SaaS always has an internal database). The card only shows **Not Available** when neither OAuth nor BYOT is possible.
+OAuth is always the path on the hosted platform. If for some reason OAuth isn't configured on the deploy, the card falls back to the BYOT token form (the platform always has an internal database). The card only shows **Not Available** when neither OAuth nor BYOT is possible.
+</WhenSaaS>
 
 ### Disconnecting
 
@@ -114,6 +140,7 @@ For the full Slack setup guide, see [Slack Integration](/guides/slack).
 
 Connect Microsoft Teams to enable `@atlas` mentions and channel conversations.
 
+<WhenSelfHosted>
 ### Self-Hosted Setup
 
 There are two ways to connect Teams:
@@ -121,10 +148,13 @@ There are two ways to connect Teams:
 1. **Platform OAuth (recommended)** — Set `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` environment variables (plus `TEAMS_TENANT_ID` for a single-tenant Azure Bot). The admin UI **Connect to Teams** button appears once `TEAMS_APP_ID` is detected, and initiates the Azure AD admin-consent flow. The callback captures the Azure-verified tenant id and persists a per-workspace `workspace_plugins` row through the chat-integration cap (#3142) — over-cap installs get an upgrade prompt. See the [Microsoft Teams integration guide](/integrations/teams) for the full per-workspace flow (manifest distribution + admin consent).
 
 2. **App credentials (BYOT)** — If platform env vars are not set but an internal database is available (`DATABASE_URL`), the card shows a credentials form. Create an [Azure Bot](https://dev.botframework.com/bots/new), copy the App ID and App Password, and enter them on the Integrations page. Credentials are validated via Azure AD client credentials token acquisition.
+</WhenSelfHosted>
 
-### SaaS Mode
+<WhenSaaS>
+### Setup
 
-Workspace admins see a **Connect to Teams** button if the platform has Teams configured. If not, the card falls back to the BYOT credentials form. The card only shows **Not Available** when neither OAuth nor BYOT is possible.
+Workspace admins see a **Connect to Teams** button if the platform has Teams configured — it initiates the Azure AD admin-consent flow, and the callback captures the Azure-verified tenant id. See the [Microsoft Teams integration guide](/integrations/teams) for the full per-workspace flow (manifest distribution + admin consent). If the platform doesn't have Teams configured, the card falls back to the BYOT credentials form. The card only shows **Not Available** when neither OAuth nor BYOT is possible.
+</WhenSaaS>
 
 ### Connection Details
 
@@ -144,6 +174,7 @@ Click **Disconnect** and confirm. The `@atlas` mentions stop working until you r
 
 Connect Discord to enable bot commands and server conversations.
 
+<WhenSelfHosted>
 ### Self-Hosted Setup
 
 There are two ways to connect Discord:
@@ -151,14 +182,17 @@ There are two ways to connect Discord:
 1. **Platform bot install (recommended)** — Set `DISCORD_BOT_TOKEN` and `DISCORD_CLIENT_ID` (plus `DISCORD_PUBLIC_KEY` to verify inbound webhook signatures) as environment variables. The admin UI **Connect to Discord** button appears once `DISCORD_CLIENT_ID` is detected and starts the cap-gated bot-install flow at `/api/v1/integrations/discord/install`, which adds the operator's bot to the selected server and records the install through the chat-integration cap.
 
 2. **Bot credentials (BYOT)** — If platform env vars are not set but an internal database is available (`DATABASE_URL`), the card shows a credentials form. Create a [Discord application](https://discord.com/developers/applications), copy the Bot Token, Application ID, and Public Key, and enter them on the Integrations page. The bot token is validated via the Discord API.
+</WhenSelfHosted>
+
+<WhenSaaS>
+### Setup
+
+Workspace admins see a **Connect to Discord** button when the platform has the Discord bot install configured. Clicking it starts the cap-gated bot-install flow at `/api/v1/integrations/discord/install`, which adds the platform's bot to the selected server and records the install through the chat-integration cap. If the platform bot install isn't configured, the card falls back to the BYOT credentials form. The card only shows **Not Available** when neither the platform bot install nor BYOT is possible.
+</WhenSaaS>
 
 <Callout type="warn">
 The legacy OAuth connect flow — `/api/v1/discord/install` and `/callback`, gated by `DISCORD_CLIENT_SECRET` — was retired in #3145 and now returns **410 Gone**. It created uncapped installs that bypassed the chat-integration cap. Use the bot-install flow above; `DISCORD_CLIENT_SECRET` is no longer read.
 </Callout>
-
-### SaaS Mode
-
-Workspace admins see a **Connect to Discord** button when the platform has the Discord bot install configured (`DISCORD_BOT_TOKEN` + `DISCORD_CLIENT_ID`). If not, the card falls back to the BYOT credentials form. The card only shows **Not Available** when neither the platform bot install nor BYOT is possible.
 
 ### Connection Details
 
@@ -180,7 +214,7 @@ Connect a Telegram bot for chat conversations. Unlike other integrations, Telegr
 
 ### Setup
 
-Telegram integration requires an internal database (`DATABASE_URL`). In SaaS mode it is always configurable; in self-hosted mode it requires the internal database.
+Telegram integration requires an internal database — always present on the hosted platform, `DATABASE_URL` on a self-hosted deployment.
 
 1. Create a bot via [BotFather](https://t.me/BotFather) on Telegram
 2. Copy the bot token
@@ -207,7 +241,7 @@ Connect Google Chat for bot conversations in Google Workspace. Unlike other inte
 
 ### Setup
 
-Google Chat integration requires an internal database (`DATABASE_URL`). It is always BYOT — workspace admins provide their own service account credentials.
+Google Chat integration requires an internal database — always present on the hosted platform, `DATABASE_URL` on a self-hosted deployment. It is always BYOT — workspace admins provide their own service account credentials.
 
 1. Create a [service account](https://console.cloud.google.com/iam-admin/serviceaccounts) in Google Cloud Console
 2. Enable the Google Chat API for the project
@@ -235,7 +269,7 @@ Connect GitHub for issue tracking and repository integration. GitHub uses a **pe
 
 ### Setup
 
-GitHub integration requires an internal database (`DATABASE_URL`). It is always BYOT — workspace admins provide their own PAT.
+GitHub integration requires an internal database — always present on the hosted platform, `DATABASE_URL` on a self-hosted deployment. It is always BYOT — workspace admins provide their own PAT.
 
 1. Create a [personal access token](https://github.com/settings/tokens) on GitHub with the permissions you need
 2. On the Integrations page, enter the token in the **Personal Access Token** field on the GitHub card
@@ -260,7 +294,7 @@ Connect Linear for issue tracking and project management integration. Linear use
 
 ### Setup
 
-Linear integration requires an internal database (`DATABASE_URL`). It is always BYOT — workspace admins provide their own API key.
+Linear integration requires an internal database — always present on the hosted platform, `DATABASE_URL` on a self-hosted deployment. It is always BYOT — workspace admins provide their own API key.
 
 1. Go to [Linear workspace settings > API](https://linear.app/settings/api) and create a new API key
 2. On the Integrations page, paste the key into the **API Key** field on the Linear card
@@ -286,7 +320,7 @@ Connect WhatsApp for messaging and notification delivery. WhatsApp uses the **Cl
 
 ### Setup
 
-WhatsApp integration requires an internal database (`DATABASE_URL`). It is always BYOT — workspace admins provide their own Cloud API credentials.
+WhatsApp integration requires an internal database — always present on the hosted platform, `DATABASE_URL` on a self-hosted deployment. It is always BYOT — workspace admins provide their own Cloud API credentials.
 
 1. Create or access your [WhatsApp Business Account](https://business.facebook.com/settings/whatsapp-business-accounts) in Meta Business Suite
 2. Copy the **Phone Number ID** and generate a **permanent access token**
@@ -319,7 +353,7 @@ Email uses the **form-based install model** (`POST /api/v1/integrations/email/in
 
 ### Setup
 
-Email integration requires an internal database (`DATABASE_URL`). Each workspace admin configures their own email delivery provider.
+Email integration requires an internal database — always present on the hosted platform, `DATABASE_URL` on a self-hosted deployment. Each workspace admin configures their own email delivery provider.
 
 1. On the Integrations page, select a provider from the **Email** card dropdown
 2. Enter the **sender address** (the "From" address for outgoing emails)
@@ -350,27 +384,39 @@ The Resend-based `sendEmailReport` tool (operator-env-configured plugin under `p
 
 ### Disconnecting
 
-Click **Disconnect** and confirm. Email delivery will fall back to environment variables (`ATLAS_SMTP_URL` or `RESEND_API_KEY`) or be disabled until reconnected.
+Click **Disconnect** and confirm.
+
+<WhenSaaS>
+Email delivery reverts to the platform's Resend baseline until you reconnect a provider.
+</WhenSaaS>
+
+<WhenSelfHosted>
+Email delivery will fall back to environment variables (`ATLAS_SMTP_URL` or `RESEND_API_KEY`) or be disabled until reconnected.
+</WhenSelfHosted>
 
 ### Auth Emails (Password Reset, Verification)
 
 The same email transport powers password reset and email verification. The workspace-level provider you configure here is used when a user is signed in (verification re-sends, magic links). The unauthenticated **Forgot password?** flow on `/login` runs without a session and therefore can't see workspace overrides — it falls through to the platform-level provider (`ATLAS_EMAIL_PROVIDER` settings or the `RESEND_API_KEY` / `ATLAS_SMTP_URL` env vars). On a deployment with no platform-level provider, the **Forgot password?** link on `/login` is hidden — see Password reset for the full flow.
 
-### Self-Hosted
+<WhenSelfHosted>
+### Environment-variable fallback
 
 For self-hosted deployments without an internal database, email delivery is configured via environment variables:
 
 - `ATLAS_SMTP_URL` — Webhook endpoint for SMTP-to-HTTP bridge
 - `RESEND_API_KEY` — Resend API key for direct email delivery
 - `ATLAS_EMAIL_FROM` — Default sender address
+</WhenSelfHosted>
 
 ---
 
 ## Webhooks
 
-The webhook card shows the count of active webhook delivery tasks. Webhooks are created via [Scheduled Tasks](/guides/scheduled-tasks) — the Integrations page provides a summary view.
+The webhook card shows the count of active webhook delivery tasks. Webhooks are created via <AudienceLink saas="/guides/scheduled-tasks">Scheduled Tasks</AudienceLink> — the Integrations page provides a summary view.
 
-In SaaS mode with webhook support enabled, a **Create Webhook** link navigates to the Scheduled Tasks page.
+<WhenSaaS>
+With webhook support enabled, a **Create Webhook** link navigates to the Scheduled Tasks page.
+</WhenSaaS>
 
 ### Outbound Webhook (HMAC-signed)
 
@@ -488,6 +534,11 @@ Atlassian-specific notes vs Salesforce:
 - After the token exchange Atlas calls `GET https://api.atlassian.com/oauth/token/accessible-resources` to learn the **`cloudid`** of the Atlassian Cloud the user connected. One Atlas Workspace = one Atlassian Cloud; `cloudid` lands in `workspace_plugins.config`.
 - Atlassian **rotates** the `refresh_token` on every refresh; the new value is persisted back to `integration_credentials` (Salesforce sometimes returns one, sometimes not).
 
+<WhenSaaS>
+On the hosted platform the Atlassian OAuth app is already registered and configured — there is no operator setup. Skip to the admin flow below.
+</WhenSaaS>
+
+<WhenSelfHosted>
 ### Operator setup
 
 1. In your Atlassian Developer Console, create an **OAuth 2.0 (3LO) integration**.
@@ -503,6 +554,7 @@ Atlassian-specific notes vs Salesforce:
 | `ATLAS_PUBLIC_API_URL` | yes | Public origin of the API — used to construct the OAuth callback URL |
 
 Without `JIRA_CLIENT_ID` / `JIRA_CLIENT_SECRET`, the install handler logs `Jira OAuth handler not registered` at boot and `GET /api/v1/integrations/jira/install` returns 501.
+</WhenSelfHosted>
 
 ### Customer admin flow
 
@@ -527,6 +579,11 @@ Jira access tokens are short-lived. On HTTP 401 during a query, Atlas runs `gran
 
 Salesforce is the first **lazy OAuth integration** — credentials live in the dedicated `integration_credentials` table (per [ADR-0005](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0005-integration-credentials-table.md)) and the per-Workspace plugin instance is built on demand by `LazyPluginLoader` on the first agent tool call.
 
+<WhenSaaS>
+On the hosted platform the Salesforce Connected App is already registered and configured — there is no operator setup. Skip to the admin flow below.
+</WhenSaaS>
+
+<WhenSelfHosted>
 ### Operator setup
 
 1. Create a Salesforce **Connected App** in your Salesforce org's setup (Setup → App Manager → New Connected App).
@@ -544,6 +601,7 @@ Salesforce is the first **lazy OAuth integration** — credentials live in the d
 | `ATLAS_PUBLIC_API_URL` | yes | — | Public origin of the API — used to construct the OAuth callback URL |
 
 Without `SALESFORCE_CLIENT_ID` / `SALESFORCE_CLIENT_SECRET`, the install handler logs `Salesforce OAuth handler not registered` at boot and `GET /api/v1/integrations/salesforce/install` returns 501.
+</WhenSelfHosted>
 
 ### Customer admin flow
 
@@ -574,9 +632,23 @@ column on `organization`:
 | --------- | -------------------------------------------------------------- |
 | `free`    | Accessible to every workspace.                                 |
 | `trial`   | Trial workspaces and above.                                    |
-| `starter` | Paid Starter and above. Slack ships at this tier.              |
+| `starter` | Paid Starter and above. Slack ships at this tier on the hosted platform. |
 | `pro`     | Pro and above.                                                 |
-| `business`| Business / premium integrations (Salesforce ships here).       |
+| `business`| Business / premium integrations (Salesforce ships here on the hosted platform). |
+
+<WhenSaaS>
+The tiers map to Atlas's paid plans — see <AudienceLink saas="/guides/billing-and-plans">Billing &amp; Plans</AudienceLink> for what each plan includes.
+</WhenSaaS>
+
+<WhenSelfHosted>
+On a self-hosted deployment you declare the catalog — and each entry's
+`min_plan` — in your own `atlas.config.ts`. **An entry that omits
+`min_plan` defaults to `starter`**, and without billing configured every
+workspace sits on the default `free` tier, so set `min_plan: "free"` on
+entries every workspace should be able to install. The tier gate only
+distinguishes workspaces if you wire up your own Stripe billing — see
+[Self-Hosted Billing](/self-hosted/guides/self-hosted-billing).
+</WhenSelfHosted>
 
 The admin Integrations page renders a card per entry; a workspace
 sitting below the entry's `min_plan` sees the card in a **locked**
@@ -594,14 +666,15 @@ Disconnect button so credentials can be cleaned up.
 ### Operator workspaces
 
 The `organization.is_operator_workspace` boolean flag bypasses every
-plan-tier check for Atlas's own dogfood / per-region operator orgs.
-The flag is operator-only — never exposed in customer-facing UI or
-billing surfaces.
+plan-tier check for the operator's own dogfood orgs — on the hosted
+platform, Atlas's own per-region operator orgs. The flag is
+operator-only — never exposed in customer-facing UI or billing
+surfaces.
 
 ---
 
 ## See Also
 
 - [Slack Integration](/guides/slack) — Full Slack setup guide
-- [Scheduled Tasks](/guides/scheduled-tasks) — Create webhook delivery tasks
-- [Admin Console](/guides/admin-console) — Overview of all admin pages
+- <AudienceLink saas="/guides/scheduled-tasks">Scheduled Tasks</AudienceLink> — Create webhook delivery tasks
+- <AudienceLink saas="/guides/admin-console">Admin Console</AudienceLink> — Overview of all admin pages

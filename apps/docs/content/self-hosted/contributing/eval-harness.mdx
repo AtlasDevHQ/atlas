@@ -16,7 +16,7 @@ A curated set of ~20 canonical questions in `eval/canonical-questions/questions.
 - **Joins** — DTC vs marketplace revenue (joins `order_items` → `products`), top customers by spend (joins `customers` → `orders`)
 - **Time-series** — monthly GMV trend, new customers by month
 - **Virtual dimensions** — `orders.order_size_bucket`, `products.price_tier`
-- **Glossary disambiguation** — `revenue`, `status`, `price` are `status: ambiguous` and must trigger the disambiguation contract documented in [the typed MCP tools](/guides/mcp#searchglossary), never resolve to a single mapping
+- **Glossary disambiguation** — `revenue`, `status`, `price` are `status: ambiguous` and must trigger the disambiguation contract documented in [the typed MCP tools](/self-hosted/guides/mcp#searchglossary), never resolve to a single mapping
 - **Filtered query_patterns** — `orders.orders_with_promotions` (`WHERE status != 'cancelled'`), `products.dtc_vs_marketplace` (`WHERE status = 'active'`)
 
 ## Running locally

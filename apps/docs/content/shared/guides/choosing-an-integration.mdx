@@ -1,11 +1,11 @@
 ---
 title: Choosing an Integration
-description: Comparison tables to help you pick the right integration surface and auth mode for your Atlas deployment.
+description: Comparison tables to help you pick the right integration surface — and, when self-hosting, the right auth mode — for your Atlas deployment.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas offers multiple ways to integrate and multiple authentication modes. These tables help you choose the right combination for your use case.
+Atlas offers multiple integration surfaces — and, on a self-hosted deployment, a choice of authentication mode. These tables help you choose the right combination for your use case.
 
 ## Widget vs SDK vs API
 
@@ -27,6 +27,18 @@ Atlas has three integration surfaces. Each serves a different audience and custo
 </Callout>
 
 ### Quick examples
+
+<WhenSaaS>
+<Callout type="info">
+In the examples below, replace `https://your-api.example.com` with the hosted API endpoint, `https://api.useatlas.dev`, and `sk-...` with an API key created from <AudienceLink saas="/guides/api-keys">Admin → API Keys</AudienceLink>.
+</Callout>
+</WhenSaaS>
+
+<WhenSelfHosted>
+<Callout type="info">
+In the examples below, replace `https://your-api.example.com` with your Atlas API server's public URL.
+</Callout>
+</WhenSelfHosted>
 
 **Script tag widget** — one line of HTML:
 
@@ -71,6 +83,11 @@ curl -X POST https://your-api.example.com/api/v1/query \
 
 ## Auth Modes
 
+<WhenSaaS>
+On the hosted platform, authentication is preconfigured — every workspace runs **managed** auth. Users sign in with workspace accounts, get per-user roles (viewer, analyst, admin), and keep their own conversation history. For programmatic access — the SDK, the REST API, or an embedded widget — create an API key from <AudienceLink saas="/guides/api-keys">Admin → API Keys</AudienceLink> and send it as a Bearer token. The auth-mode choice described on the self-hosted version of this page is a deployment decision that the platform has already made for you.
+</WhenSaaS>
+
+<WhenSelfHosted>
 Atlas supports four authentication modes. The right choice depends on your deployment environment and user management needs.
 
 | Dimension | None | Simple Key (`api-key`) | Managed (`managed`) | BYOT (`byot`) |
@@ -131,12 +148,14 @@ When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects from environment variables
 4. None of the above → **None**
 
 Set `ATLAS_AUTH_MODE` explicitly to override auto-detection. Valid values: `none`, `api-key`, `managed`, `byot`. You can also set `auth` in `atlas.config.ts`.
+</WhenSelfHosted>
 
 ---
 
 ## Related
 
 - [Embedding Widget](/guides/embedding-widget) — full widget configuration and customization guide
-- Authentication — detailed auth setup, roles, rate limiting, and audit logging
+- <AudienceLink selfHosted="/self-hosted/deployment/authentication">Authentication</AudienceLink> — detailed auth setup, roles, rate limiting, and audit logging
+- <AudienceLink saas="/guides/api-keys">API Key Management</AudienceLink> — create and revoke keys for programmatic access
 - [Environment Variables](/reference/environment-variables) — all configuration variables with defaults
 - [SDK documentation](https://www.npmjs.com/package/@useatlas/sdk) — `@useatlas/sdk` on npm

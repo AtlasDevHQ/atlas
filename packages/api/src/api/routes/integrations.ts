@@ -1608,7 +1608,7 @@ integrations.openapi(disconnectRoute, async (c) =>
   // working Disconnect button. Adding a plan check here would strand
   // credentials in `integration_credentials` / `chat_cache` with no
   // user-reachable cleanup path. Mirrors the install carve-out
-  // documented in `apps/docs/content/docs/guides/integrations.mdx`
+  // documented in `apps/docs/content/shared/guides/integrations.mdx`
   // §"Plan tiers and integrations".
   runHandler(c, "platform disconnect", async () => {
     const { platform } = c.req.valid("param");

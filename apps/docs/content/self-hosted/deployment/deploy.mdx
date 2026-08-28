@@ -309,7 +309,7 @@ RESEND_API_KEY=re_...                # platform Resend transport (DPA-listed ven
 ATLAS_RATE_LIMIT_RPM=300             # per-user requests/minute floor (#1983)
 ```
 
-Pasting these on a fresh region before first boot is the supported flow — see [Encryption Key Rotation](/platform-ops/encryption-key-rotation) for generating `ATLAS_ENCRYPTION_KEYS` and rotating to `v2` over time.
+Pasting these on a fresh region before first boot is the supported flow — see [Encryption Key Rotation](/self-hosted/platform-ops/encryption-key-rotation) for generating `ATLAS_ENCRYPTION_KEYS` and rotating to `v2` over time.
 
 Production SaaS deploys should additionally configure `pool.perOrg` in `atlas.config.ts` to clear the pool-defaults warning above:
 
@@ -335,4 +335,4 @@ export default defineConfig({
 - [Authentication](/self-hosted/deployment/authentication) — Auth mode configuration for production
 - [Configuration](/reference/config) — Declarative `atlas.config.ts` for advanced setups
 - [Sandbox Architecture](/architecture/sandbox) — Design doc for code execution isolation across platforms
-- [Troubleshooting](/guides/troubleshooting) — Diagnosing deployment issues
+- [Troubleshooting](/self-hosted/guides/troubleshooting) — Diagnosing deployment issues

@@ -5,10 +5,17 @@
   "pages": [
     "chat-surface",
     "embedding-widget",
+    "choosing-an-integration",
+    "integrations",
+    "slack",
+    "mcp",
+    "actions",
     "answer-styles",
     "multi-tenancy",
+    "caching",
     "plugin-marketplace",
     "onboarding-emails",
+    "social-providers",
     "atlas-temporal-model",
     "atlas-corrections",
     "atlas-conflicts",
@@ -18,6 +25,7 @@
     "atlas-connector-authoring",
     "self-serve-signup",
     "self-hosted-billing",
-    "self-hosted-models"
+    "self-hosted-models",
+    "troubleshooting"
   ]
 }

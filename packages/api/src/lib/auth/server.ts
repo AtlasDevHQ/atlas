@@ -1389,7 +1389,7 @@ export function resolveAllowUnauthDcr(env: NodeJS.ProcessEnv): boolean {
 /**
  * Default access-token TTL — 1 hour (Better Auth's default, OAuth 2.1
  * "industry standard"). Refresh-token default — 30 days. Documented in
- * `docs/guides/mcp.mdx` (hosted protocol reference) so SDK consumers have one source of truth
+ * `shared/guides/mcp.mdx` (hosted protocol reference) so SDK consumers have one source of truth
  * for the contract; the literals here are the implementation half.
  *
  * Surfacing both as env vars (#2066) lets the e2e test override them to

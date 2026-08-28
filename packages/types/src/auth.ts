@@ -66,15 +66,15 @@ export type AdminRole = (typeof ADMIN_ROLES)[number];
  * (`@atlas/ee/auth/roles`) and the API's `admin-router.ts` permission
  * middleware.
  *
- * ⚠️ **Publication sequencing (#5194).** This tuple's move here from
- * `packages/api/src/lib/auth/permissions.ts` is deliberately split: the
- * monorepo consumers keep their own copy until this version is PUBLISHED to
- * npm, because Deploy Validation builds `packages/api` against the published
- * `@useatlas/types` — a re-export of a symbol npm doesn't have yet fails the
- * scaffold build (`Export PERMISSIONS doesn't exist in target module`), which
- * is what reverted the first attempt. Until issue 5194's steps 3–4 land, the
- * api module holds the live copy the monorepo consumes and the two tuples
- * must stay identical; step 4 replaces that copy with a re-export from here.
+ * ⚠️ **Publication sequencing (#5194).** This tuple moved here from
+ * `packages/api/src/lib/auth/permissions.ts` in two gated stages: it was
+ * added here and PUBLISHED (0.11.0) first, and only then did the api module
+ * become a re-export — because Deploy Validation builds `packages/api`
+ * against the published `@useatlas/types`, so a re-export of a symbol npm
+ * doesn't have yet fails the scaffold build
+ * (`Export PERMISSIONS doesn't exist in target module`), which is what
+ * reverted the first attempt. Any future symbol promoted into this package
+ * must follow the same sequence: publish first, re-export after.
  *
  * ⚠️ **This package publishes to npm, so these flag ids are public
  * contract**: removing or renaming a flag is a breaking change for external

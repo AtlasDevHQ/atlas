@@ -12,11 +12,12 @@
  * itself (no duplicates, no accidental whitespace) that a hand-edit could
  * silently break.
  *
- * NOTE: until issue 5194's step 4 lands, `packages/api/src/lib/auth/
- * permissions.ts` carries the copy of this tuple the monorepo actually
- * consumes, and the two must stay identical. That equality cannot be asserted
- * from here (`@useatlas/types` must not depend on `@atlas/api`); step 4
- * replaces the api copy with a re-export, which retires the risk.
+ * NOTE: between step 1 and step 4 of issue 5194, `packages/api/src/lib/auth/
+ * permissions.ts` carried its own copy of this tuple, which had to stay
+ * identical to this one — an equality that could not be asserted from here
+ * (`@useatlas/types` must not depend on `@atlas/api`). Step 4 replaced the
+ * api copy with a re-export from this package, which retired that risk: this
+ * tuple is now the only definition.
  */
 
 import { describe, test, expect } from "bun:test";

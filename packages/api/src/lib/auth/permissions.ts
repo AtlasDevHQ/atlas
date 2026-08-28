@@ -36,31 +36,40 @@ const log = createLogger("auth:permissions");
  * Granular permission flags consumed by the enterprise custom-role surface
  * (`@atlas/ee/auth/roles`) and the `admin-router.ts` permission middleware.
  *
- * Hosted here (rather than in `@atlas/ee/auth/roles`) so core route handlers
- * can import the type without taking a hard dep on `@atlas/ee` — see #2563
- * (slice 1/11 of #2017, inverting the core → ee dependency).
+ * The tuple is DEFINED in `@useatlas/types` beside `ATLAS_ROLES` (#5194), so
+ * the web's role editor can reach the `Permission` union without importing
+ * from `@atlas/api` — the frontend speaks HTTP and takes types only from the
+ * shared package. Re-exported here (rather than consumers importing
+ * `@useatlas/types` directly) because this module is where the flags are
+ * ENFORCED, and the api-side conventions below need a definition-site to hang
+ * on; it also keeps core route handlers off a hard dep on `@atlas/ee` — see
+ * #2563 (slice 1/11 of #2017, inverting the core → ee dependency).
  *
- * ⚠️ **This tuple belongs in `@useatlas/types` next to `ATLAS_ROLES`, and
- * #5191 tried to move it there. It was REVERTED, and the reason is worth
- * knowing before anyone tries again.**
+ * ⚠️ The move was attempted in #5191 WITHOUT publishing `@useatlas/types`
+ * first, and reverted: Deploy Validation builds `packages/api` against the
+ * PUBLISHED copy, so this re-export failed the scaffold with
+ * `Export PERMISSIONS doesn't exist in target module` while every local gate
+ * passed. Any future symbol promoted into `@useatlas/types` must follow the
+ * same sequence — publish first, re-export after (issue 5194 has the
+ * post-mortem; CLAUDE.md's "sequence ref bumps AFTER the publish lands" is
+ * the general rule).
  *
- * The issue's premise — *"both consumers resolve it as `workspace:*`, so no npm
- * publish is required to land this"* — is true of the monorepo and FALSE of the
- * scaffold lane. `create-atlas`'s templates depend on the PUBLISHED
- * `@useatlas/types` (`^0.7.0` → 0.10.0), and Deploy Validation builds
- * `packages/api` against that npm copy. So the moment this module re-exported
- * the tuple from `@useatlas/types`, the scaffold failed with
- * `Export PERMISSIONS doesn't exist in target module` — on a REQUIRED check,
- * because the published build has `ATLAS_ROLES` and not this.
- *
- * The move is therefore gated on a `/publish` of `@useatlas/types` landing
- * FIRST, which is CLAUDE.md's ref-bump ordering rule arriving through a
- * different door. Tracked as a follow-up; see the note in
- * `packages/web/src/app/admin/roles/__tests__/permission-grouping.test.ts`,
- * which keeps a hand-copy until then.
+ * Flag semantics live where they are enforced:
+ *   - `query`/`query:raw_data` — not enforced at any route today.
+ *   - `dashboards:read`/`dashboards:write` split on "does this persist", not
+ *     HTTP method (#5189); per-route table in `api/routes/dashboards.ts`.
+ *     Enforced by `requireWorkspacePermission`, so unlike the `admin:*` flags
+ *     (gated by `adminAuth` upstream, subtract-only) they can GRANT to a
+ *     non-admin member.
+ *   - `dashboards:share` — a distinct authority, not a degree of editing: the
+ *     PUBLIC branch of `POST /{id}/share` publishes workspace data to the
+ *     unauthenticated internet (#5192). Org-mode shares and revocation stay on
+ *     `dashboards:write`.
  *
  * Adding a flag requires:
- *   1. Appending it here
+ *   1. Appending it to `PERMISSIONS` in `packages/types/src/auth.ts` — and
+ *      note that package publishes to npm, so flag ids are public contract:
+ *      additions are safe, removals/renames are breaking changes.
  *   2. A BACKFILL MIGRATION reconciling seeded `custom_roles` rows — without
  *      it the flag is silently absent for every workspace that has ever opened
  *      /admin/roles, because `resolvePermissions` returns the stored set rather
@@ -70,60 +79,14 @@ const log = createLogger("auth:permissions");
  *      `ee/src/auth/roles.ts`. Only `admin` picks a new flag up automatically
  *      (`[...PERMISSIONS]`); the others are hand-listed, deliberately — see
  *      `dashboards:share`.
- *   4. (Optional) Mapping it into `LEGACY_ROLE_PERMISSIONS` in
+ *   4. A label in `PERMISSION_LABELS` in
+ *      `packages/web/src/app/admin/roles/page.tsx` — exhaustive over
+ *      `Permission`, so `bun run type` reddens until the copy exists.
+ *   5. (Optional) Mapping it into `LEGACY_ROLE_PERMISSIONS` in
  *      `lib/auth/permission-resolve.ts` for non-enterprise deployments
  */
-export const PERMISSIONS = [
-  "query",
-  "query:raw_data",
-  // #5189 — the first pair ENFORCED outside the admin perimeter. Every
-  // `admin:*` flag below is gated by `adminAuth` upstream, so those can only
-  // ever *subtract* from admin; these are enforced by
-  // `requireWorkspacePermission` and can therefore GRANT to an
-  // analyst/viewer/member who is not an org admin. (`query`/`query:raw_data`
-  // above are non-admin-named but are not enforced at any route today.)
-  //
-  // The read/write split is **does this persist**, not **is this a GET**. Read
-  // covers non-persisting viewing: list/get/render/export/screenshot. Write
-  // covers anything that persists — create/update/delete, cards, org share
-  // links, BOTH refresh routes (they UPDATE the published card cache) and
-  // `GET /{id}/draft` (the first call forks) — plus the authoring assists
-  // `/suggest` and `/preview-card`. The per-route table and the full sweep live
-  // in `api/routes/dashboards.ts`; keep the rule stated in one place and this
-  // pointing at it, because an earlier draft of this comment stated the
-  // method-based rule that was rejected, at the definition site a reader
-  // reaches first.
-  "dashboards:read",
-  "dashboards:write",
-  // #5192 — a THIRD dashboards flag, and the reason it is not a finer slice of
-  // authoring: `POST /{id}/share` in `shareMode: "public"` mints a token served
-  // by `publicDashboards` at `/api/public/dashboards/{token}`, which bypasses
-  // auth entirely. That is publishing workspace data to the unauthenticated
-  // internet — a distinct authority from "can edit a dashboard", not a degree
-  // of it. #5189's two-flags-not-three decision was about read-vs-write
-  // granularity within authoring and still stands.
-  //
-  // Withheld from `member`, `analyst` and `viewer`; admin/owner/platform_admin
-  // pick it up through the `[...PERMISSIONS]` spreads. Enforced in the share
-  // handler on the PUBLIC branch only — an `org`-mode share re-checks org
-  // membership on read, so it is authoring-adjacent and stays on
-  // `dashboards:write`, as does REVOKING a link (de-escalation must never be
-  // harder than escalation).
-  "dashboards:share",
-  "admin:users",
-  "admin:connections",
-  "admin:settings",
-  "admin:audit",
-  "admin:roles",
-  "admin:semantic",
-] as const;
-
-export type Permission = (typeof PERMISSIONS)[number];
-
-/** Validate that a string is a known permission flag. */
-export function isValidPermission(p: string): p is Permission {
-  return (PERMISSIONS as readonly string[]).includes(p);
-}
+export { PERMISSIONS, isValidPermission } from "@useatlas/types/auth";
+export type { Permission } from "@useatlas/types/auth";
 
 // ---------------------------------------------------------------------------
 // Role hierarchy

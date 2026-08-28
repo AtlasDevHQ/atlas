@@ -12,8 +12,9 @@
 # scope both link occurrences and anchor targets per mount; <AudienceLink>
 # hrefs validate per mount; code fences, MDX comments, frontmatter, and custom
 # `[#id]` heading ids are honored; relative links resolve file-style through
-# the merged virtual namespace; and an empty content dir fails loudly rather
-# than vacuously passing.
+# the merged virtual namespace; an un-allowlisted self-hosted → docs-only
+# cross-audience link fails while allowlisted and <AudienceLink> forms pass;
+# and an empty content dir fails loudly rather than vacuously passing.
 
 set -euo pipefail
 
@@ -114,7 +115,8 @@ EOF
 # Self-Hosted
 
 See [deploy](/self-hosted/deploy) and the shared [concepts](/self-hosted/concepts#core-idea).
-A cross-mount jump to a [root-only page](/guides/setup) is legal.
+A cross-mount jump to a [shared page's root form](/concepts) is legal — a shared
+target serves both audiences, so no audience switch happens.
 EOF
   cat > "$1/self-hosted/deploy.mdx" <<'EOF'
 # Deploy
@@ -371,6 +373,48 @@ setup_nested_fence() {
 EOF
 }
 run_case pass "nested fence: inner \`\`\` does not close a \`\`\`\` block" setup_nested_fence
+
+# ── cross-audience gate: self-hosted → docs-only root path (2026-08-27) ─────
+# A self-hosted-tree page hard-linking a root path served only by content/docs
+# silently switches the reader's audience — fails unless the target is in
+# CROSS_AUDIENCE_ALLOWED or the link goes through <AudienceLink>.
+setup_cross_audience() {
+  setup_clean "$1"
+  cat > "$1/self-hosted/sneaky.mdx" <<'EOF'
+# Sneaky
+
+Line three links a [SaaS-only page](/guides/setup) from the self-hosted tree.
+EOF
+}
+run_case fail "cross-audience link out of the self-hosted tree" setup_cross_audience \
+  'self-hosted/sneaky\.mdx:3: cross-audience link "/guides/setup"'
+
+# Allowlisted target passes: /guides/signup is a reviewed entry in
+# CROSS_AUDIENCE_ALLOWED (the fixture materializes a docs page at that path).
+setup_cross_audience_allowed() {
+  setup_clean "$1"
+  mkdir -p "$1/docs/guides"
+  cat > "$1/docs/guides/signup.mdx" <<'EOF'
+# Signup
+EOF
+  cat > "$1/self-hosted/allowed.mdx" <<'EOF'
+# Allowed
+
+The [hosted signup guide](/guides/signup) is an allowlisted cross-audience target.
+EOF
+}
+run_case pass "allowlisted cross-audience target passes" setup_cross_audience_allowed
+
+# <AudienceLink> is cross-audience by explicit construction — exempt from the gate.
+setup_cross_audience_audiencelink() {
+  setup_clean "$1"
+  cat > "$1/self-hosted/deliberate.mdx" <<'EOF'
+# Deliberate
+
+<AudienceLink saas="/guides/setup" selfHosted="/self-hosted/deploy">setup</AudienceLink>
+EOF
+}
+run_case pass "AudienceLink to a docs-only page is exempt from the cross-audience gate" setup_cross_audience_audiencelink
 
 # ── empty content dir is a loud failure, not a vacuous pass ─────────────────
 setup_empty() { :; }

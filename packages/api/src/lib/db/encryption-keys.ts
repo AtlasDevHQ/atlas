@@ -9,7 +9,7 @@
  * module header for the picking guide)
  * and the re-encryption script (`scripts/rotate-encryption-key.ts`).
  *
- * See `apps/docs/content/docs/platform-ops/encryption-key-rotation.mdx`
+ * See `apps/docs/content/shared/platform-ops/encryption-key-rotation.mdx`
  * for the operator-facing runbook.
  */
 import * as crypto from "crypto";

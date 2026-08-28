@@ -138,3 +138,5 @@ command  apps/docs/src/lib/audience-taxonomy.ts  /index  # a trailing URL suffix
 command  apps/docs/src/lib/__tests__/source-partition.test.ts  /index  # same URL suffix
 command  scripts/check-docs-links.ts  /index  # same URL suffix
 command  scripts/check-agent-doc-paths.sh  /name  # the placeholder in this gate's own description of its `/name` syntax
+path     apps/docs/content/shared/guides/mcp.mdx  .vscode/mcp.json   # the READER's VS Code workspace MCP config — a file the doc tells them to create on their machine, not a repo path (page moved from content/docs in the 2026-08-27 audit follow-up, which brought it into this gate's scan)
+command  apps/docs/content/shared/guides/troubleshooting.mdx  /jwks  # a URL path suffix of the identity provider's JWKS endpoint ("must end in .json or /jwks"), not a slash command (page moved from content/docs in the 2026-08-27 audit follow-up)

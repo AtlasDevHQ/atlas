@@ -25,6 +25,10 @@ Each finding is scored by `impact x confidence x (1 - staleness)` to prioritize 
 
 ## Running `atlas improve`
 
+<Callout type="info">
+The CLI flow in this section (and [Interactive Mode](#interactive-mode) / [Version Tracking](#version-tracking-with-atlas-migrate) below) applies to **self-hosted** deployments, where the semantic layer lives as YAML on disk next to the CLI. On Atlas Cloud, use the [web improve page](#web-interactive-mode) and the [scheduler](#scheduled-improvements-phase-4) — the same engine, run server-side against your workspace's layer.
+</Callout>
+
 The `atlas improve` CLI command runs the analysis engine in batch mode:
 
 ```bash
@@ -240,13 +244,13 @@ See the [CLI reference](/reference/cli#migrate) for the full `atlas migrate` doc
 
 ## Web Interactive Mode
 
-The admin UI includes a dedicated improvement page with a split-view layout: a chat panel on the left for conversing with the expert agent, and a proposals panel on the right showing pending changes with approve/reject buttons.
+The admin UI includes a dedicated improvement page with a split-view layout: a chat panel on the left for conversing with the expert agent, and a proposals panel on the right showing pending changes with approve/reject buttons. The expert is a first-class **mode** of the Atlas agent — same loop, its own persona and a per-workspace step cap, with every proposal stamped with its origin (interactive vs. scheduled).
 
 ### Getting Started
 
-1. Navigate to **Admin > Semantic Layer** and click the **Improve** button in the header, or go directly to **Admin > Data > Improve Layer** in the sidebar
+1. Navigate to **Admin > Semantic Layer** and click the **Improve** button in the header, or go directly to **Admin > Data > Improve Layer** in the sidebar. You can also enter through an **anchor**: the group and entity pages carry launchers that open the conversation already focused on that group or entity, and the **coverage view** (column-anchored from the physical schema) opens it focused on a specific unmapped column
 2. Click **Run Analysis** for autonomous mode, or type a message to guide the agent toward specific areas (e.g., "Focus on the orders table" or "Check for missing joins")
-3. The agent will analyze your semantic layer and present proposals as they're identified
+3. The agent opens with a **briefing** — turn-one context assembled from your layer, recent decisions, and real `/health` inputs — then analyzes and presents proposals as they're identified. Proposals are **dialect-aware**: the engine loads a specialist prompt module keyed by the datasource's `dbType`, so a ClickHouse layer gets ClickHouse-shaped SQL suggestions, not generic Postgres ones
 
 ### Proposal Cards
 

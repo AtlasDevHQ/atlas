@@ -87,7 +87,7 @@ export function classifyByPath(absolutePath: string): AudienceClass | null {
 }
 
 export interface ContentEntry {
-  /** Real source file path, e.g. `content/docs/guides/slack.mdx`. */
+  /** Real source file path, e.g. `content/docs/guides/dashboards.mdx`. */
   readonly absolutePath: string;
   /** Optional explicit `audience:` frontmatter declaration. */
   readonly audience?: string | null;

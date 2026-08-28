@@ -8,8 +8,8 @@ import { githubEditPath } from "@/lib/mdx-links";
 // branches keeps a refactor from silently 404-ing every shared page's edit link.
 
 test("prefixes apps/docs/ onto a Fumadocs relative absolutePath", () => {
-  expect(githubEditPath("content/docs/guides/slack.mdx")).toBe(
-    "apps/docs/content/docs/guides/slack.mdx",
+  expect(githubEditPath("content/docs/guides/dashboards.mdx")).toBe(
+    "apps/docs/content/docs/guides/dashboards.mdx",
   );
 });
 

@@ -40,7 +40,7 @@ test("directory manifest classifies each content root to exactly one audience", 
 
 test("classification is robust to absolute filesystem paths", () => {
   expect(
-    classifyByPath("/home/x/apps/docs/content/docs/guides/slack.mdx"),
+    classifyByPath("/home/x/apps/docs/content/docs/guides/dashboards.mdx"),
   ).toBe("saas-only");
 });
 

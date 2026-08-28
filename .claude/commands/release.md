@@ -129,6 +129,8 @@ The public changelog at `docs.useatlas.dev/changelog` is a per-tag feed (ADR-000
    ```
    Curate from the milestone scope / the Step 4 tag message — customer-facing prose, not a commit dump. The component derives the GitHub Release link from `version`, so **do not** set `githubMilestone` on tag entries (that field belongs to the `developmentHistory` track only). Draft the prose from the tag message and the milestone scope — customer-facing, Keep-a-Changelog shape (Added / Changed / Fixed) with PR links.
 
+   **Endpoint removals get a "Removed (REST):" highlight.** Enumerate this tag's window with `bun scripts/check-openapi-removals.ts --base <previous tag>` — any removed data-plane path it reports belongs in this entry as a Removed line naming the endpoints, the ADR, and the migration path, and must already have its row in stability.mdx's "Removals within v0.x" ledger (the `openapi-removals` CI gate enforces the ledger half; this step is the changelog half — the v0.0.47/v0.0.55 entries are the models).
+
 2. Type-check the docs app so a broken entry can't reach the docs build (the docs service deploys from `main`), then commit + push:
    ```bash
    node_modules/.bin/tsgo --noEmit -p apps/docs/tsconfig.json   # from repo root

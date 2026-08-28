@@ -15,7 +15,7 @@ Atlas releases under semver via git tags (`v0.0.1`, `v0.0.2`, …). Not every su
 
 | Surface | Today (v0.x) | At v1.0.0 |
 |---------|--------------|-----------|
-| REST API (`/api/v1/*`) | Stable wire format; additive changes only within `v0.x` | Frozen — breaks require `/api/v2/*` + 12-month deprecation window |
+| REST API (`/api/v1/*`) | Stable wire format; additive by default within `v0.x` — the pre-1.0 removals are [recorded below](#removals-within-v0x-pre-10-record) | Frozen — breaks require `/api/v2/*` + 12-month deprecation window |
 | MCP tool surface | Stable tool names + parameter shapes; additive only within `v0.x` | Frozen — breaks bump the tool name (`executeSQL` → `executeSQL2`) |
 | Plugin SDK (`@useatlas/plugin-sdk`) | Stable for in-tree plugins; minor evolution possible | Frozen at `@useatlas/plugin-sdk@1.0.0` |
 | Agent behavior + prompts | No contract | No contract |
@@ -29,9 +29,9 @@ The rest of this page expands each row.
 
 **Scope.** This section covers the customer-facing data-plane endpoints. Three prefixes are excluded and are listed under [Out-of-scope surfaces](#out-of-scope-surfaces): `/api/v1/internal/*`, `/api/v1/platform/*`, and `/api/v1/admin/*`. The last is the Admin Console's backing API and evolves with the console it serves — it is documented in the API reference and is additive by default, but it is not frozen.
 
-**Within `v0.x` minor tags:** the wire format of every documented `/api/v1/*` endpoint is stable. New endpoints may be added. New optional fields may be added to existing request/response shapes. Existing fields, status codes, and required parameters do not change between minor tags.
+**Within `v0.x` minor tags:** the wire format of every documented `/api/v1/*` endpoint is stable. New endpoints may be added. New optional fields may be added to existing request/response shapes. Existing fields, status codes, and required parameters do not change between minor tags — with the pre-1.0 exception that when a *product surface itself is retired or redesigned under an ADR*, its endpoints go with it. Every such removal is recorded in the [ledger below](#removals-within-v0x-pre-10-record) with its migration path; there are no unrecorded removals.
 
-**Breaking changes** — any change that an existing well-formed client would observe as incompatible — happen only across major version boundaries via the v2 rollout policy below.
+**Breaking changes** — any change that an existing well-formed client would observe as incompatible — happen only across major version boundaries via the v2 rollout policy below. (Before `v1.0.0`, the surface-retirement exception above applies; from `v1.0.0` there are no exceptions.)
 
 **At `v1.0.0` and beyond:**
 
@@ -59,6 +59,17 @@ What does **not** count as a breaking change:
 - Performance improvements, error message wording, internal refactors
 
 The OpenAPI specification at `/api/v1/openapi.json` is the precise contract; this page is the prose summary.
+
+### Removals within v0.x (pre-1.0 record)
+
+Twice before `v1.0.0`, a product surface was retired or redesigned under an ADR and its endpoints were removed rather than deprecated in place. This ledger records every such removal — if an endpoint disappeared from the API reference and is not listed here, that is a bug, not a policy:
+
+| Removed | Endpoints | Why | Migration path |
+|---------|-----------|-----|----------------|
+| 2026-08 | `PATCH /api/v1/conversations/{id}/notebook-state` · `POST /api/v1/conversations/{id}/convert-to-notebook` · `/api/v1/conversations/{id}/fork` · `/api/v1/conversations/{id}/branches/{branchId}` · the `notebookState` field on the share-conversation response | The notebook surface was retired end-to-end ([ADR-0035](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0035-retire-the-notebook-surface.md)) | Existing notebook conversations were auto-converted to web chat (internal migration `0169_convert_notebook_conversations`); no client action possible or required |
+| 2026-08 | `POST /api/v1/dashboards/{id}/stage` · `POST /api/v1/dashboards/{id}/stage/{stageId}/accept` · `POST /api/v1/dashboards/{id}/stage/{stageId}/discard` | Dashboard staging was superseded by the single edit mechanism ([ADR-0034](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0034-dashboard-draft-cache-single-edit-mechanism.md)) | Use the draft endpoints (`/api/v1/dashboards/{id}/draft/*`, including `draft/undo`) — destructive edits land in the caller's draft with inline undo |
+
+From `v1.0.0`, this ledger closes: removals happen only via the `/api/v2/*` + 12-month deprecation policy above.
 
 ## MCP tool surface
 

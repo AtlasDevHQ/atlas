@@ -45,6 +45,10 @@ Navigate to **Admin > Platform Admin** in the sidebar. The dashboard tab shows a
 
 A bar chart shows the top 10 workspaces by query volume.
 
+## Platform-Tier Settings
+
+Platform admins can write the **platform tier** of workspace-scoped settings from the console ([#4669](https://github.com/AtlasDevHQ/atlas/issues/4669)): `PUT`/`DELETE /api/v1/admin/settings/{key}?tier=platform` sets or clears a deployment-wide value that every workspace inherits unless it has set its own override (the registry precedence is workspace > platform > env > default). The settings `GET` response exposes `platformValue`/`platformSource` so a workspace admin can see when their effective value is platform-inherited.
+
 ## Workspace Management
 
 The workspaces tab lists all organizations with sortable columns and filters for status and plan tier.

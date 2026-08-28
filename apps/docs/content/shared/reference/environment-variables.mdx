@@ -49,6 +49,7 @@ LLM provider and model configuration.
 | `AI_GATEWAY_API_KEY` | — | API key for `gateway` provider (Vercel AI Gateway) |
 | `ATLAS_BYOT_CATALOG_TTL_MS` | `21600000` (6h) | TTL in milliseconds for the cached model catalog when using `anthropic`, `openai`, or `bedrock` BYOT mode. Atlas calls each provider's catalog endpoint and caches the result in the internal database (L2) per workspace; raising the TTL reduces upstream catalog calls at the cost of slower discovery of newly-published models |
 | `ATLAS_GATEWAY_CATALOG_TTL_MS` | `1800000` (30 min) | TTL in milliseconds for the cached Vercel AI Gateway catalog (in-memory). Same role as `ATLAS_BYOT_CATALOG_TTL_MS` but for the `gateway` provider |
+| `ATLAS_RECOMMENDED_MODELS` | (built-in shortlist) | Comma-separated Vercel AI Gateway model IDs starred at the top of the model picker (slash+dot form, e.g. `anthropic/claude-opus-5`). Blank = no Recommended group; the full catalog stays selectable either way. IDs the gateway no longer serves are logged as a warning and skipped. Platform-scoped settings-registry knob (Admin → Settings → Model Catalog), hot-reloadable — the env var is the self-host boot fallback |
 
 When `ATLAS_PROVIDER` is not set, the default depends on the runtime environment. On Vercel (detected via the platform-set `VERCEL` env var), the default is `gateway`. Everywhere else, the default is `anthropic`.
 
@@ -136,6 +137,7 @@ OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1  # Required
 | `DATABASE_URL` | — | Atlas internal Postgres (auth, audit, conversations). Optional — Atlas works without it |
 | `DATABASE_URL_UNPOOLED` | — | Unpooled Postgres connection string (e.g. Neon direct URL). When `ATLAS_DEMO_DATA=true` and `ATLAS_DATASOURCE_URL` is unset, checked before `DATABASE_URL` in the demo data fallback chain |
 | `ATLAS_DEMO_DATA` | — | Set `true` to use the internal DB as both analytics datasource and internal DB |
+| `ATLAS_DATASOURCE_EXPECTED` | — (expected) | Declare whether this deployment expects a process-level analytics datasource (#4854). Set `false` only on a deployment that intentionally has none — a multi-tenant SaaS region with per-workspace connections, or a knowledge-only self-host — so `/health` reports `datasource: disabled` without degrading. Unset means expected: a box that simply forgot `ATLAS_DATASOURCE_URL` keeps degrading. Overrides the config-file `datasourceExpected` field per-service; an unrecognized value warns and is treated as expected (the config file is deliberately not consulted). `ATLAS_DEMO_DATA=true` outranks both. Source: `packages/api/src/lib/db/datasource-expectation.ts` |
 
 **Demo data fallback chain:** When `ATLAS_DEMO_DATA=true` and `ATLAS_DATASOURCE_URL` is not set, Atlas resolves the analytics datasource by checking `DATABASE_URL_UNPOOLED` first, then `DATABASE_URL`. This lets a single Postgres instance (e.g. Neon on Vercel) serve as both the analytics datasource and Atlas's internal database.
 
@@ -244,7 +246,7 @@ All seventeen are hidden from the generic settings page on Atlas Cloud, so a wor
 
 ## Security
 
-Query safety, SQL validation, and security-disclosure settings. See <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink> for how the query-safety settings are enforced.
+Query safety, SQL validation, and security-disclosure settings. See [SQL Validation Pipeline](/security/sql-validation) for how the query-safety settings are enforced.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -527,7 +529,7 @@ ATLAS_SEMANTIC_INDEX_ENABLED=false
 
 ## Row-Level Security
 
-Env var shorthand for a single global RLS policy. For per-table policies, use [`atlas.config.ts`](/reference/config#rls-row-level-security). See <AudienceLink saas="/security/row-level-security">Row-Level Security</AudienceLink> for the full guide.
+Env var shorthand for a single global RLS policy. For per-table policies, use [`atlas.config.ts`](/reference/config#rls-row-level-security). See [Row-Level Security](/security/row-level-security) for the full guide.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -990,6 +992,12 @@ Credentials for the Elasticsearch / OpenSearch datasource when profiling from th
 | `ATLAS_ES_AWS_REGION` | — | Selects AWS SigV4 auth (Amazon OpenSearch Service); signing keys come from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ optional `AWS_SESSION_TOKEN`) |
 | `ATLAS_ES_AWS_SERVICE` | `es` | SigV4 service code; set `aoss` for OpenSearch Serverless |
 | `ATLAS_ES_ENGINE` | from URL scheme | Explicit engine override: `elasticsearch` or `opensearch`. Wins over the URL scheme |
+
+### Obsidian Reader Datasource
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OBSIDIAN_API_KEY` | — | API key for the Obsidian Local REST API plugin, used by the [Obsidian reader datasource](/plugins/datasources/obsidian-reader). **Not auto-read** — pass it explicitly as the plugin's `api_key` config; the variable name is a convention |
 | `ATLAS_ES_TERMINATE_AFTER` | `100000` | Per-shard document cap for query/aggregation requests. Set `0` to disable. Source: `plugins/elasticsearch/src/dsl.ts` |
 
 ---
@@ -1101,6 +1109,12 @@ SaaS only. Automated internal database backups.
 | `ATLAS_BACKUP_RETENTION_DAYS` | `30` | Number of days to retain backups before automatic deletion |
 | `ATLAS_BACKUP_STORAGE_PATH` | `./backups` | Directory path for backup file storage. Must not contain `..` |
 | `ATLAS_BACKUP_VERIFY_SCRATCH_URL` | — | Postgres URL of a **disposable** scratch DB for restore-into-scratch backup verification (#2941). When set, each dump is restored into this DB and its base tables counted, so "verified" means "restorable"; unset degrades to a header-only `pg_dump` check (logs a warning — a truncated dump with a valid header would still pass). ⚠️ Wipes the scratch DB's public schema on every run — point it only at a throwaway DB, never a real/prod database. As a safety net, verification refuses to run if this resolves to the same `{host, port, db}` as `DATABASE_URL`. Source: `ee/src/backups/verify.ts` |
+| `ATLAS_BACKUP_SCHEDULED_ENABLED` | `true` | Kill switch for the scheduled-backup fiber only — manual admin backups are unaffected. Only the exact strings `false` / `0` disable it. Boot-consumed (restart to change); the `/health` backup tripwire mirrors this gate. Source: `packages/api/src/lib/backups/cadence.ts` |
+| `ATLAS_BACKUP_S3_BUCKET` | — | Bucket name; presence selects the S3 backup-storage driver over the local filesystem. The driver is read once and cached for the process lifetime — restart to change drivers. Source: `ee/src/backups/storage.ts` |
+| `ATLAS_BACKUP_S3_ENDPOINT` | — | S3-compatible endpoint URL (e.g. a Railway bucket endpoint). Optional override |
+| `ATLAS_BACKUP_S3_REGION` | — | Optional S3 region override |
+| `ATLAS_BACKUP_S3_ACCESS_KEY_ID` | — | S3 credential — per-service env secret |
+| `ATLAS_BACKUP_S3_SECRET_ACCESS_KEY` | — | S3 credential — per-service env secret |
 
 ### Custom Domains (Railway)
 

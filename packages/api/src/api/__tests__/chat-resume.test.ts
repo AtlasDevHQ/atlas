@@ -309,10 +309,11 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     const names = Object.keys(arg.tools!.getAll());
     expect(names).toContain("createDashboard");
     expect(names).toContain("correct_fact");
+    expect(names).toContain("proposeFact");
     expect(names).toContain("executeSQL");
   });
 
-  it("#5496 — a resume with no surface claim gets the widget registry, without correct_fact", async () => {
+  it("#5496, #5482 — a resume with no surface claim gets the widget registry, without either brain write", async () => {
     // A resume must not WIDEN the tool surface relative to the turn it resumes,
     // and the surface claim is re-read from THIS request rather than restored
     // from the checkpoint — so a client that no longer claims the capability
@@ -329,6 +330,10 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
       names,
       "a resume with no `x-atlas-write-confirm-ui` claim was offered correct_fact — the embeddable widget renders no confirm card, so it could stage a correction nobody can confirm (#5496)",
     ).not.toContain("correct_fact");
+    expect(
+      names,
+      "a resume with no `x-atlas-write-confirm-ui` claim was offered proposeFact — it would stage a claim nobody can confirm (#5482)",
+    ).not.toContain("proposeFact");
     // …and loses nothing else: dashboards and SQL are unaffected.
     expect(names).toContain("createDashboard");
     expect(names).toContain("executeSQL");

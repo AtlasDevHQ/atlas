@@ -559,6 +559,50 @@ sandbox: {
 },
 ```
 
+#### Python backend (optional)
+
+A sandbox plugin can additionally provide the **Python execution** backend (`executePython`) by implementing `createPython` alongside `create`. The optionality is load-bearing: every explore-only sandbox plugin stays valid with no edit, and **presence is the capability** — the host derives Python support from the method existing, so a declared capability can never disagree with an implemented one.
+
+```typescript
+sandbox: {
+  create(semanticRoot) { /* explore backend as above */ },
+  createPython(options: PluginPythonOptions): PluginPythonBackend {
+    // Called per request (unlike create, whose backend is cached) — construct
+    // cheaply and create the provider sandbox lazily on first exec.
+  },
+  // Required in spirit whenever createPython is present. Omitted is treated
+  // as "unsupported" — the honest default: say whether your provider can
+  // actually enforce options.networkPolicy, don't imply it by omission.
+  pythonEgressControl: "unsupported",
+},
+```
+
+Most providers should not implement the wire protocol themselves. `@useatlas/plugin-sdk` ships the shared **file-transport backend** — it owns the wrapper script, result/chart collection, package install, and retry-after-infra-failure; the plugin supplies only a `PythonSandboxSession` mapping six primitives onto the provider SDK (`mkdir`, `writeFile`, `run`, `readFile`, `listDir`, `destroy`, plus a `workDir`). The e2b and daytona plugins are the reference implementations:
+
+```typescript
+import { createFileTransportPythonBackend, installPythonPackages } from "@useatlas/plugin-sdk";
+
+createPython(options) {
+  return createFileTransportPythonBackend(options, {
+    providerName: "MyProvider",
+    async createSession() {
+      const sandbox = await mySdk.create();
+      await installPythonPackages(sessionFor(sandbox), config.pythonPackages, "MyProvider", log);
+      return sessionFor(sandbox); // PythonSandboxSession over the provider SDK
+    },
+  });
+},
+```
+
+Supporting helpers and constants (all exported from `@useatlas/plugin-sdk`):
+
+- **`installPythonPackages(session, packages, providerName, logger?)`** — pip-installs the configured package list into a fresh session before the first run.
+- **`shellQuote(value)`** — quotes a path for providers whose exec surface takes one command string rather than an argv array.
+- **`isNotFoundSdkError(err)`** — the shared "no such file" predicate: a missing result file is a *normal* outcome (the interpreter died before the wrapper wrote one) that must become `null`, while other read failures propagate. Single-sourced because two plugins guessing at it had already drifted.
+- **`directoryEntryNames(entries)`** — normalizes provider `listDir` results to bare entry names.
+- **`PLUGIN_PYTHON_RESULT_FILE_ENV`** / **`PLUGIN_PYTHON_CHART_DIR_ENV`** / **`PLUGIN_PYTHON_CHART_PATTERN`** — the env vars the wrapper script reads for the result-JSON path and chart directory, and the `chart_*.png` pattern the backend collects.
+- Types: `PluginPythonOptions`, `PluginPythonBackend` (`exec`, optional `execStream` with `PluginPythonProgressEvent`, optional `close`), `PluginPythonResult`, `PluginPythonData`, `PluginPythonChart`, `PluginRechartsChart`, `PythonSandboxSession`, `PythonBackendAdapter`.
+
 ## `createPlugin` vs `definePlugin`
 
 The SDK exports two helpers for authoring plugins. Choose based on whether your plugin accepts runtime configuration.
@@ -976,7 +1020,7 @@ connection: {
 
 These are ignored when a custom `validate` function is provided.
 
-Both properties are consumed during SQL validation: `parserDialect` sets the AST parser mode used in layer 2, and `forbiddenPatterns` are checked as additional regex guards in layer 1. See <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink> for the full layer breakdown.
+Both properties are consumed during SQL validation: `parserDialect` sets the AST parser mode used in layer 2, and `forbiddenPatterns` are checked as additional regex guards in layer 1. See [SQL Validation Pipeline](/security/sql-validation) for the full layer breakdown.
 
 ## Plugin Lifecycle
 
@@ -1179,5 +1223,5 @@ myPlugin({ apiKey: process.env.MY_API_KEY! })
 - [Plugin Cookbook](/plugins/cookbook) — Real-world patterns for caching, hooks, credentials, and error handling
 - [Plugin Composition](/plugins/composition) — How multiple plugins interact (ordering, priority, constraints)
 - [Configuration](/reference/config#plugins) — Registering plugins in `atlas.config.ts`
-- <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink> — How plugin hooks and custom validators fit into validation
+- [SQL Validation Pipeline](/security/sql-validation) — How plugin hooks and custom validators fit into validation
 - [Enterprise (`/ee`) boundary](/architecture/enterprise) — License split, the `isEnterpriseEnabled` / `requireEnterprise` API, and how plugins should (and shouldn't) interact with the gate

@@ -97,6 +97,13 @@ interface QueryResponse {
   steps: number;
   usage: { totalTokens: number };
   conversationId?: string;
+  runId?: string;
+  pendingApproval?: {
+    requestId: string | null;
+    ruleName: string;
+    matchedRules: string[];
+    message: string;
+  };
   pendingActions?: Array<{
     id: string;
     type: string;
@@ -105,8 +112,17 @@ interface QueryResponse {
     approveUrl: string;
     denyUrl: string;
   }>;
+  planWarning?: {
+    code: "plan_limit_warning";
+    message: string;
+    metrics: PlanLimitStatus[];
+  };
 }
 ```
+
+- `runId` — identifier of the underlying agent run, present whenever the agent loop ran. Use it to correlate with durable-session records and server logs.
+- `pendingApproval` — set when a SQL query matched an approval rule and was enqueued for admin approval instead of executed. **The run is not a complete answer in this case** — the queued query runs only after approval. `requestId` is `null` when no approval-queue row could be created.
+- `planWarning` — the 80–109% plan-usage warning band. Omitted below 80% and on self-hosted deployments.
 
 ---
 

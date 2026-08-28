@@ -1,0 +1,8 @@
+{
+  "name": "@atlas/hero-3d-bundle",
+  "private": true,
+  "description": "Pins three for the hero page bundle. Not part of the workspace.",
+  "dependencies": {
+    "three": "0.180.0"
+  }
+}

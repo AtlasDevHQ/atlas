@@ -10,7 +10,7 @@
  *
  * ## ⚠️ EVALUATION ONLY
  *
- * ADR-0043 (#5339): brain facts are never trained into weights, and customer
+ * ADR-0044 (#5339): brain facts are never trained into weights, and customer
  * data is never a training corpus. A bundle this command writes exists to
  * MEASURE the extraction cascade (#5338 — stage-1 recall and gate agreement),
  * is read once, and is destroyed. It is outside `purge-scope.ts` by
@@ -287,7 +287,7 @@ export async function handleGateExport(args: string[]): Promise<void> {
       console.log(`${TAG} wrote ${output}`);
       console.log(
         `${TAG} ⚠️ EVALUATION ONLY — this file is outside purge-scope.ts. Destroy it when the ` +
-          `evaluation it was cut for is done, and never train on it (ADR-0043, issue 5339).`,
+          `evaluation it was cut for is done, and never train on it (ADR-0044, issue 5339).`,
       );
     }
 

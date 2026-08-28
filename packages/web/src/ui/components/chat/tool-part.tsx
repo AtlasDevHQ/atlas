@@ -13,6 +13,7 @@ import { DashboardEditCard, DASHBOARD_EDIT_TOOL_NAMES } from "./dashboard-edit-c
 import { DraftEditUndoCard } from "./draft-edit-undo-card";
 import { RestWriteConfirmCard } from "./rest-write-confirm-card";
 import { CorrectFactConfirmCard } from "./correct-fact-confirm-card";
+import { ProposeFactConfirmCard } from "./propose-fact-confirm-card";
 import { SearchBrainCard } from "./search-brain-card";
 import type { PreviousExecution } from "./result-card-types";
 
@@ -82,6 +83,13 @@ export const ToolPart = memo(function ToolPart({
     // the same change — the two are one decision.
     case "correct_fact":
       return <CorrectFactConfirmCard part={part} />;
+    // #5482 — `proposeFact` stages a NET-NEW claim the same way, and registers
+    // behind the same gate in `registry.ts` for the same reason this case is
+    // here and not in the widget's copy. The paragraph above applies verbatim:
+    // adding the arm there and flipping the widget's registry claim is one
+    // change, not two.
+    case "proposeFact":
+      return <ProposeFactConfirmCard part={part} />;
     default: {
       // #4322 — bound editor building + inspection tools get a first-class
       // receipt line (icon + what the tool did) instead of the gray

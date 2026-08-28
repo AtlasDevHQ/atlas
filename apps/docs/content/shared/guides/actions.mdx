@@ -7,20 +7,28 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 The action framework lets the Atlas agent perform write operations -- sending emails, creating JIRA tickets, and more -- with configurable approval gates. Actions go through a request-approve-execute lifecycle that gives humans control over what the agent does.
 
+<WhenSelfHosted>
 <Callout title="Prerequisites">
 - Authentication enabled (any mode except `none`)
 - Internal database (`DATABASE_URL`) recommended for persistent action log (in-memory fallback available but lost on restart)
 - For email actions: `RESEND_API_KEY`
 - For JIRA actions: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`
 </Callout>
+</WhenSelfHosted>
 
 ## Enable
 
+<WhenSaaS>
+On [app.useatlas.dev](https://app.useatlas.dev), action enablement, credentials (email provider, JIRA), and approval-mode defaults are part of the hosted deployment's configuration — there are no environment variables to set. When actions are active for your deployment, pending actions appear with **Approve** / **Deny** controls in the chat UI and under **Admin > Actions**.
+</WhenSaaS>
+
+<WhenSelfHosted>
 ```bash
 ATLAS_ACTIONS_ENABLED=true
 ```
 
 Actions require authentication (any mode except `none`) and an internal database (`DATABASE_URL`) for the action log.
+</WhenSelfHosted>
 
 ---
 
@@ -94,7 +102,7 @@ Actions in any other status (`pending`, `denied`, `failed`, `timed_out`, or alre
 
 ```bash
 # Rollback an executed action
-curl -X POST http://localhost:3001/api/v1/actions/<id>/rollback \
+curl -X POST https://your-atlas-host/api/v1/actions/<id>/rollback \
   -H "Authorization: Bearer <key>"
 ```
 
@@ -212,7 +220,7 @@ Send email reports via [Resend](https://resend.com).
 
 **Optional:**
 - `ATLAS_EMAIL_FROM` -- From address (default: `Atlas <atlas@ship.useatlas.dev>`)
-- `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` -- Comma-separated domains recipients may belong to, in addition to workspace member addresses (unset = workspace members only). Shared with the `sendEmail` integration tool
+- `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` -- Comma-separated domains recipients may belong to, in addition to workspace member addresses (unset = workspace members only). Shared with the `sendEmail` integration tool. Also editable at runtime as the **Email Recipient Domains** workspace setting (**Admin > Settings**, Security section)
 
 **Input:**
 - `to` -- Recipient email address(es)
@@ -245,6 +253,11 @@ This action is **reversible** -- on rollback, Atlas transitions the created issu
 
 ## Configuration
 
+<WhenSaaS>
+On [app.useatlas.dev](https://app.useatlas.dev), approval modes, role requirements, and timeouts follow each action's defaults (`email:send` is `admin-only`, `jira:create` is `manual`) and are managed as part of the hosted deployment — there is no per-workspace configuration file. The workspace-level control you own is the **Email Recipient Domains** setting (**Admin > Settings**, Security section), which bounds where agent-initiated email may deliver.
+</WhenSaaS>
+
+<WhenSelfHosted>
 ### Via Environment Variables
 
 ```bash
@@ -286,6 +299,7 @@ export default defineConfig({
 **Timeout resolution:** With a config file, per-action `timeout` overrides `defaults.timeout`. The `ATLAS_ACTION_TIMEOUT` env var is only used when no config file is present (it populates `defaults.timeout` automatically). When no timeout is configured, actions run without a time limit.
 
 See [Configuration](/reference/config) for the full config schema.
+</WhenSelfHosted>
 
 ---
 
@@ -293,17 +307,17 @@ See [Configuration](/reference/config) for the full config schema.
 
 ### Web UI
 
-Pending actions appear in the chat UI with **Approve** and **Deny** buttons. Admins can also manage actions from the [Admin Console](/guides/admin-console) at `/admin/actions`.
+Pending actions appear in the chat UI with **Approve** and **Deny** buttons. Admins can also manage actions from the <AudienceLink saas="/guides/admin-console">Admin Console</AudienceLink> at `/admin/actions`.
 
 ### API
 
 ```bash
 # Approve a pending action
-curl -X POST http://localhost:3001/api/v1/actions/<id>/approve \
+curl -X POST https://your-atlas-host/api/v1/actions/<id>/approve \
   -H "Authorization: Bearer <key>"
 
 # Deny with an optional reason (recorded in the action log)
-curl -X POST http://localhost:3001/api/v1/actions/<id>/deny \
+curl -X POST https://your-atlas-host/api/v1/actions/<id>/deny \
   -H "Authorization: Bearer <key>" \
   -H "Content-Type: application/json" \
   -d '{"reason": "Not relevant"}'
@@ -347,7 +361,13 @@ Action plugins follow the same pattern as built-in actions. See [Plugin Authorin
 
 ## Troubleshooting
 
+<WhenSaaS>
+**Actions not appearing** -- Actions may not be active for your deployment. Check whether **Admin > Actions** lists any action log entries; if the framework should be available and isn't, contact support.
+</WhenSaaS>
+
+<WhenSelfHosted>
 **Actions not appearing** -- Verify `ATLAS_ACTIONS_ENABLED=true` and authentication is configured (any mode except `none`). Without `DATABASE_URL`, actions still work but use in-memory storage.
+</WhenSelfHosted>
 
 **Approval stuck** -- Check that the approving user has the required role. In `admin-only` mode, the requester cannot self-approve.
 
@@ -360,5 +380,5 @@ See [Troubleshooting](/guides/troubleshooting#action-framework-operator) for mor
 - [Plugin Authoring Guide](/plugins/authoring-guide) — Building custom action plugins
 - [Configuration](/reference/config#actions) — Declarative action configuration in `atlas.config.ts`
 - Authentication — Role-based approval (actions require auth)
-- [Admin Console](/guides/admin-console) — Monitor and manage actions from the web UI
+- <AudienceLink saas="/guides/admin-console">Admin Console</AudienceLink> — Monitor and manage actions from the web UI
 - [Environment Variables](/reference/environment-variables#actions) — `ATLAS_ACTIONS_ENABLED` and per-action settings

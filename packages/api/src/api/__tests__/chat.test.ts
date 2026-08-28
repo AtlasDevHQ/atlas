@@ -1711,9 +1711,12 @@ describe("POST /api/v1/chat", () => {
     // other half.
     expect(names).toContain("createDashboard");
     expect(names).toContain("correct_fact");
+    // #5482 — `proposeFact` rides the same claim, so the positive control has to
+    // name it too or it stops controlling for half the gate.
+    expect(names).toContain("proposeFact");
   });
 
-  it("#5496 — a turn with no surface claim is not offered correct_fact", async () => {
+  it("#5496, #5482 — a turn with no surface claim is offered neither brain write", async () => {
     // The embeddable widget (`@useatlas/react`) POSTs the same route with the
     // same body and no `x-atlas-write-confirm-ui` header. It renders no card, so
     // offering it a verb that stages onto one would produce a correction nobody
@@ -1726,6 +1729,10 @@ describe("POST /api/v1/chat", () => {
       names,
       "a turn with no `x-atlas-write-confirm-ui` claim was offered correct_fact — the widget reaches this same route and has no confirm card (#5496)",
     ).not.toContain("correct_fact");
+    expect(
+      names,
+      "a turn with no `x-atlas-write-confirm-ui` claim was offered proposeFact — same route, same missing card (#5482)",
+    ).not.toContain("proposeFact");
     // A capability removal, not a stripped surface: everything else is intact.
     expect(names).toContain("createDashboard");
     expect(names).toContain("executeSQL");

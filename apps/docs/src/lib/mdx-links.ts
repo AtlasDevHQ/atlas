@@ -33,7 +33,7 @@ export function createSectionRelativeLink<C extends LoaderConfig>(
  * a non-existent `content/docs/*` twin.
  *
  * fumadocs-mdx reports `absolutePath` relative to `apps/docs`
- * (e.g. `content/docs/guides/slack.mdx`); we defensively also accept an absolute
+ * (e.g. `content/docs/guides/dashboards.mdx`); we defensively also accept an absolute
  * path that merely contains `apps/docs/`.
  */
 export function githubEditPath(absolutePath: string | undefined): string {

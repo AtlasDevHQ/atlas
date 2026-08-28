@@ -461,6 +461,17 @@ jobs:
       - name: Test the docs-links gate itself (adversarial fixtures)
         run: bash scripts/__tests__/check-docs-links.test.sh
 
+      - name: Check REST endpoint removals are ledgered on the stability page (2026-08-27 audit)
+        # The gate diffs openapi.json's path set against the latest v* release
+        # tag; the Actions clone is shallow and tag-less, so fetch the release
+        # tags as their own shallow tips first. A plain `git fetch --tags` does
+        # NOT work here — a shallow repo rejects every tag with "shallow roots
+        # are not allowed to be updated" — and without tags the gate DECLINES
+        # (exit 3) rather than passing vacuously.
+        run: |
+          git fetch --depth=1 --force --quiet origin '+refs/tags/v*:refs/tags/v*'
+          bun scripts/check-openapi-removals.ts
+
       - name: Check published Brain* contract snippets against their declarations (#5165)
         run: bun scripts/check-docs-brain-snippets.ts
 

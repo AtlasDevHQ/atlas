@@ -20,6 +20,7 @@ import {
 } from "@atlas/api/lib/integrations/salesforce-tool";
 import { searchBrain, SEARCH_BRAIN_DESCRIPTION } from "./search-brain";
 import { correctFactTool, CORRECT_FACT_DESCRIPTION } from "./correct-fact";
+import { proposeFactTool, PROPOSE_FACT_DESCRIPTION } from "./propose-fact";
 import { withToolSpans } from "./tool-spans";
 import {
   isPythonSandboxMisconfigured,
@@ -351,11 +352,34 @@ function registerCoreTools(
   // registry each production call site must resolve to. This is the canonical
   // account of the GATE; each call site narrates only its own surface-specific
   // exposure rather than restating this.
+  //
+  // #5482 — `proposeFact` joins this gate, not a gate of its own, and the
+  // sameness is the decision. It is the OTHER agent write onto the fact graph
+  // (the net-new claim ADR-0036 §T7 names, which `correct_fact`'s four verbs
+  // structurally cannot make), it stages onto a confirm card by the same
+  // mechanism, and #5485's grill scoped the entry-gate decision to EVERY such
+  // write. So the exposure question is identical and one condition answers it
+  // for both — a second `if` with the same test would be two places to keep in
+  // agreement, and the one that fell behind would be the one nobody read.
+  //
+  // Read the paragraphs above as written about both verbs. The one asymmetry
+  // that does NOT reach this gate: `proposeFact` is deliberately not
+  // owner/admin-gated, because its output is a draft and gating ordinary
+  // testimony kills the compounding loop. That is an AUTHORITY decision, argued
+  // in `lib/brain/proposal.ts`, and it is orthogonal to the SURFACE decision
+  // here — which asks only whether a client can finish a confirm-before-write
+  // flow. A verb anyone may call still must not be offered where its
+  // confirmation cannot be rendered.
   if (dashboardUrlResolver && rendersConfirmations) {
     registry.register({
       name: "correct_fact",
       description: CORRECT_FACT_DESCRIPTION,
       tool: correctFactTool,
+    });
+    registry.register({
+      name: "proposeFact",
+      description: PROPOSE_FACT_DESCRIPTION,
+      tool: proposeFactTool,
     });
   }
 
@@ -406,31 +430,38 @@ function registerCoreTools(
 // --- Default registry ---
 // A dashboards-owning surface that CANNOT render a confirm card — it owns
 // `/dashboards/[id]`, so `createDashboard` registers with the workspace
-// resolver, but `correct_fact` does not (#5496).
+// resolver, but neither brain-write verb does (`correct_fact` #5496,
+// `proposeFact` #5482).
 //
 // That combination is the embeddable widget, and naming it here matters because
 // the name `defaultRegistry` reads like "the full set" and no longer is. Both
 // `POST /api/v1/chat` callers — the first-party web app and `@useatlas/react` —
 // reach the same route with the same resolver, and only the first renders the
-// correction confirm card. This singleton is what the widget gets; the web app
-// opts up to {@link confirmCapableRegistry}. Fail-closed by construction: a
-// surface that never claims the capability lands here.
+// confirm cards. This singleton is what the widget gets; the web app opts up to
+// {@link confirmCapableRegistry}. Fail-closed by construction: a surface that
+// never claims the capability lands here.
 const defaultRegistry = new ToolRegistry();
 registerCoreTools(defaultRegistry, WORKSPACE_DASHBOARD_URL_RESOLVER, false);
 defaultRegistry.freeze();
 
-// --- Confirm-capable workspace registry (#5496) ---
-// {@link defaultRegistry} PLUS `correct_fact`, for the one surface that renders
-// the confirm-before-write card: the first-party web chat. It is a separate
-// frozen singleton rather than an option on the shared one because the two
-// differ by a single write verb, and the difference has to be visible at the
+// --- Confirm-capable workspace registry (#5496, #5482) ---
+// {@link defaultRegistry} PLUS the two confirm-staged brain writes —
+// `correct_fact` and `proposeFact` — for the one surface that renders a
+// confirm-before-write card: the first-party web chat. It is a separate frozen
+// singleton rather than an option on the shared one because the two registries
+// differ ONLY by those write verbs, and the difference has to be visible at the
 // call site that chooses between them.
+//
+// `registry.test.ts` pins that difference as an exact set rather than a
+// membership check, so a third verb joining the gate has to be named there
+// before it can ship — which is what stops this singleton quietly becoming
+// "everything the web app happens to have".
 const confirmCapableRegistry = new ToolRegistry();
 registerCoreTools(confirmCapableRegistry, WORKSPACE_DASHBOARD_URL_RESOLVER, true);
 confirmCapableRegistry.freeze();
 
 // --- Non-dashboard registry (#4566) ---
-// Core tools MINUS createDashboard AND correct_fact, for surfaces that own no
+// Core tools MINUS createDashboard AND both brain-write verbs, for surfaces that own no
 // dashboards route (SDK / Slack / MCP / scheduler via `executeAgentQuery`).
 // Both omissions used to follow from the one `dashboardUrlResolver` signal;
 // since #5496 they are two signals, and this registry declines BOTH — a

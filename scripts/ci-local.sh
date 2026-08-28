@@ -355,6 +355,7 @@ launch docs-brain-snippets       bun scripts/check-docs-brain-snippets.ts
 launch auth-md-parity            g_auth_md_parity
 launch apex-discovery-drift      bash scripts/check-apex-discovery-drift.sh
 launch openapi-drift             g_openapi_drift
+launch openapi-removals          bun scripts/check-openapi-removals.ts
 if [ "$NO_NET" != "1" ]; then
   launch published-symbols       g_published_symbols
   launch unpublished-versions    g_unpublished

@@ -85,3 +85,17 @@ lighthouse-reports/
 # not, so ignoring it would make both lint cases measure nothing. See the suite's
 # own header before widening this pattern.
 scripts/zz-*.fixture.ts
+
+# Purchased 3D source for brand/atlas-hero-3d (Fab Standard Licence, Personal).
+# This repo is public and AGPL — we hold no right to redistribute the asset
+# itself, only to ship a rendered derivative. See brand/atlas-hero-3d/README.md.
+brand/atlas-hero-3d/src/*.fbx
+brand/atlas-hero-3d/src/*.blend
+brand/atlas-hero-3d/src/atlas-original*.glb
+# Build output: 3.2 MB, regenerated wholesale by build.sh, and being base64 it
+# rewrites end-to-end every time — committing it would grow .git by that much
+# per iteration. The published Artifact is the deliverable; this dir is source.
+brand/atlas-hero-3d/atlas-hero.html
+brand/atlas-hero-3d/src/three-bundle.js
+brand/atlas-hero-3d/src/node_modules/
+brand/atlas-hero-3d/src/bun.lock

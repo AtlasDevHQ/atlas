@@ -115,7 +115,16 @@ export type BrainReadSurface =
    * or it sends the reader to the wrong query. Diagnostics only, never branched
    * on.
    */
-  | "gate-analytics";
+  | "gate-analytics"
+  /**
+   * The `proposeFact` write (#5482). Its own member rather than reusing
+   * `"correction"`, on `"vocabulary-preview"`'s reasoning: the two verbs are
+   * different entry points with different authority bars — a correction needs
+   * owner/admin, a proposal deliberately does not — so a refusal labelled
+   * `"correction"` would send an operator to check a gate the proposal path
+   * never ran. Diagnostics only, never branched on.
+   */
+  | "proposal";
 
 /**
  * The reader's identity could not be turned into a usable principal set, so

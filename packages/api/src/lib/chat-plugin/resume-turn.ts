@@ -171,6 +171,19 @@ export async function resumeChatTurn(input: ResumeChatTurnInput): Promise<Resume
         // hold, the posture is that a brain-mutating tool must not be on this
         // surface at all.
         //
+        // #5482 — that posture is now load-bearing rather than belt-and-braces,
+        // and this note is why the paragraph above is left as written rather
+        // than generalized: it is the #4936 incident, and `proposeFact` did not
+        // exist then. It does now, it rides the SAME registry decision, and its
+        // execute-time behaviour is the opposite of the one described above.
+        // `correct_fact`'s owner/admin gate is what partially saved the widened
+        // resume in authenticated modes; `proposeFact` is deliberately NOT
+        // owner/admin-gated (the draft state is its safety, and its own entry
+        // gate is the confirm card), so on this surface there would be no
+        // execute-time backstop at all — in any auth mode. The registry gate is
+        // the whole of it, which is exactly what "must not be on this surface"
+        // now means. `resume-turn.test.ts` asserts both verbs are absent.
+        //
         // #4941 — the seam also hands back the warnings the model must relay
         // (degraded action tools, or a fallback to the core set). A resumed
         // turn is as headless as the parked one, so it needs the same telling.

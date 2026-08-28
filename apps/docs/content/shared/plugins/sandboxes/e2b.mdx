@@ -11,6 +11,8 @@ Managed Firecracker microVM isolation via the [E2B](https://e2b.dev) API. Each a
 bun add @useatlas/e2b e2b
 ```
 
+Requires `@useatlas/plugin-sdk` >= 0.0.18 (the Python execution contract).
+
 ## Configuration
 
 ```typescript
@@ -36,6 +38,13 @@ export default defineConfig({
 | `apiKey` | `string` | Yes | -- | E2B API key |
 | `template` | `string` | No | E2B default | Sandbox template ID for custom VM images |
 | `timeoutSec` | `number` | No | `30` | Per-command timeout in seconds |
+| `pythonPackages` | `string[]` | No | `["pandas", "numpy", "matplotlib", "scipy", "scikit-learn", "statsmodels"]` | Packages installed before the first Python run. Set to `[]` when your `template` already bakes them in -- the install is the slowest part of a cold Python run |
+
+## Python execution
+
+Beyond the `explore` tool, this plugin provides the **Python execution** backend: Python runs (`executePython`) execute on your own E2B account instead of the host's default backend. A sandbox is created lazily per request, the `pythonPackages` list is installed on first run, and the sandbox is destroyed afterwards.
+
+Note that E2B sandboxes have no per-run egress allowlist -- the plugin declares `pythonEgressControl: "unsupported"`, so the host's per-request REST egress bound does not apply inside the sandbox. Bound egress at the network layer (e.g. a restricted E2B template) if your Python runs must not reach the open internet.
 
 ## Security
 

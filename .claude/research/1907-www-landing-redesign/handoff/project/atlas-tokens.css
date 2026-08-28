@@ -1,4 +1,25 @@
 /* =====================================================================
+ * ⚠️ SUPERSEDED VOCABULARY — note added 2026-08-27, values deliberately UNCHANGED
+ * =====================================================================
+ * This file predates ADR-0023 ("Forest is the brand, teal is the spark"). It
+ * declares `--atlas-brand` as teal #23CE9E and calls it "the one accent
+ * color". That is the exact contradiction the ADR exists to end: the committed
+ * brand colour is now forest #1F5C45, and teal is `--atlas-spark` — a rare
+ * highlight on dark / green surfaces, never a primary.
+ *
+ * Read `--atlas-brand` below as what is now called `--atlas-spark`.
+ *
+ * The VALUES are intentionally left as they were. Nine sibling mockups in this
+ * handoff directory consume this file, and they were designed against teal;
+ * repointing the token would retroactively restyle a historical design
+ * artifact rather than correct it. This is a record of that pass, not a live
+ * palette.
+ *
+ * For anything current, the source of truth is /brand.css, with
+ * /docs/adr/0023-brand-color-system.md for the reasoning.
+ * ===================================================================== */
+
+/* =====================================================================
  * Atlas — Design Tokens
  * =====================================================================
  * Color space is oklch throughout (per .impeccable.md: "oklch throughout —

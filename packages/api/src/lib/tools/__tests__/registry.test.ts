@@ -238,14 +238,22 @@ describe("defaultRegistry", () => {
     // `confirmCapableRegistry`.
     expect(defaultRegistry.get("correct_fact")).toBeUndefined();
     expect(confirmCapableRegistry.get("correct_fact")).toBeDefined();
+    // #5482 — `proposeFact` joins the SAME gate, so it splits the same way. The
+    // two verbs are asserted separately rather than looped over: a change that
+    // moved one of them alone should name which one it moved.
+    expect(defaultRegistry.get("proposeFact")).toBeUndefined();
+    expect(confirmCapableRegistry.get("proposeFact")).toBeDefined();
   });
 
-  it("confirmCapableRegistry is defaultRegistry plus exactly correct_fact", () => {
-    // The two singletons must differ by ONE verb. A drift here means a surface
-    // silently gained or lost something other than the confirm-gated write.
+  it("confirmCapableRegistry is defaultRegistry plus exactly the two confirm-staged brain writes", () => {
+    // The two singletons must differ by exactly the confirm-gated writes —
+    // `correct_fact` (#5496) and `proposeFact` (#5482) — and by nothing else. An
+    // EXACT set, not a membership check, so a third verb joining the gate has to
+    // be named here before it can ship. A drift means a surface silently gained
+    // or lost something other than a confirm-before-write verb.
     const base = Object.keys(defaultRegistry.getAll()).sort();
     const confirmable = Object.keys(confirmCapableRegistry.getAll()).sort();
-    expect(confirmable).toEqual([...base, "correct_fact"].sort());
+    expect(confirmable).toEqual([...base, "correct_fact", "proposeFact"].sort());
   });
 
   it("getAll returns exactly the core tools", () => {
@@ -271,6 +279,11 @@ describe("defaultRegistry", () => {
     // a verb the surface does not carry is the #4941 wrong-explanation bug.
     expect(text).not.toContain("### Correct a Company-Brain Fact");
     expect(confirmCapableRegistry.describe()).toContain("### Correct a Company-Brain Fact");
+    // #5482 — same split, same reason. The proposal guidance names correct_fact
+    // as the verb for a wrong EXISTING fact, so advertising it on a surface that
+    // carries neither would describe two absent verbs at once.
+    expect(text).not.toContain("### Propose a Company-Brain Fact");
+    expect(confirmCapableRegistry.describe()).toContain("### Propose a Company-Brain Fact");
   });
 
   it("is frozen — cannot register additional tools", () => {
@@ -346,9 +359,11 @@ describe("buildRegistry", () => {
     // this: the widget and the web app share it, and only one has a card.
     const { registry: withCard } = await buildRegistry({ rendersConfirmations: true });
     expect(Object.keys(withCard.getAll())).toContain("correct_fact");
+    expect(Object.keys(withCard.getAll())).toContain("proposeFact");
 
     const { registry: withoutCard } = await buildRegistry({ rendersConfirmations: false });
     expect(Object.keys(withoutCard.getAll())).not.toContain("correct_fact");
+    expect(Object.keys(withoutCard.getAll())).not.toContain("proposeFact");
 
     // …and claiming the card without owning a dashboards route still omits it:
     // a headless surface has nowhere to render one, whatever it claims.
@@ -357,6 +372,7 @@ describe("buildRegistry", () => {
       rendersConfirmations: true,
     });
     expect(Object.keys(headless.getAll())).not.toContain("correct_fact");
+    expect(Object.keys(headless.getAll())).not.toContain("proposeFact");
   });
 
   it("with includeActions includes createJiraTicket and sendEmailReport alongside core tools", async () => {
@@ -419,6 +435,7 @@ describe("buildRegistry", () => {
       // are env-gated and would break an exact-equality check on a dev box.)
       expect(names).not.toContain("createDashboard");
       expect(names).not.toContain("correct_fact");
+      expect(names).not.toContain("proposeFact");
       for (const core of ["explore", "executeSQL", "searchBrain", "sendEmail", "createLinearIssue"]) {
         expect(names).toContain(core);
       }
@@ -431,13 +448,17 @@ describe("buildRegistry", () => {
     // The exported fallback the non-web surfaces (and the buildRegistry error
     // path in agent-query) land on — it must never carry createDashboard, so a
     // build failure can't silently reintroduce the tool.
-    it("nonDashboardRegistry omits createDashboard AND correct_fact but keeps the core query tools", () => {
+    it("nonDashboardRegistry omits createDashboard AND both brain writes but keeps the core query tools", () => {
       expect(nonDashboardRegistry.get("createDashboard")).toBeUndefined();
       // #4915/#4707 — this registry is what POST /api/v1/query reaches, and
       // that operation is admitted to READ-SAFE Agent-Auth keys; a brain-
       // mutating tool here would break the read-only-engine guarantee (the
       // agent-auth tripwire test pins the same surface from the other side).
       expect(nonDashboardRegistry.get("correct_fact")).toBeUndefined();
+      // #5482 — the same admission, the same reason. `proposeFact` mutates the
+      // fact graph too: a novel claim writes a draft row, and an agreeing one
+      // writes a provenance edge against a live fact. Neither is read-safe.
+      expect(nonDashboardRegistry.get("proposeFact")).toBeUndefined();
       expect(nonDashboardRegistry.get("executeSQL")).toBeDefined();
       expect(nonDashboardRegistry.get("explore")).toBeDefined();
       expect(nonDashboardRegistry.get("searchBrain")).toBeDefined();
@@ -519,6 +540,7 @@ describe("buildHeadlessRegistry (#4936)", () => {
 
     expect(names).not.toContain("createDashboard");
     expect(names).not.toContain("correct_fact");
+    expect(names).not.toContain("proposeFact");
     // Not vacuous — a headless surface is still a full read surface.
     for (const core of ["explore", "executeSQL", "searchBrain"]) {
       expect(names).toContain(core);
@@ -567,6 +589,7 @@ describe("buildHeadlessRegistry (#4936)", () => {
         const names = Object.keys(registry.getAll());
         expect(names).not.toContain("createDashboard");
         expect(names).not.toContain("correct_fact");
+        expect(names).not.toContain("proposeFact");
         expect(names).toContain("executeSQL");
       },
     );

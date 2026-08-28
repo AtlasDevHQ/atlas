@@ -36,7 +36,7 @@ export interface IntegrationTable {
 /**
  * Every integration credential table covered by F-41. Order matches
  * the migration history (`0001_…` → `0011_…`) and the runbook in
- * `apps/docs/content/docs/platform-ops/encryption-key-rotation.mdx`.
+ * `apps/docs/content/shared/platform-ops/encryption-key-rotation.mdx`.
  *
  * `slack_installations` was dropped in migration `0086_consolidate_slack_installations.sql`
  * (#2634) — Slack bot tokens now live in `chat_cache` under the

@@ -555,6 +555,7 @@ export const releases: Release[] = [
     highlights: [
       "Drafts are self-contained: draft cards carry their own cached data, and never-run tiles render and refresh without touching the published dashboard",
       "One edit mechanism with inline undo — destructive changes land in the draft and are reversible, replacing the old staging model",
+      "Removed (REST): POST /dashboards/{id}/stage and its /accept and /discard endpoints — superseded by the /draft/* flow including /draft/undo (ADR-0034). Recorded in the stability page's removals ledger",
       "View is read-only; editing controls move to a dedicated Edit mode on the canvas",
       "Start a new dashboard directly on the canvas via the bound editor, and let the agent seed cards as it creates them",
       "Share a dashboard as a framable embed with a light/dark theme control — same snapshot, revocation, and expiry as the shared link",
@@ -660,6 +661,7 @@ export const releases: Release[] = [
     highlights: [
       "The notebook surface — cells, fork/branch, convert-to-notebook, and the \"Share as Report\" viewer — is removed end-to-end (#4589)",
       "Existing notebook conversations migrate to web chat with full message history preserved; forked notebooks become standalone chats; no rows are deleted (migration 0169)",
+      "Removed (REST): PATCH /conversations/{id}/notebook-state, POST /conversations/{id}/convert-to-notebook, the /fork and /branches/{branchId} endpoints, and the notebookState field on the share response — retired with the surface (ADR-0035). Recorded in the stability page's removals ledger; no client action is possible or required",
       "Dashboards own the curated, agent-built, shareable-artifact job going forward, on the draft-first, publish-gated model (ADR-0029/0034)",
       "Two-phase drop: this release stops every read and write of notebook state; the underlying column is dropped in the next release (#4588)",
     ],

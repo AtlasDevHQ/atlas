@@ -176,6 +176,21 @@ The `"default"` datasource is used when the agent's `executeSQL` tool is called 
 
 ---
 
+## Datasource Expectation
+
+By default, a deployment with no process-level analytics datasource degrades `/health` — a box that simply forgot `ATLAS_DATASOURCE_URL` should look unhealthy. When a deployment *intentionally* has none (a multi-tenant SaaS region where every connection is per-workspace, or a knowledge-only self-host), declare that so `/health` reports the `datasource` component as `disabled` without degrading the rollup:
+
+```typescript
+// atlas.config.ts — this deployment deliberately has no process-level datasource
+export default defineConfig({
+  datasourceExpected: false,
+});
+```
+
+Resolution precedence (#4854, `packages/api/src/lib/db/datasource-expectation.ts`): the `ATLAS_DATASOURCE_EXPECTED` env var overrides per-service; then the config-file `datasourceExpected` field; then the default of "expected". An unrecognized env value warns and resolves to "expected" *without* consulting the config file. `ATLAS_DEMO_DATA=true` outranks all of these — demo mode always expects its datasource.
+
+---
+
 ## Semantic Layer Path
 
 Override the default semantic layer directory:
@@ -242,7 +257,7 @@ export default defineConfig({
 });
 ```
 
-The default tools are `explore` (read semantic layer files) and `executeSQL` (run validated SQL queries). When the action framework is enabled, action tools are also registered. See [Actions](#actions) below.
+The default tools are `explore` (read semantic layer files) and `executeSQL` (run validated SQL queries). Other registrable names include `searchBrain` (Knowledge Base + [Company Atlas](/guides/atlas-temporal-model) search); the legacy name `searchKnowledge` is still accepted and normalized to `searchBrain` with a startup warning. When the action framework is enabled, action tools are also registered. See [Actions](#actions) below.
 
 ---
 
@@ -419,7 +434,7 @@ ATLAS_STARTER_PROMPT_MAX_FAVORITES=10
 
 Define RLS policies that inject WHERE clauses on every query based on user JWT claims. Each policy specifies which tables it applies to, which column to filter on, and which JWT claim provides the value.
 
-See <AudienceLink saas="/security/row-level-security">Row-Level Security</AudienceLink> for the full guide.
+See [Row-Level Security](/security/row-level-security) for the full guide.
 
 <Tabs items={["Single policy", "Per-table policies", "All tables", "OR-combined"]}>
 <Tab value="Single policy">
@@ -1063,6 +1078,7 @@ export default defineConfig({
 | `auth` | `"auto" \| "none" \| "api-key" \| "managed" \| "byot"` | `"auto"` | Authentication mode |
 | `semanticLayer` | `string` | `"./semantic"` | Path to semantic layer directory (relative to project root) |
 | `maxTotalConnections` | `number` | `100` | Max total pool slots across all datasources |
+| `datasourceExpected` | `boolean` | — (treated as expected) | Whether this deployment expects a process-level analytics datasource (#4854). Set `false` on a deployment that intentionally has none (per-workspace connections, knowledge-only) so `/health` reports the datasource component as `disabled` instead of degrading. Omitted means expected. Overridden per-service by `ATLAS_DATASOURCE_EXPECTED` ([details](#datasource-expectation)) |
 | `plugins` | `unknown[]` | — | Plugin instances to register at boot |
 | `actions` | `ActionsConfig` | — | Action framework configuration |
 | `rls` | `RLSConfig` | — | Row-Level Security policies |
@@ -1088,4 +1104,4 @@ export default defineConfig({
 - <AudienceLink selfHosted="/self-hosted/deployment/deploy">Deploy</AudienceLink> — Platform-specific deployment with config examples
 - <AudienceLink saas="/deployment/multi-datasource">Multi-Datasource Routing</AudienceLink> — Guide for configuring multiple datasources
 - [Plugin Authoring Guide](/plugins/authoring-guide) — Building plugins registered via the config file
-- <AudienceLink saas="/security/row-level-security">Row-Level Security</AudienceLink> — Full RLS guide for the `rls` config option
+- [Row-Level Security](/security/row-level-security) — Full RLS guide for the `rls` config option

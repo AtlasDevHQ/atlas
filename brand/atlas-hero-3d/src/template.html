@@ -1130,6 +1130,9 @@ function layoutSheet(){
       st.style.left=(qx+s)+'px'; st.style.top=(qy+qh+19*s)+'px';
       st.style.width=(qw-2*s)+'px';
       st.style.fontSize=Math.max(8,11*s)+'px';
+      // At phone scale the italic glosses collide with the neighbouring
+      // quads' titles; the titles and the drawings carry the sheet there.
+      st.style.display=s<0.5?'none':'';
     }
   });
   sheetDom.marginLabel.style.left=(S_PAD*s)+'px';
@@ -1512,6 +1515,12 @@ function updatePlates(){
     wpp=2*D*Math.tan(camera.fov*Math.PI/360)/H;
   }
 
+  // A portrait viewport backs the camera off (chartDist) to keep the whole
+  // band in frame, which read the hover cards down to a third of their
+  // design size. The cards grow part of that distance back as they rise —
+  // born at the chart's own scale, arriving at reading scale.
+  var portS=Math.pow(Math.max(1,1.45/Math.max(camera.aspect,0.4)),0.35);
+
   for(var i=0;i<plates.length;i++){
     var P=plates[i];
     var p=sm(t,P.t0,P.t1);
@@ -1520,7 +1529,7 @@ function updatePlates(){
     var ep=1-Math.pow(1-p,2.6);
     P.curve.getPoint(ep,P.mesh.position);
     P.mesh.quaternion.slerpQuaternions(P.q0,P.q1,ep);
-    var us=lp(P.s0,P.s1,ep);
+    var us=lp(P.s0,P.s1,ep)*lp(1,portS,ep);
     P.mesh.scale.setScalar(us);
 
     if(flip){
@@ -1859,8 +1868,14 @@ function updateLabels(w,h){
     _v.project(camera);
     var x=(_v.x*0.5+0.5)*w, y=(-_v.y*0.5+0.5)*h;
     e.style.transform='translate('+x.toFixed(1)+'px,'+y.toFixed(1)+'px)';
-    e.style.setProperty('--tf',tf.toFixed(3));
-    e.style.opacity=(vi*front).toFixed(3);
+    // Frame-edge grace, for narrow viewports where an anchor can sit at the
+    // silhouette's edge: a label runs rightward from its dot, so the words
+    // fade first against the right edge, and a dot carried off the left
+    // takes its whole label with it — never a clipped word hanging mid-air.
+    var lEdge=Math.max(0,Math.min(1,(x-12)/36));
+    var rEdge=Math.max(0,Math.min(1,(w-70-x)/170));
+    e.style.setProperty('--tf',(tf*rEdge).toFixed(3));
+    e.style.opacity=(vi*front*lEdge).toFixed(3);
   }
 }
 

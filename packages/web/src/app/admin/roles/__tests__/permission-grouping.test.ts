@@ -51,7 +51,7 @@ describe("groupPermissions", () => {
   });
 
   it("labels every flag the server can send", () => {
-    // #5191 — `PERMISSION_LABELS` is now exhaustive over `Permission` at the
+    // #5194 — `PERMISSION_LABELS` is now exhaustive over `Permission` at the
     // TYPE level, which catches a missing label at build time. This is the
     // runtime half: it proves the labels are real copy rather than the raw id
     // the `?? p` fallback would render, which type-checks perfectly.

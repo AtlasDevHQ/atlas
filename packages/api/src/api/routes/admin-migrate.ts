@@ -2699,6 +2699,14 @@ export async function importBundle(
   // destination admin's remedy, and re-ordering the two sections would not
   // remove it — it would only decide it silently in the other direction.
   //
+  // ⚠️ The MIRROR direction exists too: an arriving `approved` proposal can
+  // land over a destination `pending` here while `mergeApprovedEdges` refused
+  // its edge (cycle / second parent). The pair's unique slot then holds an
+  // `approved` row with no in-force edge, and the QUEUE cannot re-establish
+  // the alias — a re-proposal meets the already-approved row. Not silent: the
+  // edge refusal is surfaced with persisted `refusalDetails`, and
+  // `authorAliasEdge` (which bypasses the queue) is the remedy there.
+  //
   // ⚠️ THE LOCK IS TAKEN FOR THESE TWO SECTIONS TOO, on section 10's "taken for
   // the READ" reasoning. Section 9 acquires it only when the bundle carries
   // EDGES, and a bundle can carry proposals or cardinality entries with none.
@@ -2883,11 +2891,42 @@ export async function importBundle(
       if (inserted.rows.length > 0) {
         result.brainPredicateCardinalities.imported++;
       } else {
-        result.brainPredicateCardinalities.refused++;
-        log.warn(
-          { orgId, correlationId, predicateKey: entry.predicateKey, arrivingStatus: entry.status },
-          "Region import: a predicate-cardinality entry appeared concurrently while importing this one — this region's row is kept and the arriving entry is NOT applied; re-author it here if it is the right one",
+        // The concurrent row decides the outcome the way a pre-held row would
+        // have: an IDENTICAL decision (same status, and same value or both
+        // rejected) is the skip arm arriving late, and counting it `refused`
+        // would report a human conflict where there is agreement — the
+        // reconciliation still balances either way, but `refused` is the
+        // counter an operator acts on. Anything else stays destination-wins,
+        // refused and warned; the racy arm deliberately does NOT re-enter the
+        // decision-over-pending lattice, because a concurrent `pending` row's
+        // proposer is actively working the key right now and destination-wins
+        // is the direction that never overwrites a human mid-decision.
+        const raced = await client.query(
+          `SELECT status, cardinality FROM brain_predicate_cardinality
+            WHERE workspace_id = $1 AND predicate_key = $2`,
+          [orgId, entry.predicateKey],
         );
+        const racedHeld = raced.rows[0] as { status: string; cardinality: string } | undefined;
+        if (
+          racedHeld !== undefined &&
+          racedHeld.status === entry.status &&
+          (racedHeld.cardinality === entry.cardinality || racedHeld.status === "rejected")
+        ) {
+          result.brainPredicateCardinalities.skipped++;
+        } else {
+          result.brainPredicateCardinalities.refused++;
+          log.warn(
+            {
+              orgId,
+              correlationId,
+              predicateKey: entry.predicateKey,
+              arrivingStatus: entry.status,
+              existingStatus: racedHeld?.status ?? null,
+              existingCardinality: racedHeld?.cardinality ?? null,
+            },
+            "Region import: a predicate-cardinality entry appeared concurrently while importing this one — this region's row is kept and the arriving entry is NOT applied; re-author it here if it is the right one",
+          );
+        }
       }
     } else if (
       held.status === entry.status &&

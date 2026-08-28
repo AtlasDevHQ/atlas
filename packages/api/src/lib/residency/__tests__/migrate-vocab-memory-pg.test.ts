@@ -57,6 +57,8 @@ const TARGET_EMPTY = "org-5113-tgt-empty";
 const TARGET_HELD = "org-5113-tgt-held";
 /** A destination whose vocabulary canonicalizes the arriving predicate away. */
 const TARGET_ALIASED = "org-5113-tgt-aliased";
+/** A destination that starts alias-free: the re-canonicalizing edge arrives IN the bundle. */
+const TARGET_MERGE_ALIASED = "org-5113-tgt-merge-aliased";
 
 describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113)", () => {
   let pool: Pool;
@@ -350,6 +352,63 @@ describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113
         [TARGET_ALIASED],
       );
       expect(keys.rows).toEqual([{ predicate_key: "billed monthly", status: "rejected" }]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "FALSIFICATION 2b: the screen reads the POST-MERGE closure — a re-canonicalizing edge arriving IN the bundle refuses the entry keyed on its from-norm",
+    async () => {
+      // The arm the section-9a-ii ordering exists for, and the one FALSIFICATION
+      // 2 cannot pin: there the destination's alias PRE-EXISTS, so the closure
+      // is identical before and after the edge merge and the test passes
+      // whichever side of `mergeApprovedEdges` the screen runs on. Here the
+      // destination starts alias-free and the bundle itself carries BOTH the
+      // edge (`ships to` → `delivers to`) and a cardinality entry keyed on
+      // `ships to` — the realizable source state, since nothing re-keys
+      // `brain_predicate_cardinality` when an alias is approved at the source.
+      // Run the screen BEFORE the merge (or against a pre-merge closure read)
+      // and the stale entry lands verbatim; this test goes red exactly then.
+      const bundle = await exportWorkspaceBundle(SOURCE_ORG, "vocab-memory-test");
+      const withEdge: ExportBundle = JSON.parse(JSON.stringify(bundle));
+      withEdge.brainVocabularyProposals = [];
+      withEdge.manifest.counts.brainVocabularyProposals = 0;
+      withEdge.brainVocabularyEdges = [
+        {
+          slotPosition: "predicate",
+          fromNorm: "ships to",
+          toNorm: "delivers to",
+          approvedBy: "user-remote",
+          approvedAt: "2026-07-04T00:00:00Z",
+        },
+      ];
+      withEdge.manifest.counts.brainVocabularyEdges = 1;
+
+      const result = await importInto(withEdge, TARGET_MERGE_ALIASED);
+      // The edge lands first (the merge), and only then is the entry judged —
+      // against the closure that edge just created: `ships to` is aliased away
+      // here NOW, so its entry is refused; `billed monthly` is untouched and
+      // its rejected memory lands.
+      expect(result.brainVocabularyEdges).toMatchObject({ imported: 1, skipped: 0, refused: 0 });
+      expect(result.brainPredicateCardinalities).toEqual({ imported: 1, skipped: 0, refused: 1 });
+
+      // The refused entry landed on NEITHER key — not the arriving `ships to`,
+      // not the destination's new canonical `delivers to`.
+      const keys = await pool.query(
+        `SELECT predicate_key, status FROM brain_predicate_cardinality
+          WHERE workspace_id = $1 ORDER BY predicate_key`,
+        [TARGET_MERGE_ALIASED],
+      );
+      expect(keys.rows).toEqual([{ predicate_key: "billed monthly", status: "rejected" }]);
+
+      // And the closure row the refusal was judged against really is the one
+      // the merge wrote in this same transaction.
+      const closure = await pool.query(
+        `SELECT effective_target FROM brain_vocabulary_target
+          WHERE workspace_id = $1 AND slot_position = 'predicate' AND norm = 'ships to'`,
+        [TARGET_MERGE_ALIASED],
+      );
+      expect(closure.rows).toEqual([{ effective_target: "delivers to" }]);
     },
     PG_TEST_TIMEOUT_MS,
   );

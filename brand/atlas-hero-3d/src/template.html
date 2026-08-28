@@ -97,6 +97,14 @@ body{
    other mid-morph, so the category's point of light is the continuity and
    the words never ghost over one another. */
 .lbl span,.lbl b{opacity:var(--tf,1)}
+/* The sounding ring: a one-shot expanding pulse when a dot is born, then a
+   soft ambient ping while it rides the globe — the survey's own unit told as
+   motion, so the marks read as live readings before any word appears. */
+.lbl .ping{
+  position:absolute;left:2.5px;top:50%;width:34px;height:34px;
+  border:1px solid var(--spark);border-radius:50%;pointer-events:none;
+  transform:translate(-50%,-50%) scale(var(--pp,0));opacity:var(--po,0);
+}
 .lbl span{display:block;width:30px;height:1px;flex:none;
   background:linear-gradient(90deg,var(--accent),rgba(56,156,106,0))}
 .lbl b{
@@ -659,7 +667,8 @@ var labelEls=CLASSES.map(function(d){
     var em=document.createElement('em'); em.textContent=d.units;
     b.appendChild(em);
   }
-  el.appendChild(dot); el.appendChild(ln); el.appendChild(b);
+  var ping=document.createElement('u'); ping.className='ping';
+  el.appendChild(dot); el.appendChild(ln); el.appendChild(b); el.appendChild(ping);
   document.getElementById('labels').appendChild(el);
   return el;
 });
@@ -1275,7 +1284,7 @@ function anchorFlat(i,out){
 function anchorHover(i,out){
   if(!mapGeo) return anchorPos(i,out);
   var vi=classAnchor[i];
-  var th=Math.max(-2.3,Math.min(2.3,mapTheta[vi]));
+  var th=Math.max(-2.15,Math.min(2.15,mapTheta[vi]));
   var la=Math.max(-0.75,Math.min(0.75,mapLat[vi]));
   morphVert(th,la,mapR[vi],1,out);
   out.y+=LIFT;
@@ -1339,7 +1348,9 @@ function buildPlates(){
       .addScaledVector(UPV,(i%2?0.04:-0.02)*modelRadius);
     var qF=new THREE.Quaternion().setFromEuler(
       new THREE.Euler(0,AZ0,(i%2?-1:1)*0.02,'YXZ'));
-    var P={mesh:mesh, q0:qF, q1:qF, s0:sphereRadius*0.22, s1:modelRadius*0.34};
+    // s1 sized so the quadrangle's soundings — not the caption — carry the
+    // card at the hover framing: the drawing is the meaning.
+    var P={mesh:mesh, q0:qF, q1:qF, s0:sphereRadius*0.22, s1:modelRadius*0.38};
     P.curve=new THREE.CubicBezierCurve3(
       p0,
       p0.clone().addScaledVector(F0,modelRadius*0.08),
@@ -1665,14 +1676,37 @@ function updateLabels(w,h){
   var sm=THREE.MathUtils.smoothstep;
   // The dots are on the globe almost from the load frame — the opening shot
   // should already say "this globe has marked places" with no words at all.
-  // The text joins once the descent brings it close enough to read.
+  // They come online one by one, each announced by a sounding ring, and the
+  // text joins once the descent brings it close enough to read.
   var tf=sm(t,0.15,0.25)*Math.min(1,(1-sm(t,0.52,0.555))+sm(t,0.60,0.64));
-  var vis=sm(t,0.05,0.14);
   var mNow=sm(t,MORPH_T0,MORPH_T1);
+  var now=performance.now()/1000;
   for(var i=0;i<CLASSES.length;i++){
     var d=CLASSES[i], e=labelEls[i];
     var born=PLATE_T0+i*PLATE_DT0;
-    var vi=vis*(1-sm(t,born,born+0.035));
+    var tb=0.045+i*0.018;
+    // The dot snaps in, THEN the ring announces it — a ping over a dot still
+    // fading in inherits its near-zero opacity and reads as nothing.
+    var vi=sm(t,tb,tb+0.025)*(1-sm(t,born,born+0.035));
+    // The ping phase: the birth ring is a function of t, so the scrub
+    // replays it; afterwards a soft ambient sounding every few seconds
+    // while the dot rides the globe (stilled before the fold, and under
+    // prefers-reduced-motion).
+    var q=-1;
+    if(!reduced){
+      var qb=(t-tb-0.025)/0.06;
+      if(qb>=0&&qb<1) q=qb;
+      else if(qb>=1&&t<0.44){
+        var qa=((now+i*2.13)%6.5)/1.4;
+        if(qa<1) q=qa;
+      }
+    }
+    if(q>=0){
+      e.style.setProperty('--pp',(0.35+q*2.1).toFixed(3));
+      e.style.setProperty('--po',((1-q)*(1-q)*0.6).toFixed(3));
+    }else{
+      e.style.setProperty('--po','0');
+    }
     if(vi<=0.001){ e.style.opacity='0'; continue; }
     anchorPos(i,_v);
     // On the sphere a label facing away fades; on the chart everything faces

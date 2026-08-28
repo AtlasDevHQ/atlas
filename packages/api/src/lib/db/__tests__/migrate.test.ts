@@ -430,7 +430,14 @@ describe("runMigrations", () => {
     //   secret, so credentials are ROTATED rather than migrated — decrypting
     //   live customer secrets to re-digest them is the one failure mode that
     //   would break provisioning silently) = 210.
-    expect(count).toBe(210);
+    //   Plus 0210 (brain_triage — #5336: the stage-0 pre-extraction triage
+    //   marks. `triaged_out_at` + `triage_reason` on `brain_episodes`, paired
+    //   under a CHECK, so a deterministically claim-free episode ("on it",
+    //   "+1", pure emoji) is routed past the model as a RECORDED, re-queueable
+    //   verdict — never stamped `extracted_at`, which would be the
+    //   extracted-with-no-facts silent drop 0180's posture forbids. The drain
+    //   excludes the mark; clearing it re-queues the episode in place) = 211.
+    expect(count).toBe(211);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -751,6 +758,7 @@ describe("runMigrations", () => {
         "0207_brain_extraction_batch.sql",
         "0208_brain_actor_identity.sql",
         "0209_scim_provider_to_managed_connection.sql",
+        "0210_brain_triage.sql",
       ],
     });
 

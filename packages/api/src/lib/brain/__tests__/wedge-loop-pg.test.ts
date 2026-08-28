@@ -616,7 +616,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       factsBlocked: 0,
       outageRefunded: 0,
     });
-    expect(cycle.skipped).toEqual({ model_unavailable: 0, no_body: 0, quarantined: 0 });
+    expect(cycle.skipped).toEqual({ model_unavailable: 0, no_body: 0, quarantined: 0, triaged: 0 });
     // Two claims in one array. WHICH workspace: the cycle must resolve for the
     // EPISODE's workspace — the BYO-mis-billing class `resolveExtractionModel`
     // exists to prevent. HOW MANY times: exactly one, because `extract.ts`'s

@@ -1067,7 +1067,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       factsBlocked: 0,
       outageRefunded: 0,
     });
-    expect(cycle.skipped).toEqual({ model_unavailable: 0, no_body: 0, quarantined: 0 });
+    expect(cycle.skipped).toEqual({ model_unavailable: 0, no_body: 0, quarantined: 0, triaged: 0 });
     // WHICH workspace and HOW MANY times, in one assertion: the cycle must
     // resolve for the EPISODE's workspace, exactly once, because `modelFor`
     // memoizes per workspace per cycle. Keyed off `inspected` so a cycle that

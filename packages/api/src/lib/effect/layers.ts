@@ -2527,6 +2527,15 @@ export function makeSchedulerLive(
           "atlas.brain.skipped_model_unavailable": result.skipped.model_unavailable,
           "atlas.brain.skipped_no_body": result.skipped.no_body,
           "atlas.brain.skipped_quarantined": result.skipped.quarantined,
+          // The stage-0 triage pair (#5336): together with `extracted` and
+          // `episodes_with_candidates` they state the coverage funnel —
+          // episodes seen, episodes that reached the model, episodes that
+          // produced a candidate. `skipped_triaged: 0` with a non-zero
+          // `triage_evaluated` means "triage on, everything passed";
+          // both zero means the gate is off.
+          "atlas.brain.skipped_triaged": result.skipped.triaged,
+          "atlas.brain.triage_evaluated": result.triage.evaluated,
+          "atlas.brain.episodes_with_candidates": result.episodesWithCandidates,
           "atlas.brain.outage_refunded": result.outageRefunded,
         }),
         onTickFailure: {

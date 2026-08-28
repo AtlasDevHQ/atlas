@@ -3329,6 +3329,21 @@ export const brainEpisodes = pgTable(
     // outright, because a batch that never returns would then be a permanent
     // silent drop instead of a re-queue.
     extractionBatchId: uuid("extraction_batch_id"),
+    // Stage-0 triage mark (#5336, migration 0210). Set when the deterministic
+    // pre-extraction gate routed this episode out BEFORE any model call; the
+    // drain excludes marked rows. NEVER doubles as `extractedAt` — no
+    // extraction ran, and stamping one would be the silent drop 0180's posture
+    // forbids. Clearing both columns re-queues the episode at its original
+    // `ingested_at` position (`REQUEUE_TRIAGED_SQL`).
+    triagedOutAt: timestamp("triaged_out_at", { withTimezone: true }),
+    // WHICH rule fired — a `TriageRuleId` from `lib/brain/triage.ts` today,
+    // stage 1's own ids later. Open text rather than a CHECK enum so a future
+    // rule is not a migration; the pairing CHECK below is the only constraint.
+    // Neither triage column rides the region-export projection (`export.ts`
+    // enumerates columns, `extraction_batch_id`'s precedent): an imported
+    // episode arrives unmarked, re-drains, and is re-triaged at the
+    // destination — the verdict is deterministic and cheap to re-derive.
+    triageReason: text("triage_reason"),
     // ACL grant (grammar documented on `brainFacts.visibleTo`). Tiers 2 AND 3
     // are gated — raw episodes are often *more* sensitive than their facts.
     visibleTo: text("visible_to").array().notNull(),
@@ -3396,6 +3411,19 @@ export const brainEpisodes = pgTable(
       "chk_brain_episodes_grant_nonempty",
       sql`cardinality(array_remove(array_remove(visible_to, NULL::text), '')) > 0`,
     ),
+    // The triage mark and its reason travel together (#5336, migration 0210):
+    // a mark with no reason is unexplainable, a reason with no mark excludes
+    // nothing — each half-state reads as a bug, so both are unrepresentable.
+    check(
+      "chk_brain_episodes_triage_pair",
+      sql`num_nonnulls(triaged_out_at, triage_reason) <> 1
+      AND coalesce(triage_reason, 'x') <> ''`,
+    ),
+    // The triaged-out backlog, countable per workspace and reason. PARTIAL on
+    // the un-extracted triaged set, so with triage off it holds nothing.
+    index("idx_brain_episodes_triaged_out")
+      .on(t.workspaceId, t.triageReason)
+      .where(sql`triaged_out_at IS NOT NULL AND extracted_at IS NULL`),
   ],
 );
 

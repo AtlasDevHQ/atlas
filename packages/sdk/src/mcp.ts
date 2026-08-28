@@ -408,7 +408,7 @@ export async function beginConnect(
   return liftHelper(async () => {
     const metadata = await discover(apiUrl, { fetchImpl });
 
-    const randomBytesOpts = randomBytesImpl ? { randomBytesImpl } : {};
+    const randomBytesOpts = randomBytesImpl !== undefined ? { randomBytesImpl } : {};
     const state = generateState(randomBytesOpts);
     const { codeVerifier, codeChallenge } = await generatePkce(randomBytesOpts);
 
@@ -571,7 +571,7 @@ export function buildConfig(options: BuildConfigOptions): McpClientConfig {
             type: block.type,
             url: block.url,
             headers: block.headers,
-            ...(block.env ? { env: block.env } : {}),
+            ...(block.env !== undefined ? { env: block.env } : {}),
           }
         : { kind: "bare", type: block.type, url: block.url, headers: block.headers };
     case "claude-desktop":

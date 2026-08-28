@@ -786,7 +786,7 @@ export function createAtlasClient(options: AtlasClientOptions) {
       const res = await post("/api/v1/chat", {
         messages,
         conversationId: opts?.conversationId,
-      }, { ...(opts?.signal ? { signal: opts.signal } : {}) });
+      }, { ...(opts?.signal !== undefined ? { signal: opts.signal } : {}) });
 
       await throwIfNotOk(res);
 

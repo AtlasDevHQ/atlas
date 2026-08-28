@@ -2428,6 +2428,11 @@ describe("agent-proposed origin is labelled (#5483, ADR-0036 §T9)", () => {
    * the discriminator the badge branches on, and `source`/episode are `human`
    * — which is exactly why `source` alone cannot carry the label, since a
    * correction-authored replacement is `human` too.
+   *
+   * `producer` is DELIBERATELY the literal `"proposal"`, not
+   * `BRAIN_PROPOSAL_PRODUCER`: this fixture pins the wire BYTE the API
+   * actually sends, so a respelling of the constant fails here instead of the
+   * badge and the fixture agreeing their way past a broken label.
    */
   const PROPOSAL_PROVENANCE = {
     ...PROVENANCE,

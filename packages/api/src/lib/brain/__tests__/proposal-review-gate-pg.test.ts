@@ -211,10 +211,14 @@ describeIfPg("the review gate proposeFact exits through (#5483)", () => {
       extractedAt: new Date("2026-08-20T09:05:00.000Z"),
     });
     const outcome = report.outcomes[0];
-    expect(outcome?.kind, "the incumbent draft was refused — every assertion downstream is vacuous").toBe(
-      "created",
-    );
-    const factId = outcome!.kind === "created" ? outcome!.factId : "";
+    // A throw, not an expect-then-fallback: an empty-string factId would fail
+    // every downstream assertion with messages pointing at the wrong seam.
+    if (outcome?.kind !== "created") {
+      throw new Error(
+        `the incumbent draft was not created (got ${outcome?.kind ?? "no outcome"}) — every assertion downstream is vacuous`,
+      );
+    }
+    const factId = outcome.factId;
     const grant = await grantOf(workspaceId, factId);
     expect(grant, "precondition: the incumbent's grant must be the NARROW audience alone").toEqual([
       NARROW_GRANT,
@@ -370,6 +374,19 @@ describeIfPg("the review gate proposeFact exits through (#5483)", () => {
       // Lock 3's negative half: proposing widened NOTHING. The draft's grant
       // after the corroboration is byte-identical to before it.
       expect(await grantOf(ws, factId)).toEqual([NARROW_GRANT]);
+
+      // Lock 5's display half, on a MULTI-source row: the reviewer's own queue
+      // read now shows two distinct sources — the colleague who said it and
+      // the proposer who vouched for it. The single-source case is pinned in
+      // the first test; this is the count a reviewer actually weighs when
+      // deciding whether corroborated testimony earns a wider audience.
+      const queueBefore = await loadFactCandidates(pool, {
+        ctx: reviewer(ws, ["chat-channel:slack:C0PRIVATE"]),
+        limit: 10,
+        offset: 0,
+      });
+      expect(queueBefore.candidates.length).toBe(1);
+      expect(queueBefore.candidates[0]!.corroborationCount).toBe(2);
 
       // The reviewer is TOLD before they act: the widening preview names the
       // fact and the exact token the evidence will add. The reviewer must be

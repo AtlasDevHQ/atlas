@@ -122,6 +122,8 @@ void mock.module("@atlas/ee/layers", () => {
 // ── Stripe teardown: quiet success, so warnings observed here are SCIM's ──
 
 const teardownOutcome: StripeTeardownOutcome = { attempted: true, actions: [], warnings: [] };
+// All exports mocked (testing.md's mock.module rule) — the extra two are
+// inert pass-throughs no code path here reaches.
 void mock.module("@atlas/api/lib/billing/workspace-teardown", () => ({
   cancelStripeSubscriptionsForWorkspace: mock(async () => teardownOutcome),
   purgeStripeBillingForWorkspace: mock(async () => {
@@ -130,13 +132,20 @@ void mock.module("@atlas/api/lib/billing/workspace-teardown", () => ({
   }),
   pauseStripeCollectionForWorkspace: mock(async () => teardownOutcome),
   resumeStripeCollectionForWorkspace: mock(async () => teardownOutcome),
+  enqueueStripeTeardownOps: mock(async () => 0),
+  isStripeResourceMissing: () => false,
   stripeAuditMetadata: () => ({}),
   withWarnings: () => ({}),
 }));
 
+// The route imports errorMessage/causeToError from lib/audit/error-scrub
+// DIRECTLY (not via this index), so the real scrub runs in these tests — the
+// re-exports are mirrored here only to keep the module mock complete.
 void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mock(() => {}),
   logAdminActionAwait: mock(async () => {}),
+  errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  causeToError: (cause: unknown) => cause,
   ADMIN_ACTIONS: {
     workspace: {
       suspend: "workspace.suspend",

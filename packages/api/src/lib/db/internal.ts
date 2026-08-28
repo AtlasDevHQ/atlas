@@ -4841,6 +4841,23 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     if (scimPresent.scimGroup) {
       scimGroup = await del(`DELETE FROM "scimGroup" WHERE "provisioningDomainId" = $1`);
     }
+    // A SURVIVING user's subject record can point at a projection this purge
+    // is about to delete: `scimSubject.profileSourceId` holds the scimUser id
+    // whose profile currently sources the subject, and the plugin declares it
+    // as a plain string — no FK, so nothing cascades or nulls it. The
+    // decommission lifecycle clears it when it reconciles; this is the arm for
+    // when that lifecycle did not run (plugin failure, never-composed caller).
+    // NULLed (the column is optional upstream) rather than deleted — the
+    // subject itself is user-scoped and must survive for a user still managed
+    // in another workspace; the next sync re-establishes a source. Must run
+    // BEFORE the projection delete below, whose rows the subquery reads.
+    if (scimPresent.scimSubject && scimPresent.scimUser) {
+      await client.query(
+        `UPDATE "scimSubject" SET "profileSourceId" = NULL
+          WHERE "profileSourceId" IN (SELECT id FROM "scimUser" WHERE "provisioningDomainId" = $1)`,
+        [orgId],
+      );
+    }
     // THE #5515 headline statement: the projection rows carry primaryEmail,
     // displayName and serializedEmails, and their user-FK cascade fires only
     // when the USER is deleted — which the orphan arm deliberately does not do

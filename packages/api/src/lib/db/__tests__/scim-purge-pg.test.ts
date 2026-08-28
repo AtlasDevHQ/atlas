@@ -182,6 +182,7 @@ const SCIM_BOOTSTRAP_SQL = `
   CREATE TABLE IF NOT EXISTS "scimSubject" (
     id TEXT PRIMARY KEY,
     "userId" TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+    "profileSourceId" TEXT,
     revision INTEGER NOT NULL DEFAULT 1,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
   );
@@ -333,10 +334,16 @@ describeIfPg("scim* GDPR purge falsifier (real Postgres, #5515)", () => {
          ('b-nb', 'ba_scim_connection_nb', 'key-nb', $3, 'active')`,
       [ORG, ORG_CONNECTION_IDS[0], NEIGHBOUR],
     );
+    // Both subjects point their `profileSourceId` at an ORG-domain projection
+    // — for the SHARED user that is the dangling-pointer case the spec review
+    // surfaced: the subject row survives (user-scoped), so a purge that only
+    // deleted the projection would leave it referencing a row that no longer
+    // exists. The plugin declares the column as a plain optional string (no
+    // FK), so nothing cascades it; the purge must NULL it explicitly.
     await pool.query(
-      `INSERT INTO "scimSubject" (id, "userId") VALUES
-         ('subj-orphan', $1),
-         ('subj-shared', $2)`,
+      `INSERT INTO "scimSubject" (id, "userId", "profileSourceId") VALUES
+         ('subj-orphan', $1, 'su-org-orphan'),
+         ('subj-shared', $2, 'su-org-shared')`,
       [USER_ORPHAN, USER_SHARED],
     );
     // The projections. su-org-shared is THE row this issue exists for: a user
@@ -429,6 +436,14 @@ describeIfPg("scim* GDPR purge falsifier (real Postgres, #5515)", () => {
       await countWhere("scimSubject", `id = 'subj-shared'`, []),
       "the shared user's subject record must survive — deleting it breaks the NEIGHBOUR's provisioning",
     ).toBe(1);
+    // …but its profile-source pointer at the purged domain's DELETED
+    // projection must be cleared: the column is a plain string with no FK, so
+    // without the explicit UPDATE it dangles at a row that no longer exists —
+    // scim* residue referencing the purged domain, one join away.
+    expect(
+      await countWhere("scimSubject", `id = 'subj-shared' AND "profileSourceId" IS NULL`, []),
+      "the surviving subject still points its profileSourceId at the purged domain's deleted projection",
+    ).toBe(1);
   });
 
   it("does not touch the neighbouring workspace's catalog (blast radius)", async () => {
@@ -484,6 +499,13 @@ describeIfPg("scim* GDPR purge falsifier (real Postgres, #5515)", () => {
       }
       if (cols.has("scimUserId")) {
         arms.push(`"scimUserId" IN (${ORG_SCIM_USER_IDS.map((c) => `'${c}'`).join(", ")})`);
+      }
+      // `profileSourceId` is a PLAIN-STRING reference (no declared FK, so the
+      // derived reference pin in better-auth-purge-scope.test.ts cannot see
+      // it) — hand-added here, which is exactly why that pin asserts every
+      // DECLARED reference is a column this sweep knows.
+      if (cols.has("profileSourceId")) {
+        arms.push(`"profileSourceId" IN (${ORG_SCIM_USER_IDS.map((c) => `'${c}'`).join(", ")})`);
       }
       if (cols.has("userId")) arms.push(`"userId" = '${USER_ORPHAN}'`);
       expect(arms.length, `${table}: the sweep found no referencing columns — vacuous`).toBeGreaterThan(0);

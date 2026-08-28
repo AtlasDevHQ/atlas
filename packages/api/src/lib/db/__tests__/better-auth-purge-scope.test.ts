@@ -269,12 +269,50 @@ describe("Better Auth purge/bundle-scope tripwire (#5515)", () => {
       .map((t) => t.modelName)
       .filter((n) => n.startsWith("scim"))
       .toSorted();
-    expect([...SCIM_PLUGIN_TABLES].toSorted()).toEqual(liveScim);
+    // Widened to string so the comparison is name-vs-name; the literal-union
+    // typing is the registry's concern, not this assertion's.
+    expect(SCIM_PLUGIN_TABLES.map((t): string => t).toSorted()).toEqual(liveScim);
     // And the probe is real: the function consults the derived list.
     expect(
       purgeFnBody.includes("SCIM_PLUGIN_TABLES"),
       "hardDeleteWorkspace no longer reads SCIM_PLUGIN_TABLES — the probe/registry coupling is broken",
     ).toBe(true);
+  });
+
+  it("keeps scim-purge-pg's sweep arms covering every DECLARED scim reference", () => {
+    // The -pg sweep hunts residue by column name. Its arm list is
+    // hand-written there (it has no plugin access), so this is the coupling
+    // pin: every field a scim table DECLARES as a reference — to another scim
+    // model or to user — must be a column the sweep knows how to chase. An
+    // upstream bump that adds a declared reference fails here by name, which
+    // is the prompt to add its arm. What this cannot see is a PLAIN-STRING
+    // reference (`scimSubject.profileSourceId` holds a scimUser id with no
+    // declared FK — found by the #5515 spec review); those are hand-added to
+    // the sweep and the purge, and there is no derivable source to pin them
+    // against.
+    const SWEEP_ARM_COLUMNS = new Set([
+      "connectionRecordId",
+      "groupId",
+      "scimUserId",
+      "userId",
+      "profileSourceId",
+    ]);
+    const unswept: string[] = [];
+    for (const table of enumerated) {
+      if (!table.modelName.startsWith("scim")) continue;
+      for (const [field, def] of Object.entries(table.fields)) {
+        if (!def.references) continue;
+        if (!SWEEP_ARM_COLUMNS.has(field)) {
+          unswept.push(`${table.modelName}.${field} -> ${def.references.model}`);
+        }
+      }
+    }
+    expect(
+      unswept,
+      `scim reference column(s) the residue sweep has no arm for: ${unswept.join(", ")}. ` +
+        `Add each to the arm map in scim-purge-pg.test.ts (and, if the purge must chase it, ` +
+        `to hardDeleteWorkspace's Phase 3f) before widening this list.`,
+    ).toEqual([]);
   });
 
   it("deletes scim children before the parents their subqueries read", () => {
@@ -305,9 +343,12 @@ describe("Better Auth purge/bundle-scope tripwire (#5515)", () => {
     // `export.ts` has no Better Auth sections, so an `exported` decision here
     // would be a claim the implementation does not honour — the direction the
     // bundle tripwire calls "the registry outrunning the implementation".
-    const exported = Object.entries(BETTER_AUTH_BUNDLE_DECISIONS)
-      .filter(([, v]) => v.decision === "exported")
-      .map(([k]) => k);
+    // Iterated through the string-indexed view: against the literal-typed
+    // const, tsc rejects the comparison as no-overlap — which is true today
+    // and is exactly the drift this test exists to catch tomorrow.
+    const exported = Object.keys(BETTER_AUTH_BUNDLE_DECISIONS).filter(
+      (k) => bundleDecisionFor[k]?.decision === "exported",
+    );
     expect(
       exported,
       `Better Auth table(s) marked 'exported' with no export.ts section: ${exported.join(", ")}.`,

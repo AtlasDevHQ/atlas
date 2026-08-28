@@ -19,7 +19,8 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createPlatformRouter } from "./admin-router";
-import { Cause, Effect } from "effect";
+import { Effect, type Cause } from "effect";
+import { causeToError, errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
@@ -847,26 +848,38 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     // this whole block is a no-op.
     const scim = yield* SCIMProvenance;
     const scimWarnings: string[] = [];
+    // `errorMessage` (lib/audit/error-scrub.ts), not the raw ternary: these
+    // strings ride the 200 body AND logAdminAction metadata, and better-auth /
+    // pg error text can echo a connection string — the exact hazard that
+    // module exists for. `causeToError` unwraps the Cause (deleteConnection
+    // surfaces plugin failures as DEFECTS via Effect.promise, so typed-error
+    // recovery alone would miss them); `undefined` means interrupt-only.
+    const scimWarn = (prefix: string, cause: Cause.Cause<unknown>): void => {
+      const err = causeToError(cause);
+      scimWarnings.push(
+        `${prefix}: ${err === undefined ? "interrupted" : errorMessage(err)}. ` +
+          "Its rows are still deleted by the purge transaction.",
+      );
+    };
     if (scim.available) {
       const scimConnections = yield* scim.listConnections(workspaceId).pipe(
         Effect.catchAllCause((cause) => {
-          const err = Cause.squash(cause);
-          scimWarnings.push(
-            "Could not list SCIM connections for pre-purge decommission: " +
-              `${err instanceof Error ? err.message : String(err)}. Their rows are still ` +
-              "deleted by the purge transaction.",
-          );
+          scimWarn("Could not list SCIM connections for pre-purge decommission", cause);
           return Effect.succeed([]);
         }),
       );
+      // Sequential ON PURPOSE, not a missed Promise.all: each decommission
+      // acquires the plugin's per-domain projection user locks and a
+      // per-binding lease (reconcileDecommissionedConnection), so concurrent
+      // decommissions of one workspace's connections contend on the same lock
+      // set and manufacture the "lease was taken over" conflict path for no
+      // wall-clock win on an admin-rare operation.
       for (const connection of scimConnections) {
         yield* scim.deleteConnection(workspaceId, connection.id).pipe(
           Effect.catchAllCause((cause) => {
-            const err = Cause.squash(cause);
-            scimWarnings.push(
-              `SCIM connection ${connection.id} could not be decommissioned through the ` +
-                `plugin lifecycle: ${err instanceof Error ? err.message : String(err)}. ` +
-                "Its rows are still deleted by the purge transaction.",
+            scimWarn(
+              `SCIM connection ${connection.id} could not be decommissioned through the plugin lifecycle`,
+              cause,
             );
             return Effect.succeed(false);
           }),

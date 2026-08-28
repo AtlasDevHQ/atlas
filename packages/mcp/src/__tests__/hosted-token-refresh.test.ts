@@ -141,9 +141,6 @@ void mock.module("@better-auth/core/oauth2", () => ({
   validateToken: () => {
     throw new Error("validateToken called from refresh test");
   },
-  verifyJwsAccessToken: () => {
-    throw new Error("verifyJwsAccessToken called from refresh test");
-  },
 }));
 
 void mock.module("@atlas/api/lib/residency/misrouting", () => ({

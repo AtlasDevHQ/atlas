@@ -62,7 +62,7 @@ ATLAS_API_KEY_ROLE=admin      # Optional: member, admin (default), owner
 
 ### Managed Auth (Self-Hosted Setup)
 
-Full user management with email/password login, sessions, and role-based access. Built on [Better Auth](https://www.better-auth.com/). Requires an internal Postgres database (`DATABASE_URL`). Supports [social login providers](/guides/social-providers) (Google, GitHub, Microsoft) alongside email/password.
+Full user management with email/password login, sessions, and role-based access. Built on [Better Auth](https://www.better-auth.com/). Requires an internal Postgres database (`DATABASE_URL`). Supports [social login providers](/self-hosted/guides/social-providers) (Google, GitHub, Microsoft) alongside email/password.
 
 <Callout type="info">
   On [app.useatlas.dev](https://app.useatlas.dev), managed auth is pre-configured. The setup below is for self-hosted operators only.
@@ -103,7 +103,7 @@ The account is flagged with `password_change_required` -- the user must change t
 
 Atlas ships a self-serve password reset flow for managed auth. Users click **Forgot password?** on `/login`, enter their email at `/forgot-password`, click the link in the recovery email, and choose a new password at `/reset-password`. The link expires in one hour and can be used only once. On a successful reset Atlas revokes every other active session for that user — recovery is the wrong moment to keep stale sessions live.
 
-The recovery email is sent through whichever delivery backend you have configured for Atlas — see the [Email integration setup](/guides/integrations#email) for the workspace-level provider, or wire up `ATLAS_EMAIL_PROVIDER` / `RESEND_API_KEY` at the platform level. Resolution order:
+The recovery email is sent through whichever delivery backend you have configured for Atlas — see the [Email integration setup](/self-hosted/guides/integrations#email) for the workspace-level provider, or wire up `ATLAS_EMAIL_PROVIDER` / `RESEND_API_KEY` at the platform level. Resolution order:
 
 1. Per-org override (a workspace admin configured Resend, SendGrid, Postmark, SMTP, or SES under Admin > Email Provider)
 2. Platform-level provider (`ATLAS_EMAIL_PROVIDER` + the matching key in your settings store)
@@ -334,8 +334,8 @@ Set `ATLAS_LOG_LEVEL=debug` to see per-step agent actions in the logs.
 ## Related
 
 - [Multi-Tenancy](/guides/multi-tenancy) — isolate semantic layers, connections, and caches per organization
-- [Social Login Providers](/guides/social-providers) — configure Google, GitHub, and Microsoft sign-in
-- [Choosing an Integration](/guides/choosing-an-integration) — compare auth modes side-by-side with setup examples
-- [Row-Level Security](/security/row-level-security) — automatic data isolation per tenant using JWT claims
-- [Actions Framework](/guides/actions) — approval-gated write operations (requires auth)
-- [Troubleshooting](/guides/troubleshooting#auth-issues-operator) — common auth errors and fixes
+- [Social Login Providers](/self-hosted/guides/social-providers) — configure Google, GitHub, and Microsoft sign-in
+- [Choosing an Integration](/self-hosted/guides/choosing-an-integration) — compare auth modes side-by-side with setup examples
+- [Row-Level Security](/self-hosted/security/row-level-security) — automatic data isolation per tenant using JWT claims
+- [Actions Framework](/self-hosted/guides/actions) — approval-gated write operations (requires auth)
+- [Troubleshooting](/self-hosted/guides/troubleshooting#auth-issues-operator) — common auth errors and fixes

@@ -12,7 +12,7 @@ There are two ways to run the server. **Hosted** (`mcp.useatlas.dev`) speaks Str
 
 ## What an MCP-connected agent can see
 
-Atlas's MCP tools execute with your workspace's read permissions. A connected agent can query the data your account can query — and only that. Atlas enforces SELECT-only at the <AudienceLink saas="/security/sql-validation">SQL validation layer</AudienceLink>, so even a misbehaving agent cannot mutate data, drop tables, or escape the table whitelist defined by your semantic layer. You can revoke any OAuth-connected agent at any time from **Settings → AI Agents** (your account) or **Admin → OAuth Clients** (workspace-wide) — revocation is atomic and immediate. A self-hosted stdio agent holds no token to revoke: disconnect it by removing its entry from the client's config.
+Atlas's MCP tools execute with your workspace's read permissions. A connected agent can query the data your account can query — and only that. Atlas enforces SELECT-only at the [SQL validation layer](/security/sql-validation), so even a misbehaving agent cannot mutate data, drop tables, or escape the table whitelist defined by your semantic layer. You can revoke any OAuth-connected agent at any time from **Settings → AI Agents** (your account) or **Admin → OAuth Clients** (workspace-wide) — revocation is atomic and immediate. A self-hosted stdio agent holds no token to revoke: disconnect it by removing its entry from the client's config.
 
 ---
 
@@ -338,7 +338,7 @@ If your agent doesn't see the Atlas tools at all, **restart the client** — mos
 There are two shapes of data access over MCP, and the **recommended** one is the high-level `query` tool:
 
 - **`query` (recommended)** — hand Atlas a **natural-language question** and let *Atlas's own server-side agent* answer it. Atlas explores its semantic layer, picks the right entities and canonical metrics, writes and runs the SQL, and returns a prose `answer` plus the exact SQL it ran and the result rows. Because it knows your catalog, glossary, joins, and RLS, it composes better SQL than a generic client writing raw SQL blind. Example: `{ "question": "top 5 customers by revenue last quarter" }`. Note it runs a second, server-side LLM (your client's model already paid once): on Atlas SaaS that **spends your Atlas plan tokens**; on a self-hosted server it bills the provider API key the server is configured with (`ATLAS_PROVIDER` + key). Reach for it when answer quality on a complex schema matters most.
-- **`executeSQL` (advanced / raw escape hatch)** — you (or your client's model) already wrote the exact `SELECT`; Atlas validates it through the <AudienceLink saas="/security/sql-validation">SQL pipeline</AudienceLink> and runs it. No Atlas-agent tokens are spent — your client's model did the SQL authoring. Use it when you want full control over the query, or when the question is simple enough that your client's own model writes correct SQL against the semantic layer's `describeEntity` output.
+- **`executeSQL` (advanced / raw escape hatch)** — you (or your client's model) already wrote the exact `SELECT`; Atlas validates it through the [SQL pipeline](/security/sql-validation) and runs it. No Atlas-agent tokens are spent — your client's model did the SQL authoring. Use it when you want full control over the query, or when the question is simple enough that your client's own model writes correct SQL against the semantic layer's `describeEntity` output.
 
 Both clear the same dispatch gate (billing solvency → action policy → `mcp:write` → RBAC → approval) and land the same `origin=mcp` audit trail. On Atlas SaaS, `query` additionally runs the **claim gate** (unclaimed-trial metering) because it spends Atlas plan tokens; on a self-hosted deployment the billing and claim gates have nothing to enforce (there is no billing surface) and the stdio transport is exempt from the `mcp:write` scope check.
 
@@ -451,7 +451,7 @@ explanation: "Count total orders"
 connectionId: "warehouse"  (optional)
 ```
 
-All SQL validation applies: SELECT-only, table whitelist, auto-LIMIT, statement timeout, and audit logging. See <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink>.
+All SQL validation applies: SELECT-only, table whitelist, auto-LIMIT, statement timeout, and audit logging. See [SQL Validation Pipeline](/security/sql-validation).
 
 On hosted (SaaS) deployments, `executeSQL` is also behind the workspace <AudienceLink saas="/guides/billing-and-plans#enforcement-surfaces">billing-enforcement gate</AudienceLink>: a suspended, trial-expired, or subscription-ended workspace receives a `billing_blocked` [error envelope](#error-contract) instead of query results. Self-hosted deployments (no internal DB / no workspace) are unaffected.
 
@@ -1226,7 +1226,7 @@ See [Troubleshooting](/guides/troubleshooting) for general diagnostic steps.
 
 ## Atlas MCP vs raw database MCP
 
-Wondering why you'd use Atlas's MCP server instead of connecting Claude Desktop directly to your database with a tool like DBHub? Atlas's MCP server routes every query through the <AudienceLink saas="/security/sql-validation">SQL validation pipeline</AudienceLink> and gives the AI your semantic layer for context — not just raw schema metadata. See [Atlas vs Raw MCP](/comparisons/raw-mcp) for a full comparison.
+Wondering why you'd use Atlas's MCP server instead of connecting Claude Desktop directly to your database with a tool like DBHub? Atlas's MCP server routes every query through the [SQL validation pipeline](/security/sql-validation) and gives the AI your semantic layer for context — not just raw schema metadata. See [Atlas vs Raw MCP](/comparisons/raw-mcp) for a full comparison.
 
 ---
 
@@ -1235,7 +1235,7 @@ Wondering why you'd use Atlas's MCP server instead of connecting Claude Desktop 
 - [CLI Reference](/reference/cli#mcp) — `atlas mcp` command flags and transport options
 - [Environment Variables](/reference/environment-variables) — Variables used by the MCP server
 - [Agent Auth](/agent-auth) — Capability-based authorization for AI agents layered on top of this OAuth 2.1 surface (experimental, off by default)
-- <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink> — How queries from MCP clients are validated
+- [SQL Validation Pipeline](/security/sql-validation) — How queries from MCP clients are validated
 - [Sandbox Architecture](/architecture/sandbox) — Design doc for code execution isolation across platforms
 - [Troubleshooting](/guides/troubleshooting) — General diagnostic steps
 - [MCP authorization spec (2025-03-26)](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization)

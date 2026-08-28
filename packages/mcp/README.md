@@ -4,7 +4,7 @@ Atlas Model Context Protocol (MCP) server. Exposes the agent's `explore`
 and `executeSQL` tools, the semantic layer as MCP resources, and prompt
 templates over stdio or SSE transport.
 
-See **[docs/guides/mcp](../../apps/docs/content/docs/guides/mcp.mdx)** for
+See **[docs/guides/mcp](../../apps/docs/content/shared/guides/mcp.mdx)** for
 the full Claude Desktop / Cursor / SSE setup guide.
 
 ## Quick start

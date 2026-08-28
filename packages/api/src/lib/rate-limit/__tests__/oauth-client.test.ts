@@ -459,7 +459,7 @@ describe("eviction — limits LRU bound", () => {
 // ── Docs table lockstep ──────────────────────────────────────────────
 
 describe("TOOL_WEIGHTS docs sync", () => {
-  it("apps/docs/content/docs/guides/mcp.mdx weights table matches TOOL_WEIGHTS exactly", () => {
+  it("apps/docs/content/shared/guides/mcp.mdx weights table matches TOOL_WEIGHTS exactly", () => {
     // The hosted-MCP guide hardcodes a parallel table to keep operator
     // copy readable. This test pins the lockstep so a single-side edit
     // (rename a tool, change a weight, add a tool) trips CI before the
@@ -477,7 +477,7 @@ describe("TOOL_WEIGHTS docs sync", () => {
       "apps",
       "docs",
       "content",
-      "docs",
+      "shared",
       "guides",
       "mcp.mdx",
     );

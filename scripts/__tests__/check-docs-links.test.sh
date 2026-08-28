@@ -389,18 +389,18 @@ EOF
 run_case fail "cross-audience link out of the self-hosted tree" setup_cross_audience \
   'self-hosted/sneaky\.mdx:3: cross-audience link "/guides/setup"'
 
-# Allowlisted target passes: /guides/troubleshooting is a reviewed entry in
+# Allowlisted target passes: /guides/signup is a reviewed entry in
 # CROSS_AUDIENCE_ALLOWED (the fixture materializes a docs page at that path).
 setup_cross_audience_allowed() {
   setup_clean "$1"
   mkdir -p "$1/docs/guides"
-  cat > "$1/docs/guides/troubleshooting.mdx" <<'EOF'
-# Troubleshooting
+  cat > "$1/docs/guides/signup.mdx" <<'EOF'
+# Signup
 EOF
   cat > "$1/self-hosted/allowed.mdx" <<'EOF'
 # Allowed
 
-The [troubleshooting guide](/guides/troubleshooting) is an allowlisted cross-audience target.
+The [hosted signup guide](/guides/signup) is an allowlisted cross-audience target.
 EOF
 }
 run_case pass "allowlisted cross-audience target passes" setup_cross_audience_allowed

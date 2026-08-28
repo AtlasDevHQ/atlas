@@ -93,32 +93,22 @@ const NON_CONTENT_ROUTES = new Set([
 // A self-hosted-tree page linking a root path that only content/docs serves
 // silently walks the reader out of the /self-hosted tree into SaaS-audience
 // docs — the URL looks tree-local, so nothing signals the switch. The audit
-// found 26 of these had accumulated in one window; each target below was
-// reviewed once and is DELIBERATE. A new one fails this gate: either move the
-// target to content/shared (the fix when its content is audience-neutral —
-// `guides/embedding-widget` went that way), reword the sentence, or add the
-// target here with a rationale.
+// found 26 of these had accumulated in one window. The ten shared-candidate
+// targets were audience-branched and moved to content/shared in the same
+// audit's follow-up (guides/{actions,caching,choosing-an-integration,
+// integrations,mcp,slack,social-providers,troubleshooting,embedding-widget},
+// security/{row-level-security,sql-validation}, platform-ops/
+// encryption-key-rotation), leaving only the deliberate cross-audience
+// pointers below. A new violation fails this gate: either move the target to
+// content/shared with an audience-branching pass, reword the sentence, or add
+// the target here with a rationale.
 //
 // The opposite direction (a docs-tree page linking "/self-hosted/...") is not
 // gated: there the URL itself announces the audience switch.
-//
-// Entries marked "shared-candidate" have audience-neutral SUBJECTS but their
-// content still speaks env-vars/CLI — move each to content/shared when it gets
-// an audience-branching pass, then delete its entry.
 const CROSS_AUDIENCE_ALLOWED = new Set([
-  "/getting-started/hosted", //          deliberate "prefer hosted?" pointer from quick-start
-  "/guides/actions", //                  shared-candidate: action framework works self-hosted
-  "/guides/billing-and-plans", //        deliberate contrast link from self-hosted-billing
-  "/guides/caching", //                  shared-candidate: cache cockpit exists self-hosted
-  "/guides/choosing-an-integration", //  shared-candidate: integration chooser is surface-neutral
-  "/guides/integrations", //             shared-candidate: integrations catalog applies self-hosted
-  "/guides/mcp", //                      shared-candidate: hosted + self-hosted already share the page via tabs
-  "/guides/signup", //                   deliberate contrast link from self-serve-signup
-  "/guides/slack", //                    shared-candidate: Slack works self-hosted (own app)
-  "/guides/social-providers", //         shared-candidate: Better Auth social login works self-hosted
-  "/guides/troubleshooting", //          shared-candidate: most steps apply self-hosted
-  "/platform-ops/encryption-key-rotation", // shared-candidate: ATLAS_ENCRYPTION_KEYS rotation applies self-hosted
-  "/security/row-level-security", //     shared-candidate: RLS is core, not SaaS
+  "/getting-started/hosted", //   deliberate "prefer hosted?" pointer from quick-start
+  "/guides/billing-and-plans", // deliberate contrast link from self-hosted-billing
+  "/guides/signup", //            deliberate contrast link from self-serve-signup
 ]);
 
 const repoRoot = resolve(import.meta.dir, "..");

@@ -26,7 +26,7 @@
  *
  * The script expects `ATLAS_ENCRYPTION_KEYS` (or legacy single-key env
  * vars) to be set. See
- * `apps/docs/content/docs/platform-ops/encryption-key-rotation.mdx`
+ * `apps/docs/content/shared/platform-ops/encryption-key-rotation.mdx`
  * for the full rotation procedure.
  *
  * Not covered by this script (by design):

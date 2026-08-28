@@ -637,24 +637,23 @@ function applyPreset(P,keepManual){
    source regions lift off the chart as plates; beat 05 lands them on the
    product's one sheet and the frame goes light. The whole journey is a zoom
    INTO what Atlas tracks; the myth ends on the product. */
-/* Homepage voice (#5518): the motion carries the argument \u2014 titan, descent,
-   unroll, condensation, survey \u2014 and these lines only say what the reader is
-   already seeing, in their words, not the survey's. No product vocabulary a
-   visitor hasn't been shown yet ("sounding", "quadrangle", "Coverage Plate"
-   are taught by the drawings, and the sheet header says the sheet's own
-   rules); no compositional brand-study talk. The one term the prose does
-   hand over is "plate", in the beat where the cards are naming themselves. */
+/* Homepage voice (#5518), second pass. The division of labour: the headline
+   captions the MOTION (short, the thing on screen), and the body text says
+   what it means for the PRODUCT \u2014 sources read, a record per source, an
+   honest account. The first rewrite kept the cartography in both, and read
+   as a page about mapmaking; the map is the picture's job, so the words
+   don't repeat it. No survey vocabulary the drawings haven't taught. */
 var BEATS=[
   [0.00,"01 \u2014 the titan","He carries the whole thing.",
-   "Everything your company knows, carried in one place \u2014 every team, every tool, all of it at once."],
+   "Your company knows more than any one person can hold. Atlas is built to carry it \u2014 all of it, at once."],
   [0.20,"02 \u2014 the descent","The surface stops being a picture.",
-   "Come closer: the world is made of sources \u2014 the channels, meetings, mailboxes, and tables where your company already thinks out loud."],
+   "Every mark is a real source: chat channels, meeting recordings, mailboxes, warehouse tables. Atlas reads them where they live."],
   [0.40,"03 \u2014 the chart","The world opens flat.",
-   "A globe is an atlas rolled up. Unrolled, everything Atlas can hear from is a region of one chart \u2014 nothing off the map."],
+   "Atlas listens to all of them at once, so nothing your company knows is lost for living in the wrong tool."],
   [0.62,"04 \u2014 the plates","Regions become records.",
-   "Nothing stays a vague impression: each region of the chart condenses into a plate \u2014 one source, one page of the record."],
+   "What it hears doesn't stay a feeling. Every source gets its own page of the record: what's been read, what's waiting, what's out of reach."],
   [0.82,"05 \u2014 the survey","This is what he holds up.",
-   "An honest account of what your company knows \u2014 what's been read, what's gone stale, what nobody has opened yet. Nothing invented, nothing left out."]
+   "An honest account of what your company knows \u2014 and of what it doesn't, which matters just as much. Nothing invented, nothing left out."]
 ];
 /* The five source classes the Coverage Surface counts, in `vocabulary.ts`'s own
    order, each anchored at a longitude/latitude on the globe. The sheet state is
@@ -1468,30 +1467,68 @@ function buildPlates(){
     mesh.visible=false;
     platesGroup.add(mesh);
 
-    // Each card is born ON the flat chart, at the point its class's label
-    // was marking, and condenses toward the reader — the region becoming its
-    // own record. It never leaves the neighbourhood of where it was born;
-    // beat 05's landing does the rest.
-    var p0=anchorFlat(i,new THREE.Vector3()).addScaledVector(F0,0.03);
-    var hover=anchorHover(i,new THREE.Vector3())
-      .addScaledVector(F0,modelRadius*0.22)
-      .addScaledVector(UPV,(i%2?0.04:-0.02)*modelRadius);
     var qF=new THREE.Quaternion().setFromEuler(
       new THREE.Euler(0,AZ0,(i%2?-1:1)*0.02,'YXZ'));
-    // s1 sized so the quadrangle's soundings — not the caption — carry the
-    // card at the hover framing: the drawing is the meaning.
     var P={mesh:mesh, q0:qF, q1:qF, s0:sphereRadius*0.22, s1:modelRadius*0.38};
-    P.curve=new THREE.CubicBezierCurve3(
-      p0,
-      p0.clone().addScaledVector(F0,modelRadius*0.08),
-      hover.clone().addScaledVector(F0,-modelRadius*0.05),
-      hover);
     // Condensation is fully settled before any flight begins — a card still
     // condensing when the flight takes it reads as being yanked.
     P.t0=PLATE_T0+i*PLATE_DT0; P.t1=0.765+i*0.014;
     plates.push(P);
   }
+  layoutPlates();
   scene.add(platesGroup);
+}
+
+/* Where each card comes to rest before beat 05's flight — re-laid on resize,
+   because the formation is a composition in the frame. A wide frame spreads
+   the cards over the regions they rose from. A portrait frame cannot: five
+   cards across a band fitted to its width read at a third of design size
+   (that was the mobile beat 04 nobody could parse), so there they cascade
+   into a stack down the middle — a hand of survey pages, dealt top to
+   bottom in the same left-to-right order they land on the sheet, each born
+   at its region and rising into its slot. */
+function layoutPlates(){
+  if(!plates.length) return;
+  var portrait=camera.aspect<0.8 && !!mapGeo;
+  // The beat-04 framing, reconstructed with the camera path's own numbers,
+  // so the stack is sized in frame terms rather than model terms.
+  var d=chartDist(modelRadius*2.3);
+  var fovH=Math.tan(44*Math.PI/360);
+  var frameH=2*d*fovH, frameW=frameH*camera.aspect;
+  for(var i=0;i<plates.length;i++){
+    var P=plates[i];
+    // Born ON the flat chart, at the point its class's label was marking —
+    // the region becoming its own record. That much is true in every frame.
+    var p0=anchorFlat(i,new THREE.Vector3()).addScaledVector(F0,0.03);
+    var hover;
+    if(portrait){
+      // Two pages across, laid in reading order — the same order their
+      // quadrangles sit on the sheet they are about to land in. A single
+      // shingled pile was tried first and buried every card's title strip
+      // under the next card; a grid gives each page its whole face, sized
+      // so two of them span the frame. The odd page (People, the off-survey
+      // class) centres the last row. The pile sits above the beat copy.
+      P.s1=0.42*frameW/PLATE_W;
+      var cw=P.s1*PLATE_W, rowStep=P.s1*1.10;
+      var col=i%2, row=(i/2)|0;
+      hover=new THREE.Vector3().copy(mapLook)
+        .addScaledVector(UPV,frameH*0.26-row*rowStep)
+        .addScaledVector(R0,(i===4)?0:(col?1:-1)*cw*0.53)
+        .addScaledVector(F0,modelRadius*(0.22+0.01*i));
+    }else{
+      // s1 sized so the quadrangle's soundings — not the caption — carry
+      // the card at the hover framing: the drawing is the meaning.
+      P.s1=modelRadius*0.38;
+      hover=anchorHover(i,new THREE.Vector3())
+        .addScaledVector(F0,modelRadius*0.22)
+        .addScaledVector(UPV,(i%2?0.04:-0.02)*modelRadius);
+    }
+    P.curve=new THREE.CubicBezierCurve3(
+      p0,
+      p0.clone().addScaledVector(F0,modelRadius*0.08),
+      hover.clone().addScaledVector(F0,-modelRadius*0.05),
+      hover);
+  }
 }
 
 var _f=new THREE.Vector3(), _ray=new THREE.Vector3(), _land=new THREE.Vector3();
@@ -1524,12 +1561,6 @@ function updatePlates(){
     wpp=2*D*Math.tan(camera.fov*Math.PI/360)/H;
   }
 
-  // A portrait viewport backs the camera off (chartDist) to keep the whole
-  // band in frame, which read the hover cards down to a third of their
-  // design size. The cards grow part of that distance back as they rise —
-  // born at the chart's own scale, arriving at reading scale.
-  var portS=Math.pow(Math.max(1,1.45/Math.max(camera.aspect,0.4)),0.35);
-
   for(var i=0;i<plates.length;i++){
     var P=plates[i];
     var p=sm(t,P.t0,P.t1);
@@ -1538,7 +1569,7 @@ function updatePlates(){
     var ep=1-Math.pow(1-p,2.6);
     P.curve.getPoint(ep,P.mesh.position);
     P.mesh.quaternion.slerpQuaternions(P.q0,P.q1,ep);
-    var us=lp(P.s0,P.s1,ep)*lp(1,portS,ep);
+    var us=lp(P.s0,P.s1,ep);
     P.mesh.scale.setScalar(us);
 
     if(flip){
@@ -2011,6 +2042,7 @@ function resize(){
   renderer.setSize(W,H,false);
   camera.aspect=W/H; camera.updateProjectionMatrix();
   layoutSheet();
+  layoutPlates();   // the hover formation is a composition in the frame
 }
 addEventListener('resize',resize);
 

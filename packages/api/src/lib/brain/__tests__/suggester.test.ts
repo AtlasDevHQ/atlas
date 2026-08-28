@@ -70,7 +70,6 @@ let enumerationParams: unknown[] | null = null;
 
 let conversationRows: Array<{ id: string; user_id: string; updated_at: string }> = [];
 let conversationSql: string | null = null;
-let conversationParams: unknown[] | null = null;
 let messageRowsByConversation = new Map<string, Array<{ role: string; content: unknown }>>();
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
@@ -87,11 +86,11 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
     }
     if (typeof sql === "string" && sql.includes("FROM conversations")) {
       conversationSql = sql;
-      conversationParams = params ?? null;
       return conversationRows;
     }
     if (typeof sql === "string" && sql.includes("FROM messages")) {
-      const conversationId = String(params?.[0] ?? "");
+      const first = params?.[0];
+      const conversationId = typeof first === "string" ? first : "";
       return messageRowsByConversation.get(conversationId) ?? [];
     }
     return settingsRows;
@@ -225,7 +224,6 @@ beforeEach(() => {
   enumerationParams = null;
   conversationRows = [];
   conversationSql = null;
-  conversationParams = null;
   messageRowsByConversation = new Map();
 });
 

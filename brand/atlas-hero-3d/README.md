@@ -1,8 +1,12 @@
 # Atlas hero — 3D titan
 
-A self-contained WebGL hero: the Atlas titan holding a carved celestial globe,
-orbitable, with a camera that descends from the full figure onto the globe
-surface. Built as a published Artifact; `atlas-hero.html` is the whole page.
+A self-contained WebGL hero, told as a five-beat scroll story: the titan
+(orbitable) — the descent onto the carved celestial globe — the globe unrolling
+flat into a chart of sources — the chart's regions condensing into plates — and
+the Coverage Plate itself, as the product draws it (#5422, ADR-0041), on a frame
+that turns to paper. Scroll position is the journey; a 560vh track drives a
+sticky stage. Built as a published Artifact; `atlas-hero.html` is the whole
+page.
 
 ```bash
 ./build.sh          # → atlas-hero.html

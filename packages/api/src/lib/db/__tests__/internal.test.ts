@@ -34,6 +34,19 @@ import {
   type URLSecret,
 } from "../internal";
 import { connections } from "../connection";
+import { SCIM_PLUGIN_TABLES } from "../purge-scope";
+
+/**
+ * The Phase 3f scim-class probe (#5515) selects every plugin-owned scim
+ * relation's existence in ONE statement and fails closed on an unshaped
+ * answer — so the generic `to_regclass → { table_exists }` branches below
+ * would abort every mocked purge. Answered "class absent" (EE SCIM never
+ * enabled: counts 0, nothing skipped), which keeps each mock exercising what
+ * it was written for; the present-class behaviour lives in scim-purge-pg.
+ */
+const SCIM_CLASS_ABSENT_ROW = Object.fromEntries(
+  SCIM_PLUGIN_TABLES.map((t) => [t, false]),
+);
 
 // `loadSavedConnections` mutates the production global `connections` singleton
 // by design (it's the boot wiring path). The per-describe `afterEach` cleanups
@@ -1231,6 +1244,7 @@ describe("hardDeleteWorkspace()", () => {
         // CLOSED on an unshaped answer, so a mock that falls through to the generic
         // DELETE branch aborts the purge instead of exercising it.
         if (sql.includes("WITH ids AS")) return { rows: [{ removed_count: 1, tombstoned_ids: ["sub_purge-seed"] }] };
+        if (sql.includes('AS "scimManagedConnection"')) return { rows: [SCIM_CLASS_ABSENT_ROW] };
         if (sql.includes("to_regclass")) return { rows: [{ table_exists: true }] };
         // Orphaned-user lookup — no orphans, keeps the user-delete path skipped.
         if (sql.includes("FROM member m")) return { rows: [] };
@@ -1299,6 +1313,7 @@ describe("hardDeleteWorkspace()", () => {
         if (sql.includes("WITH ids AS")) {
           return { rows: [{ removed_count: 2, tombstoned_ids: ["sub_purge-seed"] }] };
         }
+        if (sql.includes('AS "scimManagedConnection"')) return { rows: [SCIM_CLASS_ABSENT_ROW] };
         if (sql.includes("to_regclass")) {
           return { rows: [{ table_exists: true }] };
         }
@@ -1355,6 +1370,7 @@ describe("hardDeleteWorkspace()", () => {
         // CLOSED on an unshaped answer, so a mock that falls through to the generic
         // DELETE branch aborts the purge instead of exercising it.
         if (sql.includes("WITH ids AS")) return { rows: [{ removed_count: 1, tombstoned_ids: ["sub_purge-seed"] }] };
+        if (sql.includes('AS "scimManagedConnection"')) return { rows: [SCIM_CLASS_ABSENT_ROW] };
         if (sql.includes("to_regclass")) {
           return { rows: [{ table_exists: true }] };
         }
@@ -1458,6 +1474,7 @@ describe("hardDeleteWorkspace()", () => {
         // CLOSED on an unshaped answer, so a mock that falls through to the generic
         // DELETE branch aborts the purge instead of exercising it.
         if (sql.includes("WITH ids AS")) return { rows: [{ removed_count: 1, tombstoned_ids: ["sub_purge-seed"] }] };
+        if (sql.includes('AS "scimManagedConnection"')) return { rows: [SCIM_CLASS_ABSENT_ROW] };
         if (sql.includes("to_regclass")) {
           return { rows: [{ table_exists: false }] };
         }
@@ -1509,6 +1526,7 @@ describe("hardDeleteWorkspace()", () => {
         // CLOSED on an unshaped answer, so a mock that falls through to the generic
         // DELETE branch aborts the purge instead of exercising it.
         if (sql.includes("WITH ids AS")) return { rows: [{ removed_count: 1, tombstoned_ids: ["sub_purge-seed"] }] };
+        if (sql.includes('AS "scimManagedConnection"')) return { rows: [SCIM_CLASS_ABSENT_ROW] };
         if (sql.includes("to_regclass")) {
           return { rows: [{ table_exists: params?.[0] !== "scim_group_mappings" }] };
         }
@@ -1594,6 +1612,7 @@ describe("hardDeleteWorkspace()", () => {
         // CLOSED on an unshaped answer, so a mock that falls through to the generic
         // DELETE branch aborts the purge instead of exercising it.
         if (sql.includes("WITH ids AS")) return { rows: [{ removed_count: 1, tombstoned_ids: ["sub_purge-seed"] }] };
+        if (sql.includes('AS "scimManagedConnection"')) return { rows: [SCIM_CLASS_ABSENT_ROW] };
         if (sql.includes("to_regclass")) return { rows: [{ table_exists: true }] };
         if (sql.includes("FROM member m")) return { rows: [] };
         if (failOn === "commit" && upper === "COMMIT") throw failWith;
@@ -1745,6 +1764,7 @@ describe("hardDeleteWorkspace()", () => {
         // CLOSED on an unshaped answer, so a mock that falls through to the generic
         // DELETE branch aborts the purge instead of exercising it.
         if (sql.includes("WITH ids AS")) return { rows: [{ removed_count: 1, tombstoned_ids: ["sub_purge-seed"] }] };
+        if (sql.includes('AS "scimManagedConnection"')) return { rows: [SCIM_CLASS_ABSENT_ROW] };
         if (sql.includes("to_regclass")) return { rows: [{ table_exists: true }] };
         if (sql.includes("FROM member m")) return { rows: [] };
         if (upper === "ROLLBACK") throw new Error("ROLLBACK failed — socket dirty");
@@ -1952,6 +1972,7 @@ describe("hardDeleteWorkspace()", () => {
           // CLOSED on an unshaped answer, so a mock that falls through to the generic
           // DELETE branch aborts the purge instead of exercising it.
           if (sql.includes("WITH ids AS")) return { rows: [{ removed_count: 1, tombstoned_ids: ["sub_purge-seed"] }] };
+          if (sql.includes('AS "scimManagedConnection"')) return { rows: [SCIM_CLASS_ABSENT_ROW] };
           if (sql.includes("to_regclass")) {
             // A non-boolean where the contract promises a boolean — a driver or
             // pool wrapper that does not honour `to_regclass(...) IS NOT NULL`.
@@ -2002,6 +2023,7 @@ describe("hardDeleteWorkspace()", () => {
         // CLOSED on an unshaped answer, so a mock that falls through to the generic
         // DELETE branch aborts the purge instead of exercising it.
         if (sql.includes("WITH ids AS")) return { rows: [{ removed_count: 1, tombstoned_ids: ["sub_purge-seed"] }] };
+        if (sql.includes('AS "scimManagedConnection"')) return { rows: [SCIM_CLASS_ABSENT_ROW] };
         if (sql.includes("to_regclass")) {
           return { rows: [{ table_exists: params?.[0] !== "stripe_teardown_pending" }] };
         }

@@ -1607,21 +1607,25 @@ function updateCamera(){
   if(t<=T1){
     e=sm(t/T1,0,1);
     _look.copy(modelCenter).lerp(sphereCenter,e);
-    dist=lp(mR*2.58, sR*2.15, e);
+    // The descent stops while the whole globe still holds the frame: the
+    // reader should keep the OBJECT and its marked points, not be buried in
+    // surface texture before the map opens (and the 510-vertex silhouette
+    // never gets close enough to facet).
+    dist=lp(mR*2.58, sR*2.55, e);
     elevBias=lp(0.10,-0.02,e);
-    fov=lp(38,52,e);
+    fov=lp(38,48,e);
   }else if(t<=TL){
     e=sm((t-T1)/(TL-T1),0,1);
     _look.copy(sphereCenter); _look.y+=liftNow;
-    dist=lp(sR*2.15, sR*2.35, e);
+    dist=lp(sR*2.55, sR*2.75, e);
     elevBias=-0.02*(1-e);
-    fov=52;
+    fov=48;
   }else if(t<=T2){
     e=sm((t-TL)/(T2-TL),0,1);
     _look.copy(sphereCenter); _look.y+=LIFT; _look.lerp(mapLook,e);
-    dist=lp(sR*2.35, chartDist(mR*2.35), e);
+    dist=lp(sR*2.75, chartDist(mR*2.35), e);
     elevBias=0.0;
-    fov=lp(52,44,e);
+    fov=lp(48,44,e);
   }else if(t<=T3){
     e=sm((t-T2)/(T3-T2),0,1);
     _look.copy(mapLook);
@@ -1659,8 +1663,11 @@ function updateLabels(w,h){
   // each label hands off whole as its card — carrying the same title —
   // condenses out of the spot it was marking.
   var sm=THREE.MathUtils.smoothstep;
-  var tf=Math.min(1,(1-sm(t,0.52,0.555))+sm(t,0.60,0.64));
-  var vis=sm(t,0.20,0.30);
+  // The dots are on the globe almost from the load frame — the opening shot
+  // should already say "this globe has marked places" with no words at all.
+  // The text joins once the descent brings it close enough to read.
+  var tf=sm(t,0.15,0.25)*Math.min(1,(1-sm(t,0.52,0.555))+sm(t,0.60,0.64));
+  var vis=sm(t,0.05,0.14);
   var mNow=sm(t,MORPH_T0,MORPH_T1);
   for(var i=0;i<CLASSES.length;i++){
     var d=CLASSES[i], e=labelEls[i];

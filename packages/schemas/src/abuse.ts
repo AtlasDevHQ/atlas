@@ -28,6 +28,7 @@
  * code change, both caught earlier than the admin-page boundary.
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
@@ -71,7 +72,7 @@ export const AbuseStatusSchema = z.object({
   // (pre-#1682) keep parsing; new consumers treat absent as "ok" — see the
   // type comment on `AbuseStatus.eventsStatus`.
   eventsStatus: EventsStatusEnum.optional(),
-}) satisfies z.ZodType<AbuseStatus>;
+}) satisfies z.ZodType<WithLooseOptionals<AbuseStatus>>;
 
 // `errorRateThreshold` is branded `Ratio` (#1685). `z.number().min(0).max(1)`
 // enforces the 0–1 scale at the wire boundary — a drifted payload that

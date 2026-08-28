@@ -10,6 +10,7 @@
  * and the `.openapi()` metadata `@useatlas/schemas` does not).
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import type {
   PublishPromotedCounts,
   PublishRefusedDraft,
@@ -51,4 +52,4 @@ export const PublishResultSchema = z.object({
   // Never capped — see `PublishResult.refusedDraftTotal`. A client counting
   // `refusedDrafts.length` under-reports exactly when the backlog is worst.
   refusedDraftTotal: z.number().int().nonnegative().optional(),
-}) satisfies z.ZodType<PublishResult, unknown>;
+}) satisfies z.ZodType<WithLooseOptionals<PublishResult>, unknown>;

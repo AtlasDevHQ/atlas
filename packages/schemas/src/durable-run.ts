@@ -6,6 +6,7 @@
  * `@useatlas/types` shape is a compile error.
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import type { RunStatusResponse } from "@useatlas/types";
 
 /** The four `agent_runs.status` lifecycle values plus the `none` sentinel. */
@@ -16,4 +17,4 @@ export const RunStatusResponseSchema = z.object({
   status: RunStatusValueSchema,
   runId: z.string().optional(),
   parkedReason: z.string().nullable().optional(),
-}) satisfies z.ZodType<RunStatusResponse>;
+}) satisfies z.ZodType<WithLooseOptionals<RunStatusResponse>>;

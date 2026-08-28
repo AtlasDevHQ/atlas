@@ -21,6 +21,7 @@
  * through to runtime.
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import {
   LEARNED_PATTERN_STATUSES,
   LEARNED_PATTERN_SOURCES,
@@ -54,7 +55,7 @@ export const AmendmentPayloadSchema = z.object({
   testQuery: z.string().optional(),
   testResult: AmendmentTestResultSchema.optional(),
   confidence: z.number(),
-}) satisfies z.ZodType<AmendmentPayload>;
+}) satisfies z.ZodType<WithLooseOptionals<AmendmentPayload>>;
 
 /** One learned-pattern row as served on the wire. */
 export const LearnedPatternSchema = z.object({
@@ -79,7 +80,7 @@ export const LearnedPatternSchema = z.object({
   autoPromoted: z.boolean(),
   avgDurationMs: z.number().nullable(),
   injectionCount: z.number().int().nonnegative(),
-}) satisfies z.ZodType<LearnedPattern>;
+}) satisfies z.ZodType<WithLooseOptionals<LearnedPattern>>;
 
 /**
  * Whitelisted sort fields for `GET /api/v1/admin/learned-patterns` — the wire

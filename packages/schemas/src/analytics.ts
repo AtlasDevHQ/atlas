@@ -12,6 +12,7 @@
  * Timestamp fields go through `IsoTimestampSchema` (#1697).
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import { IsoTimestampSchema } from "./common";
 
 // ---------------------------------------------------------------------------
@@ -80,7 +81,7 @@ export const AuditUserStatsSchema = z.object({
   avgDuration: z.number(),
   errorCount: z.number(),
   errorRate: z.number(),
-}) satisfies z.ZodType<AuditUserStats, unknown>;
+}) satisfies z.ZodType<WithLooseOptionals<AuditUserStats>, unknown>;
 
 export const AuditVolumeResponseSchema = z.object({
   volume: z.array(VolumePointSchema),
@@ -200,7 +201,7 @@ export const UserTokenRowSchema = z.object({
   completionTokens: z.number(),
   totalTokens: z.number(),
   requestCount: z.number(),
-}) satisfies z.ZodType<UserTokenRow, unknown>;
+}) satisfies z.ZodType<WithLooseOptionals<UserTokenRow>, unknown>;
 
 export const TrendPointSchema = z.object({
   day: z.string(),

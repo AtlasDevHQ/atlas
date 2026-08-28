@@ -15,6 +15,7 @@
  * `IsoTimestampSchema` (#1697).
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import {
   BEDROCK_REGIONS,
   GATEWAY_MODEL_TYPES,
@@ -199,4 +200,4 @@ export const SemanticDiffResponseSchema = z.object({
     unchanged: z.number(),
   }),
   warnings: z.array(z.string()).optional(),
-}) satisfies z.ZodType<SemanticDiffResponse, unknown>;
+}) satisfies z.ZodType<WithLooseOptionals<SemanticDiffResponse>, unknown>;

@@ -39,6 +39,7 @@
  * beyond the wire boundary (enforcement, metering).
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import { PLAN_TIERS, type PlanTier, type OverageStatus } from "@useatlas/types";
 
 const OVERAGE_STATUSES = ["ok", "warning", "soft_limit", "metered", "hard_limit"] as const;
@@ -261,7 +262,7 @@ export const BillingPlanSchema = z.object({
   trialEndsAt: z.string().nullable(),
   trialEndsAtEffective: z.string().nullable().optional(),
   trialDays: z.number().nullable().optional(),
-}) satisfies z.ZodType<BillingPlan>;
+}) satisfies z.ZodType<WithLooseOptionals<BillingPlan>>;
 
 export const BillingLimitsSchema = z.object({
   tokenBudgetPerSeat: z.number().nullable(),
@@ -285,7 +286,7 @@ export const BillingUsageSchema = z.object({
   periodStart: z.string(),
   periodEnd: z.string(),
   periodSource: z.enum(["stripe", "utc-month"]).optional(),
-}) satisfies z.ZodType<BillingUsage>;
+}) satisfies z.ZodType<WithLooseOptionals<BillingUsage>>;
 
 export const BillingSeatCountSchema = z.object({
   count: z.number(),
@@ -303,7 +304,7 @@ export const BillingSubscriptionSchema = z.object({
   status: z.string(),
   cancelAtPeriodEnd: z.boolean().optional(),
   periodEnd: z.string().nullable().optional(),
-}) satisfies z.ZodType<BillingSubscription>;
+}) satisfies z.ZodType<WithLooseOptionals<BillingSubscription>>;
 
 export const BillingAvailablePlanSchema = z.object({
   tier: PlanTierEnum,
@@ -360,4 +361,4 @@ export const BillingStatusSchema = z.object({
   currentModel: z.string(),
   subscription: BillingSubscriptionSchema.nullable(),
   availablePlans: z.array(BillingAvailablePlanSchema).optional(),
-}) satisfies z.ZodType<BillingStatus>;
+}) satisfies z.ZodType<WithLooseOptionals<BillingStatus>>;

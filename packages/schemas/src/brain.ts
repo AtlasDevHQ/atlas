@@ -24,6 +24,7 @@
  * at the browser's `.parse()`.
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import type {
   BrainCorrectionVerb,
   BrainEntityRole,
@@ -659,7 +660,7 @@ export const BRAIN_TENSION_FORECAST_SURFACE_MAX_CHARS = 2_000;
 
 export const BrainFactTensionForecastRequestSchema = z.strictObject({
   predicateSurface: z.string().min(1).max(BRAIN_TENSION_FORECAST_SURFACE_MAX_CHARS).optional(),
-}) satisfies z.ZodType<BrainFactTensionForecastRequest, unknown>;
+}) satisfies z.ZodType<WithLooseOptionals<BrainFactTensionForecastRequest>, unknown>;
 
 /**
  * ⚠️ A `discriminatedUnion`, not a record with a nullable count — see
@@ -1136,7 +1137,7 @@ export const BrainFactOversightSchema = z
           "distinctAudiences is below the number of buckets shipped — the buckets are a subset of the distinct tokens, so this understates a cardinality the client renders as exact",
       });
     }
-  }) satisfies z.ZodType<BrainFactOversight, unknown>;
+  }) satisfies z.ZodType<WithLooseOptionals<BrainFactOversight>, unknown>;
 
 /**
  * The BROWSER's parser. Same fields, additive-tolerant at the envelope.
@@ -1183,7 +1184,7 @@ export const BrainFactOversightClientSchema = z.object({
   // rather than losing the whole oversight surface — and with it the
   // hidden-backlog alert, which is the costlier loss.
   gateAnalytics: BrainFactGateAnalyticsSchema.optional(),
-}) satisfies z.ZodType<BrainFactOversight, unknown>;
+}) satisfies z.ZodType<WithLooseOptionals<BrainFactOversight>, unknown>;
 
 
 // ---------------------------------------------------------------------------
@@ -1478,7 +1479,13 @@ const COVERAGE_ENVELOPE_FIELDS = {
  * map edges and the "cannot establish" arms, which are the parts that exist to
  * be seen when things are wrong.
  */
-function checkCoverageArithmetic(value: BrainCoverage, ctx: z.RefinementCtx): void {
+function checkCoverageArithmetic(
+  // The loose view, not `BrainCoverage`: `.superRefine` hands this callback the
+  // schema's own inferred output, which carries Zod's `| undefined` on optional
+  // fields (#4955 — see exact-optional.ts).
+  value: WithLooseOptionals<BrainCoverage>,
+  ctx: z.RefinementCtx,
+): void {
   // ── The AUTHORITY arm's own cross-checks, re-applied ─────────────────────
   //
   // `BrainFactOversightSchema` carries these and cannot be used as the field
@@ -1579,7 +1586,7 @@ export const BrainCoverageSchema = z
     availability: z.strictObject(COVERAGE_AVAILABILITY_FIELDS),
     ...COVERAGE_ENVELOPE_FIELDS,
   })
-  .superRefine(checkCoverageArithmetic) satisfies z.ZodType<BrainCoverage, unknown>;
+  .superRefine(checkCoverageArithmetic) satisfies z.ZodType<WithLooseOptionals<BrainCoverage>, unknown>;
 
 /**
  * The BROWSER's parser. Same fields, additive-tolerant at the envelope and
@@ -1603,7 +1610,7 @@ export const BrainCoverageClientSchema = z.object({
   // itself on the next web deploy.
   availability: z.object(COVERAGE_AVAILABILITY_FIELDS),
   ...COVERAGE_ENVELOPE_FIELDS,
-}) satisfies z.ZodType<BrainCoverage, unknown>;
+}) satisfies z.ZodType<WithLooseOptionals<BrainCoverage>, unknown>;
 
 // ---------------------------------------------------------------------------
 // The Claim Vocabulary surface (#5087, ADR-0037 §6)

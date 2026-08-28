@@ -26,6 +26,7 @@
  * generated OpenAPI spec describing the genuine output shape.
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import {
   WORKSPACE_STATUSES,
   PLAN_TIERS,
@@ -81,7 +82,7 @@ export const PlatformWorkspaceSchema = z.object({
   // "none" by the UI). Sourced from `checkAbuseStatus`, independent of
   // the `status` column.
   abuseLevel: AbuseLevelEnum.optional(),
-}) satisfies z.ZodType<PlatformWorkspace>;
+}) satisfies z.ZodType<WithLooseOptionals<PlatformWorkspace>>;
 
 export const PlatformWorkspaceUserSchema = z.object({
   id: z.string(),
@@ -105,7 +106,7 @@ export const PlatformOverviewSchema = z.object({
   warnings: z.array(z.string()).optional(),
   poolWarnings: z.array(z.string()).optional(),
   requestId: z.string(),
-}) satisfies z.ZodType<PlatformOverview>;
+}) satisfies z.ZodType<WithLooseOptionals<PlatformOverview>>;
 
 export const NoisyNeighborSchema = z.object({
   workspaceId: z.string(),

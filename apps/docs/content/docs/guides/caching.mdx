@@ -51,7 +51,7 @@ A query like `SELECT * FROM orders` with `role: "sales"` produces a different ca
 
 ## Admin Cache Management
 
-The [admin console](/guides/admin-console) provides a cache management UI at `/admin/cache` with per-workspace stats, an entry inspection table with per-entry delete, runtime enable/TTL controls, and a flush button.
+The <AudienceLink saas="/guides/admin-console">admin console</AudienceLink> provides a cache management UI at `/admin/cache` with per-workspace stats, an entry inspection table with per-entry delete, runtime enable/TTL controls, and a flush button.
 
 ### Stats Endpoint
 
@@ -89,7 +89,11 @@ Lists your org's live cached entries as **metadata rows** (capped SQL preview, c
 POST /api/v1/admin/cache/flush
 ```
 
-**Org-scoped by default**: removes only the caller's org's entries and returns the count. A platform admin can pass `{ "scope": "fleet" }` to clear every workspace's entries in the region — the admin UI discloses that blast radius before confirming. Flushing while caching is disabled returns `409`. The cache is also automatically flushed on config reload to prevent stale results from outdated settings.
+**Org-scoped by default**: removes only the caller's org's entries and returns the count. A platform admin can pass `{ "scope": "fleet" }` to clear every workspace's entries in the region — the admin UI discloses that blast radius before confirming. Flushing while caching is disabled returns `409`.
+
+<WhenSelfHosted>
+The cache is also automatically flushed whenever the Atlas config file is (re)loaded, so a configuration change never serves results computed under outdated settings.
+</WhenSelfHosted>
 
 ---
 
@@ -103,7 +107,7 @@ POST /api/v1/admin/cache/flush
 
 ### Cache appears stale after schema changes
 
-**Cause:** The cache is not automatically invalidated when the database schema changes — only when the Atlas config file changes.
+**Cause:** The cache is not automatically invalidated when the database schema changes — entries persist until they expire, are deleted, or the cache is flushed.
 
 **Fix:** Flush the cache via `POST /api/v1/admin/cache/flush` or the admin console after schema changes. If only one result is stale, delete just that entry from the admin console's entry table (or `DELETE /api/v1/admin/cache/entries/{key}`) instead of flushing everything — or ask the agent to refresh, which bypasses and re-freshens the entry.
 
@@ -111,13 +115,17 @@ POST /api/v1/admin/cache/flush
 
 **Cause:** A structurally low hit rate is expected, not a fault — cache keys are exact hashes of the (trim-normalized) SQL, and the agent regenerates SQL nondeterministically, so repeat hits are largely incidental rather than guaranteed. Beyond that, the `maxSize` may be too small for your query diversity, or the TTL too short.
 
-**Fix:** Tune the cache from **Admin → the Cache page** — the enable toggle and TTL apply to your workspace at runtime with no redeploy; max entries is a platform-wide setting. Self-hosted deployments can also set the `ATLAS_CACHE_*` env vars (see [Cache Configuration](/self-hosted/deployment/cache-configuration)). Monitor stats via `GET /api/v1/admin/cache/stats`.
+**Fix:** Tune the cache from **Admin → the Cache page** — the enable toggle and TTL apply to your workspace at runtime with no redeploy; max entries is a platform-wide setting. Monitor stats via `GET /api/v1/admin/cache/stats`.
+
+<WhenSelfHosted>
+Self-hosted deployments can also set boot defaults via the `ATLAS_CACHE_*` env vars — see [Cache Configuration](/self-hosted/deployment/cache-configuration).
+</WhenSelfHosted>
 
 ---
 
 ## See Also
 
-- [Cache Configuration](/self-hosted/deployment/cache-configuration) — Settings registry, environment variables, and external cache backends
+- <AudienceLink selfHosted="/self-hosted/deployment/cache-configuration">Cache Configuration</AudienceLink> — Settings registry, environment variables, and external cache backends
 - [Configuration](/reference/config#query-cache) — Query Cache settings reference (the `cache:` config block was removed)
 - [Environment Variables](/reference/environment-variables) — `ATLAS_CACHE_*` variables
-- [Admin Console](/guides/admin-console) — Cache stats and flush UI
+- <AudienceLink saas="/guides/admin-console">Admin Console</AudienceLink> — Cache stats and flush UI

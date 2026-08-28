@@ -12,7 +12,7 @@ There are two ways to run the server. **Hosted** (`mcp.useatlas.dev`) speaks Str
 
 ## What an MCP-connected agent can see
 
-Atlas's MCP tools execute with your workspace's read permissions. A connected agent can query the data your account can query — and only that. Atlas enforces SELECT-only at the [SQL validation layer](/security/sql-validation), so even a misbehaving agent cannot mutate data, drop tables, or escape the table whitelist defined by your semantic layer. You can revoke any agent at any time from **Settings → AI Agents** (your account) or **Admin → OAuth Clients** (workspace-wide) — revocation is atomic and immediate.
+Atlas's MCP tools execute with your workspace's read permissions. A connected agent can query the data your account can query — and only that. Atlas enforces SELECT-only at the <AudienceLink saas="/security/sql-validation">SQL validation layer</AudienceLink>, so even a misbehaving agent cannot mutate data, drop tables, or escape the table whitelist defined by your semantic layer. You can revoke any OAuth-connected agent at any time from **Settings → AI Agents** (your account) or **Admin → OAuth Clients** (workspace-wide) — revocation is atomic and immediate. A self-hosted stdio agent holds no token to revoke: disconnect it by removing its entry from the client's config.
 
 ---
 
@@ -337,10 +337,10 @@ If your agent doesn't see the Atlas tools at all, **restart the client** — mos
 
 There are two shapes of data access over MCP, and the **recommended** one is the high-level `query` tool:
 
-- **`query` (recommended)** — hand Atlas a **natural-language question** and let *Atlas's own server-side agent* answer it. Atlas explores its semantic layer, picks the right entities and canonical metrics, writes and runs the SQL, and returns a prose `answer` plus the exact SQL it ran and the result rows. Because it knows your catalog, glossary, joins, and RLS, it composes better SQL than a generic client writing raw SQL blind. Example: `{ "question": "top 5 customers by revenue last quarter" }`. Note it runs a second, server-side LLM and **spends your Atlas plan tokens** (your client's model already paid once), so reach for it when answer quality on a complex schema matters most.
-- **`executeSQL` (advanced / raw escape hatch)** — you (or your client's model) already wrote the exact `SELECT`; Atlas validates it through the [SQL pipeline](/security/sql-validation) and runs it. No Atlas-agent tokens are spent — your client's model did the SQL authoring. Use it when you want full control over the query, or when the question is simple enough that your client's own model writes correct SQL against the semantic layer's `describeEntity` output.
+- **`query` (recommended)** — hand Atlas a **natural-language question** and let *Atlas's own server-side agent* answer it. Atlas explores its semantic layer, picks the right entities and canonical metrics, writes and runs the SQL, and returns a prose `answer` plus the exact SQL it ran and the result rows. Because it knows your catalog, glossary, joins, and RLS, it composes better SQL than a generic client writing raw SQL blind. Example: `{ "question": "top 5 customers by revenue last quarter" }`. Note it runs a second, server-side LLM (your client's model already paid once): on Atlas SaaS that **spends your Atlas plan tokens**; on a self-hosted server it bills the provider API key the server is configured with (`ATLAS_PROVIDER` + key). Reach for it when answer quality on a complex schema matters most.
+- **`executeSQL` (advanced / raw escape hatch)** — you (or your client's model) already wrote the exact `SELECT`; Atlas validates it through the <AudienceLink saas="/security/sql-validation">SQL pipeline</AudienceLink> and runs it. No Atlas-agent tokens are spent — your client's model did the SQL authoring. Use it when you want full control over the query, or when the question is simple enough that your client's own model writes correct SQL against the semantic layer's `describeEntity` output.
 
-Both clear the same dispatch gate (billing solvency → action policy → `mcp:write` → RBAC → approval) and land the same `origin=mcp` audit trail; `query` additionally runs the **claim gate** (unclaimed-trial metering) because it spends Atlas plan tokens.
+Both clear the same dispatch gate (billing solvency → action policy → `mcp:write` → RBAC → approval) and land the same `origin=mcp` audit trail. On Atlas SaaS, `query` additionally runs the **claim gate** (unclaimed-trial metering) because it spends Atlas plan tokens; on a self-hosted deployment the billing and claim gates have nothing to enforce (there is no billing surface) and the stdio transport is exempt from the `mcp:write` scope check.
 
 ---
 
@@ -360,6 +360,8 @@ Honest support matrix (last reviewed May 2026). "Tested" means the eval harness 
 If you connect a client not listed here and it works (or it doesn't), [open an issue](https://github.com/AtlasDevHQ/atlas/issues/new) — we'd love to update the table.
 
 ---
+
+<WhenSaaS>
 
 ## Start a trial from inside your agent
 
@@ -409,6 +411,8 @@ While the workspace is unclaimed, it is **metered**: everything you do over MCP 
 
 See [Claiming a Self-Serve (MCP) Trial](/guides/signup#claiming-a-self-serve-mcp-trial) for the full claim flow. Note this is distinct from trial **expiry**: once a trial expires, every surface — MCP included — is blocked with `billing_blocked` until a paid subscription is added.
 
+</WhenSaaS>
+
 ## Available tools
 
 The MCP server exposes seven core semantic tools — three general-purpose and four typed accessors over the semantic layer — plus a set of admin [datasource lifecycle tools](#datasource-lifecycle-tools) covered below. Prefer the typed tools when you only need catalog/glossary/metric data; reach for `explore` only when you need raw file access.
@@ -421,7 +425,7 @@ Hand Atlas a **natural-language question** and let its server-side agent answer 
 question: "top 5 customers by revenue last quarter"
 ```
 
-It returns a prose `answer` plus the exact SQL it ran and the result rows. Because it runs a second, server-side LLM it **spends your Atlas plan tokens** and additionally clears the claim gate (unclaimed-trial metering).
+It returns a prose `answer` plus the exact SQL it ran and the result rows. Because it runs a second, server-side LLM it spends tokens server-side: on Atlas SaaS that means **your Atlas plan tokens** (and the dispatch additionally clears the claim gate — unclaimed-trial metering); on a self-hosted server it bills the provider key the server is configured with.
 
 The agent run is capped by a **90-second server-side soft deadline** — MCP clients impose their own request-timeout ceiling (commonly ~120s) that no server keepalive can extend, so Atlas stops the run just under it and returns a `query_timeout` [error envelope](#error-contract) rather than letting the transport drop with the response lost. Narrow the question (shorter time range, fewer breakdowns, one metric at a time) or drop down to `executeSQL` for a specific slice.
 
@@ -447,9 +451,9 @@ explanation: "Count total orders"
 connectionId: "warehouse"  (optional)
 ```
 
-All SQL validation applies: SELECT-only, table whitelist, auto-LIMIT, statement timeout, and audit logging. See [SQL Validation Pipeline](/security/sql-validation).
+All SQL validation applies: SELECT-only, table whitelist, auto-LIMIT, statement timeout, and audit logging. See <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink>.
 
-On hosted (SaaS) deployments, `executeSQL` is also behind the workspace [billing-enforcement gate](/guides/billing-and-plans#enforcement-surfaces): a suspended, trial-expired, or subscription-ended workspace receives a `billing_blocked` [error envelope](#error-contract) instead of query results. Self-hosted deployments (no internal DB / no workspace) are unaffected.
+On hosted (SaaS) deployments, `executeSQL` is also behind the workspace <AudienceLink saas="/guides/billing-and-plans#enforcement-surfaces">billing-enforcement gate</AudienceLink>: a suspended, trial-expired, or subscription-ended workspace receives a `billing_blocked` [error envelope](#error-contract) instead of query results. Self-hosted deployments (no internal DB / no workspace) are unaffected.
 
 ### listEntities
 
@@ -548,7 +552,7 @@ Search the workspace's grounded context — Knowledge Base documents plus the [C
 
 ## Datasource lifecycle tools
 
-Beyond the read-only semantic tools above, the server exposes a set of **admin, write-scoped** tools for managing datasources from an agent: `list_datasources`, `test_datasource`, `create_datasource`, `create_rest_datasource`, `profile_datasource`, `publish_datasources`, `archive_datasource`, `restore_datasource`, and `delete_datasource`. They require the `admin` role and (for the mutating tools) the `mcp:write` scope, and route through RBAC plus the per-workspace MCP action policy; the `destructive` `delete_datasource` additionally routes through the approval gate. None of them ever return a connection URL or any secret — `create_datasource` collects the credential via a separate masked prompt that is never shared with the agent.
+Beyond the read-only semantic tools above, the server exposes a set of **admin, write-scoped** tools for managing datasources from an agent: `list_datasources`, `test_datasource`, `create_datasource`, `create_rest_datasource`, `profile_datasource`, `publish_datasources`, `archive_datasource`, `restore_datasource`, and `delete_datasource`. They require the `admin` role and (for the mutating tools) the `mcp:write` scope, and route through RBAC plus the per-workspace MCP action policy; the `destructive` `delete_datasource` additionally routes through the approval gate. (The `mcp:write` scope check applies to the OAuth-bearing hosted transport only — a self-hosted stdio server carries no third-party OAuth scopes and is exempt from that one gate; the role, action-policy, and approval gates still apply.) None of them ever return a connection URL or any secret — `create_datasource` collects the credential via a separate masked prompt that is never shared with the agent.
 
 The path to make a new datasource queryable on the published `/chat` surface is **create → profile → publish**:
 
@@ -580,7 +584,7 @@ Profiling does two things with the generated layer:
 }
 ```
 
-Because the persisted rows land as **drafts**, they follow the standard [content-mode](/security/sql-validation) status discipline: queryable immediately in **developer mode** (the draft overlay), but **not** on the published `/chat` surface until an admin promotes them through the atomic publish endpoint (`/api/v1/admin/publish`) — reachable from an agent via the [`publish_datasources`](#publish_datasources) tool below, from a shell via [`atlas datasource publish`](/reference/cli#datasource-publish), or from the admin console. This keeps machine-generated, unreviewed entities out of the published whitelist until a human signs off. Profiling fails loud (a `validation_failed` envelope) rather than report success if any generated table cannot be persisted — a partially-persisted layer would silently leave some tables unqueryable.
+Because the persisted rows land as **drafts**, they follow the standard [content-mode](/architecture/content-mode) status discipline: queryable immediately in **developer mode** (the draft overlay), but **not** on the published `/chat` surface until an admin promotes them through the atomic publish endpoint (`/api/v1/admin/publish`) — reachable from an agent via the [`publish_datasources`](#publish_datasources) tool below, from a shell via [`atlas datasource publish`](/reference/cli#datasource-publish), or from the admin console. This keeps machine-generated, unreviewed entities out of the published whitelist until a human signs off. Profiling fails loud (a `validation_failed` envelope) rather than report success if any generated table cannot be persisted — a partially-persisted layer would silently leave some tables unqueryable.
 
 If profiling persists fewer rows than it generated, or the workspace has no internal database configured (a self-hosted stdio server with no `DATABASE_URL`), `persisted` is `false` and only the in-process whitelist is populated for the current session.
 
@@ -763,7 +767,7 @@ Entity and metric resources are listable — clients can discover all available 
 
 ## Configuration
 
-The MCP server uses the same configuration as the main API server:
+A self-hosted MCP server uses the same configuration as the main API server (the hosted endpoint is configured by Atlas — there is nothing to set server-side):
 
 - `atlas.config.ts` (if present)
 - Environment variables: `ATLAS_DATASOURCE_URL`, `ATLAS_PROVIDER`, provider API keys, etc.
@@ -1222,7 +1226,7 @@ See [Troubleshooting](/guides/troubleshooting) for general diagnostic steps.
 
 ## Atlas MCP vs raw database MCP
 
-Wondering why you'd use Atlas's MCP server instead of connecting Claude Desktop directly to your database with a tool like DBHub? Atlas's MCP server routes every query through the [SQL validation pipeline](/security/sql-validation) and gives the AI your semantic layer for context — not just raw schema metadata. See [Atlas vs Raw MCP](/comparisons/raw-mcp) for a full comparison.
+Wondering why you'd use Atlas's MCP server instead of connecting Claude Desktop directly to your database with a tool like DBHub? Atlas's MCP server routes every query through the <AudienceLink saas="/security/sql-validation">SQL validation pipeline</AudienceLink> and gives the AI your semantic layer for context — not just raw schema metadata. See [Atlas vs Raw MCP](/comparisons/raw-mcp) for a full comparison.
 
 ---
 
@@ -1231,7 +1235,7 @@ Wondering why you'd use Atlas's MCP server instead of connecting Claude Desktop 
 - [CLI Reference](/reference/cli#mcp) — `atlas mcp` command flags and transport options
 - [Environment Variables](/reference/environment-variables) — Variables used by the MCP server
 - [Agent Auth](/agent-auth) — Capability-based authorization for AI agents layered on top of this OAuth 2.1 surface (experimental, off by default)
-- [SQL Validation Pipeline](/security/sql-validation) — How queries from MCP clients are validated
+- <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink> — How queries from MCP clients are validated
 - [Sandbox Architecture](/architecture/sandbox) — Design doc for code execution isolation across platforms
 - [Troubleshooting](/guides/troubleshooting) — General diagnostic steps
 - [MCP authorization spec (2025-03-26)](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization)

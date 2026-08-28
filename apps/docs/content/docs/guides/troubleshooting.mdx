@@ -8,7 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 This page covers troubleshooting for both **users** (common issues when using Atlas) and **operators** (diagnosing deployment and configuration problems). Jump to the section that applies to you:
 
 - [User Troubleshooting](#user-troubleshooting) — SQL validation errors, auth issues, common questions
-- [Operator Debugging](#operator-debugging) — `atlas doctor`, startup errors, connection issues, sandbox problems, debug logs
+- [Operator Debugging](#operator-debugging) — connection issues, whitelist fixes, auth, scheduled tasks, actions
 
 ---
 
@@ -67,8 +67,15 @@ For chat and API runtime errors (rate limiting, provider failures, authenticatio
 
 ## Operator Debugging
 
+<WhenSaaS>
+<Callout type="info" title="Atlas Cloud">
+  On [app.useatlas.dev](https://app.useatlas.dev), the Atlas platform team operates the infrastructure — server startup, sandbox isolation, auth internals, and server logs are managed for you. The sections below cover what workspace admins can diagnose from the Admin console; for anything infrastructure-level, contact support.
+</Callout>
+</WhenSaaS>
+
+<WhenSelfHosted>
 <Callout type="warn" title="Self-Hosted Operators">
-  The sections below are for operators managing their own Atlas deployment. On [app.useatlas.dev](https://app.useatlas.dev), infrastructure diagnostics are handled by the Atlas platform team. If you encounter persistent issues on the hosted platform, contact support.
+  The sections below assume shell and environment-variable access to your own Atlas deployment. Start with `atlas doctor` — it catches most configuration problems.
 </Callout>
 
 ### atlas doctor
@@ -167,15 +174,31 @@ The action framework requires authentication. Set up any auth mode other than `n
 #### `INVALID_CONFIG`
 
 `atlas.config.ts` failed to load. Check for syntax errors or missing dependencies.
+</WhenSelfHosted>
 
 ---
 
 ### Connection Issues
 
+These apply whenever Atlas cannot reach an analytics datasource.
+
+<WhenSaaS>
+On [app.useatlas.dev](https://app.useatlas.dev), connection strings live under **Admin &gt; Connections** — edit the connection there and use **Test** to verify. See [Connect your database](/getting-started/hosted#connect-your-database) for the full setup flow.
+</WhenSaaS>
+
 #### PostgreSQL SSL
 
 Most managed Postgres providers require SSL:
 
+<WhenSaaS>
+Append the SSL parameter to the connection string in **Admin &gt; Connections**:
+
+```
+postgresql://user:pass@host:5432/db?sslmode=require
+```
+</WhenSaaS>
+
+<WhenSelfHosted>
 ```bash
 # Require SSL (recommended)
 ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/db?sslmode=require
@@ -183,41 +206,67 @@ ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/db?sslmode=require
 # Skip certificate verification (development only)
 ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/db?sslmode=no-verify
 ```
+</WhenSelfHosted>
 
 #### MySQL Timeouts
 
 If MySQL connections drop, check:
 
 - `wait_timeout` on the MySQL server (default 8 hours)
-- Connection pool idle timeout (configure via `atlas.config.ts`)
 - Network latency between Atlas and MySQL
+
+<WhenSelfHosted>
+Self-hosted deployments can also tune the connection pool idle timeout via `atlas.config.ts`.
+</WhenSelfHosted>
 
 #### Connection Refused
 
 - Verify the host and port are correct
 - Check that the database server is running
 - Ensure no firewall is blocking the connection
-- For Docker: use `host.docker.internal` instead of `localhost` to reach the host machine
+
+<WhenSaaS>
+Atlas connects to your database from cloud infrastructure. If your database is in a private VPC or restricts inbound connections by IP, allowlist Atlas's egress IP ranges (contact support for the current ranges) or set up a secure tunnel.
+</WhenSaaS>
+
+<WhenSelfHosted>
+For Docker: use `host.docker.internal` instead of `localhost` to reach the host machine.
+</WhenSelfHosted>
 
 ---
 
 ### SQL Validation Errors (Operator Details)
 
-For user-facing descriptions, see [User Troubleshooting](#sql-validation-errors) above. The operator-specific details below cover remediation steps that require config access.
+For user-facing descriptions, see [User Troubleshooting](#sql-validation-errors) above. The operator-specific details below cover remediation steps that require admin or config access.
 
 #### "Table not in whitelist" — Operator Fix
 
-The query references a table that does not have an entity YAML file in `semantic/entities/`. Either:
+The query references a table that has no entity in the semantic layer.
+
+<WhenSaaS>
+Add the table in the [Semantic Editor](/guides/semantic-editor) (**Admin &gt; Semantic Layer**) — create the entity by hand, or re-profile the datasource from **Admin &gt; Connections**.
+</WhenSaaS>
+
+<WhenSelfHosted>
+The table does not have an entity YAML file in `semantic/entities/`. Either:
 
 - Add the table: `bun run atlas -- init --tables <table_name>`
 - Or set `ATLAS_TABLE_WHITELIST=false` to disable (not recommended for production)
+</WhenSelfHosted>
 
 #### "Failed to parse SQL" — Operator Fix
 
+<WhenSaaS>
+If a specific question consistently fails to parse, contact support and include the question that failed — the platform team can inspect the rejected SQL in server logs.
+</WhenSaaS>
+
+<WhenSelfHosted>
 Check `ATLAS_LOG_LEVEL=debug` for the full SQL that was rejected.
+</WhenSelfHosted>
 
 ---
 
+<WhenSelfHosted>
 ### Sandbox Issues
 
 #### "nsjail not found"
@@ -248,6 +297,7 @@ nsjail requires specific Linux kernel capabilities. Check:
 - The nsjail binary has correct permissions
 
 ---
+</WhenSelfHosted>
 
 ### Auth Issues (Operator)
 
@@ -255,6 +305,11 @@ nsjail requires specific Linux kernel capabilities. Check:
 
 See [User Troubleshooting > Auth Issues](#auth-issues-users) for common 401 causes by auth mode.
 
+<WhenSaaS>
+On [app.useatlas.dev](https://app.useatlas.dev), auth infrastructure is operated by the platform. If a user gets persistent 401s: have them sign out and back in (sessions last 7 days), confirm they are a member of the workspace under **Admin &gt; Users**, and contact support if the problem persists.
+</WhenSaaS>
+
+<WhenSelfHosted>
 **Operator-specific remediation:**
 
 - Verify auth environment variables are set correctly (`ATLAS_API_KEY`, `BETTER_AUTH_SECRET`, or `ATLAS_AUTH_JWKS_URL` depending on mode). Run `atlas doctor` to validate
@@ -272,7 +327,7 @@ BETTER_AUTH_TRUSTED_ORIGINS=https://app.example.com
 BETTER_AUTH_URL=https://api.example.com
 ```
 
-See Authentication - Cross-origin deployment.
+See [Cross-origin deployment](/self-hosted/deployment/authentication#cross-origin-deployment-self-hosted).
 
 #### JWKS Fetch Failures (BYOT)
 
@@ -281,11 +336,17 @@ Atlas caches JWKS keys but needs to reach the endpoint on startup. If your JWKS 
 - Check network access from Atlas to the identity provider
 - Verify the URL format (must be HTTPS, end in `.json` or `/jwks`)
 - Check for firewall rules blocking outbound HTTPS
+</WhenSelfHosted>
 
 ---
 
 ### Scheduled Tasks (Operator)
 
+<WhenSaaS>
+On [app.useatlas.dev](https://app.useatlas.dev), the scheduler backend is managed for you and scheduled tasks are pre-enabled. If a task never triggers, verify its cron expression and delivery configuration on the task itself (see [Scheduled Tasks](/guides/scheduled-tasks)). Email delivery is pre-configured — verify the recipient addresses; for Slack, the Atlas app must be in the target channel. Contact support if tasks still don't run.
+</WhenSaaS>
+
+<WhenSelfHosted>
 #### Tasks Never Trigger
 
 - Verify `ATLAS_SCHEDULER_ENABLED=true` is set
@@ -303,6 +364,7 @@ Atlas caches JWKS keys but needs to reach the endpoint on startup. If your JWKS 
 #### "Lock contention" or Duplicate Runs
 
 The scheduler uses an in-process lock to prevent overlapping ticks. If you see duplicate executions, check that only one instance is running the scheduler. For multi-instance deployments, use the `webhook` backend with an external scheduler service.
+</WhenSelfHosted>
 
 ---
 
@@ -310,10 +372,16 @@ The scheduler uses an in-process lock to prevent overlapping ticks. If you see d
 
 #### Actions Not Appearing
 
+<WhenSaaS>
+On [app.useatlas.dev](https://app.useatlas.dev), the action framework and its credentials are managed platform-side. If actions you expect aren't offered in chat, contact support.
+</WhenSaaS>
+
+<WhenSelfHosted>
 - Verify `ATLAS_ACTIONS_ENABLED=true`
 - Actions require authentication (any mode except `none`)
 - Without `DATABASE_URL`, actions use in-memory storage (action log is lost on restart). Set `DATABASE_URL` for persistent tracking
 - Check that the action plugin is loaded (built-in actions like `email:send` and `jira:create` register automatically)
+</WhenSelfHosted>
 
 #### Approval Stuck in "Pending"
 
@@ -323,17 +391,31 @@ The scheduler uses an in-process lock to prevent overlapping ticks. If you see d
 
 #### Execution Failed
 
+- For email: recipients are restricted to workspace members plus the allowed domains configured in **Admin → Settings → Security**
+
+<WhenSaaS>
+If an action fails against the external service (email, JIRA), contact support — the platform team can check the specific error from the external service in server logs.
+</WhenSaaS>
+
+<WhenSelfHosted>
 - Check credentials: `RESEND_API_KEY` for email, `JIRA_BASE_URL` + `JIRA_EMAIL` + `JIRA_API_TOKEN` for JIRA
-- For email: recipients are restricted to workspace members plus domains in `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` (Admin → Settings → Security)
 - Check debug logs for the specific error from the external service
+</WhenSelfHosted>
 
 ---
 
 ### Row-Level Security (Operator)
 
+For the user-visible symptom (queries return empty results), see [User Troubleshooting > Row-Level Security](#row-level-security) above.
+
+<WhenSaaS>
+On [app.useatlas.dev](https://app.useatlas.dev), if RLS behaves unexpectedly — queries blocked entirely, or a policy claim reported missing — contact support to review the policy configuration for your workspace. See [Row-Level Security](/security/row-level-security) for how policies and claim resolution work.
+</WhenSaaS>
+
+<WhenSelfHosted>
 #### All Queries Blocked
 
-- If `ATLAS_AUTH_MODE=none` with RLS enabled, all queries are blocked (no user context to resolve claims). This is by design -- see [Row-Level Security](/security/row-level-security#auth-mode-compatibility)
+- If `ATLAS_AUTH_MODE=none` with RLS enabled, all queries are blocked (no user context to resolve claims). This is by design -- see [RLS with BYOT](/self-hosted/deployment/authentication#rls-with-byot)
 - Verify the auth mode provides claims (BYOT or managed auth)
 
 #### "RLS policy requires claim X but it is missing"
@@ -347,11 +429,17 @@ The JWT doesn't contain the expected claim path. Check:
 #### Queries Return Empty Results
 
 RLS is working but the claim value does not match any rows. This usually means the claim value in the JWT does not match the values in the filtered column. Check debug logs for the injected WHERE conditions.
+</WhenSelfHosted>
 
 ---
 
 ### Debug Logging
 
+<WhenSaaS>
+Server logs on [app.useatlas.dev](https://app.useatlas.dev) are not customer-accessible. For query-level history, use the audit log in the [Admin Console](/guides/admin-console). When reporting an issue to support, include the `requestId` from the error response — every 500 carries one, and it lets the platform team find the exact request in the logs.
+</WhenSaaS>
+
+<WhenSelfHosted>
 Enable debug logs to see detailed agent actions, SQL validation steps, and request traces:
 
 ```bash
@@ -366,22 +454,33 @@ Key things to look for in debug logs:
 - **SQL validation** -- Which layer rejected a query and why
 - **Auth decisions** -- Mode detection, role extraction, rate limit checks
 - **Sandbox execution** -- Command sent, stdout/stderr, exit code
+</WhenSelfHosted>
 
 ---
 
 ## Getting Help
 
 - [GitHub Issues](https://github.com/AtlasDevHQ/atlas/issues) -- Bug reports and feature requests
+
+<WhenSaaS>
+- Contact support for issues specific to your [app.useatlas.dev](https://app.useatlas.dev) workspace, and include the `requestId` from any error response
+</WhenSaaS>
+
+<WhenSelfHosted>
 - Run `atlas doctor` and include the output in your issue for faster diagnosis
 - Set `ATLAS_LOG_LEVEL=debug` and include relevant log lines
+</WhenSelfHosted>
 
 ---
 
 ## See Also
 
 - [Error Codes](/reference/error-codes) — Full catalog of every runtime error code, HTTP status, and retry guidance
+- <AudienceLink saas="/security/row-level-security" selfHosted="/self-hosted/deployment/authentication#rls-with-byot">Row-Level Security</AudienceLink> — RLS configuration and auth mode compatibility
+- <AudienceLink saas="/guides/rate-limiting" selfHosted="/self-hosted/deployment/authentication#rate-limiting">Rate Limiting</AudienceLink> — Rate limit configuration and client-side handling
+
+<WhenSelfHosted>
 - [CLI Reference](/reference/cli#doctor) — `atlas doctor` and `atlas validate` command details
 - [Environment Variables](/reference/environment-variables) — All configuration variables with defaults
-- Authentication — Auth mode setup and CORS configuration
-- [Row-Level Security](/security/row-level-security) — RLS configuration and auth mode compatibility
-- [Rate Limiting & Retry](/guides/rate-limiting) — Rate limit configuration and client-side handling
+- [Authentication](/self-hosted/deployment/authentication) — Auth mode setup and CORS configuration
+</WhenSelfHosted>

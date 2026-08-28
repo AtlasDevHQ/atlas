@@ -7,20 +7,25 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Atlas integrates with Slack via a slash command (`/atlas`) and threaded follow-ups. Ask questions in any channel, get answers with formatted data tables, and continue the conversation in a thread.
 
+<WhenSaaS>
 <Callout type="info" title="Looking for the proactive chat admin surface?">
 Operators configuring proactive mode (kill switches, monthly quota, sensitivity, public-dataset HITL, activation announcement) — see the [Proactive Chat admin guide](/guides/proactive-chat).
 </Callout>
 
-<Callout type="info" title="SaaS">
-On [app.useatlas.dev](https://app.useatlas.dev), the Atlas Slack app is pre-configured. Install it to your workspace from **Admin > Integrations**. For custom Slack app setup (e.g., your own branding), contact support.
-</Callout>
+## Install
 
+On [app.useatlas.dev](https://app.useatlas.dev), the Atlas Slack app is pre-configured — there is no Slack app to create and no environment variables to set. A workspace admin installs it from **Admin > Integrations**: click **Connect** on the Slack card, approve the OAuth grant in Slack, and you land back on the Integrations page with the Slack card showing the connected workspace name, install timestamp, and the user who completed the install. For custom Slack app setup (e.g., your own branding), contact support.
+</WhenSaaS>
+
+<WhenSelfHosted>
 <Callout title="Self-hosted prerequisites">
 - Atlas API server running and accessible over HTTPS (required by Slack)
 - A [Slack workspace](https://api.slack.com/apps) with permissions to create apps
 - `SLACK_SIGNING_SECRET` from your Slack app's Basic Information page
 - For multi-workspace OAuth: internal database (`DATABASE_URL`)
 </Callout>
+
+Self-hosted deployments bring their own Slack app — you create it once, point it at your Atlas API, and configure the credentials via environment variables.
 
 ## Setup Modes
 
@@ -34,10 +39,6 @@ Both modes require `SLACK_SIGNING_SECRET` for request signature verification.
 ---
 
 ## Single-Workspace Setup (Self-Hosted)
-
-<Callout type="info" title="SaaS">
-SaaS users do not need to create their own Slack app. Use the pre-configured Atlas app from **Admin > Integrations**. The sections below are for self-hosted operators.
-</Callout>
 
 The simplest setup -- no OAuth flow, no database storage for tokens.
 
@@ -92,10 +93,6 @@ SLACK_SIGNING_SECRET=your-signing-secret    # Basic Information → Signing Secr
 
 ## Multi-Workspace OAuth Setup (Self-Hosted)
 
-<Callout type="info" title="SaaS">
-SaaS users do not need to configure OAuth. Use the pre-configured Atlas app from **Admin > Integrations**. This section is for self-hosted operators only.
-</Callout>
-
 For distributing Atlas to multiple Slack workspaces. Requires an [internal database](/reference/environment-variables) (`DATABASE_URL`) to store per-workspace bot tokens.
 
 ### 1. Configure OAuth
@@ -123,8 +120,11 @@ DATABASE_URL=postgresql://...         # Required — stores per-workspace bot to
 The supported path is the admin UI: a Workspace admin opens **`/admin/integrations`** and clicks **Connect** on the Slack card. The button redirects to Slack's OAuth authorize page; after approval, the callback persists the bot token under `chat_cache:slack:installation:<teamId>` — the single store shared with the `@chat-adapter/slack` multi-workspace lookup path. The admin lands back on `/admin/integrations` with a success toast and the Slack card now showing the connected workspace name, install timestamp, and the user who completed the install.
 
 For headless installs (CI provisioning, SDK consumers), the install endpoint is still callable directly at `https://your-api-host/api/v1/integrations/slack/install`. A browser-based callback failure (invalid state, upstream Slack error) redirects to `/admin/integrations?error=slack&reason=...` with an actionable toast; JSON-Accept callers receive the original 400/502 for machine-readable debugging.
+</WhenSelfHosted>
 
-### 4. Workspace Disclosure
+---
+
+## Workspace Disclosure [#4-workspace-disclosure]
 
 Before approving the OAuth grant, give the installing admin this disclosure so they can present it to their org:
 
@@ -170,7 +170,7 @@ When the [action framework](/guides/actions) is enabled and a query produces pen
 
 ### Query approval rules
 
-If your workspace has [approval rules](/guides/approval-workflows) configured (e.g. "queries against `customer_pii` require approval"), a Slack query that matches a rule will not execute. Atlas replaces the "Thinking…" message with a clear approval-required notice naming the rule, and queues the request in the admin console. An admin must approve it from the web app before it can run — there is no per-message approval workflow inside Slack itself. This is the same gate that runs from the chat UI; it can't be bypassed by routing through Slack.
+If your workspace has <AudienceLink saas="/guides/approval-workflows">approval rules</AudienceLink> configured (e.g. "queries against `customer_pii` require approval"), a Slack query that matches a rule will not execute. Atlas replaces the "Thinking…" message with a clear approval-required notice naming the rule, and queues the request in the admin console. An admin must approve it from the web app before it can run — there is no per-message approval workflow inside Slack itself. This is the same gate that runs from the chat UI; it can't be bypassed by routing through Slack.
 
 ---
 
@@ -187,6 +187,7 @@ Block Kit limits: max 50 blocks per message, max 3,000 characters per text block
 
 ---
 
+<WhenSelfHosted>
 ## Environment Variables
 
 | Variable | Required | Description |
@@ -195,27 +196,38 @@ Block Kit limits: max 50 blocks per message, max 3,000 characters per text block
 | `SLACK_BOT_TOKEN` | Single-workspace | Bot OAuth token |
 | `SLACK_CLIENT_ID` | Multi-workspace | OAuth app client ID |
 | `SLACK_CLIENT_SECRET` | Multi-workspace | OAuth app client secret |
+| `SLACK_ENCRYPTION_KEY` | Multi-workspace (production) | 32 raw bytes (hex64 or base64) — encrypts per-workspace bot tokens at rest |
 
 See [Environment Variables](/reference/environment-variables) for the full reference.
 
 ---
+</WhenSelfHosted>
 
 ## Deployment Notes
 
-- The API must be accessible over **HTTPS** for Slack to deliver events and commands
 - Slash commands have a **3-second response deadline** -- Atlas acknowledges immediately and processes asynchronously
 - Rate limiting is per Slack user per team for commands, and per team for thread follow-ups
 - Error messages sent to Slack are scrubbed to prevent leaking connection strings, API keys, or stack traces
+
+<WhenSelfHosted>
+- The API must be accessible over **HTTPS** for Slack to deliver events and commands
 - Without an internal database (`DATABASE_URL`), thread conversation mappings and OAuth tokens cannot be persisted. Single-workspace mode with `SLACK_BOT_TOKEN` still works, but thread follow-ups won't have conversation history
+</WhenSelfHosted>
 
 ---
 
 ## Troubleshooting
 
+<WhenSaaS>
+If Atlas stops responding in Slack, check **Admin > Integrations** — the Slack card should show your workspace as connected. If it doesn't, run **Connect** again from the card; otherwise contact support.
+</WhenSaaS>
+
+<WhenSelfHosted>
 **Events not being delivered** -- Verify the Request URL in your Slack app settings is HTTPS and publicly reachable. Slack retries failed deliveries but will disable the subscription after repeated failures.
 
 **OAuth callback fails** -- Ensure the Redirect URL in your Slack app settings matches `https://your-api-host/api/v1/integrations/slack/callback` exactly. Check that `DATABASE_URL` is set (required for storing OAuth tokens).
 
 **Bot doesn't respond in threads** -- The bot needs `message.channels` and `message.groups` event subscriptions. Also verify `DATABASE_URL` is set for conversation history persistence.
+</WhenSelfHosted>
 
 See [Troubleshooting](/guides/troubleshooting) for general diagnostic steps.

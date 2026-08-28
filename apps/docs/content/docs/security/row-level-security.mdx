@@ -29,6 +29,14 @@ Policies support single or multi-column conditions, array-valued JWT claims (gen
 
 ## Quick Start (Environment Variables)
 
+<WhenSaaS>
+On Atlas Cloud, the RLS knobs are **platform-scoped and not visible in the workspace admin console** — RLS configuration is an operator-level control. The mechanics on this page still describe exactly what happens to queries when it is on; workspace admins should read [For workspace admins](#for-workspace-admins) below.
+</WhenSaaS>
+
+<WhenSelfHosted>
+Self-hosted, the same three knobs are also available in **Admin → Settings → Security** (registry-backed; a change requires a restart), alongside the env-var and config-file forms below.
+</WhenSelfHosted>
+
 The simplest setup uses three environment variables for a single-policy configuration:
 
 ```bash

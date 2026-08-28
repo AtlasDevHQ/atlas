@@ -343,6 +343,36 @@ const MINT_FORBIDDEN = {
   message: "Only admin, owner, or platform-admin users can issue SCIM tokens.",
 } as const;
 
+/**
+ * Record a REFUSED attempt to issue a SCIM credential.
+ *
+ * A 403 returns as a successful Effect, so the `tapErrorCause` handlers on
+ * these routes never see it. Without this an attempt to mint an IdP
+ * provisioning credential that the authorization check turned away would
+ * leave no trace at all, while a transient DB fault would be audited — the
+ * refusal is the more interesting event of the two.
+ */
+function auditMintRefused(args: {
+  actionType: (typeof ADMIN_ACTIONS)["scim"][keyof (typeof ADMIN_ACTIONS)["scim"]];
+  targetId: string;
+  ipAddress: string | null;
+  userId: string | undefined;
+  metadata?: Record<string, unknown>;
+}): void {
+  logAdminAction({
+    actionType: args.actionType,
+    targetType: "scim",
+    targetId: args.targetId,
+    status: "failure",
+    ipAddress: args.ipAddress,
+    metadata: {
+      ...args.metadata,
+      reason: "not_authorized_to_mint",
+      attemptedBy: args.userId ?? "unknown",
+    },
+  });
+}
+
 // POST /connections — create a connection and issue its first token
 adminScim.openapi(createConnectionRoute, async (c) => {
   const ipAddress = clientIP(c);
@@ -351,6 +381,12 @@ adminScim.openapi(createConnectionRoute, async (c) => {
     const { orgId, user } = yield* AuthContext;
     yield* requireFeatureEntitlement(orgId, "scim");
     if (!(yield* canMintHere(user?.role, user?.id))) {
+      auditMintRefused({
+        actionType: ADMIN_ACTIONS.scim.connectionCreate,
+        targetId: "unissued",
+        ipAddress,
+        userId: user?.id,
+      });
       return c.json(MINT_FORBIDDEN, 403);
     }
 
@@ -398,6 +434,13 @@ adminScim.openapi(rotateCredentialRoute, async (c) => {
     const { orgId, user } = yield* AuthContext;
     yield* requireFeatureEntitlement(orgId, "scim");
     if (!(yield* canMintHere(user?.role, user?.id))) {
+      auditMintRefused({
+        actionType: ADMIN_ACTIONS.scim.credentialRotate,
+        targetId: connectionId,
+        ipAddress,
+        userId: user?.id,
+        metadata: { connectionId },
+      });
       return c.json(MINT_FORBIDDEN, 403);
     }
 

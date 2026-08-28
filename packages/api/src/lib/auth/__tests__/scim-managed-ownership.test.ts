@@ -131,7 +131,7 @@ describe("SCIM ownership is now a required column, not a nullable one", () => {
 
   it("no longer declares the `scimProvider` table at all", () => {
     // The table migration 0184 sealed. Its absence is why 0184 is retired
-    // and why the raw SQL in `ee/auth/scim.ts`, `scim-provenance.ts` and
+    // and why the raw SQL in `ee/src/auth/scim.ts`, `scim-provenance.ts` and
     // `db/internal.ts` had to move to the connection/binding model — none of
     // those are template-string-checked, so this assertion is the only
     // compile-adjacent signal that the old table is gone.

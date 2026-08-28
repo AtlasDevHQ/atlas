@@ -84,19 +84,36 @@ interface FakeJwtPayload {
   [WORKSPACE_CLAIM]?: string;
 }
 
+/**
+ * Stand-in for `verifyAccessTokenRequest`. #5493 — better-auth 1.7 removed
+ * `verifyAccessToken`, and the runtime re-export from `better-auth/oauth2`
+ * went with it (the star export survives only in the .d.mts), so `hosted.ts`
+ * imports from `@better-auth/core/oauth2` and the mock has to follow. The
+ * verifier now takes the REQUEST shape rather than a bare token.
+ */
 const mockVerifyAccessToken: Mock<
-  (token: string, opts: unknown) => Promise<FakeJwtPayload>
+  (request: { authorizationHeader?: string | null }, opts: unknown) => Promise<FakeJwtPayload>
 > = mock(async () => {
-  throw new Error("verifyAccessToken called without a stub");
+  throw new Error("verifyAccessTokenRequest called without a stub");
 });
 
-mock.module("better-auth/oauth2", () => {
+/** Pull the bearer out of the request shape the verifier receives. */
+function bearerOf(request: { authorizationHeader?: string | null }): string {
+  const header = request?.authorizationHeader ?? "";
+  return header.toLowerCase().startsWith("bearer ")
+    ? header.slice("bearer ".length).trim()
+    : header;
+}
+
+mock.module("@better-auth/core/oauth2", () => {
   const notUsed = (name: string) => () => {
-    throw new Error(`better-auth/oauth2.${name} called from multi-replica test`);
+    throw new Error(`@better-auth/core/oauth2.${name} called from multi-replica test`);
   };
   return {
-    verifyAccessToken: (token: string, opts: unknown) =>
-      mockVerifyAccessToken(token, opts),
+    verifyAccessTokenRequest: (
+      request: { authorizationHeader?: string | null },
+      opts: unknown,
+    ) => mockVerifyAccessToken(request, opts),
     authorizationCodeRequest: notUsed("authorizationCodeRequest"),
     clientCredentialsToken: notUsed("clientCredentialsToken"),
     clientCredentialsTokenRequest: notUsed("clientCredentialsTokenRequest"),
@@ -262,7 +279,8 @@ beforeEach(() => {
   mockWorkspaceRegion.mockReset();
   mockApiRegion.mockImplementation(() => null);
   mockWorkspaceRegion.mockImplementation(async () => null);
-  mockVerifyAccessToken.mockImplementation(async (token) => {
+  mockVerifyAccessToken.mockImplementation(async (request) => {
+    const token = bearerOf(request);
     if (token === TOKEN_A) {
       return {
         sub: SUB_A,

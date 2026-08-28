@@ -182,6 +182,62 @@ export const listConnections = (orgId: string): Effect.Effect<SCIMConnection[], 
   }));
 
 /**
+ * Message for the "enterprise gate let us through but the plugin is not
+ * registered" case. One string, three call sites — the condition is
+ * identical at each.
+ */
+const pluginMissing = (operation: string): string =>
+  `SCIM plugin is not registered on the auth instance — cannot ${operation}. `
+  + "This indicates the enterprise gate and plugin registration have diverged.";
+
+/**
+ * Resolve the plugin's server-only API off the auth singleton.
+ *
+ * The SCIM plugin is pushed conditionally in `buildPlugins()` (enterprise
+ * only), so the singleton's inferred `api` type cannot name its endpoints.
+ * Callers reach this only behind `eeRead`/`eeWrite`'s enterprise gate — the
+ * same condition that registers the plugin.
+ */
+async function scimApi(): Promise<{
+  createSCIMManagedConnection?: (input: { body: Record<string, unknown> }) => Promise<unknown>;
+  rotateSCIMManagedCredential?: (input: { body: Record<string, unknown> }) => Promise<unknown>;
+  decommissionSCIMManagedConnection?: (input: { body: Record<string, unknown> }) => Promise<unknown>;
+}> {
+  const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
+  return getAuthInstance().api as unknown as Awaited<ReturnType<typeof scimApi>>;
+}
+
+/**
+ * Resolve the plugin-facing `connectionId` for a connection the given org
+ * actually owns, or `undefined`.
+ *
+ * ⚠️ This lookup is the ONLY cross-organization containment on the
+ * managed-connection operations. The plugin's server-only endpoints take a
+ * `connectionId` at face value and do no tenancy check of their own, so
+ * every caller must scope through here first — it is what stops one
+ * workspace rotating or decommissioning another's credential, and it
+ * replaces the `AND "organizationId" = $2` predicate the 1.6 SQL carried
+ * inline. Shared rather than duplicated per call site: two copies of a
+ * containment check is one copy that can drift.
+ */
+const ownedConnectionId = (
+  orgId: string,
+  connectionRowId: string,
+): Effect.Effect<string | undefined> =>
+  Effect.gen(function* () {
+    const rows = yield* Effect.promise(() => internalQuery<{ connectionId: string; [key: string]: unknown }>(
+      `SELECT "connectionId"
+       FROM "scimManagedConnection"
+       WHERE id = $1
+         AND "provisioningDomainId" = $2
+         AND status = 'active'
+       LIMIT 1`,
+      [connectionRowId, orgId],
+    ));
+    return rows[0]?.connectionId;
+  });
+
+/**
  * Decommission a SCIM connection (revoke access).
  *
  * ⚠️ This is deliberately NOT a `DELETE`. In the 1.6 model one row WAS the
@@ -204,20 +260,7 @@ export const listConnections = (orgId: string): Effect.Effect<SCIMConnection[], 
  */
 export const deleteConnection = (orgId: string, connectionId: string): Effect.Effect<boolean, EnterpriseError> =>
   eeRead("scim", false, Effect.gen(function* () {
-    // Scope the lookup to the caller's org BEFORE touching the plugin API:
-    // the endpoint is server-only and takes the connection id at face value,
-    // so this query is what stops one org decommissioning another's
-    // connection. Mirrors the `AND "organizationId" = $2` the 1.6 DELETE had.
-    const owned = yield* Effect.promise(() => internalQuery<{ connectionId: string; [key: string]: unknown }>(
-      `SELECT "connectionId"
-       FROM "scimManagedConnection"
-       WHERE id = $1
-         AND "provisioningDomainId" = $2
-         AND status = 'active'
-       LIMIT 1`,
-      [connectionId, orgId],
-    ));
-    const target = owned[0]?.connectionId;
+    const target = yield* ownedConnectionId(orgId, connectionId);
     if (!target) return false;
 
     // `Effect.promise` (not `tryPromise`) to match the rest of this module:
@@ -226,24 +269,12 @@ export const deleteConnection = (orgId: string, connectionId: string): Effect.Ef
     // failure audit row. Converting it to a typed error would widen this
     // function's error channel and slip past that handler.
     yield* Effect.promise(async () => {
-      const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
-      // The SCIM plugin is pushed conditionally in `buildPlugins()`
-      // (enterprise only), so the singleton's inferred `api` type cannot
-      // name its endpoints. This module only ever runs behind `eeRead`'s
-      // enterprise gate, which is the same condition that registers it.
-      const api = getAuthInstance().api as unknown as {
-        decommissionSCIMManagedConnection?: (
-          input: { body: { connectionId: string } },
-        ) => Promise<unknown>;
-      };
+      const api = await scimApi();
       if (typeof api.decommissionSCIMManagedConnection !== "function") {
         // Fail loudly rather than reporting a revoke that never happened —
         // a silent success here would tell an admin that an IdP connection
         // was torn down while it kept provisioning users.
-        throw new Error(
-          "SCIM plugin is not registered on the auth instance — cannot decommission connection. "
-            + "This indicates the enterprise gate and plugin registration have diverged.",
-        );
+        throw new Error(pluginMissing("decommission a connection"));
       }
       await api.decommissionSCIMManagedConnection({ body: { connectionId: target } });
     });
@@ -282,45 +313,53 @@ interface IssuedCredential {
 }
 
 /**
- * Resolve the plugin's server-only API off the auth singleton.
+ * Read the issued credential out of a mint/rotate response.
  *
- * The SCIM plugin is pushed conditionally in `buildPlugins()` (enterprise
- * only), so the singleton's inferred `api` type cannot name its endpoints.
- * Callers reach this only behind `eeRead`/`eeWrite`'s enterprise gate — the
- * same condition that registers the plugin.
- */
-async function scimApi(): Promise<{
-  createSCIMManagedConnection?: (input: { body: Record<string, unknown> }) => Promise<unknown>;
-  rotateSCIMManagedCredential?: (input: { body: Record<string, unknown> }) => Promise<unknown>;
-}> {
-  const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
-  return getAuthInstance().api as unknown as Awaited<ReturnType<typeof scimApi>>;
-}
-
-/**
- * Read the plaintext token out of a mint/rotate response.
+ * Every field fails loudly rather than falling back. An earlier revision
+ * defaulted `connectionId` to the creation-request id and `expiresAt` to
+ * `now + TTL`; both are FABRICATIONS. The request id is an idempotency key,
+ * not a connection id, so the caller would receive — and the audit row would
+ * record — an id no row matches, and a later rotate or decommission against
+ * it would 404. The invented expiry would be shown to an admin as though
+ * upstream had set it.
  *
- * The plugin returns it once and stores only an HMAC digest, so a shape
- * change upstream must fail loudly here rather than yield an empty string
- * that the admin UI would render as a valid-looking token.
+ * The plugin returns the plaintext once and stores only an HMAC digest, so a
+ * shape change upstream has to surface here rather than yield values that
+ * render as a valid-looking credential.
  */
-function readIssued(result: unknown, fallbackConnectionId: string): IssuedCredential {
+function readIssued(result: unknown): IssuedCredential {
   const r = (result ?? {}) as Record<string, unknown>;
   const token = typeof r.token === "string" ? r.token : undefined;
   const credentialId = typeof r.credentialId === "string" ? r.credentialId : undefined;
-  if (!token || !credentialId) {
-    throw new Error(
-      "SCIM credential mint returned no token — @better-auth/scim response shape changed. "
-        + "Refusing to report a successful issue without a credential.",
-    );
-  }
-  const connectionId = typeof r.connectionId === "string" ? r.connectionId : fallbackConnectionId;
+  const connectionId = typeof r.connectionId === "string" ? r.connectionId : undefined;
   const expiresAt = typeof r.expiresAt === "string"
     ? r.expiresAt
     : r.expiresAt instanceof Date
       ? r.expiresAt.toISOString()
-      : new Date(Date.now() + CREDENTIAL_TTL_MS).toISOString();
-  return { connectionId, credentialId, token, expiresAt };
+      : undefined;
+
+  const missing = [
+    token === undefined ? "token" : null,
+    credentialId === undefined ? "credentialId" : null,
+    connectionId === undefined ? "connectionId" : null,
+    expiresAt === undefined ? "expiresAt" : null,
+  ].filter((f): f is string => f !== null);
+
+  if (missing.length > 0) {
+    throw new Error(
+      `SCIM credential mint response is missing ${missing.join(", ")} — `
+        + "@better-auth/scim's response shape changed. Refusing to report a "
+        + "successful issue with fabricated values.",
+    );
+  }
+  // Non-null assertions are justified by the `missing` check directly above:
+  // every one of these is proven defined by the time we get here.
+  return {
+    connectionId: connectionId!,
+    credentialId: credentialId!,
+    token: token!,
+    expiresAt: expiresAt!,
+  };
 }
 
 /**
@@ -337,10 +376,7 @@ export const createConnection = (
   eeWrite("scim", "create SCIM connection", Effect.gen(function* () {
     const api = yield* Effect.promise(() => scimApi());
     if (typeof api.createSCIMManagedConnection !== "function") {
-      return yield* Effect.fail(new Error(
-        "SCIM plugin is not registered on the auth instance — cannot create a connection. "
-          + "This indicates the enterprise gate and plugin registration have diverged.",
-      ));
+      return yield* Effect.fail(new Error(pluginMissing("create a connection")));
     }
     // `creationRequestId` is the plugin's idempotency key (UNIQUE). A fresh
     // uuid per attempt means a retry creates a new connection rather than
@@ -359,7 +395,7 @@ export const createConnection = (
       }),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
-    const issued = readIssued(result, creationRequestId);
+    const issued = readIssued(result);
     // Never log `issued.token`.
     log.info(
       { orgId, actorUserId, connectionId: issued.connectionId, credentialId: issued.credentialId },
@@ -382,16 +418,7 @@ export const rotateCredential = (
   actorUserId: string,
 ): Effect.Effect<IssuedCredential, SCIMError | EnterpriseError | Error> =>
   eeWrite("scim", "rotate SCIM credential", Effect.gen(function* () {
-    const owned = yield* Effect.promise(() => internalQuery<{ connectionId: string; [key: string]: unknown }>(
-      `SELECT "connectionId"
-       FROM "scimManagedConnection"
-       WHERE id = $1
-         AND "provisioningDomainId" = $2
-         AND status = 'active'
-       LIMIT 1`,
-      [connectionId, orgId],
-    ));
-    const target = owned[0]?.connectionId;
+    const target = yield* ownedConnectionId(orgId, connectionId);
     if (!target) {
       return yield* Effect.fail(new SCIMError({
         code: "not_found" satisfies SCIMErrorCode,
@@ -401,10 +428,7 @@ export const rotateCredential = (
 
     const api = yield* Effect.promise(() => scimApi());
     if (typeof api.rotateSCIMManagedCredential !== "function") {
-      return yield* Effect.fail(new Error(
-        "SCIM plugin is not registered on the auth instance — cannot rotate a credential. "
-          + "This indicates the enterprise gate and plugin registration have diverged.",
-      ));
+      return yield* Effect.fail(new Error(pluginMissing("rotate a credential")));
     }
     const result = yield* Effect.tryPromise({
       try: () => api.rotateSCIMManagedCredential!({
@@ -418,7 +442,7 @@ export const rotateCredential = (
       }),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
-    const issued = readIssued(result, target);
+    const issued = readIssued(result);
     log.info(
       { orgId, actorUserId, connectionId: issued.connectionId, credentialId: issued.credentialId },
       "SCIM credential rotated",

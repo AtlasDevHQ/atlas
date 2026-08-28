@@ -815,6 +815,17 @@ describe("admin SCIM — credential minting is gated on canGenerateSCIMToken", (
       // is dropped, this is the assertion that fails — the service would be
       // invoked and a live IdP credential issued.
       expect(mockCreateConnection).not.toHaveBeenCalled();
+
+      // ...and the refusal is RECORDED. A 403 returns as a successful
+      // Effect, so the route's `tapErrorCause` never sees it — without an
+      // explicit audit call, a turned-away attempt to mint an IdP
+      // credential would leave no trace while a transient DB fault would.
+      const refusals = mockLogAdminAction.mock.calls
+        .map(([entry]) => entry as Record<string, unknown>)
+        .filter((e) => e.status === "failure");
+      expect(refusals.length).toBe(1);
+      expect(refusals[0]!.actionType).toBe(REAL_ADMIN_ACTIONS.scim.connectionCreate);
+      expect(JSON.stringify(refusals[0]!.metadata)).toContain("not_authorized_to_mint");
     })();
   });
 

@@ -49,8 +49,9 @@ function applicationTypeFor(redirectUri: string): "web" | "native" {
   try {
     url = new URL(redirectUri);
   } catch {
-    // Let the server reject a malformed URI with its own message rather
-    // than guessing a type here.
+    // intentionally ignored: a malformed redirect URI is the registration
+    // endpoint's to reject, with its own specific message. Classifying it
+    // here would replace that with a guess, and this helper has no logger.
     return "web";
   }
   if (url.protocol !== "http:") return "web";

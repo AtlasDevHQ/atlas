@@ -177,3 +177,69 @@ export const EXPORTED_TABLES: readonly string[] = Object.entries(BUNDLE_TABLE_DE
 export const STAYS_TABLES: readonly string[] = Object.entries(BUNDLE_TABLE_DECISIONS)
   .filter(([, v]) => v.decision === "stays")
   .map(([k]) => k);
+
+// ═════════════════════════════════════════════════════════════════════
+// Better Auth tables (#5515) — the half the schema enumeration misses.
+// ═════════════════════════════════════════════════════════════════════
+//
+// The header above says Better-Auth tables "never enter this registry", and
+// that was the blind spot: nothing ENFORCED that their absence was a decision
+// rather than an omission, so the 1.7 `scim*` catalog (#5505) — nine tables,
+// several carrying customer names and emails verbatim — was invisibly absent
+// from both this registry and the purge one. This block makes the class
+// explicit: one entry per Better Auth table, enforced complete against the
+// live plugin roster by `lib/db/__tests__/better-auth-purge-scope.test.ts`
+// (the same tripwire that covers `BETTER_AUTH_PURGE_DECISIONS`).
+//
+// The decisions reuse this file's vocabulary. None is `exported` — nothing
+// here rides the bundle, so `export.ts` needs no new sections:
+//
+// - `platform` — the global auth spine (ADR-0024): identity, sessions,
+//   credentials, OAuth/agent infrastructure. Region migration re-establishes
+//   these by re-authentication, not by data movement.
+// - `stays` — the `scim*` catalog, on `sso_providers`/`scim_group_mappings`'
+//   exact reasoning: directory-sync config and its provisioned projections
+//   follow the IdP connection, which is re-created in the target region (the
+//   admin mints a fresh token, the IdP re-syncs, the projections rebuild).
+//   Carrying them would land credential digests and sync state that no
+//   target-region connection owns.
+//
+// `subscription` is deliberately absent here for the same reason it is absent
+// from BETTER_AUTH_PURGE_DECISIONS: it is mirrored into `db/schema.ts`, so it
+// already carries its decision in BUNDLE_TABLE_DECISIONS above (`platform`).
+
+export const BETTER_AUTH_BUNDLE_DECISIONS = {
+  organization: { decision: "platform", reason: "The org row is the global auth spine's anchor (ADR-0024) — region routing reads it, so it must not ride a bundle that presumes it." },
+  member: { decision: "platform", reason: "Membership — auth spine." },
+  invitation: { decision: "platform", reason: "Pending invitations — auth spine; short-lived." },
+  user: { decision: "platform", reason: "Identity is global (ADR-0024); users are not moved per-workspace." },
+  session: { decision: "platform", reason: "Live sessions are region-local by construction; users re-authenticate against the target." },
+  account: { decision: "platform", reason: "Credential/OAuth account rows — auth spine." },
+  twoFactor: { decision: "platform", reason: "TOTP secrets follow the user, not the workspace." },
+  passkey: { decision: "platform", reason: "WebAuthn credentials follow the user." },
+  verification: { decision: "platform", reason: "Transient TTL token store." },
+  apikey: { decision: "platform", reason: "API keys are minted against a region's host and die with their member binding; re-minted in the target." },
+  jwks: { decision: "platform", reason: "Region signing keys — must NOT move between regions." },
+  oauthClient: { decision: "platform", reason: "DCR clients re-register against the target region's issuer." },
+  oauthResource: { decision: "platform", reason: "Config-seeded resource registrations, rebuilt at boot." },
+  oauthClientResource: { decision: "platform", reason: "Follows oauthClient/oauthResource — both platform." },
+  oauthAccessToken: { decision: "platform", reason: "Tokens are issuer-bound and TTL'd; never portable across regions." },
+  oauthRefreshToken: { decision: "platform", reason: "Same issuer-bound argument as access tokens." },
+  oauthConsent: { decision: "platform", reason: "Consent is per-issuer; re-granted in the target." },
+  oauthClientAssertion: { decision: "platform", reason: "JTI replay guard — transient." },
+  deviceCode: { decision: "platform", reason: "Minutes-TTL device-flow codes — transient." },
+  agentHost: { decision: "platform", reason: "Agent enrollments are user-keyed auth spine; re-enrolled against the target." },
+  agent: { decision: "platform", reason: "Follows agentHost." },
+  agentCapabilityGrant: { decision: "platform", reason: "Follows agent." },
+  approvalRequest: { decision: "platform", reason: "Transient CIBA approval state." },
+  scimManagedConnection: { decision: "stays", reason: "Directory-sync connection config — `sso_providers`' reasoning: re-created in the target, where the admin mints a fresh credential for the IdP." },
+  scimManagedCredential: { decision: "stays", reason: "HMAC digests under the source region's derivation — credential material is never bundled (the `knowledge_sync_credentials` rule, one secret scheme over)." },
+  scimManagedConnectionEvent: { decision: "stays", reason: "Audit trail of a connection that does not move." },
+  scimConnectionBinding: { decision: "stays", reason: "Plugin lifecycle state for a connection that does not move." },
+  scimIdentityTombstone: { decision: "stays", reason: "Deprovisioning tombstones are records of what the SOURCE region's connection did; the target's fresh connection starts with none." },
+  scimUser: { decision: "stays", reason: "Provisioned-user projections rebuild from the IdP's own re-sync against the target's fresh connection — the IdP is the source of truth, so carrying a projection would race it." },
+  scimProjectionGrant: { decision: "stays", reason: "Follows scimUser — rebuilt by the re-sync." },
+  scimGroup: { decision: "stays", reason: "Group projections rebuild from the IdP re-sync, like scimUser." },
+  scimGroupMember: { decision: "stays", reason: "Follows scimGroup/scimUser." },
+  scimSubject: { decision: "platform", reason: "Per-user cross-domain SCIM subject record — follows the user (global spine), not any one workspace's connection." },
+} satisfies Readonly<Record<string, BundleTableScope>>;

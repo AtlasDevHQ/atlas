@@ -38,13 +38,19 @@ import {
   RETAINED_TABLES,
   WORKSPACE_SCOPE_COLUMNS,
   USER_SCOPE_COLUMNS,
+  BETTER_AUTH_PURGED_TABLES,
+  BETTER_AUTH_ORPHAN_DELETE_TABLES,
   viaParentDeleteSql,
   parentKeySubquery,
   type PurgeParentLink,
   type PurgeTableScope,
   type ViaParentTableName,
 } from "../purge-scope";
-import { COUNT_FIELD_ALIASES, NON_REGISTRY_COUNT_FIELDS } from "../internal";
+import {
+  COUNT_FIELD_ALIASES,
+  BETTER_AUTH_COUNT_FIELD_ALIASES,
+  NON_REGISTRY_COUNT_FIELDS,
+} from "../internal";
 
 // String-indexed view: the registry's literal key type (from `as const`; the
 // `satisfies` clause type-checks the values without widening) rejects
@@ -188,16 +194,21 @@ const updateTargets = new Set(
 
 /**
  * Better-Auth tables the purge deletes directly. They are not in `db/schema.ts`
- * (global by ADR-0024) so they never enter the registry, but they ARE real
- * DELETE targets, so the exact-count assertion has to know about them.
+ * (global by ADR-0024) so they never enter the Drizzle registry, but they ARE
+ * real DELETE targets, so the exact-count assertion has to know about them.
+ *
+ * DERIVED from `BETTER_AUTH_PURGE_DECISIONS` since #5515 — this was a
+ * hand-written six-name list, which is exactly the shape that let the 1.7
+ * scim* catalog arrive with no decision anywhere: a hand list is a copy of a
+ * belief, and the belief was six tables. The registry's own completeness is
+ * enforced against the live plugin roster by
+ * `better-auth-purge-scope.test.ts`; this set is the deletes it implies —
+ * every `purged` entry plus every `user_scoped` entry whose orphan arm is an
+ * explicit statement (`user`, `session`, `account`, `scimSubject`).
  */
 const BETTER_AUTH_DELETE_TARGETS = new Set([
-  "organization",
-  "member",
-  "invitation",
-  "session",
-  "account",
-  "user",
+  ...BETTER_AUTH_PURGED_TABLES,
+  ...BETTER_AUTH_ORPHAN_DELETE_TABLES,
 ]);
 
 /**
@@ -1017,6 +1028,19 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     for (const field of NON_REGISTRY_COUNT_FIELDS) {
       byField.set(field, [`<non-registry: ${field}>`]);
     }
+    // The THIRD arm of the union (#5515): Better Auth `purged` tables, whose
+    // count fields are the table names verbatim (already camelCase) except
+    // where BETTER_AUTH_COUNT_FIELD_ALIASES pins a pre-existing wire name.
+    // Seeded before the Drizzle registry loop for the same reason the
+    // non-registry seed is: the union dedupes ACROSS arms, so a snake_case
+    // table whose camel form landed on `scimUser` or `members` would report
+    // under the wrong count with nothing failing.
+    const betterAuthAliases: Readonly<Record<string, string | undefined>> =
+      BETTER_AUTH_COUNT_FIELD_ALIASES;
+    for (const table of BETTER_AUTH_PURGED_TABLES) {
+      const field = betterAuthAliases[table] ?? table;
+      byField.set(field, [...(byField.get(field) ?? []), `<better-auth: ${table}>`]);
+    }
     for (const table of PURGED_TABLES) {
       const field = aliases[table] ?? camel(table);
       byField.set(field, [...(byField.get(field) ?? []), table]);
@@ -1041,13 +1065,20 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // because it also catches a future edit that stops appending to `byField`.
     // Vacuity is pinned separately, on the registry itself:
     expect(PURGED_TABLES.size, "registry produced no purged tables").toBeGreaterThan(80);
-    expect(byField.size, "distinct count fields (registry + non-registry)").toBe(
-      PURGED_TABLES.size + NON_REGISTRY_COUNT_FIELDS.length,
+    expect(
+      BETTER_AUTH_PURGED_TABLES.size,
+      "better-auth registry produced no purged tables",
+    ).toBeGreaterThan(10);
+    expect(byField.size, "distinct count fields (both registries + non-registry)").toBe(
+      PURGED_TABLES.size + BETTER_AUTH_PURGED_TABLES.size + NON_REGISTRY_COUNT_FIELDS.length,
     );
     // Alias VALUES are unconstrained by `satisfies`, which constrains keys only:
     // a non-identifier value would just become a required field on
     // HardDeleteCounts that the return statement dutifully supplies.
-    const badAlias = Object.values(COUNT_FIELD_ALIASES).filter((v) => !/^[a-z][A-Za-z0-9]*$/.test(v));
+    const badAlias = [
+      ...Object.values(COUNT_FIELD_ALIASES),
+      ...Object.values(BETTER_AUTH_COUNT_FIELD_ALIASES),
+    ].filter((v) => !/^[a-z][A-Za-z0-9]*$/.test(v));
     expect(badAlias, `alias value(s) that are not camelCase identifiers: ${badAlias.join(", ")}`).toEqual([]);
   });
 

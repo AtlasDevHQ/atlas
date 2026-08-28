@@ -590,3 +590,174 @@ export const RETAINED_TABLES: ReadonlySet<string> = new Set(
     .filter(([, v]) => v.decision === "retained")
     .map(([k]) => k),
 );
+
+// ═════════════════════════════════════════════════════════════════════
+// Better Auth tables (#5515) — the registry the schema enumeration
+// CANNOT reach.
+// ═════════════════════════════════════════════════════════════════════
+//
+// `purge-scope.test.ts` enumerates the Drizzle schema, and Better Auth
+// tables are absent from `db/schema.ts` by design (their DDL is owned by
+// better-auth's schema-diff auto-migrate, which runs on every boot before
+// the Atlas runner). So the #5160 tripwire never sees them, and the 1.7
+// `scim*` catalog (#5505) arrived with zero entries in either registry and
+// nothing failing — the blind spot #5515 is about. This registry is the
+// closure: `better-auth-purge-scope.test.ts` enumerates the LIVE plugin
+// roster via `getAuthTables({ plugins: buildPlugins() })` — the same
+// source better-auth's own migrator reads — and fails when a table appears
+// with no entry here, so the next plugin bump that adds a table breaks CI
+// instead of quietly surviving a GDPR purge.
+//
+// Decision semantics (deliberately NOT the Drizzle registry's set —
+// these tables have different reachability mechanics):
+//
+// - `purged` — `hardDeleteWorkspace` issues an explicit workspace-scoped
+//   DELETE. For the plugin-owned `scim*` relations the DELETE is gated on
+//   a to_regclass presence probe, because they exist only where EE SCIM
+//   has been enabled: an absent class means "never enabled — nothing to
+//   purge", NOT an incomplete purge, which is why they do not ride
+//   `tableExists` (whose absence semantics are region drift).
+// - `user_scoped` — keyed on a user id. `orphanArm` names the mechanism:
+//   `"explicit-delete"` is a statement in the orphaned-user arm;
+//   `"user-fk-cascade"` is the FK better-auth's migrator creates — every
+//   `references` without an explicit `onDelete` gets ON DELETE CASCADE
+//   (get-migration.mjs: `onDelete(field.references.onDelete || "cascade")`),
+//   so deleting the orphaned `"user"` row removes these. The tripwire
+//   verifies the claimed reference actually exists in the plugin schema.
+// - `platform` — no workspace and no user erasure dimension: the global
+//   auth spine, config-seeded rows, or transient TTL state.
+// - `unreached` — a RECORDED gap: the table has a user or workspace
+//   dimension and no mechanism removes it. Every entry here must name a
+//   follow-up; the tripwire pins the exact set so it can only grow
+//   deliberately. This arm exists so closing the enumeration blind spot
+//   cannot be blocked on fixing every gap it reveals — an invisible gap
+//   became a named one, which is the registry's whole job.
+//
+// `subscription` (@better-auth/stripe) is deliberately ABSENT: it is the
+// one Better Auth table mirrored into `db/schema.ts` (so the drift gates
+// see it), which puts it in BOTH Drizzle registries already. An entry here
+// too would be a second decision for the same table.
+
+/** How a `user_scoped` Better Auth table is removed for an orphaned user. */
+export type BetterAuthOrphanArm = "explicit-delete" | "user-fk-cascade";
+
+interface BetterAuthPurgedScope {
+  readonly decision: "purged";
+  readonly reason: string;
+  readonly orphanArm?: undefined;
+}
+
+interface BetterAuthUserScope {
+  readonly decision: "user_scoped";
+  readonly reason: string;
+  readonly orphanArm: BetterAuthOrphanArm;
+}
+
+interface BetterAuthPlatformScope {
+  readonly decision: "platform";
+  readonly reason: string;
+  readonly orphanArm?: undefined;
+}
+
+interface BetterAuthUnreachedScope {
+  readonly decision: "unreached";
+  readonly reason: string;
+  readonly orphanArm?: undefined;
+}
+
+export type BetterAuthTableScope =
+  | BetterAuthPurgedScope
+  | BetterAuthUserScope
+  | BetterAuthPlatformScope
+  | BetterAuthUnreachedScope;
+
+export const BETTER_AUTH_PURGE_DECISIONS = {
+  // ── The org spine ──────────────────────────────────────────────────
+  organization: { decision: "purged", reason: "The workspace row itself — deleted last (Phase 5), after every table that scopes through it." },
+  member: { decision: "purged", reason: "Membership rows for the purged org, deleted by organizationId. Also what the orphaned-user computation reads, so it goes AFTER that read." },
+  invitation: { decision: "purged", reason: "Pending invitations carry invitee EMAIL addresses. Deleted explicitly by organizationId; the migrator-level FK to organization would cascade too, but explicit is the completeness rule (#5160)." },
+
+  // ── The user spine (orphaned-user arm) ─────────────────────────────
+  user: { decision: "user_scoped", reason: "Deleted only when the purge orphans the user (no membership in any other org). A user surviving in another workspace keeps their account — that is the correct reading of a WORKSPACE erasure.", orphanArm: "explicit-delete" },
+  session: { decision: "user_scoped", reason: "Deleted explicitly for orphaned users; also cascades from the user row. Explicit as a completeness guarantee for deployments predating the FK, like `messages`.", orphanArm: "explicit-delete" },
+  account: { decision: "user_scoped", reason: "Credential/OAuth account rows for orphaned users. Same explicit-plus-cascade posture as session.", orphanArm: "explicit-delete" },
+  twoFactor: { decision: "user_scoped", reason: "TOTP secrets + backup codes, keyed on userId. Removed by the migrator's default ON DELETE CASCADE from the user row.", orphanArm: "user-fk-cascade" },
+  passkey: { decision: "user_scoped", reason: "WebAuthn credentials, keyed on userId. Removed by the user-FK cascade.", orphanArm: "user-fk-cascade" },
+
+  // ── OAuth / OIDC provider (ADR-0016 surface) ───────────────────────
+  oauthClient: { decision: "user_scoped", reason: "DCR client registrations, owned by the registering user (userId → user.id, migrator-default cascade). Workspace linkage lives in the Drizzle-side oauth_client_workspace_* tables, which are `purged` in the main registry.", orphanArm: "user-fk-cascade" },
+  oauthAccessToken: { decision: "user_scoped", reason: "Bearer tokens: userId → user.id cascade removes an orphaned user's tokens. A multi-workspace user's token whose `referenceId` names the purged org dies functionally (the org row is gone, so audience/workspace resolution fails) and expires on its own TTL.", orphanArm: "user-fk-cascade" },
+  oauthRefreshToken: { decision: "user_scoped", reason: "Refresh tokens — same shape and same cascade as oauthAccessToken, same TTL argument for the multi-workspace residue.", orphanArm: "user-fk-cascade" },
+  oauthConsent: { decision: "user_scoped", reason: "Per-(client, user) consent records, removed by the user-FK cascade. Carries no content beyond scopes granted.", orphanArm: "user-fk-cascade" },
+  oauthResource: { decision: "platform", reason: "Resource registrations seeded from resolveOAuthValidAudiences() at boot (#5505) — deployment config, identical for every workspace." },
+  oauthClientResource: { decision: "platform", reason: "Client→resource links (#5505). No user or workspace column of its own; follows its client by declared ON DELETE CASCADE when the client goes." },
+  oauthClientAssertion: { decision: "platform", reason: "JTI replay-guard rows: a single expiresAt column, self-expiring. No user or workspace dimension." },
+  jwks: { decision: "platform", reason: "The region's token-signing keys. Global infrastructure." },
+  deviceCode: { decision: "platform", reason: "Device-flow codes (RFC 8628) with a minutes-scale TTL, self-expiring. `userId` is an unconstrained string that only points at a user mid-flow; by the time a purge runs, live rows for the workspace's users are gone or moments from it." },
+
+  // ── Agent auth (@better-auth/agent-auth) ───────────────────────────
+  agentHost: { decision: "user_scoped", reason: "Agent host enrollments, userId → user.id with declared ON DELETE CASCADE.", orphanArm: "user-fk-cascade" },
+  agent: { decision: "user_scoped", reason: "Agent identities under a host — declared cascade from both user and host.", orphanArm: "user-fk-cascade" },
+  agentCapabilityGrant: { decision: "user_scoped", reason: "Capability grants — declared cascade from agent and from the granting/denying user.", orphanArm: "user-fk-cascade" },
+  approvalRequest: { decision: "user_scoped", reason: "CIBA approval requests — declared cascade from agent, host and user.", orphanArm: "user-fk-cascade" },
+
+  // ── Misc core ──────────────────────────────────────────────────────
+  verification: { decision: "platform", reason: "TTL token store for in-flight verifications (email OTP, reset). `identifier` can hold an email for the minutes a flow is live; rows self-expire and better-auth prunes them. No workspace dimension and no durable user key." },
+  apikey: { decision: "unreached", reason: "A RECORDED GAP, found by this registry's own tripwire on its first run. Workspace API keys (ADR-0027 §6) carry the owning user in `referenceId` and the workspace binding in `metadata.orgId` — and the 1.7 table declares NO foreign key at all, so neither the orphaned-user arm nor any cascade reaches them: an erased user's key rows (name, prefix, hashed secret, per-key metadata) survive the purge. Mitigation today: the key is useless after the purge — validateManaged re-resolves the LIVE member, which is gone. The fix is #5525; when it lands this becomes `user_scoped`/`purged` and the tripwire's pinned unreached set shrinks to empty." },
+
+  // ── @better-auth/scim 1.7 catalog (#5505 → #5515) ──────────────────
+  // The repo owner's recorded decision on #5515: when a workspace is
+  // purged, ALL scim* data for its provisioning domain is deleted — no
+  // retention arm. The provisioning domain IS the organization (server.ts
+  // passes the org id), so `provisioningDomainId = $1` is the scope.
+  // The purge COMPOSES with the decommission lifecycle rather than
+  // replacing it: the purge route decommissions each active connection
+  // through the plugin (reconciling provisioned users) BEFORE the
+  // transaction, and these deletes are the GDPR completeness guarantee
+  // that removes what the lifecycle deliberately keeps for audit.
+  scimManagedConnection: { decision: "purged", reason: "The connection catalog root (provisioningDomainId = org). Deleted for ALL statuses — a decommissioned connection keeps its row for audit in normal operation, but a GDPR purge is exactly the event that audit trail does not survive. Deleted AFTER its credential and event children, whose only scope is a subquery through this table." },
+  scimManagedCredential: { decision: "purged", reason: "HMAC digests of the connection's bearer tokens — credential material at rest. No domain column; reached via connectionRecordId through scimManagedConnection, so it must be deleted BEFORE the connection rows or the subquery matches nothing (#5160's shape)." },
+  scimManagedConnectionEvent: { decision: "purged", reason: "The connection's audit trail, carrying actorId per event. Same via-connection scope and same child-before-parent order as scimManagedCredential." },
+  scimConnectionBinding: { decision: "purged", reason: "The plugin's per-connection lifecycle record (decommission cursor/lease), keyed by provisioningDomainId. Scheduling-shaped state: a purged workspace leaves no lifecycle residue." },
+  scimIdentityTombstone: { decision: "purged", reason: "Deprovisioned-identity tombstones whose `profile` column holds a serialized SCIM profile — names and emails of people the IdP removed. The owner's no-retention decision applies with extra force here: these are erasure records that themselves carry the personal data." },
+  scimUser: { decision: "purged", reason: "THE #5515 headline row: the provisioned-user projection carries primaryEmail, displayName, givenName/familyName and serializedEmails verbatim. Its userId FK cascades only when the USER is deleted, and the orphaned-user arm spares anyone still in another workspace — so without this domain-keyed DELETE, a multi-workspace user's identity data survives the purge of the workspace that provisioned it. Deleted after scimProjectionGrant and scimGroupMember, which reference it." },
+  scimProjectionGrant: { decision: "purged", reason: "Role grants attached to provisioned users (sourceKind/sourceId/role), keyed by provisioningDomainId. Deleted before scimUser, which its scimUserId references." },
+  scimGroup: { decision: "purged", reason: "IdP group projections — displayName is the customer's own directory structure, the same asset class as brain_slack_channel's channel names. Deleted after scimGroupMember, which references it." },
+  scimGroupMember: { decision: "purged", reason: "Group membership rows. No domain column; reached through BOTH parents (groupId via scimGroup, scimUserId via scimUser) so a row is removed whichever parent attributes it. First of the scim deletes — both parents must still exist for the subqueries to match." },
+  scimSubject: { decision: "user_scoped", reason: "One row per SCIM-managed user ACROSS domains (userId → user.id), not per provisioning domain — deleting it by domain would break another workspace's provisioning for a shared user. Deleted explicitly for orphaned users (probed: the relation exists only where EE SCIM ran); the migrator-default cascade covers deployments that predate the statement.", orphanArm: "explicit-delete" },
+} as const satisfies Record<string, BetterAuthTableScope>;
+
+/** Better Auth tables the purge deletes with an explicit workspace-scoped statement. */
+export const BETTER_AUTH_PURGED_TABLES: ReadonlySet<string> = new Set(
+  Object.entries(BETTER_AUTH_PURGE_DECISIONS)
+    .filter(([, v]) => v.decision === "purged")
+    .map(([k]) => k),
+);
+
+/** Better Auth tables the orphaned-user arm deletes with an explicit statement. */
+export const BETTER_AUTH_ORPHAN_DELETE_TABLES: ReadonlySet<string> = new Set(
+  Object.entries(BETTER_AUTH_PURGE_DECISIONS)
+    .filter(([, v]) => v.decision === "user_scoped" && v.orphanArm === "explicit-delete")
+    .map(([k]) => k),
+);
+
+/**
+ * The @better-auth/scim plugin's tables, as a literal union + value list.
+ *
+ * `hardDeleteWorkspace` probes exactly this set in one round trip before its
+ * scim deletes: the relations are plugin-owned (created by better-auth's
+ * schema-diff only where EE SCIM has been enabled), so unlike every other
+ * relation the purge names, "absent" is a NORMAL state meaning "nothing was
+ * ever provisioned" rather than region drift. Derived from the registry so the
+ * probe list, the deletes and the decisions cannot disagree; the enumeration
+ * tripwire additionally pins this set against the plugin's own live schema, so
+ * an upstream bump that adds a scim table fails there by name.
+ */
+export type ScimPluginTableName = Extract<
+  keyof typeof BETTER_AUTH_PURGE_DECISIONS,
+  `scim${string}`
+>;
+
+export const SCIM_PLUGIN_TABLES: readonly ScimPluginTableName[] = Object.keys(
+  BETTER_AUTH_PURGE_DECISIONS,
+).filter((k): k is ScimPluginTableName => k.startsWith("scim"));

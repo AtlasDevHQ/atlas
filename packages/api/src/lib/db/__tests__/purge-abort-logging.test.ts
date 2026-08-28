@@ -35,6 +35,17 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from "bun:test";
+import { SCIM_PLUGIN_TABLES } from "../purge-scope";
+
+/**
+ * The Phase 3f scim-class probe (#5515) fails closed on an unshaped answer,
+ * so the generic `to_regclass → { table_exists }` branch below would abort
+ * the mocked purge before reaching the statement under test. Answered "class
+ * absent" (EE SCIM never enabled) — see internal.test.ts's twin note.
+ */
+const SCIM_CLASS_ABSENT_ROW = Object.fromEntries(
+  SCIM_PLUGIN_TABLES.map((t) => [t, false]),
+);
 
 interface CapturedLog {
   level: "error" | "warn" | "info" | "debug";
@@ -117,6 +128,7 @@ function poolThatFails(
       if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
         return { rows: [{ workspace_status: "deleted" }] };
       }
+      if (sql.includes('AS "scimManagedConnection"')) return { rows: [SCIM_CLASS_ABSENT_ROW] };
       if (sql.includes("to_regclass")) return { rows: [{ table_exists: true }] };
       if (sql.includes("FROM member m")) return { rows: [] };
       if (sql.includes("WITH ids AS")) {
@@ -324,6 +336,7 @@ describe("hardDeleteWorkspace abort logging (#5265)", () => {
         if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
           return { rows: [{ workspace_status: "deleted" }] };
         }
+        if (sql.includes('AS "scimManagedConnection"')) return { rows: [SCIM_CLASS_ABSENT_ROW] };
         if (sql.includes("to_regclass")) return { rows: [{ table_exists: true }] };
         if (sql.includes("FROM member m")) return { rows: [] };
         // Two ids returned, neither a string — the shape a renamed RETURNING

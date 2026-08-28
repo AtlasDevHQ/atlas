@@ -32,9 +32,12 @@ import { getConnectTimeoutMs } from "@atlas/api/lib/db/pool-config";
 // only ever points one way.
 import {
   PURGE_TABLE_DECISIONS,
+  BETTER_AUTH_PURGE_DECISIONS,
+  SCIM_PLUGIN_TABLES,
   viaParentDeleteSql,
   tombstoneAndDeleteViaParentSql,
   type KeySourceOptions,
+  type ScimPluginTableName,
   type ViaParentTableName,
 } from "@atlas/api/lib/db/purge-scope";
 import { foldRollingMean } from "@atlas/api/lib/learn/rolling-mean";
@@ -4040,16 +4043,20 @@ type CountFieldFor<T extends string> = T extends keyof CountFieldAliases
  * `adminActionLogAnonymized` counts rows that SURVIVED — `admin_action_log` is
  * `anonymized`, not `purged`, so it is deliberately not in the union above; see
  * `SURVIVOR_COUNT_FIELDS` below, which excludes it from the destruction total.
- * The other four are Better-Auth tables: global by ADR-0024, absent from
- * `db/schema.ts`, and therefore absent from the registry that enumerates it.
+ * `orphanedUsers` counts the `"user"` rows the orphan arm deleted — a
+ * `user_scoped` decision in `BETTER_AUTH_PURGE_DECISIONS`, so no mapped type
+ * produces a field for it. (This list held `members`, `betterAuthInvitations`
+ * and `organization` too until #5515, when those tables gained registry
+ * entries and their fields became DERIVED — see the Better Auth arm below.)
  *
- * The exemptions stop one class short of complete, deliberately: the purge also
- * DELETEs `session`, `account`, `user_onboarding` and `email_preferences` for
- * orphaned users and discards all four counts. The first two are Better-Auth;
- * the last two are `user_scoped` registry entries, which `PurgedTableName`
- * filters out because it selects on `decision === "purged"`. Nothing here counts
- * them, and `purge-scope.test.ts` covers them instead — it asserts each has a
- * real DELETE, which is the claim that matters for a user-keyed erasure.
+ * The derivations stop one class short of complete, deliberately: the purge
+ * also DELETEs `session`, `account`, `scimSubject`, `user_onboarding` and
+ * `email_preferences` for orphaned users and discards those counts. The first
+ * three are `user_scoped` Better Auth registry entries, the last two
+ * `user_scoped` Drizzle ones, and both mapped types select on
+ * `decision === "purged"` only. Nothing here counts them, and
+ * `purge-scope.test.ts` covers them instead — it asserts each has a real
+ * DELETE, which is the claim that matters for a user-keyed erasure.
  */
 /**
  * The one name `skippedTables` can carry that is a skipped WRITE, not a skipped
@@ -4082,15 +4089,45 @@ export const PURGE_TEARDOWN_OUTBOX_RELATION = "stripe_teardown_pending";
 
 export const NON_REGISTRY_COUNT_FIELDS = [
   "adminActionLogAnonymized",
-  "members",
-  "betterAuthInvitations",
   "orphanedUsers",
-  "organization",
 ] as const;
 
 type NonRegistryCountField = (typeof NON_REGISTRY_COUNT_FIELDS)[number];
 
-type HardDeleteCountField = CountFieldFor<PurgedTableName> | NonRegistryCountField;
+/**
+ * Better Auth count fields, DERIVED from `BETTER_AUTH_PURGE_DECISIONS` the
+ * same way the Drizzle-registry half derives from `PURGE_TABLE_DECISIONS`
+ * (#5176's guarantee, extended to the class the schema enumeration cannot
+ * see, #5515). `members`, `betterAuthInvitations` and `organization` lived in
+ * `NON_REGISTRY_COUNT_FIELDS` until that registry existed; now a `purged`
+ * Better Auth entry with no count is a compile error at the return literal,
+ * exactly like a Drizzle one.
+ *
+ * The table names are already camelCase, so the field name is the table name
+ * except where an alias pins a pre-existing wire name: `members` and
+ * `betterAuthInvitations` are published response fields and do not move.
+ */
+type BetterAuthRegistry = typeof BETTER_AUTH_PURGE_DECISIONS;
+
+type BetterAuthPurgedTableName = {
+  [K in keyof BetterAuthRegistry]: BetterAuthRegistry[K]["decision"] extends "purged" ? K : never;
+}[keyof BetterAuthRegistry];
+
+export const BETTER_AUTH_COUNT_FIELD_ALIASES = {
+  member: "members",
+  invitation: "betterAuthInvitations",
+} as const satisfies Partial<Record<BetterAuthPurgedTableName, string>>;
+
+type BetterAuthCountFieldAliases = typeof BETTER_AUTH_COUNT_FIELD_ALIASES;
+
+type BetterAuthCountFieldFor<T extends string> = T extends keyof BetterAuthCountFieldAliases
+  ? BetterAuthCountFieldAliases[T]
+  : T;
+
+type HardDeleteCountField =
+  | CountFieldFor<PurgedTableName>
+  | BetterAuthCountFieldFor<BetterAuthPurgedTableName>
+  | NonRegistryCountField;
 
 /**
  * Per-table row counts from a hard delete — DERIVED from the purge registry
@@ -4694,6 +4731,193 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       `DELETE FROM oauth_client_rate_limits WHERE reference_id = $1`,
     );
 
+    // ── Phase 3f: @better-auth/scim 1.7 catalog (#5505 → #5515) ──
+    //
+    // Plugin-owned relations: better-auth's schema-diff creates them only where
+    // EE SCIM has been enabled, so unlike every other relation this function
+    // names, ABSENT is a normal state ("SCIM was never enabled — nothing to
+    // purge"), not region drift. They therefore do not ride `tableExists`,
+    // whose absence semantics are "the purge is incomplete for this table":
+    // reporting `complete: false` on every self-hosted purge because an
+    // optional plugin's tables do not exist would make the flag meaningless.
+    //
+    // One probe for the whole class, then per-table handling:
+    //   - class fully absent  → all counts 0, nothing skipped, one log line.
+    //   - table present       → its DELETE runs.
+    //   - table absent while ANY sibling is present → genuine drift inside an
+    //     enabled class: skippedTables + warn, same consequence as the
+    //     `tableExists` path.
+    //
+    // The provisioning domain IS the organization (server.ts passes the org id
+    // when creating a connection), so `provisioningDomainId = $1` is the scope.
+    // The repo owner's #5515 decision: ALL scim* rows for the domain are
+    // deleted — including decommissioned connections and identity tombstones,
+    // which survive for audit in normal operation but not through a GDPR
+    // purge. The plugin's own decommission lifecycle is composed with at the
+    // ROUTE (each active connection is decommissioned, reconciling provisioned
+    // users, before this transaction); these statements are the completeness
+    // guarantee that removes what that lifecycle deliberately keeps.
+    //
+    // `to_regclass` lowercases an unquoted argument, so the camelCase names
+    // are passed with embedded quotes — the same trick migration 0209 uses.
+    const scimProbe = await client.query(
+      `SELECT ` +
+        SCIM_PLUGIN_TABLES.map((t, i) => `to_regclass($${i + 1}) IS NOT NULL AS "${t}"`).join(", "),
+      SCIM_PLUGIN_TABLES.map((t) => `"${t}"`),
+    );
+    const scimProbeRow = scimProbe.rows[0] as Record<string, unknown> | undefined;
+    // Fail CLOSED on an unshaped answer, matching `tableExists`: "I could not
+    // determine whether the relation exists" must abort, not silently skip an
+    // erasure.
+    if (
+      scimProbe.rows.length !== 1 ||
+      SCIM_PLUGIN_TABLES.some((t) => typeof scimProbeRow?.[t] !== "boolean")
+    ) {
+      throw new Error(
+        `Existence probe for the scim* catalog returned an unexpected shape during ` +
+          `hardDeleteWorkspace — refusing to guess whether the relations exist. Nothing was deleted.`,
+      );
+    }
+    const scimPresent = scimProbeRow as Record<ScimPluginTableName, boolean>;
+    const scimClassPresent = SCIM_PLUGIN_TABLES.some((t) => scimPresent[t]);
+    if (!scimClassPresent) {
+      log.info(
+        { orgId },
+        "scim* catalog absent — EE SCIM was never enabled on this deploy, nothing to purge for the class",
+      );
+    } else {
+      const missing = SCIM_PLUGIN_TABLES.filter((t) => !scimPresent[t]);
+      if (missing.length > 0) {
+        skippedTables.push(...missing);
+        log.warn(
+          { orgId, missing },
+          "scim* relation(s) absent while the rest of the catalog exists — their DELETEs were " +
+            "SKIPPED, so the purge is incomplete for those tables (drift inside an enabled class; " +
+            "boot this region with EE SCIM enabled so the plugin's schema-diff recreates them, " +
+            "then clear the residue)",
+        );
+      }
+    }
+
+    // Child-before-parent, because the childrens' only scope is a subquery
+    // through the parent (#5160's ordering rule): member/grant before
+    // group/user, credential/event before connection. The migrator-default
+    // ON DELETE CASCADE would keep the wrong order from aborting, but it would
+    // also zero the child counts — and cascade being ASSUMED present is
+    // exactly the mechanism #5160 found missing.
+    let scimGroupMember = 0;
+    if (scimPresent.scimGroupMember) {
+      const memberArms: string[] = [];
+      if (scimPresent.scimGroup) {
+        memberArms.push(`"groupId" IN (SELECT id FROM "scimGroup" WHERE "provisioningDomainId" = $1)`);
+      }
+      if (scimPresent.scimUser) {
+        memberArms.push(`"scimUserId" IN (SELECT id FROM "scimUser" WHERE "provisioningDomainId" = $1)`);
+      }
+      if (memberArms.length > 0) {
+        // BOTH parents, OR'd: a membership row is removed whichever parent
+        // attributes it to this domain, so a row pointing at this domain's
+        // group cannot survive on a technicality about which side was seeded.
+        scimGroupMember = await del(`DELETE FROM "scimGroupMember" WHERE ${memberArms.join(" OR ")}`);
+      } else {
+        // Present but unreachable: both parent relations are missing, so there
+        // is no way to say which rows are this workspace's. Recorded, not
+        // guessed — an unscoped delete here would be a cross-tenant delete.
+        skippedTables.push("scimGroupMember");
+        log.warn(
+          { orgId },
+          "scimGroupMember exists but both of its scoping parents (scimGroup, scimUser) are absent — " +
+            "its DELETE was SKIPPED; the purge is incomplete for this table",
+        );
+      }
+    }
+    let scimProjectionGrant = 0;
+    if (scimPresent.scimProjectionGrant) {
+      scimProjectionGrant = await del(
+        `DELETE FROM "scimProjectionGrant" WHERE "provisioningDomainId" = $1`,
+      );
+    }
+    let scimGroup = 0;
+    if (scimPresent.scimGroup) {
+      scimGroup = await del(`DELETE FROM "scimGroup" WHERE "provisioningDomainId" = $1`);
+    }
+    // A SURVIVING user's subject record can point at a projection this purge
+    // is about to delete: `scimSubject.profileSourceId` holds the scimUser id
+    // whose profile currently sources the subject, and the plugin declares it
+    // as a plain string — no FK, so nothing cascades or nulls it. The
+    // decommission lifecycle clears it when it reconciles; this is the arm for
+    // when that lifecycle did not run (plugin failure, never-composed caller).
+    // NULLed (the column is optional upstream) rather than deleted — the
+    // subject itself is user-scoped and must survive for a user still managed
+    // in another workspace; the next sync re-establishes a source. Must run
+    // BEFORE the projection delete below, whose rows the subquery reads.
+    if (scimPresent.scimSubject && scimPresent.scimUser) {
+      await client.query(
+        `UPDATE "scimSubject" SET "profileSourceId" = NULL
+          WHERE "profileSourceId" IN (SELECT id FROM "scimUser" WHERE "provisioningDomainId" = $1)`,
+        [orgId],
+      );
+    }
+    // THE #5515 headline statement: the projection rows carry primaryEmail,
+    // displayName and serializedEmails, and their user-FK cascade fires only
+    // when the USER is deleted — which the orphan arm deliberately does not do
+    // for a user who is still a member of another workspace. This domain-keyed
+    // delete is what removes those users' projections.
+    let scimUser = 0;
+    if (scimPresent.scimUser) {
+      scimUser = await del(`DELETE FROM "scimUser" WHERE "provisioningDomainId" = $1`);
+    }
+    let scimIdentityTombstone = 0;
+    if (scimPresent.scimIdentityTombstone) {
+      scimIdentityTombstone = await del(
+        `DELETE FROM "scimIdentityTombstone" WHERE "provisioningDomainId" = $1`,
+      );
+    }
+    let scimManagedCredential = 0;
+    let scimManagedConnectionEvent = 0;
+    if (scimPresent.scimManagedConnection) {
+      if (scimPresent.scimManagedCredential) {
+        scimManagedCredential = await del(
+          `DELETE FROM "scimManagedCredential" WHERE "connectionRecordId" IN ` +
+            `(SELECT id FROM "scimManagedConnection" WHERE "provisioningDomainId" = $1)`,
+        );
+      }
+      if (scimPresent.scimManagedConnectionEvent) {
+        scimManagedConnectionEvent = await del(
+          `DELETE FROM "scimManagedConnectionEvent" WHERE "connectionRecordId" IN ` +
+            `(SELECT id FROM "scimManagedConnection" WHERE "provisioningDomainId" = $1)`,
+        );
+      }
+    } else if (scimPresent.scimManagedCredential || scimPresent.scimManagedConnectionEvent) {
+      // Same unreachable shape as scimGroupMember's: the children exist but
+      // their only scoping parent does not.
+      const unreachable = (
+        ["scimManagedCredential", "scimManagedConnectionEvent"] as const
+      ).filter((t) => scimPresent[t]);
+      skippedTables.push(...unreachable);
+      log.warn(
+        { orgId, unreachable },
+        "scim credential/event relation(s) exist but scimManagedConnection is absent — their " +
+          "DELETEs were SKIPPED; the purge is incomplete for those tables",
+      );
+    }
+    let scimManagedConnection = 0;
+    if (scimPresent.scimManagedConnection) {
+      // ALL statuses — active, decommissioned, mid-reconcile. No narrowing:
+      // the catalog is append-only for audit in normal operation, and a GDPR
+      // purge is the one event that audit trail does not survive (#5515's
+      // recorded no-retention decision).
+      scimManagedConnection = await del(
+        `DELETE FROM "scimManagedConnection" WHERE "provisioningDomainId" = $1`,
+      );
+    }
+    let scimConnectionBinding = 0;
+    if (scimPresent.scimConnectionBinding) {
+      scimConnectionBinding = await del(
+        `DELETE FROM "scimConnectionBinding" WHERE "provisioningDomainId" = $1`,
+      );
+    }
+
     // ── Phase 3b: Stripe billing linkage rows (#3425) ──
     // Better Auth creates the @better-auth/stripe `subscription` table only on
     // Stripe deployments (STRIPE_SECRET_KEY), but migration 0152 (#4019) now also
@@ -4883,6 +5107,22 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         `DELETE FROM email_preferences WHERE user_id = ANY($1) RETURNING 1`,
         [orphanedUserIds],
       );
+      // The cross-domain SCIM subject record (#5515). USER-scoped, not
+      // domain-scoped: one row per SCIM-managed user across every provisioning
+      // domain, so deleting it by domain would break another workspace's
+      // provisioning for a shared user. Deleted here for orphaned users only,
+      // like session/account; a user who survives in another workspace keeps
+      // theirs. Gated on the Phase 3f presence probe — the relation is
+      // plugin-owned and absent wherever EE SCIM never ran. The migrator's
+      // default user-FK cascade covers deployments predating this statement;
+      // the explicit delete is the completeness guarantee, same reasoning as
+      // session's.
+      if (scimPresent.scimSubject) {
+        await delRaw(
+          `DELETE FROM "scimSubject" WHERE "userId" = ANY($1) RETURNING 1`,
+          [orphanedUserIds],
+        );
+      }
       const userResult = await client.query(
         `DELETE FROM "user" WHERE id = ANY($1) RETURNING 1`,
         [orphanedUserIds],
@@ -5074,6 +5314,15 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         proactivePublicDataset,
         emailOutbox,
         crmOutbox,
+        scimManagedConnection,
+        scimManagedCredential,
+        scimManagedConnectionEvent,
+        scimConnectionBinding,
+        scimIdentityTombstone,
+        scimUser,
+        scimProjectionGrant,
+        scimGroup,
+        scimGroupMember,
         adminActionLogAnonymized,
         members,
         betterAuthInvitations,

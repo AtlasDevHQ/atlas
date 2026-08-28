@@ -1067,6 +1067,12 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // additionally guarded on both the table and the "userId" column, so it
   // no-ops rather than erroring where SCIM was never turned on.
   "0184_scim_provider_seal_ownerless.sql",
+  // Carries legacy "scimProvider" rows into @better-auth/scim 1.7's
+  // "scimManagedConnection" catalog (#5493). MANAGED_AUTH because both tables
+  // are owned by the plugin and exist only in managed mode with EE SCIM on;
+  // the migration guards on each independently and no-ops otherwise.
+  // Connections only — credentials are rotated, not carried. See the header.
+  "0209_scim_provider_to_managed_connection.sql",
 ];
 
 /**

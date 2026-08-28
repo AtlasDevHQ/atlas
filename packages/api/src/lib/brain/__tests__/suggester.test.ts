@@ -256,9 +256,14 @@ describe("⭐ off by default", () => {
     expect(def?.type).toBe("boolean");
     expect(def?.default).toBe("false");
     expect(def?.envVar).toBe(SUGGESTER_ENABLED_KEY);
-    // Live, self-service toggle: not restart-bound, not hidden from admins.
+    // Hot-reloaded (per-tick read), so never restart-bound.
     expect(def?.requiresRestart).toBeFalsy();
-    expect(def?.saasVisible).not.toBe(false);
+    // Where the promote/decay mirror deliberately breaks: every ATLAS_BRAIN_*
+    // key is hidden from the generic settings page on Atlas Cloud — the
+    // env-vars reference's universal claim, enforced by
+    // check-brain-settings-doc.ts — so on SaaS the per-workspace opt-in row
+    // is written by a platform admin, not self-served by the tenant.
+    expect(def?.saasVisible).toBe(false);
   });
 
   it("the interval knob is platform operator policy", () => {

@@ -2023,6 +2023,15 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // platform fiber iterates the workspaces that opted in, resolved per tick
     // (mirrors ATLAS_LEARN_PROMOTE_DECAY_ENABLED, #4582).
     //
+    // `saasVisible: false`, and here the mirror deliberately BREAKS from the
+    // promote/decay precedent: that dial is a tenant-self-service toggle, but
+    // every ATLAS_BRAIN_* key is hidden from the generic settings page on
+    // Atlas Cloud — a page-level universal claim `check-brain-settings-doc.ts`
+    // enforces, and the closest sibling (the warehouse cadence, the other
+    // draft-filing cycle) already follows it. On SaaS the per-workspace
+    // opt-in row is therefore written by a platform admin on the tenant's
+    // behalf; still per-workspace, still explicit, just not self-serve.
+    //
     // ⚠️ The platform-scope enrollment behaviour, stated because the tier
     // chain makes it a footgun: on SaaS, enrollment reads EXPLICIT workspace
     // overrides straight off the settings table (`lib/brain/suggester.ts`),
@@ -2041,6 +2050,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: "false",
     envVar: "ATLAS_BRAIN_SUGGESTER_ENABLED",
     scope: "workspace",
+    saasVisible: false,
   },
   {
     // The suggester fiber's cadence. Platform-scoped + requiresRestart for the

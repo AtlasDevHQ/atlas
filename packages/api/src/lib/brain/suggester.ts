@@ -232,6 +232,13 @@ export function getSuggesterIntervalMs(): number {
  * which is the exact accident lock 1's off-by-default exists to prevent (and
  * the footgun the promote/decay precedent documents). Joined to
  * `organization` so a stale override for a deleted workspace drops.
+ *
+ * The asymmetry cuts both ways, and the other direction is worth a sentence:
+ * platform rows are ignored ENTIRELY on SaaS, so a platform-scoped `false` is
+ * not a kill switch either — a workspace's explicit `true` keeps it enrolled.
+ * Deliberate, matching the promote/decay enumeration byte for byte: the dial
+ * belongs to the workspace in both directions, and an operator emergency stop
+ * is the fiber's cadence knob or a deploy, not a tier-chain surprise.
  */
 export const LIST_SUGGESTER_ORG_IDS_SQL = `SELECT DISTINCT s.org_id AS org_id
        FROM settings s
@@ -349,7 +356,21 @@ async function resolveSuggesterWorkspaces(): Promise<string[]> {
     return rows.map((r) => r.org_id);
   }
   const orgs = await internalQuery<{ id: string }>(`SELECT id FROM organization ORDER BY id`);
-  return orgs.map((r) => r.id).filter((id) => isSuggesterEnabledForWorkspace(id));
+  const enrolled = orgs.map((r) => r.id).filter((id) => isSuggesterEnabledForWorkspace(id));
+  // The tier chain's sharp edge on a MULTI-workspace self-hosted install: a
+  // platform override or the env var reaches every workspace that lacks its
+  // own row, which is the mass-enrollment shape the SaaS path structurally
+  // refuses. Deliberate (the operator IS the tenant on self-hosted, and the
+  // env var opting in "the deployment" is the documented degenerate case) —
+  // but on more than one workspace it deserves to be said out loud, once per
+  // tick, rather than inferred from per-workspace log lines.
+  if (enrolled.length > 1) {
+    log.warn(
+      { workspaces: enrolled.length },
+      "Suggester: multiple workspaces are enrolled on this self-hosted deployment — a platform/env ATLAS_BRAIN_SUGGESTER_ENABLED=true reaches every workspace without its own override",
+    );
+  }
+  return enrolled;
 }
 
 /** A selected conversation row, narrowed. */
@@ -357,6 +378,41 @@ interface CandidateConversationRow extends Record<string, unknown> {
   id: string;
   user_id: string;
   updated_at: Date | string;
+}
+
+/**
+ * The session episode as the reconcile stage needs it — one builder for both
+ * moments it is assembled (pre-model, where only the id is still pending, and
+ * post-mint, with the real id and stored grant), so the two cannot drift on
+ * the fields they must share.
+ */
+function sessionEpisodeRef(input: {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly conversationId: string;
+  readonly ownerId: string;
+  readonly at: Date;
+  readonly visibleTo: readonly string[];
+}): ReconcileEpisodeRef {
+  return {
+    id: input.id,
+    workspaceId: input.workspaceId,
+    source: HUMAN_SOURCE,
+    sourceId: sessionSourceId(input.conversationId),
+    sourceActor: input.ownerId,
+    occurredAt: input.at,
+    visibleTo: input.visibleTo,
+  };
+}
+
+/** Per-workspace counters — folded into the tick total (promote/decay's shape). */
+interface WorkspaceCounters {
+  modelUnavailable: boolean;
+  conversationsScanned: number;
+  drafted: number;
+  corroborated: number;
+  blocked: number;
+  errors: number;
 }
 
 /**
@@ -368,26 +424,23 @@ interface CandidateConversationRow extends Record<string, unknown> {
  */
 export function messageText(content: unknown): string {
   if (typeof content === "string") return content.trim();
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => partText(part))
-      .filter((t) => t !== "")
-      .join(" ")
-      .trim();
-  }
+  if (Array.isArray(content)) return joinParts(content);
   if (content !== null && typeof content === "object") {
     const parts = (content as Record<string, unknown>).parts;
-    if (Array.isArray(parts)) {
-      return parts
-        .map((part) => partText(part))
-        .filter((t) => t !== "")
-        .join(" ")
-        .trim();
-    }
+    if (Array.isArray(parts)) return joinParts(parts);
     const text = (content as Record<string, unknown>).text;
     if (typeof text === "string") return text.trim();
   }
   return "";
+}
+
+/** The text parts of one parts array, joined — shared by both array shapes. */
+function joinParts(parts: readonly unknown[]): string {
+  return parts
+    .map((part) => partText(part))
+    .filter((t) => t !== "")
+    .join(" ")
+    .trim();
 }
 
 /** The text of one AI SDK message part, or "". */
@@ -460,7 +513,13 @@ export async function runSuggesterTick(deps: SuggesterDeps = {}): Promise<Sugges
     for (const workspaceId of workspaces) {
       result.workspacesConsidered++;
       try {
-        await runWorkspaceSuggesterTick(workspaceId, result, deps, now);
+        const ws = await runWorkspaceSuggesterTick(workspaceId, deps, now);
+        if (ws.modelUnavailable) result.workspacesModelUnavailable++;
+        result.conversationsScanned += ws.conversationsScanned;
+        result.drafted += ws.drafted;
+        result.corroborated += ws.corroborated;
+        result.blocked += ws.blocked;
+        result.errors += ws.errors;
       } catch (err) {
         result.errors++;
         log.warn(
@@ -497,13 +556,20 @@ function pruneLedger(nowMs: number): void {
   }
 }
 
-/** One workspace's scan — folds its outcomes into the tick totals. */
+/** One workspace's scan — returns its counters for the caller to fold in. */
 async function runWorkspaceSuggesterTick(
   workspaceId: string,
-  result: SuggesterTickResult,
   deps: SuggesterDeps,
   now: () => Date,
-): Promise<void> {
+): Promise<WorkspaceCounters> {
+  const counters: WorkspaceCounters = {
+    modelUnavailable: false,
+    conversationsScanned: 0,
+    drafted: 0,
+    corroborated: 0,
+    blocked: 0,
+    errors: 0,
+  };
   const resolveModel = deps.resolveModel ?? resolveExtractionModel;
   const extract = deps.extract ?? llmFactExtractor;
   const loadVocabulary = deps.loadVocabulary ?? loadWorkspaceVocabulary;
@@ -516,12 +582,12 @@ async function runWorkspaceSuggesterTick(
   // leaves this workspace's conversations exactly where they were.
   const resolved = await resolveModel(workspaceId);
   if (resolved === null) {
-    result.workspacesModelUnavailable++;
+    counters.modelUnavailable = true;
     log.debug(
       { workspaceId },
       "Suggester: workspace model unavailable — conversations stay unharvested until it resolves",
     );
-    return;
+    return counters;
   }
 
   const at = now();
@@ -553,19 +619,18 @@ async function runWorkspaceSuggesterTick(
     // not exist yet (no find, no episode). The ref here feeds the prompt
     // (`source`, `occurredAt`) and the extractor's log lines only —
     // `reconcileFacts` below gets the real ref, with the minted id.
-    const preRef: ReconcileEpisodeRef = {
+    const preRef = sessionEpisodeRef({
       id: `pending:${conversationId}`,
       workspaceId,
-      source: HUMAN_SOURCE,
-      sourceId: sessionSourceId(conversationId),
-      sourceActor: ownerId,
-      occurredAt: at,
+      conversationId,
+      ownerId,
+      at,
       visibleTo: [`${USER_PREFIX}${ownerId}`],
-    };
+    });
 
     let candidates: readonly FactCandidate[];
     try {
-      result.conversationsScanned++;
+      counters.conversationsScanned++;
       candidates = await extract({
         episode: preRef,
         body: transcript,
@@ -575,7 +640,7 @@ async function runWorkspaceSuggesterTick(
     } catch (err) {
       // Work-then-stamp: a failed model call marks nothing, so the next tick
       // retries. Bounded by the lookback window and the per-tick cap.
-      result.errors++;
+      counters.errors++;
       log.warn(
         { workspaceId, conversationId, err: errorMessage(err) },
         "Suggester: extraction failed for conversation — left unmarked for retry",
@@ -604,12 +669,12 @@ async function runWorkspaceSuggesterTick(
     try {
       vocabulary = await loadVocabulary(workspaceId);
     } catch (err) {
-      result.errors++;
+      counters.errors++;
       log.error(
         { workspaceId, err: errorMessage(err) },
         "Suggester: workspace vocabulary could not be loaded — abandoning this workspace's scan for the tick",
       );
-      return;
+      return counters;
     }
 
     let report: ReconcileReport;
@@ -639,15 +704,14 @@ async function runWorkspaceSuggesterTick(
         });
         return reconcile(
           {
-            episode: {
+            episode: sessionEpisodeRef({
               id: sessionEpisode.episodeId,
               workspaceId,
-              source: HUMAN_SOURCE,
-              sourceId: sessionSourceId(conversationId),
-              sourceActor: ownerId,
-              occurredAt: at,
+              conversationId,
+              ownerId,
+              at,
               visibleTo: sessionEpisode.visibleTo,
-            },
+            }),
             candidates: stamped,
             vocabulary,
             producer: BRAIN_SUGGESTER_PRODUCER,
@@ -675,7 +739,7 @@ async function runWorkspaceSuggesterTick(
         );
         continue;
       }
-      result.errors++;
+      counters.errors++;
       log.warn(
         { workspaceId, conversationId, err: errorMessage(err) },
         "Suggester: filing failed for conversation — left unmarked for retry",
@@ -688,7 +752,7 @@ async function runWorkspaceSuggesterTick(
       // grant and a resolved principal — so reaching it means the seam's
       // contract moved. The episode has committed; the mark is durable, and
       // silence would hide a real defect.
-      result.errors++;
+      counters.errors++;
       log.error(
         { workspaceId, conversationId, reason: report.episodeBlocked },
         "Suggester: reconcile refused an episode this module constructs away — an Atlas bug, not a content problem",
@@ -698,7 +762,7 @@ async function runWorkspaceSuggesterTick(
 
     for (const outcome of report.outcomes) {
       if (outcome.kind === "created") {
-        result.drafted++;
+        counters.drafted++;
         log.info(
           {
             workspaceId,
@@ -710,7 +774,7 @@ async function runWorkspaceSuggesterTick(
           "Suggester filed a draft suggestion",
         );
       } else if (outcome.kind === "corroborated") {
-        result.corroborated++;
+        counters.corroborated++;
         log.info(
           {
             workspaceId,
@@ -721,7 +785,7 @@ async function runWorkspaceSuggesterTick(
           "Suggester corroborated an existing fact",
         );
       } else {
-        result.blocked++;
+        counters.blocked++;
         log.warn(
           { workspaceId, conversationId, reason: outcome.reason, unkeyed: outcome.unkeyed },
           "Suggester: reconcile refused a suggested claim",
@@ -729,4 +793,5 @@ async function runWorkspaceSuggesterTick(
       }
     }
   }
+  return counters;
 }

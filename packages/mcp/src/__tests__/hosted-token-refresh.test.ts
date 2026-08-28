@@ -25,7 +25,7 @@
  *      frame must 401 with the same envelope. No leakage of *why*
  *      (user-revoke vs admin-revoke vs natural expiry) in the body.
  *
- * verifyAccessToken is mocked to fold each underlying failure mode
+ * The access-token verifier is mocked to fold each underlying failure mode
  * (signature / audience / expired / revoked) into the single
  * `throws` path the production verifier collapses them to.
  */
@@ -57,15 +57,33 @@ interface FakeJwtPayload {
   [WORKSPACE_CLAIM]?: string;
 }
 
+/**
+ * Stand-in for `verifyAccessTokenRequest`. #5493 — better-auth 1.7 removed
+ * `verifyAccessToken`, and `better-auth/oauth2` stopped re-exporting the
+ * verifiers at RUNTIME (the star export survives only in the .d.mts), so
+ * `hosted.ts` imports from `@better-auth/core/oauth2` and this mock follows.
+ * The verifier now takes the REQUEST shape rather than a bare token.
+ */
 const mockVerifyAccessToken: Mock<
-  (token: string, opts: unknown) => Promise<FakeJwtPayload>
+  (request: { authorizationHeader?: string | null }, opts: unknown) => Promise<FakeJwtPayload>
 > = mock(async () => {
-  throw new Error("verifyAccessToken called without a stub");
+  throw new Error("verifyAccessTokenRequest called without a stub");
 });
 
-void mock.module("better-auth/oauth2", () => ({
-  verifyAccessToken: (token: string, opts: unknown) =>
-    mockVerifyAccessToken(token, opts),
+void mock.module("@better-auth/core/oauth2", () => ({
+  verifyAccessTokenRequest: (
+    request: { authorizationHeader?: string | null },
+    opts: unknown,
+  ) => mockVerifyAccessToken(request, opts),
+  // Throw-on-call: hosted.ts must NOT use `verifyJwsAccessToken`, which
+  // enforces no scopes. A future edit that switches to it fails loudly here
+  // rather than silently dropping mcp:read enforcement.
+  verifyJwsAccessToken: () => {
+    throw new Error(
+      "verifyJwsAccessToken called from refresh test — hosted.ts must use "
+        + "verifyAccessTokenRequest, which enforces requiredScopes",
+    );
+  },
   authorizationCodeRequest: () => {
     throw new Error("authorizationCodeRequest called from refresh test");
   },

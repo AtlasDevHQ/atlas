@@ -139,6 +139,11 @@ import {
   type BatchPhaseDeps,
 } from "@atlas/api/lib/brain/extract-batch";
 import {
+  emptyTriageMatchCounts,
+  triageEpisodeBody,
+  type TriageRuleId,
+} from "@atlas/api/lib/brain/triage";
+import {
   BRAIN_EXTRACTION_PRODUCER,
   EXTRACTION_SYSTEM_PROMPT,
   ExtractionSchema,
@@ -303,6 +308,24 @@ export function isBrainExtractionBatchEnabled(): boolean {
   return getSettingAuto("ATLAS_BRAIN_EXTRACTION_BATCH_ENABLED") === "true";
 }
 
+/**
+ * Should this tick run the stage-0 triage gate ahead of the model call?
+ * (#5336)
+ *
+ * OFF by default, read per TICK on {@link isBrainExtractionBatchEnabled}'s
+ * exact reasoning: extraction has been live in prod, and this changes which
+ * episodes reach the model — so with the switch off the cycle must behave
+ * byte-for-byte as it did before this gate existed (pinned in
+ * `extract-triage.test.ts`), and an operator who sees a real claim routed out
+ * can turn it off without a restart. Platform-scoped like the batch switch,
+ * because the fiber is process-wide and triage spends nothing — the
+ * suggester's per-workspace-enrollment footgun does not apply to a gate whose
+ * only effect is to NOT spend a model call.
+ */
+export function isBrainExtractionTriageEnabled(): boolean {
+  return getSettingAuto("ATLAS_BRAIN_EXTRACTION_TRIAGE_ENABLED") === "true";
+}
+
 // ---------------------------------------------------------------------------
 // SQL
 // ---------------------------------------------------------------------------
@@ -391,11 +414,26 @@ export function isBrainExtractionBatchEnabled(): boolean {
  * lookup and only for rows carrying a pointer at all. On the synchronous path
  * the column is NULL for every row, so the subquery is never entered and the
  * partial index behind it holds nothing.
+ *
+ * ## The triage exclusion (#5336) — a RECORDED verdict, not a predicate
+ *
+ * `triaged_out_at IS NULL` excludes episodes the stage-0 triage gate already
+ * routed out. ⚠️ It is deliberately a MARK the scan wrote earlier, never a
+ * triage rule inlined here: #5336 requires the rules enumerable in ONE place
+ * (`lib/brain/triage.ts`), and a predicate in this string would be a second,
+ * divergeable copy. The exclusion is what stops a deterministically-junk
+ * episode re-consuming a `LIMIT` slot every tick forever — the same
+ * head-of-line argument as `$2` — while `extracted_at` stays NULL, because no
+ * extraction ran. Clearing the mark ({@link REQUEUE_TRIAGED_SQL}) re-admits
+ * the row at its original `ingested_at` position with no further repair. With
+ * the triage gate off nothing ever writes the mark, so this predicate is true
+ * for every row and the drain behaves exactly as before the column existed.
  */
 export const DRAIN_EPISODES_SQL = `SELECT e.id, e.workspace_id, e.source, e.source_id, e.source_actor,
               e.body, e.locator, e.occurred_at, e.visible_to
          FROM brain_episodes e
         WHERE e.extracted_at IS NULL
+          AND e.triaged_out_at IS NULL
           AND (e.extraction_batch_id IS NULL
                OR NOT EXISTS (SELECT 1
                                 FROM brain_extraction_batch b
@@ -422,6 +460,41 @@ export const STAMP_EXTRACTED_SQL = `UPDATE brain_episodes
         WHERE id = $1
           AND workspace_id = $2
           AND extracted_at IS NULL`;
+
+/**
+ * Record a stage-0 triage verdict (#5336): the episode is off the drain, with
+ * the rule that decided it, and `extracted_at` stays NULL — no extraction ran
+ * and nothing may claim one did. `AND triaged_out_at IS NULL` makes a re-mark
+ * a no-op so a concurrent drainer keeps the first verdict's timestamp;
+ * `AND extracted_at IS NULL` refuses to mark an episode some other path
+ * already extracted, so the two outcomes can never coexist on one row.
+ */
+export const MARK_TRIAGED_SQL = `UPDATE brain_episodes
+          SET triaged_out_at = now(),
+              triage_reason = $3
+        WHERE id = $1
+          AND workspace_id = $2
+          AND extracted_at IS NULL
+          AND triaged_out_at IS NULL`;
+
+/**
+ * The re-queue verb #5336's acceptance criteria demand: clear a workspace's
+ * triage marks and the drain picks the episodes up again at their original
+ * `ingested_at` position — no backfill, no sweep, no copy of the rows.
+ *
+ * `$2` narrows to one rule id, or passes NULL for every mark — an operator
+ * who loosens a rule re-queues only that rule's verdicts rather than every
+ * triaged episode. Exported for the operator/admin surface that wires it (a
+ * later slice; nothing in the fiber calls it, deliberately — re-queueing is a
+ * human's decision or a smarter stage's, never this cycle's own).
+ */
+export const REQUEUE_TRIAGED_SQL = `UPDATE brain_episodes
+          SET triaged_out_at = NULL,
+              triage_reason = NULL
+        WHERE workspace_id = $1
+          AND triaged_out_at IS NOT NULL
+          AND extracted_at IS NULL
+          AND ($2::text IS NULL OR triage_reason = $2::text)`;
 
 // ---------------------------------------------------------------------------
 // The extractor
@@ -635,9 +708,38 @@ export const EXTRACTION_SKIP_REASONS = [
    * widening backoff elapses, so a repaired model heals it without a restart.
    */
   "quarantined",
+  /**
+   * Routed out by the stage-0 deterministic triage gate (#5336) before any
+   * model call. Marked `triaged_out_at` + `triage_reason` — NEVER stamped
+   * `extracted_at`, because no extraction ran — and re-queueable by clearing
+   * the mark ({@link REQUEUE_TRIAGED_SQL}). The per-rule breakdown rides
+   * {@link BrainExtractionCycleResult.triage}.
+   */
+  "triaged",
 ] as const;
 
 export type ExtractionSkipReason = (typeof EXTRACTION_SKIP_REASONS)[number];
+
+/**
+ * The stage-0 triage gate's per-tick account (#5336) — the numbers the
+ * coverage statement needs: how many fresh episodes the gate looked at, and
+ * how many it routed out, by rule. "Reached the model" is then
+ * `evaluated − Σ matched` (minus the other pre-model skips, which keep their
+ * own counters), and "produced candidates" is
+ * {@link BrainExtractionCycleResult.episodesWithCandidates}.
+ */
+export interface BrainTriageTally {
+  /**
+   * Fresh drained episodes the gate evaluated this tick. Collected batch
+   * episodes are exempt by design — their model call is already paid for, and
+   * discarding paid-for results on a filter verdict is the expensive
+   * direction of a mistake that is otherwise free.
+   */
+  evaluated: number;
+  /** Episodes routed out, by rule — a `Record` so a new rule is a compile
+   * error here, not a miscount. Its sum is what `skipped.triaged` reports. */
+  matched: Record<TriageRuleId, number>;
+}
 
 export interface BrainExtractionCycleResult {
   status: "success" | "failure";
@@ -645,6 +747,14 @@ export interface BrainExtractionCycleResult {
   inspected: number;
   /** Episodes whose extraction pass completed and were taken off the queue. */
   extracted: number;
+  /**
+   * Extracted episodes whose model pass produced at least one candidate —
+   * created, corroborated, provisional or refused alike (#5336's third
+   * coverage number). `extracted: 25, episodesWithCandidates: 2` is a quiet
+   * channel; alongside the triage tally it says whether stage 0's pass-through
+   * set is still mostly noise, which is stage 1's calibration input.
+   */
+  episodesWithCandidates: number;
   factsCreated: number;
   factsCorroborated: number;
   factsProvisional: number;
@@ -684,6 +794,13 @@ export interface BrainExtractionCycleResult {
    * simply the immediate path.
    */
   batch: BrainExtractionBatchTally;
+  /**
+   * The stage-0 triage gate's account (#5336). All zero when the gate is off —
+   * which, with `skipped.triaged: 0`, is also how an operator tells "triage is
+   * off" from "triage is on and everything passed" (`evaluated` is non-zero on
+   * the latter).
+   */
+  triage: BrainTriageTally;
   /** Present only on the scan-fault path, mirroring the other DB cycles. */
   error?: string;
 }
@@ -740,6 +857,8 @@ export interface BrainExtractionDeps {
   readonly aliasProposalDeadlineMs?: number;
   /** Defaults to {@link isBrainExtractionBatchEnabled} (#5352). */
   readonly batchEnabled?: () => boolean;
+  /** Defaults to {@link isBrainExtractionTriageEnabled} (#5336). */
+  readonly triageEnabled?: () => boolean;
   /** Defaults to the real Anthropic client in `extract-batch.ts` (#5352). */
   readonly batchClient?: BatchClient;
   /** Defaults to the internal-DB ledger in `extract-batch.ts` (#5352). */
@@ -753,6 +872,7 @@ function emptyResult(): BrainExtractionCycleResult {
     status: "success",
     inspected: 0,
     extracted: 0,
+    episodesWithCandidates: 0,
     factsCreated: 0,
     factsCorroborated: 0,
     factsProvisional: 0,
@@ -767,11 +887,12 @@ function emptyResult(): BrainExtractionCycleResult {
       SOURCE_PRINCIPAL_UNRESOLVED: 0,
       MALFORMED_CLAIM: 0,
     },
-    skipped: { model_unavailable: 0, no_body: 0, quarantined: 0 },
+    skipped: { model_unavailable: 0, no_body: 0, quarantined: 0, triaged: 0 },
     failed: 0,
     // Fresh per call for `blocked`'s reason exactly — a shared nested object
     // would make every counter here cumulative across ticks.
     batch: { submitted: 0, polled: 0, collected: 0, abandoned: 0, requeued: 0 },
+    triage: { evaluated: 0, matched: emptyTriageMatchCounts() },
   };
 }
 
@@ -793,6 +914,7 @@ export function runBrainExtractionCycle(
   // statement per call over the deduplicated surface set — and is unaffected.
   const resolveEntity = deps.resolveEntity ?? entityStoreResolver();
   const batchEnabled = deps.batchEnabled ?? isBrainExtractionBatchEnabled;
+  const triageEnabled = deps.triageEnabled ?? isBrainExtractionTriageEnabled;
   const batchClient = deps.batchClient ?? DEFAULT_BATCH_CLIENT;
   const batchLedger = deps.batchLedger ?? DEFAULT_BATCH_LEDGER;
   const proposeAliases =
@@ -870,6 +992,13 @@ export function runBrainExtractionCycle(
      * hoisted map would reintroduce it from inside.
      */
     let batchTally: BrainExtractionBatchTally = emptyResult().batch;
+    /**
+     * The stage-0 triage gate's counters for this tick (#5336). Out here
+     * beside `batchTally` and for its reason exactly: produced in `scan`
+     * (triage runs before the batch submit, so a routed-out episode is never
+     * paid for), read in the settle hook. Reset by `scan` every tick.
+     */
+    let triageTally: BrainTriageTally = emptyResult().triage;
     let precomputed = new Map<string, PrecomputedExtraction>();
 
     /**
@@ -960,6 +1089,14 @@ export function runBrainExtractionCycle(
       // reason, and in the same hook, so the audit row and the completion log
       // agree.
       result.batch = batchTally;
+      // The triage gate runs inside `scan` too (#5336), for the same reason
+      // and in the same hook. A routed-out episode never reaches `applyRow`,
+      // so its skip is folded from the scan-side tally — `skipped.triaged` is
+      // the sum the per-rule breakdown in `result.triage` itemizes.
+      result.triage = triageTally;
+      for (const count of Object.values(triageTally.matched)) {
+        result.skipped.triaged += count;
+      }
       charged.length = 0;
       emitCycleAudit(result);
     };
@@ -992,6 +1129,7 @@ export function runBrainExtractionCycle(
       // drain itself — the skeleton's failure semantics are unchanged.
       scan: async () => {
         batchTally = emptyResult().batch;
+        triageTally = emptyResult().triage;
         precomputed = new Map<string, PrecomputedExtraction>();
         const phaseDeps: BatchPhaseDeps = {
           client: batchClient,
@@ -1033,13 +1171,22 @@ export function runBrainExtractionCycle(
         const excluded = [...backingOff, ...collected.map((row) => row.id)];
         const fresh = await internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE, excluded]);
 
+        // Stage-0 triage (#5336), on the FRESH rows only and BEFORE the batch
+        // submit — the two orderings that make the gate worth having: a
+        // collected episode's model call is already paid for (routing it out
+        // now would discard bought results), and a fresh episode routed out
+        // must never be submitted and paid for either. With the gate off,
+        // `kept === fresh` and no query runs — the cycle is byte-identical to
+        // the pre-triage one, which `extract-triage.test.ts` pins.
+        const kept = triageEnabled() ? await triageFreshEpisodes(fresh, triageTally) : fresh;
+
         const submitted = batchEnabled()
-          ? await submitBatchPhase(fresh, phaseDeps, batchTally)
+          ? await submitBatchPhase(kept, phaseDeps, batchTally)
           : new Set<string>();
         // Whatever did NOT go out is extracted immediately, exactly as before.
         // That is the fallback path in its entirety: a provider with no batch
         // endpoint, a workspace whose submission failed, a body-less episode.
-        return [...collected, ...fresh.filter((row) => !submitted.has(row.id))];
+        return [...collected, ...kept.filter((row) => !submitted.has(row.id))];
       },
       applyRow: (row) =>
         extractEpisode(row, {
@@ -1134,6 +1281,72 @@ function isQuarantined(entry: QuarantineEntry | undefined, now: Date): boolean {
   if (entry === undefined || entry.failures < QUARANTINE_AFTER_FAILURES) return false;
   const shift = Math.min(entry.failures - QUARANTINE_AFTER_FAILURES, QUARANTINE_PROBE_MAX_SHIFT);
   return now.getTime() - entry.lastFailureAt < QUARANTINE_PROBE_BASE_MS * 2 ** shift;
+}
+
+/**
+ * Run the stage-0 triage gate over one tick's freshly-drained episodes
+ * (#5336): mark and drop the ones a deterministic rule catches, return the
+ * ones that go on to the model. The RULES live in `lib/brain/triage.ts` — one
+ * place, per the issue — and this function only applies the verdict.
+ *
+ * Three decisions, each biased the cheap direction (a false drop is the
+ * expensive one):
+ *
+ *   - **Body-less and whitespace-only episodes pass untouched.** They belong
+ *     to the `no_body` skip in {@link extractEpisode}, which is a different
+ *     verdict (by-reference evidence, stamped) — two owners for one body class
+ *     would make the counters disagree about what happened.
+ *   - **The mark is written BEFORE the row is dropped, and a failed write
+ *     lets the row through.** Dropping first and marking after would, on a
+ *     write fault, leave the episode both unprocessed and unmarked — invisible
+ *     this tick with nothing recorded. Letting it through costs one model
+ *     call, which is stage 0's whole currency.
+ *   - **A marked episode is NOT stamped `extracted_at`** — the drain excludes
+ *     it via `triaged_out_at`, the backlog stays queryable, and
+ *     {@link REQUEUE_TRIAGED_SQL} reverses the verdict wholesale.
+ *
+ * The failure ledger is deliberately not consulted or cleared here: triage
+ * runs before any model call, so it neither charges nor forgives strikes, and
+ * a re-queued episode re-enters the drain with whatever history it had.
+ */
+async function triageFreshEpisodes(
+  fresh: readonly EpisodeRow[],
+  tally: BrainTriageTally,
+): Promise<readonly EpisodeRow[]> {
+  const kept: EpisodeRow[] = [];
+  // Serial on purpose, not an overlooked `Promise.all`: the whole cycle is
+  // sequential by design (`Effect.forEach(concurrency: 1)` one seam up), the
+  // writes are ≤ BATCH_SIZE tiny primary-key UPDATEs, and fanning them out
+  // would burst checkouts on the internal pool (bounded at 5) that auth,
+  // audit and this drain's own queries share — the exact contention the
+  // alias-proposal deadline note above measures the cost of.
+  for (const row of fresh) {
+    if (row.body === null || row.body.trim() === "") {
+      kept.push(row);
+      continue;
+    }
+    tally.evaluated++;
+    const rule = triageEpisodeBody(row.body);
+    if (rule === null) {
+      kept.push(row);
+      continue;
+    }
+    try {
+      await internalQuery(MARK_TRIAGED_SQL, [row.id, row.workspace_id, rule]);
+      tally.matched[rule]++;
+    } catch (err) {
+      // The mark could not be recorded, so the verdict is not allowed to act:
+      // an unmarked drop would be exactly the silent, uncounted loss the mark
+      // exists to prevent. The episode goes to the model instead, and the
+      // next tick re-selects and re-tries the mark.
+      log.warn(
+        { workspaceId: row.workspace_id, episodeId: row.id, rule, err: errorMessage(err) },
+        "brain extraction: could not record a stage-0 triage verdict — letting the episode through to the model rather than dropping it uncounted; the next tick retries the mark",
+      );
+      kept.push(row);
+    }
+  }
+  return kept;
 }
 
 /** Extract → reconcile → stamp, for one episode. */
@@ -1579,9 +1792,23 @@ function tallyEpisode(
       // 12` says candidates were refused, `blocked.MALFORMED_CLAIM: 12` says the
       // extractor is emitting empty triples, and those send an investigation to
       // different files.
+      let refused = 0;
       for (const [reason, count] of Object.entries(outcome.report.blocked)) {
         result.blocked[reason as ReconcileBlockReason] += count;
         result.factsBlocked += count;
+        refused += count;
+      }
+      // Refused candidates count toward "produced" — the model DID draw a
+      // claim; the reconcile gate declined it. The question this counter
+      // answers (#5336) is about the model pass, not about what survived.
+      if (
+        outcome.report.created +
+          outcome.report.corroborated +
+          outcome.report.provisional +
+          refused >
+        0
+      ) {
+        result.episodesWithCandidates++;
       }
       return;
     }

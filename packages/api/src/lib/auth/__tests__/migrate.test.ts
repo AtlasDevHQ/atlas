@@ -631,6 +631,13 @@ describe("migrateAuthTables", () => {
             // 0208 creates `brain_actor_identity` (#5440) — an Atlas-owned brain
             // table Better Auth has no stake in, so the same grounds as 0196–0207.
             { name: "0208_brain_actor_identity.sql" },
+            // 0210 (#5336) — additive triaged_out_at/triage_reason columns on
+            // brain_episodes, an Atlas-owned brain table Better Auth has no
+            // stake in, so it runs in every auth mode — must be in the
+            // already-applied set so this "all applied" test sees zero new
+            // migrations. (0209 is absent deliberately: it is a
+            // MANAGED_AUTH_MIGRATION and never runs in this mode.)
+            { name: "0210_brain_triage.sql" },
           ],
         };
       }

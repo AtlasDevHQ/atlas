@@ -2018,6 +2018,34 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
   {
+    // Stage-0 pre-extraction triage (#5336). PLATFORM-scoped and default OFF,
+    // matching the batch switch above rather than the suggester's workspace
+    // enrollment, because the mechanisms differ: the suggester's dial ENROLLS
+    // workspaces in a model-driven producer (where a platform-scope `true`
+    // silently enrolling every SaaS tenant is the accident its off-by-default
+    // prevents), while this changes the process-wide fiber's CONTROL FLOW and
+    // never spends anything — its only power is to NOT call a model. Off by
+    // default because extraction is live in prod and a filter that drops a
+    // real claim is a new way to be quietly wrong; with it off the cycle is
+    // byte-identical to today's, which `extract-triage.test.ts` pins.
+    //
+    // Read per TICK (like the batch switch, unlike the extraction switch), so
+    // an operator who sees a real claim routed out can turn it off without a
+    // restart. The rules themselves are enumerated in `lib/brain/triage.ts`;
+    // triaged-out episodes are marked `triaged_out_at` + `triage_reason` —
+    // never stamped extracted — and re-queue by clearing the mark.
+    key: "ATLAS_BRAIN_EXTRACTION_TRIAGE_ENABLED",
+    section: "Knowledge Base",
+    label: "Company Atlas Extraction Triage",
+    description:
+      "Route obviously claim-free episodes — bare acknowledgements like \"+1\" and \"on it\", pure emoji reactions, bodies too short to state anything — past the extraction model using a fixed, human-readable rule list, before any model call is made. No model and no scoring are involved; the rules are deterministic and biased toward letting episodes through. A routed-out episode is never marked extracted: it keeps a visible triage mark with the rule that fired, is counted per rule on the extraction cycle's audit row, and can be re-queued by clearing the mark. Off by default; applies on the next cycle, no restart.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_BRAIN_EXTRACTION_TRIAGE_ENABLED",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
     // The autonomous suggester's trust dial (#5488, ADR-0036 §T9 lock 1's
     // permitted autonomy). WORKSPACE-scoped, default OFF, hot-reloaded — one
     // platform fiber iterates the workspaces that opted in, resolved per tick

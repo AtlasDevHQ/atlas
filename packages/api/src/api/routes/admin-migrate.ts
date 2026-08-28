@@ -2698,6 +2698,24 @@ export async function importBundle(
   // The refusal line is what surfaces that tension; `removeAliasEdge` is the
   // destination admin's remedy, and re-ordering the two sections would not
   // remove it — it would only decide it silently in the other direction.
+  //
+  // ⚠️ THE LOCK IS TAKEN FOR THESE TWO SECTIONS TOO, on section 10's "taken for
+  // the READ" reasoning. Section 9 acquires it only when the bundle carries
+  // EDGES, and a bundle can carry proposals or cardinality entries with none.
+  // Unlocked, two races open: (a) every other writer to the proposal table
+  // (`proposeAliasEdge`, the decide seam) runs under this lock, so an unlocked
+  // SELECT-then-INSERT here can 23505 against a concurrent proposer and take
+  // the whole import with it; (b) the cardinality screen below reads the
+  // predicate CLOSURE, and a concurrent `decideAliasProposal` approval rebuilds
+  // that closure mid-read — the screen would then judge an entry against a
+  // vocabulary this region no longer holds. `pg_advisory_xact_lock` is
+  // re-entrant, so this costs nothing when section 9 already took it.
+  if (
+    (bundle.brainVocabularyProposals ?? []).length > 0 ||
+    (bundle.brainPredicateCardinalities ?? []).length > 0
+  ) {
+    await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, orgId]);
+  }
   for (const proposal of bundle.brainVocabularyProposals ?? []) {
     const existing = await client.query(
       `SELECT id, status FROM brain_vocabulary_proposal
@@ -2735,13 +2753,25 @@ export async function importBundle(
     } else if (held.status === proposal.status) {
       result.brainVocabularyProposals.skipped++;
     } else if (held.status === "pending" && isDecidedStatus(proposal.status)) {
-      await client.query(
+      const applied = await client.query(
         `UPDATE brain_vocabulary_proposal
             SET status = $2, reviewed_by = $3, reviewed_at = $4
           WHERE id = $1 AND workspace_id = $5 AND status = 'pending'`,
         [held.id, proposal.status, proposal.reviewedBy, proposal.reviewedAt, orgId],
       );
-      result.brainVocabularyProposals.imported++;
+      // The status predicate re-checks under the lock; zero rows means the row
+      // changed between the SELECT and here (the enrollments section's
+      // concurrent-change arm, one table over). Counted `refused` and warned —
+      // an `imported` that wrote nothing would report a decision as landed.
+      if ((applied.rowCount ?? 0) > 0) {
+        result.brainVocabularyProposals.imported++;
+      } else {
+        result.brainVocabularyProposals.refused++;
+        log.warn(
+          { orgId, correlationId, slotPosition: proposal.slotPosition, fromNorm: proposal.fromNorm, toNorm: proposal.toNorm, arrivingStatus: proposal.status },
+          "Region import: the arriving vocabulary-proposal decision matched no pending row to update — it was decided concurrently. The source decision is NOT applied; re-author it here if it is the right one",
+        );
+      }
     } else if (proposal.status === "pending") {
       result.brainVocabularyProposals.skipped++;
     } else {
@@ -2823,11 +2853,21 @@ export async function importBundle(
     );
     const held = existing.rows[0] as { status: string; cardinality: string } | undefined;
     if (held === undefined) {
-      await client.query(
+      // `ON CONFLICT DO NOTHING` + RETURNING rather than a bare INSERT: the
+      // table's OWN writers (`proposeSingleCardinality`, the authoring upsert)
+      // are atomic single statements that take no advisory lock, so the
+      // vocabulary lock above does not serialize them — a concurrent proposer
+      // can take the key's only slot between the SELECT and here, and a bare
+      // INSERT would then 23505 the whole import. Zero rows is that race:
+      // counted `refused` and warned (destination-wins, like every conflict in
+      // this section), never retried blind.
+      const inserted = await client.query(
         `INSERT INTO brain_predicate_cardinality
            (workspace_id, predicate_key, cardinality, status, source_class,
             proposed_by, proposed_at, reviewed_by, reviewed_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (workspace_id, predicate_key) DO NOTHING
+         RETURNING predicate_key`,
         [
           orgId,
           entry.predicateKey,
@@ -2840,7 +2880,15 @@ export async function importBundle(
           entry.reviewedAt,
         ],
       );
-      result.brainPredicateCardinalities.imported++;
+      if (inserted.rows.length > 0) {
+        result.brainPredicateCardinalities.imported++;
+      } else {
+        result.brainPredicateCardinalities.refused++;
+        log.warn(
+          { orgId, correlationId, predicateKey: entry.predicateKey, arrivingStatus: entry.status },
+          "Region import: a predicate-cardinality entry appeared concurrently while importing this one — this region's row is kept and the arriving entry is NOT applied; re-author it here if it is the right one",
+        );
+      }
     } else if (
       held.status === entry.status &&
       // Two REJECTED rows agree in effect whatever value each declined: the
@@ -2852,14 +2900,24 @@ export async function importBundle(
       // A decision outranks a queue entry. The value moves WITH the decision —
       // an approval of `single` over a pending `multi` is an approval of
       // `single` — but the destination row keeps its own proposer, on
-      // `enrolledBy`'s no-re-attribution rule.
-      await client.query(
+      // `enrolledBy`'s no-re-attribution rule. The status predicate re-checks
+      // under the statement's own snapshot (`decidePredicateCardinality`'s
+      // shape); zero rows is a concurrent decision, counted and warned.
+      const applied = await client.query(
         `UPDATE brain_predicate_cardinality
             SET cardinality = $3, status = $4, reviewed_by = $5, reviewed_at = $6
           WHERE workspace_id = $1 AND predicate_key = $2 AND status = 'pending'`,
         [orgId, entry.predicateKey, entry.cardinality, entry.status, entry.reviewedBy, entry.reviewedAt],
       );
-      result.brainPredicateCardinalities.imported++;
+      if ((applied.rowCount ?? 0) > 0) {
+        result.brainPredicateCardinalities.imported++;
+      } else {
+        result.brainPredicateCardinalities.refused++;
+        log.warn(
+          { orgId, correlationId, predicateKey: entry.predicateKey, arrivingStatus: entry.status },
+          "Region import: the arriving predicate-cardinality decision matched no pending row to update — it was decided concurrently. The source decision is NOT applied; re-author it here if it is the right one",
+        );
+      }
     } else if (entry.status === "pending") {
       result.brainPredicateCardinalities.skipped++;
     } else {

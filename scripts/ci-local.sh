@@ -47,7 +47,7 @@
 #   TEST_DATABASE_URL=...  If set, the real-Postgres *-pg.test.ts run. If UNSET,
 #                          they self-skip AND the `test` gate is recorded
 #                          DECLINED (exit 3) rather than PASS — a run that
-#                          exercised none of the 96 real-Postgres suites is not
+#                          exercised none of the 97 real-Postgres suites is not
 #                          pre-PR pass (#5410). There is no opt-out; use
 #                          CI_LOCAL_NO_TEST=1 for a deliberate gates-only run.
 #

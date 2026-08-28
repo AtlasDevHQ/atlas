@@ -21,7 +21,7 @@ afterEach(() => {
 function installFetchResponse(response: Response) {
   const calls: FetchCall[] = [];
   const mockFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
-    calls.push([input, init]);
+    calls.push(init === undefined ? [input] : [input, init]);
     return response.clone();
   });
   globalThis.fetch = Object.assign(mockFn, { preconnect: () => {} }) as unknown as typeof fetch;

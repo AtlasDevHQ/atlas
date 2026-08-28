@@ -105,7 +105,7 @@ describe("createMockConnection", () => {
     await conn.query("SELECT 1");
     await conn.query("SELECT 2", 5000);
     expect(conn.queryCalls).toEqual([
-      { sql: "SELECT 1", timeoutMs: undefined },
+      { sql: "SELECT 1" },
       { sql: "SELECT 2", timeoutMs: 5000 },
     ]);
   });

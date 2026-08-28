@@ -18,5 +18,11 @@
     "types": ["bun", "node"],
     "tsBuildInfoFile": "./tsconfig.exact-optional.tsbuildinfo"
   },
-  "include": ["packages/types/src", "packages/schemas/src"]
+  "include": [
+    "packages/types/src",
+    "packages/schemas/src",
+    "packages/sdk/src",
+    "packages/plugin-sdk/src",
+    "packages/webhook-publisher/src"
+  ]
 }

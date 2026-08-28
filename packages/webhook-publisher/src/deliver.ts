@@ -225,7 +225,11 @@ export async function deliverWebhook(
       if (res.status >= 400 && res.status < 500) {
         // Permanent — the receiver said no. Capture a body excerpt and stop.
         const responseText = await readExcerpt(res);
-        lastFailure = { kind: "http_error", status: res.status, responseText };
+        lastFailure = {
+          kind: "http_error",
+          status: res.status,
+          ...(responseText !== undefined ? { responseText } : {}),
+        };
         permanent = true;
       } else {
         lastFailure = { kind: "http_error", status: res.status };
@@ -271,7 +275,9 @@ export async function deliverWebhook(
       status: lastFailure.status,
       attempts: attemptsUsed,
       error: `http_${lastFailure.status}`,
-      responseText: lastFailure.responseText,
+      ...(lastFailure.responseText !== undefined
+        ? { responseText: lastFailure.responseText }
+        : {}),
       signature,
     };
   }

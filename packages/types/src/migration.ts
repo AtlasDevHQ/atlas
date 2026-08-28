@@ -90,6 +90,10 @@ export interface ExportManifest {
     brainEntities?: number;
     /** Resolved actor identities — the human name on each claim (#5440). */
     brainActorIdentities?: number;
+    /** The alias queue + its permanent rejection memory (#5023, exported by #5113). */
+    brainVocabularyProposals?: number;
+    /** Canonical-predicate cardinality decisions (#5027, exported by #5113). */
+    brainPredicateCardinalities?: number;
   };
 }
 
@@ -573,6 +577,83 @@ export interface ExportedBrainVocabularyEdge {
 }
 
 /**
+ * One row of the alias queue — including its PERMANENT REJECTION MEMORY
+ * (#5023, ADR-0037 §6; exported by #5113).
+ *
+ * The identity is the UNORDERED pair `(slotPosition, {fromNorm, toNorm})` —
+ * `fromNorm`/`toNorm` carry the proposed (or approval-fixed) direction, but the
+ * destination merges on the pair, because that is the table's own unique key
+ * and the property the rejection memory protects: a producer cannot route
+ * around a rejection by emitting the pair the other way.
+ *
+ * Why it travels: a `rejected` row is a human's decision that two norms are
+ * NOT the same slot, and it is the state that stops a producer re-writing what
+ * a human removed. Left behind ('stays' is deletion, #4458), the destination's
+ * producer re-proposes the pair and — for a warehouse-derived entity edge —
+ * AUTO-APPROVES it, which is #4507's failure returning across a region
+ * boundary. The pending queue rides too: it re-derives, but carrying it costs
+ * nothing and spares the destination a producer cycle.
+ *
+ * `applying` never appears here — the claim/apply/stamp share one transaction
+ * so it never commits, and the exporter filters it anyway. `claimedAt` is a
+ * region-local claim token and does not travel.
+ */
+export interface ExportedBrainVocabularyProposal {
+  slotPosition: ExportedVocabularySlotPosition;
+  /** The proposed direction's source norm — arrival order for an undirected pair. */
+  fromNorm: string;
+  toNorm: string;
+  /** False when neither side is warehouse-derived — approval must supply direction. */
+  directed: boolean;
+  /** `warehouse_key` | `extractor` | `seam` | `human` — the auto-approve gate's input. */
+  sourceClass: string;
+  /** 0–1 producer confidence. */
+  confidence: number;
+  /** `pending` | `approved` | `rejected` — never `applying` (see the header). */
+  status: string;
+  /** Never empty — every proposal has an author (the table's NOT NULL). */
+  proposedBy: string;
+  proposedAt: string;
+  /** `null` = machine decision; `local-operator` = no-auth human; else a user id. */
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+}
+
+/**
+ * One cardinality decision on a canonical predicate (#5027, ADR-0037 §3;
+ * exported by #5113).
+ *
+ * `predicateKey` is `alias(lexicalNorm(surface))` UNDER THE SOURCE REGION'S
+ * VOCABULARY. The vocabulary merge (#5036) can leave the destination
+ * canonicalizing the same norm differently, and an entry landing on a
+ * re-canonicalized key would make an UNRELATED slot destructively
+ * supersedable — the direction bundle-scope.ts calls the one that is not
+ * affordable. The importer therefore checks the key against the destination's
+ * POST-MERGE predicate closure and REFUSES (never re-keys) an entry the
+ * destination aliases elsewhere; the refusal is counted and logged per row.
+ *
+ * A stored `multi` is not redundant with absence: absence means nobody looked,
+ * a stored `multi` is a human declining the question — which is what stops a
+ * producer re-proposing it. A `rejected` row is the same memory one state over.
+ */
+export interface ExportedBrainPredicateCardinality {
+  /** The canonical predicate key in the SOURCE region's vocabulary. Never empty. */
+  predicateKey: string;
+  /** `single` | `multi`. */
+  cardinality: string;
+  /** `pending` | `approved` | `rejected`. */
+  status: string;
+  /** `warehouse_structural` | `correction_event` | `human`. */
+  sourceClass: string;
+  /** Never empty — the table's CHECK refuses an unattributed row. */
+  proposedBy: string;
+  proposedAt: string;
+  /** `null` = machine decision; `local-operator` = no-auth human; else a user id. */
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+}
+
+/**
  * One Slack channel an admin removed from the company brain's ingest scope
  * (#5203, ADR-0036).
  *
@@ -586,9 +667,10 @@ export interface ExportedBrainVocabularyEdge {
  * channel the bot is in, minus exclusions", so an exclusion that failed to
  * travel does not degrade the destination — it makes the destination ingest a
  * channel a human took out of scope. That is over-DISCLOSURE, the
- * unrecoverable direction, and it is why this section exists rather than being
- * deferred like `brain_vocabulary_proposal`'s rejection memory (whose cost is
- * under-supersession, which is recoverable by re-authoring).
+ * unrecoverable direction, and it is why this section existed while
+ * `brain_vocabulary_proposal`'s rejection memory was still deferred (its cost
+ * is under-supersession, recoverable by re-authoring; it travels too since
+ * #5113).
  */
 export interface ExportedBrainSlackChannelExclusion {
   /** The Slack channel id — `^[CG][A-Z0-9]{2,}$`, matching the table's CHECK. */
@@ -869,6 +951,22 @@ export interface ExportBundle {
    * type's own header for why dropping the section is the silent failure.
    */
   brainActorIdentities?: ExportedBrainActorIdentity[];
+  /**
+   * The alias queue and its permanent rejection memory (#5023, exported by
+   * #5113). Same optional-on-the-wire shape as the sections above.
+   *
+   * Travels WITH `brainVocabularyEdges` because it is memory ABOUT them: a
+   * `rejected` row is the state that stops a producer re-writing what a human
+   * removed, and losing it re-opens #4507's auto-approve across a migration.
+   */
+  brainVocabularyProposals?: ExportedBrainVocabularyProposal[];
+  /**
+   * Canonical-predicate cardinality decisions (#5027, exported by #5113). Same
+   * optional-on-the-wire shape as the sections above. Keyed on the SOURCE
+   * region's canonical predicate — see the type for the re-canonicalization
+   * refusal the importer applies.
+   */
+  brainPredicateCardinalities?: ExportedBrainPredicateCardinality[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,6 +1179,39 @@ export interface ImportResult {
    * which is the one outcome an erasure has to survive.
    */
   brainActorIdentities: { imported: number; skipped: number };
+  /**
+   * The alias queue and its rejection memory (#5023, #5113).
+   *
+   * THREE counters, on `brainVocabularyEdges`' reasoning: two regions can hold
+   * contradictory human decisions about one pair, so the import has an outcome
+   * that is not "already here". The merge is keyed on the UNORDERED pair:
+   *
+   *   - `imported` — the pair was absent and landed verbatim, OR an arriving
+   *     DECIDED row (approved/rejected) replaced a destination `pending` (a
+   *     decision outranks a queue entry; the rejected arm is what closes
+   *     #4507 across a migration).
+   *   - `skipped` — the destination already holds the same decision (or the
+   *     arriving row is `pending` and the destination holds any row for the
+   *     pair — the queue entry re-derives, nothing human is lost).
+   *   - `refused` — the arriving decision CONTRADICTS a destination decision.
+   *     The destination's row is kept, on `mergeApprovedEdges`' destination-
+   *     wins reasoning, and every refusal is logged with enough of the source
+   *     row to re-author it by hand — surfaced, never silently overwritten.
+   */
+  brainVocabularyProposals: { imported: number; skipped: number; refused: number };
+  /**
+   * Canonical-predicate cardinality decisions (#5027, #5113).
+   *
+   * THREE counters, and `refused` covers TWO refusal causes, both logged per
+   * row: a decided-vs-decided conflict on the same key (destination wins,
+   * `brainVocabularyProposals`' rule), and — the arm the old deferral existed
+   * for — an arriving entry whose `predicateKey` the destination's POST-MERGE
+   * predicate closure aliases onto a DIFFERENT norm. That entry is refused
+   * outright: re-keying it silently would apply a supersession license to a
+   * slot no human at either region curated, with no preview. Re-authoring at
+   * the destination is the remedy, and the log line carries the key both ways.
+   */
+  brainPredicateCardinalities: { imported: number; skipped: number; refused: number };
 }
 
 // ---------------------------------------------------------------------------

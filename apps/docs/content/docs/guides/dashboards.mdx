@@ -8,8 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 Dashboards let you pin query results from chat and organize them into persistent, shareable layouts. **Chart cards** store a SQL query, chart configuration, and cached results — refreshable on demand or on a schedule; **text cards** store markdown for [section headers](#section-headers-text-cards) and explainers (no SQL, no data).
 
 <Callout title="Prerequisites">
-- An internal database configured (`DATABASE_URL`)
-- At least one query result in chat to add
+- At least one query result in chat to add (dashboards persist in Atlas's internal database — always present on Atlas Cloud; self-hosted deployments need `DATABASE_URL` configured)
 </Callout>
 
 ---
@@ -268,7 +267,7 @@ Cards store cached results. To update them:
 Auto-refresh uses the scheduler tick engine. The next refresh time is computed from the cron expression and displayed in the dashboard header.
 
 <Callout type="info">
-Auto-refresh requires `ATLAS_SCHEDULER_ENABLED=true`. See [Scheduled Tasks](/guides/scheduled-tasks) for setup.
+Auto-refresh runs on the task scheduler — always on for Atlas Cloud; self-hosted deployments set `ATLAS_SCHEDULER_ENABLED=true`. See [Scheduled Tasks](/guides/scheduled-tasks) for setup.
 </Callout>
 
 ### Tile status

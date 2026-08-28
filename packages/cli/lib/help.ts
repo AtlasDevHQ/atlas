@@ -478,6 +478,7 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
         name: "profile <id>",
         description: "Profile a datasource & generate its semantic layer as drafts (long-running, cancellable)",
       },
+      { name: "publish [id]", description: "Publish every pending draft in the workspace (atomic — the optional id is only for confirmation messaging)" },
       { name: "archive <id>", description: "Archive a datasource (reversible via restore)" },
       { name: "restore <id>", description: "Restore an archived datasource (republishes it)" },
       { name: "delete <id>", description: "Delete a datasource (soft — recoverable via restore)" },

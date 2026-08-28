@@ -102,7 +102,7 @@ Injected patterns carry their typical latency into the prompt (`avg ~123ms`) so 
 
 ### Seeing a pattern's standing
 
-The **Admin → Learned Patterns** cockpit surfaces each pattern's evidence so its payoff is observable rather than asserted: its status (and whether a human or the machine approved it), its confidence, how many times it's been seen, and its average latency. Sort or filter by any of these to find, for example, an approved pattern that has never gained repetitions — a candidate to refine its description or retire.
+The **Admin → Learned Patterns** cockpit surfaces each pattern's evidence so its payoff is observable rather than asserted: its status (and whether a human or the machine approved it), its confidence, how many times it's been seen, its average latency, and its **injection count over the trailing 30 days** — how often the pattern actually made it into the agent's prompt, the most direct "is this pattern earning its keep now" measure. Sort or filter by any of these to find, for example, an approved pattern with zero recent injections — a candidate to refine its description or retire.
 
 ## Learned patterns vs. query suggestions (by design)
 

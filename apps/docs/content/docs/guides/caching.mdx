@@ -10,7 +10,6 @@ Atlas caches query results in-memory so that identical queries return instantly 
 Only the agent's `executeSQL` path reads and writes this cache — dashboard tiles, metrics, and REST/OpenAPI datasource calls never cache — so the hit-rate stats below reflect agent query traffic only.
 
 <Callout title="Prerequisites">
-- Atlas server running (`bun run dev`)
 - Caching is **enabled by default** — no configuration needed to start
 - Admin role for cache management endpoints
 </Callout>

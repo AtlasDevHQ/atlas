@@ -1,5 +1,5 @@
 ---
-description: "Run the pre-PR gate — scripts/ci-local.sh, 42 ci-local gates, PASS/FAIL table. Mandatory before a PR. Iterate with bun test --parallel --changed instead."
+description: "Run the pre-PR gate — scripts/ci-local.sh, 43 ci-local gates, PASS/FAIL table. Mandatory before a PR. Iterate with bun test --parallel --changed instead."
 ---
 
 Run the same checks CI runs. This must pass before opening a PR.
@@ -138,7 +138,7 @@ pass); `CI_LOCAL_NO_NET=1` skips the two npm-registry gates for offline runs;
 It is a **superset of the historic /ci list** — it adds the drift gates real CI
 runs that the old /ci skipped (so you stop discovering them only after a push).
 The roster is `GATE_NAMES` in `scripts/ci-local.sh`, which is the authority; all
-42 ci-local gates, in run order:
+43 ci-local gates, in run order:
 `type`, `lint`, `lint-type-aware` (oxlint `--type-aware` via tsgolint — the
 promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
 `syncpack`, `dockerfile-bun-pins`, `dockerfile-workspace`,
@@ -151,12 +151,13 @@ promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
 `settings-readers`, `saas-env-doc`,
 `brain-settings-doc`,
 `docs-links`, `agent-doc-paths`, `web-brand-tokens`, `docs-brain-snippets`, `auth-md-parity`, `apex-discovery-drift`,
-`openapi-drift`, `published-symbols`, `unpublished-versions` (both net-gated),
+`openapi-drift`, `openapi-removals` (endpoint removals vs the last release tag
+must be ledgered on the stability page), `published-symbols`, `unpublished-versions` (both net-gated),
 `gate-fixtures` (the adversarial `scripts/__tests__/*.test.sh` suites),
 `mutation-tables`, and the full `test` suite.
 
-41 is the **default-configuration** count: `CI_LOCAL_NO_NET=1` drops the two
-registry gates (39), `CI_LOCAL_NO_TEST=1` drops `test` (40), both drop to 38.
+42 is the **default-configuration** count: `CI_LOCAL_NO_NET=1` drops the two
+registry gates (40), `CI_LOCAL_NO_TEST=1` drops `test` (41), both drop to 39.
 The figure is no longer hand-maintained: `check-agent-doc-paths.sh` derives it from
 the `launch`/`run_fg` lines in `scripts/ci-local.sh` and fails on any doc that
 restates it wrongly.

@@ -158,7 +158,7 @@ ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
 
 Users can log out via `POST /api/auth/sign-out` (clears the session cookie). Sessions are also revoked when the session expires (7 days) or if the user is deleted by an admin.
 
-> **Cookie cache:** Better Auth is configured with a 5-minute cookie cache (`cookieCache.maxAge = 300s`). This means **role changes and session revocations may take up to 5 minutes to take effect** due to the cache. The cache improves performance by avoiding a database lookup on every request, but be aware of this delay when revoking access or changing user roles.
+> **Cookie cache:** Better Auth is configured with a **30-second** signed cookie cache (`cookieCache.maxAge`, default 30s, clamped 5–300s via `ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC`). **Role changes and session revocations may take up to that long to take effect.** The cache avoids a database lookup on every request — raising the value trades revocation speed for fewer lookups. See [Session Timeouts](/reference/environment-variables#session-timeouts).
 
 #### Cross-origin deployment (Self-Hosted)
 

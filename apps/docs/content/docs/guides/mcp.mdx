@@ -540,6 +540,10 @@ When the result has multiple columns or multiple rows, `value` falls back to the
 
 The `filters` parameter is reserved for future pre-aggregation filter pass-through. Passing a non-empty `filters` object is rejected today; use `executeSQL` with the metric's raw SQL if you need to filter results before aggregation.
 
+### searchBrain
+
+Search the workspace's grounded context — Knowledge Base documents plus the [Company Atlas](/guides/atlas-temporal-model)'s reviewed facts. Results are trust-labelled: a fact carries its source, its date, and the person who stood behind it, and access is ACL-scoped fail-closed. This tool evolved from (and still answers to) the legacy `searchKnowledge` name. See the [MCP tools architecture page](/architecture/mcp-tools) for the schema single-sourcing.
+
 ---
 
 ## Datasource lifecycle tools

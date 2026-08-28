@@ -90,6 +90,10 @@ function App() {
 
 If the health endpoint returns a `brandColor` value (OKLCH format), it's applied as the `--atlas-brand` CSS custom property. See [Custom Styling](#custom-styling) for override options.
 
+### REST writes are unavailable in the widget
+
+Allowlisted [REST datasource writes](/plugins/datasources/openapi-generic#writing--opt-in-then-confirm) require a chat surface that can render the confirm-before-write card and POST the confirmation. The widget does not, so `/api/v1/chat` requests it makes are **not offered writes**: the agent refuses a write up front with `write_confirmation_unavailable` and stages nothing ([#5498](https://github.com/AtlasDevHQ/atlas/issues/5498)). REST *reads* work normally. A custom surface that implements its own confirm card can declare the capability by sending the `x-atlas-write-confirm-ui: 1` header on its chat requests — the header is a capability declaration, not a security control; the confirm endpoint still re-validates the allowlist and burns a single-use server-signed token.
+
 ---
 
 ## AtlasProvider
@@ -1163,7 +1167,7 @@ import { Markdown, DataTable, ErrorBanner, SQLResultCard } from "@useatlas/react
 | `Markdown` | Chat-flavored Markdown (GFM tables, fenced code, sanitized HTML) |
 | `DataTable` | A query result grid with sorting, formatting, and CSV/Excel export |
 | `SQLResultCard` | The full `executeSQL` result card — table, chart toggle, row count, error state. Also exports `SQLResultCardProps`, `SqlResultActionContext`, `PreviousExecution` |
-| `PythonResultCard` | The `runPython` result card (stdout, artifacts, progress). Also exports `PythonResultCardProps`, `PythonProgressData` |
+| `PythonResultCard` | The `executePython` result card (stdout, artifacts, progress). Also exports `PythonResultCardProps`, `PythonProgressData` |
 | `ResultCardBase` / `ResultCardErrorBoundary` | The shared card chrome + an error boundary to wrap a custom card. Also exports `ResultCardBaseProps` |
 | `ErrorBanner` | The inline error surface driven by a parsed `ChatErrorInfo` |
 
@@ -1202,7 +1206,7 @@ import {
 
 ### Tool renderer types
 
-Type your own `executeSQL` / `explore` / `runPython` renderers against the same wire shapes `AtlasChat` uses:
+Type your own `executeSQL` / `explore` / `executePython` renderers against the same wire shapes `AtlasChat` uses:
 
 ```typescript
 import type {

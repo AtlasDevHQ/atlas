@@ -4,6 +4,7 @@
   "icon": "BookOpen",
   "pages": [
     "chat-surface",
+    "embedding-widget",
     "answer-styles",
     "multi-tenancy",
     "plugin-marketplace",

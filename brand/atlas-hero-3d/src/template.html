@@ -971,7 +971,67 @@ var sheetEl=document.getElementById('sheet'),
     groundEl=document.getElementById('ground');
 var SURVEY=CLASSES.filter(function(d){ return d.render!=='off-survey'; });
 var OFFS=CLASSES.filter(function(d){ return d.render==='off-survey'; });
+var SURVEY_GI=SURVEY.map(function(d){ return CLASSES.indexOf(d); });
 var sheetDom=null, sheetScale=1, lastReveal=-1;
+
+/* ---- the world in the record (#5518) ----
+   A faint embossed ghost of the globe's engraving under each quadrangle: the
+   patch of the world that quad condensed from, cropped around the class's
+   anchor UV — the mesh's own texture coordinates, so it is georeferenced by
+   construction. Pre-rendered once per class as ink-on-transparent, normalized
+   by the crop's own luminance range (no ctx.filter, which WebKit long
+   lacked): the engraved lines come out as strokes a few percent from paper —
+   an emboss, not a photograph. redrawSheet lays it under the marks, clipped
+   by the quad's own outline, torn edge included, so the world ends where the
+   survey does. Any failure here degrades to the plain sheet. */
+var ghostSrc=null, ghosts=null;
+var GHOST_W=512, GHOST_SPAN=0.22;    // crop ~a fifth of the band per class
+function buildGhosts(){
+  if(!ghostSrc || !classUV.length || ghosts) return;
+  var iw=ghostSrc.width, ih=ghostSrc.height;
+  var out={};
+  try{
+    for(var i=0;i<CLASSES.length;i++){
+      if(CLASSES[i].render==='off-survey') continue;
+      var gw=GHOST_W, gh=Math.round(GHOST_W*S_QUAD_H/SHEET_QW);
+      var cw=Math.min(iw,Math.round(iw*GHOST_SPAN));
+      var ch=Math.min(ih,Math.round(cw*gh/gw));
+      var cx=Math.max(0,Math.min(iw-cw,Math.round(classUV[i][0]*iw-cw/2)));
+      var cy=Math.max(0,Math.min(ih-ch,Math.round(classUV[i][1]*ih-ch/2)));
+      var c=document.createElement('canvas'); c.width=gw; c.height=gh;
+      var g=c.getContext('2d');
+      g.drawImage(ghostSrc,cx,cy,cw,ch,0,0,gw,gh);
+      // High-pass, not threshold: an emboss is line work. A broad bright
+      // patch of the bake is area, and area thresholded to ink reads as a
+      // stain — so the stroke is each pixel's positive deviation from a
+      // local average (a downscale/upscale bounce, the cheapest blur there
+      // is), which keeps the engraved lines and drops the fields between.
+      var lo=document.createElement('canvas');
+      lo.width=Math.max(1,gw>>3); lo.height=Math.max(1,gh>>3);
+      lo.getContext('2d').drawImage(c,0,0,lo.width,lo.height);
+      var bc=document.createElement('canvas'); bc.width=gw; bc.height=gh;
+      var bg=bc.getContext('2d');
+      bg.imageSmoothingEnabled=true;
+      bg.drawImage(lo,0,0,gw,gh);
+      var img=g.getImageData(0,0,gw,gh), px=img.data;
+      var bpx=bg.getImageData(0,0,gw,gh).data;
+      for(var k=0;k<px.length;k+=4){
+        var l =0.2126* px[k]+0.7152* px[k+1]+0.0722* px[k+2];
+        var lb=0.2126*bpx[k]+0.7152*bpx[k+1]+0.0722*bpx[k+2];
+        var a=Math.max(0,Math.min(1,((l-lb)-5)/34));
+        px[k]=22; px[k+1]=36; px[k+2]=28;          // --plate-ink
+        px[k+3]=Math.round(a*255);
+      }
+      g.putImageData(img,0,0);
+      out[i]=c;
+    }
+    ghosts=out;
+  }catch(err){
+    // A tainted canvas or OOM leaves the sheet plain rather than broken.
+    console.debug('engraving ghost skipped:',err&&err.message?err.message:String(err));
+    ghosts=null;
+  }
+}
 
 /* The glosses are the shipped MARK_COPY details, trimmed only where they
    point at the admin page's own cards below the plate — the hero has no
@@ -1093,6 +1153,20 @@ function redrawSheet(r,force){
     var cv=sheetDom.quads[k], g=cv.getContext('2d');
     g.setTransform(DPR,0,0,DPR,0,0);
     g.clearRect(0,0,cv.width,cv.height);
+    // The world under the survey: the engraving's ghost surfaces with the
+    // ink, beneath the marks, inside the quad's own boundary.
+    var gh=ghosts&&ghosts[SURVEY_GI[k]];
+    if(gh){
+      var ga=0.16*Math.max(0,Math.min(1,(r-0.06)/0.30));
+      if(ga>0){
+        g.save();
+        traceQuad(g,0,0,SHEET_QW*s,S_QUAD_H*s,d.render==='soundings'&&d.torn,s);
+        g.clip();
+        g.globalAlpha=ga;
+        g.drawImage(gh,0,0,SHEET_QW*s,S_QUAD_H*s);
+        g.restore();
+      }
+    }
     drawQuad(g,d,0,0,SHEET_QW*s,S_QUAD_H*s,s,r);
   });
   function op(el,a){ if(el) el.style.opacity=String(Math.max(0,Math.min(1,a))); }
@@ -1139,7 +1213,7 @@ var mapMesh=null, mapGeo=null, mapMorph=-1, sphR=1;
 var mapLook=new THREE.Vector3();
 var mapTheta=null, mapLat=null, mapR=null;
 var LAT_CAP=1.15;                    // trim the poles: the band, not a lens
-var classAnchor=[];
+var classAnchor=[], classUV=[];
 /* The staging beat that keeps the unroll off the titan: before anything
    flattens, the globe rises off his shoulders (t 0.34..0.46) by LIFT — enough
    that the surface's lowest possible edge across BOTH morph phases (the
@@ -1261,6 +1335,11 @@ function buildMorphMap(){
     }
     return best;
   });
+  // The anchor vertex's own texture coordinate: where this class lives on the
+  // engraving. It is what lets the sheet show each quadrangle the exact patch
+  // of the world it condensed from, with no projection guesswork.
+  classUV=classAnchor.map(function(vi){ return [U[vi*2],U[vi*2+1]]; });
+  buildGhosts();
   applyMorph(0);
 }
 
@@ -1617,6 +1696,12 @@ loader.parse(buf,'',function(gltf){
     return decodeImage(b64).then(function(img){
       j[1].material[j[2]]=makeTexture(img,j[3]);
       j[1].material.needsUpdate=true;
+      if(j[0]==='sphere_base'){
+        // The engraving doubles as the sheet's embossed ghost; the sheet may
+        // already be laid out, so re-ink it once the ghosts exist.
+        ghostSrc=img; buildGhosts();
+        if(sheetDom) redrawSheet(lastReveal<0?0:lastReveal,true);
+      }
       return true;
     },function(err){
       console.debug('texture '+j[0]+' failed:', err && err.message ? err.message : String(err));

@@ -92,6 +92,19 @@ body{
   width:5px;height:5px;flex:none;border-radius:50%;
   background:var(--spark);box-shadow:0 0 0 3px rgba(35,206,158,.18);
 }
+/* The dot is the indicator and rides its region through the whole unroll;
+   the leader and text thin out (--tf) only while anchors are crossing each
+   other mid-morph, so the category's point of light is the continuity and
+   the words never ghost over one another. */
+.lbl span,.lbl b{opacity:var(--tf,1)}
+/* The sounding ring: a one-shot expanding pulse when a dot is born, then a
+   soft ambient ping while it rides the globe — the survey's own unit told as
+   motion, so the marks read as live readings before any word appears. */
+.lbl .ping{
+  position:absolute;left:2.5px;top:50%;width:34px;height:34px;
+  border:1px solid var(--spark);border-radius:50%;pointer-events:none;
+  transform:translate(-50%,-50%) scale(var(--pp,0));opacity:var(--po,0);
+}
 .lbl span{display:block;width:30px;height:1px;flex:none;
   background:linear-gradient(90deg,var(--accent),rgba(56,156,106,0))}
 .lbl b{
@@ -102,6 +115,9 @@ body{
 .lbl em{
   font:400 10px/1 "IBM Plex Mono",ui-monospace,monospace;font-style:normal;
   color:var(--muted);margin-left:7px;letter-spacing:.06em;
+  /* The gloss must not inherit the title's uppercase: "People" + "people"
+     was rendering as PEOPLE PEOPLE, which reads as a doubled label. */
+  text-transform:none;
 }
 
 /* ---------- the handoff (beat 05) ---------- */
@@ -645,10 +661,14 @@ var labelEls=CLASSES.map(function(d){
   var dot=document.createElement('i'), ln=document.createElement('span');
   var b=document.createElement('b'); b.textContent=d.title;
   // The unit noun, never a count: a number here would be the fabricated
-  // denominator ADR-0041 refuses, printed on a hero.
-  var em=document.createElement('em'); em.textContent=d.units;
-  b.appendChild(em);
-  el.appendChild(dot); el.appendChild(ln); el.appendChild(b);
+  // denominator ADR-0041 refuses, printed on a hero. Skipped when it would
+  // only repeat the title (People / people).
+  if(d.units.toLowerCase()!==d.title.toLowerCase()){
+    var em=document.createElement('em'); em.textContent=d.units;
+    b.appendChild(em);
+  }
+  var ping=document.createElement('u'); ping.className='ping';
+  el.appendChild(dot); el.appendChild(ln); el.appendChild(b); el.appendChild(ping);
   document.getElementById('labels').appendChild(el);
   return el;
 });
@@ -656,7 +676,7 @@ var labelEls=CLASSES.map(function(d){
 var beatN=document.getElementById('beatN'), beatH=document.getElementById('beatH'), beatP=document.getElementById('beatP');
 var scrub=document.getElementById('scrub'), pct=document.getElementById('pct');
 
-var t=0, tTarget=0, curBeat=-1;
+var t=0, tTarget=0, curBeat=-1, bootClock=-1;
 var az=1.30, azTarget=1.30, el=0.06, elTarget=0.06;
 var dragging=false, lastX=0, lastY=0, idle=0;
 
@@ -846,7 +866,19 @@ function drawQuad(g,spec,x,y,w,h,S,reveal){
       pop=Math.max(0,Math.min(1,(r1-thr)/0.08));
       if(pop<=0) continue;
     }
-    drawMark(g,kinds[q],x+8*S+spots[q].cx,y+8*S+spots[q].cy,spots[q].r*pop,S);
+    var mx=x+8*S+spots[q].cx, my=y+8*S+spots[q].cy;
+    drawMark(g,kinds[q],mx,my,spots[q].r*pop,S);
+    // Each mark lands with the same sounding ring the globe's sources ping
+    // with — the one visual verb, both places: a reading taken there, a
+    // reading recorded here.
+    if(r1<1&&pop<1){
+      g.save();
+      g.globalAlpha=(1-pop)*0.7;
+      g.strokeStyle='#23CE9E';
+      g.lineWidth=1.3*S;
+      g.beginPath(); g.arc(mx,my,spots[q].r*(0.9+2.4*pop),0,Math.PI*2); g.stroke();
+      g.restore();
+    }
   }
 }
 
@@ -1061,6 +1093,10 @@ function landingRect(i){
 }
 
 var plates=[], platesGroup=null;
+/* When each card is born (staggered): the labels key off the same schedule,
+   each one fading exactly as its card — carrying the same title — condenses
+   out of the spot it was marking. Two titles at once was the ghosting. */
+var PLATE_T0=0.64, PLATE_DT0=0.022;
 
 /* ================= the unrolling (beat 03) ================= */
 /* The globe opens flat, in place, into a RECTANGULAR chart — the unrolled
@@ -1077,6 +1113,16 @@ var mapLook=new THREE.Vector3();
 var mapTheta=null, mapLat=null, mapR=null;
 var LAT_CAP=1.15;                    // trim the poles: the band, not a lens
 var classAnchor=[];
+/* The staging beat that keeps the unroll off the titan: before anything
+   flattens, the globe rises off his shoulders (t 0.34..0.46) by LIFT — enough
+   that the surface's lowest possible edge across BOTH morph phases (the
+   ±LAT_CAP band) clears his fingertips. y-separation holds from every orbit
+   angle, so at no scroll position can the chart pass through him; at chart
+   framing his raised hands meet its torn lower edge, and he reads as holding
+   the chart the way he held the globe. */
+var LIFT=0, liftNow=0, bodyTopY=0;
+var LIFT_T0=0.34, LIFT_T1=0.46;      // the lift beat
+var MORPH_T0=0.46, MORPH_T1=0.62;    // the unroll, in clear air above him
 
 function wrapPI(a){ return Math.atan2(Math.sin(a),Math.cos(a)); }
 
@@ -1163,7 +1209,13 @@ function buildMorphMap(){
   mapMesh=new THREE.Mesh(mapGeo, sphere.material);
   mapMesh.visible=false;
   scene.add(mapMesh);
-  mapLook.copy(C).addScaledVector(F0,sphR);
+  // Measure him, don't guess: the lift clearance comes from the real bounds
+  // of everything that isn't the globe — the highest point is his fingertips.
+  var bodyBox=new THREE.Box3();
+  root.traverse(function(o){ if(o.isMesh && o!==sphere) bodyBox.expandByObject(o); });
+  bodyTopY=isFinite(bodyBox.max.y)?bodyBox.max.y:sphereCenter.y;
+  LIFT=Math.max(0, bodyTopY+0.06*sphR-(sphereCenter.y-LAT_CAP*sphR));
+  mapLook.copy(C).addScaledVector(F0,sphR); mapLook.y+=LIFT;
 
   // Each class anchors to the mesh vertex nearest its label's coordinates,
   // and rides that vertex through the unroll.
@@ -1216,9 +1268,8 @@ function applyMorph(m){
   mapGeo.computeVertexNormals();
   mapGeo.computeBoundingSphere();
   // The globe and the chart are the same surface; only one exists at a time.
-  var flat=m>0.001;
-  mapMesh.visible=flat;
-  sphere.visible=!flat;
+  // Which one is showing is decided in the render loop, where the lift is
+  // known — the swap happens at lift-off, not at the first morph step.
 }
 
 /* Where a class's anchor vertex is right now, and where it lands when flat. */
@@ -1229,21 +1280,27 @@ function anchorPos(i,out){
       Math.cos(d.lat)*Math.cos(d.lon)).multiplyScalar(sphereRadius*1.02).add(sphereCenter);
   }
   var p=mapGeo.attributes.position, vi=classAnchor[i];
-  return out.set(p.getX(vi),p.getY(vi),p.getZ(vi));
+  out.set(p.getX(vi),p.getY(vi),p.getZ(vi));
+  out.y+=liftNow;                     // the geometry is unlifted; the mesh rides
+  return out;
 }
 function anchorFlat(i,out){
   if(!mapGeo) return anchorPos(i,out);
   var vi=classAnchor[i];
-  return morphVert(mapTheta[vi],mapLat[vi],mapR[vi],1,out);
+  morphVert(mapTheta[vi],mapLat[vi],mapR[vi],1,out);
+  out.y+=LIFT;                        // the flat chart exists only fully lifted
+  return out;
 }
 /* The hover pose pulls in from the band's edges so no rising card leaves the
    frame; the birth point itself stays true to the region. */
 function anchorHover(i,out){
   if(!mapGeo) return anchorPos(i,out);
   var vi=classAnchor[i];
-  var th=Math.max(-2.3,Math.min(2.3,mapTheta[vi]));
+  var th=Math.max(-2.15,Math.min(2.15,mapTheta[vi]));
   var la=Math.max(-0.75,Math.min(0.75,mapLat[vi]));
-  return morphVert(th,la,mapR[vi],1,out);
+  morphVert(th,la,mapR[vi],1,out);
+  out.y+=LIFT;
+  return out;
 }
 
 function buildPlates(){
@@ -1303,13 +1360,17 @@ function buildPlates(){
       .addScaledVector(UPV,(i%2?0.04:-0.02)*modelRadius);
     var qF=new THREE.Quaternion().setFromEuler(
       new THREE.Euler(0,AZ0,(i%2?-1:1)*0.02,'YXZ'));
-    var P={mesh:mesh, q0:qF, q1:qF, s0:sphereRadius*0.22, s1:modelRadius*0.34};
+    // s1 sized so the quadrangle's soundings — not the caption — carry the
+    // card at the hover framing: the drawing is the meaning.
+    var P={mesh:mesh, q0:qF, q1:qF, s0:sphereRadius*0.22, s1:modelRadius*0.38};
     P.curve=new THREE.CubicBezierCurve3(
       p0,
       p0.clone().addScaledVector(F0,modelRadius*0.08),
       hover.clone().addScaledVector(F0,-modelRadius*0.05),
       hover);
-    P.t0=0.60+i*0.030; P.t1=0.76+i*0.024;
+    // Condensation is fully settled before any flight begins — a card still
+    // condensing when the flight takes it reads as being yanked.
+    P.t0=PLATE_T0+i*PLATE_DT0; P.t1=0.765+i*0.014;
     plates.push(P);
   }
   scene.add(platesGroup);
@@ -1325,11 +1386,17 @@ function updatePlates(){
      white card at half opacity over a dark scene is grey fog, so the cover
      is quick — then the survey revealing itself on the sheet. */
   var e5base=t;
-  groundEl.style.opacity=sm(t,0.868,0.915).toFixed(3);
-  sheetCardEl.style.opacity=sm(t,0.875,0.92).toFixed(3);
-  if(sheetDom) redrawSheet(sm(t,0.90,0.99));
+  /* The turn to paper is a dawn, not a curtain: the GL scene's own exposure
+     floods up first (in the render loop), so by the time this paper ground
+     eases in over the flying cards the frame is already luminous — a slow
+     ramp without the grey fog a veil over a dark scene makes. The sheet
+     still starts inking itself while the aligned cards cover it, so when
+     they fade there is a drawn survey underneath, never white-on-white. */
+  groundEl.style.opacity=sm(t,0.855,0.92).toFixed(3);
+  sheetCardEl.style.opacity=sm(t,0.868,0.905).toFixed(3);
+  if(sheetDom) redrawSheet(sm(t,0.885,0.98));
 
-  var flip=t>0.80&&sheetDom;
+  var flip=t>0.77&&sheetDom;
   var D=0, wpp=0;
   if(flip){
     camera.getWorldDirection(_f);
@@ -1355,7 +1422,9 @@ function updatePlates(){
       // the rect pixel for pixel. The bow flattens with the z scale.
       // Arrivals cascade left-to-right — papers being laid on a desk in
       // order, not a formation snapping to a grid.
-      var e5=sm(e5base,0.80+i*0.008,0.868+i*0.008);
+      // Longer, more cascaded flights: papers laid on the desk one after
+      // another, all landed before the sheet takes over at 0.906.
+      var e5=sm(e5base,0.785+i*0.009,0.878+i*0.006);
       if(e5>0){
         var rect=landingRect(i);
         var cardHpx=CARD_H*rect.h/CARD_QH;
@@ -1374,9 +1443,10 @@ function updatePlates(){
     // Overlapping settled pages must depth-sort as opaques, or the fan's
     // draw order shimmers as the camera moves.
     var op=Math.min(1,p*5);
-    // The DOM sheet takes over from the aligned plates; the off-survey card
-    // bows out earlier, before its squash into the margin box gets grotesque.
-    op*=1-sm(t,0.895,0.93);
+    // The DOM sheet takes over from the aligned plates: the cards hold full
+    // opacity until the sheet beneath them carries ink, then drop quickly —
+    // they are pixel-aligned by now, so the fast fade is seamless.
+    op*=1-sm(t,0.906,0.93);
     if(CLASSES[i].render==='off-survey') op*=1-sm(t,0.86,0.90);
     var solid=op>0.999;
     P.mesh.material.opacity=op;
@@ -1533,23 +1603,31 @@ loader.parse(buf,'',function(gltf){
       w.hidden=false;
     }
     bootbar.style.transform='scaleX(1)';
-    setTimeout(function(){ boot.classList.add('gone'); },140);
+    setTimeout(function(){
+      boot.classList.add('gone');
+      // The overture clock: the source marks come online one by one from
+      // this moment, whether or not the reader has scrolled.
+      bootClock=performance.now()/1000;
+    },140);
   });
 }, function(err){
   fail('The model failed to load.', 'glTF parsing reported: ' + (err && err.message ? err.message : 'unknown error') + '. The page needs a re-publish with a valid export.');
 });
 
 /* ================= camera path ================= */
-/* Four segments, each eased with smoothstep so the joins arrive at zero
+/* Five segments, each eased with smoothstep so the joins arrive at zero
    velocity and read as the story settling on a beat. The journey only ever
-   goes IN: down to the surface, a step back just far enough to read the
-   chart the globe unrolls into, a lean toward it, then the dive that hands
-   the frame to the sheet.
+   goes IN: down to the surface, up with the lifted globe, a step back just
+   far enough to read the chart it unrolls into, a lean toward it, then the
+   dive that hands the frame to the sheet.
      0 -> T1   the descent, titan to globe surface
-     T1 -> T2  the unrolling: the surface opens into the chart, framed
+     T1 -> TL  the lift: the look rises with the globe, and the titan sinks
+               out of the bottom of the frame — the tilt-up is what stages
+               the unroll in clear air
+     TL -> T2  the unrolling: the surface opens into the chart, framed
      T2 -> T3  the lean, while the regions rise as plates
      T3 -> 1   the dive into the sheet                                     */
-var T1=0.34, T2=0.60, T3=0.80;
+var T1=LIFT_T0, TL=LIFT_T1, T2=MORPH_T1, T3=0.80;
 var _p=new THREE.Vector3(), _look=new THREE.Vector3();
 function chartDist(base){
   // A narrow viewport can't fit the chart at the design distance; back off
@@ -1563,15 +1641,25 @@ function updateCamera(){
   if(t<=T1){
     e=sm(t/T1,0,1);
     _look.copy(modelCenter).lerp(sphereCenter,e);
-    dist=lp(mR*2.58, sR*2.15, e);
+    // The descent stops while the whole globe still holds the frame: the
+    // reader should keep the OBJECT and its marked points, not be buried in
+    // surface texture before the map opens (and the 510-vertex silhouette
+    // never gets close enough to facet).
+    dist=lp(mR*2.58, sR*2.55, e);
     elevBias=lp(0.10,-0.02,e);
-    fov=lp(38,52,e);
+    fov=lp(38,48,e);
+  }else if(t<=TL){
+    e=sm((t-T1)/(TL-T1),0,1);
+    _look.copy(sphereCenter); _look.y+=liftNow;
+    dist=lp(sR*2.55, sR*2.75, e);
+    elevBias=-0.02*(1-e);
+    fov=48;
   }else if(t<=T2){
-    e=sm((t-T1)/(T2-T1),0,1);
-    _look.copy(sphereCenter).lerp(mapLook,e);
-    dist=lp(sR*2.15, chartDist(mR*2.35), e);
-    elevBias=lp(-0.02,0.0,e);
-    fov=lp(52,44,e);
+    e=sm((t-TL)/(T2-TL),0,1);
+    _look.copy(sphereCenter); _look.y+=LIFT; _look.lerp(mapLook,e);
+    dist=lp(sR*2.75, chartDist(mR*2.35), e);
+    elevBias=0.0;
+    fov=lp(48,44,e);
   }else if(t<=T3){
     e=sm((t-T2)/(T3-T2),0,1);
     _look.copy(mapLook);
@@ -1599,25 +1687,66 @@ function updateCamera(){
 /* ================= labels ================= */
 var _v=new THREE.Vector3(), _sn=new THREE.Vector3(), _cn=new THREE.Vector3();
 function updateLabels(w,h){
-  // The labels ride their regions through the unroll, then hand off to the
-  // plates as each card — carrying the same title — condenses out of the
-  // spot they were marking.
+  // The labels ride their regions up through the lift and across the unroll:
+  // the spark dot is the indicator, and it stays pinned to its region for the
+  // whole transition — the continuity from globe to chart. Only the leader
+  // and text thin out, and only for the fold window of the unroll (the
+  // sheet's x is non-monotonic in longitude while more than half the band is
+  // still rolled, so seam-side anchors sweep across the others — where the
+  // ghosted doubles came from). The words return as the chart settles, and
+  // each label hands off whole as its card — carrying the same title —
+  // condenses out of the spot it was marking.
   var sm=THREE.MathUtils.smoothstep;
-  var vis=sm(t,0.20,0.30)*(1-sm(t,0.60,0.68));
-  var mNow=sm(t,0.40,0.60);
+  // The overture: the marks come online one by one in the first seconds
+  // after boot — ping, ping, ping across the globe before the reader has
+  // scrolled at all. A homepage has to say "this globe has marked places,
+  // and it is listening" with no words and no scroll. The text joins once
+  // the descent brings it close enough to read.
+  var tf=sm(t,0.15,0.25)*Math.min(1,(1-sm(t,0.52,0.555))+sm(t,0.60,0.64));
+  var mNow=sm(t,MORPH_T0,MORPH_T1);
+  var now=performance.now()/1000;
   for(var i=0;i<CLASSES.length;i++){
     var d=CLASSES[i], e=labelEls[i];
-    if(vis<=0.001){ e.style.opacity='0'; continue; }
+    var born=PLATE_T0+i*PLATE_DT0;
+    // Age of this mark since its slot in the overture. Under reduced motion
+    // the marks are simply present from boot.
+    var bAge=bootClock<0?-1:(now-bootClock-0.9-i*0.55);
+    // The dot snaps in, THEN the ring announces it — a ping over a dot still
+    // fading in inherits its near-zero opacity and reads as nothing.
+    var birth=reduced?(bootClock<0?0:1):sm(bAge,0,0.4);
+    var vi=birth*(1-sm(t,born,born+0.035));
+    // The ping phase: the birth ring rides just behind the dot's arrival;
+    // afterwards a soft ambient sounding every few seconds while the dot
+    // rides the globe (stilled before the fold, and under
+    // prefers-reduced-motion).
+    var q=-1;
+    if(!reduced&&bAge>=0){
+      var qb=(bAge-0.35)/1.1;
+      if(qb>=0&&qb<1) q=qb;
+      else if(qb>=1&&t<0.44){
+        var qa=((now+i*2.13)%6.5)/1.4;
+        if(qa<1) q=qa;
+      }
+    }
+    if(q>=0){
+      e.style.setProperty('--pp',(0.35+q*2.1).toFixed(3));
+      e.style.setProperty('--po',((1-q)*(1-q)*0.6).toFixed(3));
+    }else{
+      e.style.setProperty('--po','0');
+    }
+    if(vi<=0.001){ e.style.opacity='0'; continue; }
     anchorPos(i,_v);
     // On the sphere a label facing away fades; on the chart everything faces
-    // the reader, so the gate opens with the unroll.
-    var facing=_sn.copy(_v).sub(sphereCenter).normalize()
-      .dot(_cn.copy(camera.position).sub(sphereCenter).normalize());
+    // the reader, so the gate opens with the unroll. The sphere's centre is
+    // wherever the lift has carried it.
+    var facing=_sn.copy(_v).sub(sphereCenter).setY(_v.y-sphereCenter.y-liftNow).normalize()
+      .dot(_cn.copy(camera.position).sub(sphereCenter).setY(camera.position.y-sphereCenter.y-liftNow).normalize());
     var front=THREE.MathUtils.lerp(sm(facing,0.02,0.42),1,mNow);
     _v.project(camera);
     var x=(_v.x*0.5+0.5)*w, y=(-_v.y*0.5+0.5)*h;
     e.style.transform='translate('+x.toFixed(1)+'px,'+y.toFixed(1)+'px)';
-    e.style.opacity=(vis*front).toFixed(3);
+    e.style.setProperty('--tf',tf.toFixed(3));
+    e.style.opacity=(vi*front).toFixed(3);
   }
 }
 
@@ -1749,19 +1878,35 @@ function render(){
 
   if(!dragging && !reduced){
     idle++;
-    // A slow turn once the viewer settles — stilled before the unroll, which
-    // is composed to be read from the front.
-    if(idle>150) azTarget += 0.00042*(1-THREE.MathUtils.smoothstep(t,0.30,0.42));
+    // A slow turn once the viewer settles — stilled before the lift, which
+    // begins the sequence composed to be read from the front.
+    if(idle>150) azTarget += 0.00042*(1-THREE.MathUtils.smoothstep(t,0.28,0.38));
   }
-  // The chart opens facing the load azimuth; as it does, the orbit is gently
-  // taken back so the reader is never left staring at its edge.
-  if(t>0.40){
-    var kc=0.06*THREE.MathUtils.smoothstep(t,0.40,0.56);
+  // The chart opens facing the load azimuth; the orbit is gently taken back
+  // during the lift, so the unroll is never watched edge-on.
+  if(t>LIFT_T0){
+    var kc=0.06*THREE.MathUtils.smoothstep(t,LIFT_T0,0.52);
     azTarget+=wrapPI(AZ0-azTarget)*kc;
     elTarget*=(1-kc*0.8);
   }
-  applyMorph(THREE.MathUtils.smoothstep(t,0.40,0.60));
-  stage.classList.toggle('lit', t>0.90);
+  liftNow=LIFT*THREE.MathUtils.smoothstep(t,LIFT_T0,LIFT_T1);
+  applyMorph(THREE.MathUtils.smoothstep(t,MORPH_T0,MORPH_T1));
+  if(mapMesh){
+    mapMesh.position.y=liftNow;
+    // The globe and the chart are one surface: the morph mesh takes over at
+    // lift-off (it reproduces the sphere exactly at m=0), and hands back if
+    // the reader scrubs home.
+    var lifted=liftNow>1e-4||mapMorph>0.001;
+    mapMesh.visible=lifted;
+    if(sphere) sphere.visible=!lifted;
+  }
+  // The dawn: the vitrine floods with light while the cards fly, BEFORE the
+  // paper ground arrives — the turn out of the dark is continuous brightness,
+  // not a theme swap. Set per-frame so it composes with the lab's exposure.
+  var dawn=THREE.MathUtils.smoothstep(t,0.80,0.895);
+  renderer.toneMappingExposure=
+    ((typeof L.exp==='number'&&isFinite(L.exp))?L.exp:1.05)*(1+0.9*dawn);
+  stage.classList.toggle('lit', t>0.88);
 
   var bi=0;
   for(var k=0;k<BEATS.length;k++) if(t>=BEATS[k][0]) bi=k;
@@ -1781,7 +1926,8 @@ window.__atlas={
   setAz:function(v){ az=azTarget=v; },
   setEl:function(v){ el=elTarget=v; },
   probe:function(){ return {mC:modelCenter.toArray(), mR:modelRadius, minY:modelMinY,
-    sC:sphereCenter.toArray(), sR:sphereRadius}; }
+    sC:sphereCenter.toArray(), sR:sphereRadius,
+    bodyTop:bodyTopY, lift:LIFT, sphR:sphR}; }
 };
 })();
 </script>

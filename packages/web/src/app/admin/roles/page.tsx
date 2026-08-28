@@ -24,6 +24,7 @@ import {
   FormDescription,
 } from "@/components/form-dialog";
 import { z } from "zod";
+import type { Permission } from "@useatlas/types";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -65,24 +66,19 @@ const RolesResponseSchema = z.object({
 // ── Permission labels ────────────────────────────────────────────
 
 /**
- * ⚠️ NOT exhaustive over the flag union, and that is a KNOWN GAP rather than a
- * choice (#5191).
+ * Exhaustive over the `Permission` union (#5194) — `satisfies
+ * Record<Permission, string>` makes a missing label a COMPILE error in both
+ * directions. As `Record<string, …>` a missing label was a raw id rendered
+ * inside a badge, which is how `dashboards:read`/`dashboards:write` reached
+ * the editor as literal strings before anyone noticed (#5191).
  *
- * `Record<Permission, string>` would make a missing label a COMPILE error in
- * both directions, which is what this map wants — as `Record<string, …>` a
- * missing label is a raw id rendered inside a badge, which is how
- * `dashboards:read`/`dashboards:write` reached the editor as literal strings
- * before anyone noticed.
+ * The union comes from `@useatlas/types`, NOT `@atlas/api` — the web speaks
+ * HTTP and never imports from the api package; promoting `PERMISSIONS` into
+ * the shared types package is what made this reachable at all.
  *
- * The union is not reachable here: the web speaks HTTP and cannot import from
- * `@atlas/api`, and moving `PERMISSIONS` to `@useatlas/types` is gated on a
- * `/publish` of that package landing first — `create-atlas` builds
- * `packages/api` against the PUBLISHED copy, so the move failed Deploy
- * Validation with `Export PERMISSIONS doesn't exist in target module`. See the
- * note in `lib/auth/permissions.ts` and the follow-up issue.
- *
- * Until then the runtime test in `__tests__/permission-grouping.test.ts` is
- * what holds the map honest — it asserts every known flag has real copy.
+ * The runtime half is in `__tests__/permission-grouping.test.ts`: the type
+ * proves every flag HAS a label, the test proves the labels are real copy
+ * rather than something that merely type-checks.
  */
 const PERMISSION_LABELS = {
   "query": "Query data",
@@ -100,7 +96,7 @@ const PERMISSION_LABELS = {
   "admin:audit": "View audit logs",
   "admin:roles": "Manage roles",
   "admin:semantic": "Edit semantic layer",
-};
+} satisfies Record<Permission, string>;
 
 /**
  * The label map keyed for a FREE-STRING lookup.

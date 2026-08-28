@@ -15,41 +15,22 @@
  */
 
 import { describe, it, expect } from "bun:test";
+import { PERMISSIONS } from "@useatlas/types";
 import { groupPermissions, offerablePermissions, permissionLabel } from "../page";
 
 /**
- * ⚠️ STILL a hand-copy, and #5191 tried to remove it. Stating the constraint
- * honestly rather than pretending otherwise:
+ * The real tuple, no longer a hand-copy (#5194): `PERMISSIONS` now lives in
+ * `@useatlas/types` beside `ATLAS_ROLES`, which the web may import — the "web
+ * speaks HTTP" rule forbids `@atlas/api`, not the shared types package. A flag
+ * added to the tuple is therefore in `ALL` on the next run, with no second
+ * list to forget.
  *
- * `PERMISSIONS` lives in `packages/api/src/lib/auth/permissions.ts` and the web
- * speaks HTTP rather than importing from `@atlas/api`, so it genuinely cannot
- * be reached here. The fix is to promote it to `@useatlas/types` beside
- * `ATLAS_ROLES` — which was implemented, and then REVERTED: `create-atlas`
- * builds `packages/api` against the PUBLISHED `@useatlas/types`, so the api's
- * re-export failed Deploy Validation (a required check) with
- * `Export PERMISSIONS doesn't exist in target module`. The move is gated on a
- * `/publish` of that package landing first; tracked as a follow-up.
- *
- * Drift is therefore possible and DELIBERATELY SAFE: `groupPermissions` is
- * driven by the SERVER's list, so a flag this copy has never heard of still
- * reaches the editor via "Other" — which the "unrecognised flag" test pins, and
- * which is the real guarantee. This literal only fixes the input to the other
- * cases.
+ * The server can still be newer than this build, and that path stays
+ * deliberately safe: `groupPermissions` is driven by the SERVER's list, so a
+ * flag this build has never heard of reaches the editor via "Other" — which
+ * the "unrecognised flag" test pins.
  */
-const ALL = [
-  "query",
-  "query:raw_data",
-  "dashboards:read",
-  "dashboards:write",
-  // #5192 — the third dashboards flag.
-  "dashboards:share",
-  "admin:users",
-  "admin:connections",
-  "admin:settings",
-  "admin:audit",
-  "admin:roles",
-  "admin:semantic",
-];
+const ALL: string[] = [...PERMISSIONS];
 
 describe("groupPermissions", () => {
   it("offers every server-known permission exactly once", () => {

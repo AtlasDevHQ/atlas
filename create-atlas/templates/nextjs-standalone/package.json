@@ -23,7 +23,7 @@
     "@useatlas/react": "^0.3.0",
     "@useatlas/sdk": "^0.1.0",
     "@useatlas/twenty": "^0.0.6",
-    "@useatlas/types": "^0.7.0",
+    "@useatlas/types": "^0.11.0",
     "@useatlas/webhook-publisher": "^0.0.1",
     "ai": "^6.0.235",
     "@better-auth/agent-auth": "0.6.2",

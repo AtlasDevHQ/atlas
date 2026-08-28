@@ -33,18 +33,28 @@ const stamped: string[] = [];
 const marked: { episodeId: string; rule: string }[] = [];
 let markThrows = false;
 
-const internalQueryMock = mock(async (sql: string, params?: unknown[]) => {
-  if (sql.includes("triaged_out_at = now()")) {
-    if (markThrows) throw new Error("internal db unavailable");
-    marked.push({ episodeId: String(params?.[0] ?? ""), rule: String(params?.[2] ?? "") });
-    return [] as unknown[];
-  }
-  if (sql.includes("SET extracted_at = now()")) {
-    stamped.push(String(params?.[0] ?? ""));
-    return [] as unknown[];
-  }
-  return [] as unknown[];
-});
+/**
+ * The one internal-DB stand-in, shared by the module-level mock, the
+ * `beforeEach` reset and `drainServes` — one shape, three call sites, so the
+ * verb-splitting cannot drift between them. `rows` is what the drain serves.
+ */
+function queryHandler(rows: EpisodeRow[] = []) {
+  return async (sql: string, params?: unknown[]): Promise<unknown[]> => {
+    if (sql.includes("triaged_out_at = now()")) {
+      if (markThrows) throw new Error("internal db unavailable");
+      marked.push({ episodeId: String(params?.[0] ?? ""), rule: String(params?.[2] ?? "") });
+      return [];
+    }
+    if (sql.includes("SET extracted_at = now()")) {
+      stamped.push(String(params?.[0] ?? ""));
+      return [];
+    }
+    if (sql.includes("FROM brain_episodes e")) return rows;
+    return [];
+  };
+}
+
+const internalQueryMock = mock(queryHandler());
 
 // PARTIAL, spreading the real module — a wholesale replacement drops
 // `getInternalDB`, which `reconcile.ts` imports at module load
@@ -133,35 +143,12 @@ beforeEach(() => {
   marked.length = 0;
   markThrows = false;
   internalQueryMock.mockClear();
-  internalQueryMock.mockImplementation(async (sql: string, params?: unknown[]) => {
-    if (sql.includes("triaged_out_at = now()")) {
-      if (markThrows) throw new Error("internal db unavailable");
-      marked.push({ episodeId: String(params?.[0] ?? ""), rule: String(params?.[2] ?? "") });
-      return [] as unknown[];
-    }
-    if (sql.includes("SET extracted_at = now()")) {
-      stamped.push(String(params?.[0] ?? ""));
-      return [] as unknown[];
-    }
-    return [] as unknown[];
-  });
+  internalQueryMock.mockImplementation(queryHandler());
 });
 
 /** Serve these rows from the drain and nothing from anywhere else. */
 function drainServes(rows: EpisodeRow[]): void {
-  internalQueryMock.mockImplementation(async (sql: string, params?: unknown[]) => {
-    if (sql.includes("triaged_out_at = now()")) {
-      if (markThrows) throw new Error("internal db unavailable");
-      marked.push({ episodeId: String(params?.[0] ?? ""), rule: String(params?.[2] ?? "") });
-      return [] as unknown[];
-    }
-    if (sql.includes("SET extracted_at = now()")) {
-      stamped.push(String(params?.[0] ?? ""));
-      return [] as unknown[];
-    }
-    if (sql.includes("FROM brain_episodes e")) return rows;
-    return [] as unknown[];
-  });
+  internalQueryMock.mockImplementation(queryHandler(rows));
 }
 
 // ---------------------------------------------------------------------------

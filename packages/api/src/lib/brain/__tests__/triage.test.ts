@@ -41,7 +41,7 @@ describe("the rule list itself", () => {
 
 describe("routed out — the obvious majority", () => {
   it("catches bare acknowledgements by exact shape", () => {
-    for (const body of ["+1", "on it", "ok", "thanks", "will do", "lgtm", "sounds good"]) {
+    for (const body of ["+1", "on it", "ok", "thanks", "will do", "lgtm", "sounds good", "k"]) {
       expect(triageEpisodeBody(body)).not.toBeNull();
     }
   });
@@ -53,9 +53,11 @@ describe("routed out — the obvious majority", () => {
     expect(triageEpisodeBody("you’re welcome")).toBe("known_ack");
   });
 
-  it("catches bodies too short to state a claim", () => {
-    expect(triageEpisodeBody("k")).toBe("below_min_length");
-    expect(triageEpisodeBody("👍")).toBe("below_min_length");
+  it("catches bodies too short to state a claim — single characters only", () => {
+    expect(triageEpisodeBody("?")).toBe("below_min_length");
+    // A lone emoji is TWO UTF-16 units, so it passes the length floor and is
+    // caught by the reaction rule instead — the floor is unit-honest.
+    expect(triageEpisodeBody("👍")).toBe("pure_reaction");
     // The boundary itself: one under the floor matches, the floor does not.
     expect(triageEpisodeBody("x".repeat(TRIAGE_MIN_MEANINGFUL_CHARS - 1))).toBe(
       "below_min_length",
@@ -119,6 +121,18 @@ describe("⭐ passed through — the direction stage 0 must not be wrong in", ()
     // "not ok" and "ok but why" carry information the bare shapes do not.
     expect(triageEpisodeBody("not ok")).toBeNull();
     expect(triageEpisodeBody("ok but why")).toBeNull();
+  });
+
+  it("⭐ passes bare answer-shapes — yes/no/agreed are the whole content of a factual answer", () => {
+    // Removed from KNOWN_ACK_SHAPES on review and pinned here so they cannot
+    // creep back: "no" replying to "does prod use us-east-1?" IS the claim,
+    // and while today's extractor (body-only) could not recover it either, a
+    // later thread-aware prompt could — a triage rule must not pre-empt that.
+    // "no" is the two-character member — the reason the length floor sits at
+    // single characters rather than swallowing it by size.
+    for (const body of ["yes", "no", "nope", "sure", "agreed", "makes sense"]) {
+      expect(triageEpisodeBody(body)).toBeNull();
+    }
   });
 
   it("returns null for whitespace-only bodies — that class belongs to the no_body skip", () => {

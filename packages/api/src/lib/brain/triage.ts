@@ -74,12 +74,16 @@ export interface TriageRule {
 }
 
 /**
- * Shortest trimmed body that could conceivably state a claim. Three characters
- * is deliberately timid — "+1", "ok", "ty", a bare emoji all fall under it,
- * while anything resembling subject-predicate-object does not. Raising this is
- * how a false drop gets introduced; don't.
+ * Shortest trimmed body that could conceivably state a claim: the floor
+ * routes out SINGLE-character bodies only ("k", "y", "^"-noise), in UTF-16
+ * units. Two characters is already past it on purpose — "no" is a complete
+ * answer to a factual question, and the answer-shape exclusion documented on
+ * {@link KNOWN_ACK_SHAPES} would be hollow if the length rule quietly ate its
+ * two-character member. The common 2-char noise ("+1", "ok", "ty", "np") is
+ * enumerated in the ack set instead, where each entry is a reviewable
+ * decision. Raising this is how a false drop gets introduced; don't.
  */
-export const TRIAGE_MIN_MEANINGFUL_CHARS = 3;
+export const TRIAGE_MIN_MEANINGFUL_CHARS = 2;
 
 /**
  * Exact known-negative shapes, matched only after {@link normalizeForAck}.
@@ -89,6 +93,17 @@ export const TRIAGE_MIN_MEANINGFUL_CHARS = 3;
  * about the world? Every entry is a bare acknowledgement, greeting, or
  * reaction. Compounds ("thanks, will ship Friday") never match — the test is
  * exact equality, not containment, which is the conservative direction.
+ *
+ * ⚠️ ANSWER-SHAPES ARE DELIBERATELY EXCLUDED. Bare "yes", "no", "sure",
+ * "agreed", "makes sense" were in an earlier draft and were removed on
+ * review: each is the entire content of an answer to a factual question
+ * ("does prod use us-east-1?" → "no"), so it sits directly in front of a
+ * claim-bearing exchange in a way "+1" or "thanks" does not. Today's
+ * extractor sees only the body and could not recover that claim either — but
+ * a later prompt that includes thread context could, and a triage rule must
+ * not quietly pre-empt it. They pass through; do not re-add them. (The
+ * length floor was lowered to single characters for the same reason — see
+ * {@link TRIAGE_MIN_MEANINGFUL_CHARS} — so two-character "no" passes too.)
  */
 const KNOWN_ACK_SHAPES: ReadonlySet<string> = new Set([
   "+1",
@@ -122,18 +137,6 @@ const KNOWN_ACK_SHAPES: ReadonlySet<string> = new Set([
   "lgtm",
   "works for me",
   "wfm",
-  "makes sense",
-  "sure",
-  "sure thing",
-  "yes",
-  "yep",
-  "yeah",
-  "yup",
-  "no",
-  "nope",
-  "nah",
-  "agreed",
-  "agree",
   "cool",
   "nice",
   "great",
@@ -212,8 +215,11 @@ export const TRIAGE_RULES: readonly TriageRule[] = [
   {
     id: "below_min_length",
     rationale:
-      `A trimmed body under ${TRIAGE_MIN_MEANINGFUL_CHARS} characters cannot state a ` +
-      `subject-predicate-object claim ("k", "ok", "+1", a lone emoji).`,
+      `A trimmed body under ${TRIAGE_MIN_MEANINGFUL_CHARS} characters — a single ` +
+      `character ("k", "y", "?") — cannot state a subject-predicate-object claim. ` +
+      `Two characters and up is already past this floor: "no" is a complete answer ` +
+      `to a factual question, so the common two-character noise is enumerated in ` +
+      `the acknowledgement set instead.`,
     matches: (trimmed) => trimmed.length < TRIAGE_MIN_MEANINGFUL_CHARS,
   },
   {

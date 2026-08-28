@@ -1314,6 +1314,12 @@ async function triageFreshEpisodes(
   tally: BrainTriageTally,
 ): Promise<readonly EpisodeRow[]> {
   const kept: EpisodeRow[] = [];
+  // Serial on purpose, not an overlooked `Promise.all`: the whole cycle is
+  // sequential by design (`Effect.forEach(concurrency: 1)` one seam up), the
+  // writes are ≤ BATCH_SIZE tiny primary-key UPDATEs, and fanning them out
+  // would burst checkouts on the internal pool (bounded at 5) that auth,
+  // audit and this drain's own queries share — the exact contention the
+  // alias-proposal deadline note above measures the cost of.
   for (const row of fresh) {
     if (row.body === null || row.body.trim() === "") {
       kept.push(row);

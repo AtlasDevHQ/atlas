@@ -23,6 +23,7 @@
  * `checkedAt` goes through `IsoTimestampSchema` (#1697).
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import {
   CONNECTION_STATUSES,
   HEALTH_STATUSES,
@@ -36,7 +37,7 @@ export const ConnectionHealthSchema = z.object({
   latencyMs: z.number(),
   message: z.string().optional(),
   checkedAt: IsoTimestampSchema,
-}) satisfies z.ZodType<ConnectionHealth, unknown>;
+}) satisfies z.ZodType<WithLooseOptionals<ConnectionHealth>, unknown>;
 
 export const ConnectionInfoSchema = z.object({
   id: z.string(),

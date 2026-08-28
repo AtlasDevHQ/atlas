@@ -24,6 +24,7 @@
  * through to runtime.
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import {
   MIGRATION_STATUSES,
   type RegionMigration,
@@ -51,7 +52,7 @@ export const RegionPickerItemSchema = z.object({
   // single-region / local-dev configs omit it. `.url()` rejects a malformed
   // base before it ever reaches `applyRegionSignal`'s own credential-safe check.
   apiUrl: z.string().url().optional(),
-}) satisfies z.ZodType<RegionPickerItem>;
+}) satisfies z.ZodType<WithLooseOptionals<RegionPickerItem>>;
 
 export const RegionStatusSchema = z.object({
   region: z.string(),

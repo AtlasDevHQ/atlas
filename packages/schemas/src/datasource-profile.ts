@@ -14,6 +14,7 @@
  * time. See `feedback_useatlas_types_scaffold_gotcha`.
  */
 import { z } from "zod";
+import type { WithLooseOptionals } from "./exact-optional";
 import type {
   DatasourceProfileErrorCode,
   DatasourceProfileResult,
@@ -43,7 +44,7 @@ const profileResultFields = {
 
 export const DatasourceProfileResultSchema = z.object(
   profileResultFields,
-) satisfies z.ZodType<DatasourceProfileResult, unknown>;
+) satisfies z.ZodType<WithLooseOptionals<DatasourceProfileResult>, unknown>;
 
 // Discriminated union over the four NDJSON event shapes. `satisfies` pins it to
 // the shared SSOT at compile time.
@@ -64,7 +65,7 @@ const profileStreamUnion = z.discriminatedUnion("type", [
     message: z.string(),
     requestId: z.string().optional(),
   }),
-]) satisfies z.ZodType<DatasourceProfileStreamEvent>;
+]) satisfies z.ZodType<WithLooseOptionals<DatasourceProfileStreamEvent>>;
 
 /**
  * Validate one raw NDJSON line against the profile stream-event union, returning

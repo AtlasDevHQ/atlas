@@ -1,0 +1,22 @@
+{
+  // #4955 — the `exactOptionalPropertyTypes` staging manifest.
+  //
+  // The flag lands per package, not repo-wide: at measurement (2026-08-28,
+  // 366e27a) flipping it at the root surfaced 1,056 errors, 728 of them in
+  // packages/api. Triaging those honestly is several PRs of work, so each
+  // package graduates by being added to `include` below once its errors are
+  // fixed. When every package the root program covers has graduated, delete
+  // this file, move the flag into tsconfig.json, and drop the extra step from
+  // the root `type` script.
+  //
+  // The root program (`tsgo --noEmit`) still checks these packages flag-OFF —
+  // that is fine: flag-on is strictly stricter, so this program is the gate
+  // and the root program cannot contradict it.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "types": ["bun", "node"],
+    "tsBuildInfoFile": "./tsconfig.exact-optional.tsbuildinfo"
+  },
+  "include": ["packages/types/src", "packages/schemas/src"]
+}

@@ -98,13 +98,19 @@ describe("migration types", () => {
 
     // …and the legacy shape, with every identity field absent, still typechecks
     // — which is the property that keeps a months-old bundle importable.
+    // Destructure-and-drop rather than overriding with `undefined`: a parsed
+    // v1/v2 bundle has no key at all, and `exactOptionalPropertyTypes` (#4955)
+    // makes the present-with-`undefined` stand-in a compile error.
+    const {
+      subjectKey: _subjectKey,
+      predicateKey: _predicateKey,
+      objectKey: _objectKey,
+      subjectCmp: _subjectCmp,
+      objectCmp: _objectCmp,
+      ...legacyBase
+    } = carried;
     const legacy: ExportedBrainFact = {
-      ...carried,
-      subjectKey: undefined,
-      predicateKey: undefined,
-      objectKey: undefined,
-      subjectCmp: undefined,
-      objectCmp: undefined,
+      ...legacyBase,
       // The field v3 dropped. Still declared, so a consumer that sets it keeps
       // compiling; the importer ignores it.
       predicateCardinality: "single",

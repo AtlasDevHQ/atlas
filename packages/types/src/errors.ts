@@ -673,15 +673,22 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
   const serverMessage = typeof parsed.message === "string" ? parsed.message : undefined;
   const requestId = typeof parsed.requestId === "string" ? parsed.requestId : undefined;
 
+  // Spread fragments so the optional keys are ABSENT when the payload lacked
+  // them, not present-with-`undefined` — the shape `exactOptionalPropertyTypes`
+  // rejects (#4955), and the same shape consumers already see after JSON
+  // serialization drops undefined values.
+  const withRequestId = requestId !== undefined ? { requestId } : {};
+  const withServerDetail = serverMessage !== undefined ? { detail: serverMessage } : {};
+
   if (rawCode === undefined || !isChatErrorCode(rawCode)) {
-    return { title: serverMessage ?? "Something went wrong. Please try again.", requestId };
+    return { title: serverMessage ?? "Something went wrong. Please try again.", ...withRequestId };
   }
 
   const retryable = isRetryableError(rawCode);
 
   switch (rawCode) {
     case "auth_error":
-      return { title: authErrorMessage(authMode), code: rawCode, retryable, requestId };
+      return { title: authErrorMessage(authMode), code: rawCode, retryable, ...withRequestId };
 
     case "rate_limited": {
       const raw = typeof parsed.retryAfterSeconds === "number" ? parsed.retryAfterSeconds : undefined;
@@ -691,10 +698,10 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
         detail: clamped !== undefined
           ? `Try again in ${clamped} seconds.`
           : serverMessage ?? "Please wait before trying again.",
-        retryAfterSeconds: clamped,
+        ...(clamped !== undefined && { retryAfterSeconds: clamped }),
         code: rawCode,
         retryable,
-        requestId,
+        ...withRequestId,
       };
     }
 
@@ -704,87 +711,87 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
         detail: serverMessage ?? "Start a new conversation to continue. The current thread has hit the per-conversation step ceiling.",
         code: rawCode,
         retryable,
-        requestId,
+        ...withRequestId,
       };
 
     case "configuration_error":
-      return { title: "Atlas is not fully configured.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "Atlas is not fully configured.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "no_datasource":
-      return { title: "No data source configured.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "No data source configured.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "no_capability":
-      return { title: "This workspace has no data yet.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "This workspace has no data yet.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "invalid_request":
-      return { title: "Invalid request.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "Invalid request.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "provider_model_not_found":
-      return { title: "The configured AI model was not found.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "The configured AI model was not found.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "provider_auth_error":
-      return { title: "The AI provider could not authenticate.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "The AI provider could not authenticate.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "provider_rate_limit":
-      return { title: "The AI provider is rate limiting requests.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "The AI provider is rate limiting requests.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "provider_timeout":
-      return { title: "The AI provider timed out.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "The AI provider timed out.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "provider_unreachable":
-      return { title: "Could not reach the AI provider.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "Could not reach the AI provider.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "provider_error":
-      return { title: "The AI provider returned an error.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "The AI provider returned an error.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "internal_error":
-      return { title: serverMessage ?? "An unexpected error occurred.", code: rawCode, retryable, requestId };
+      return { title: serverMessage ?? "An unexpected error occurred.", code: rawCode, retryable, ...withRequestId };
 
     case "validation_error":
-      return { title: "Validation error.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "Validation error.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "not_found":
-      return { title: "Not found.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "Not found.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "forbidden":
-      return { title: "Access denied.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "Access denied.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "session_expired":
-      return { title: "Your session has expired.", detail: serverMessage ?? "Please sign in again.", code: rawCode, retryable, requestId };
+      return { title: "Your session has expired.", detail: serverMessage ?? "Please sign in again.", code: rawCode, retryable, ...withRequestId };
 
     case "forbidden_role":
-      return { title: "Admin role required.", detail: serverMessage, code: rawCode, retryable, requestId };
+      return { title: "Admin role required.", ...withServerDetail, code: rawCode, retryable, ...withRequestId };
 
     case "org_not_found":
-      return { title: "No active organization.", detail: serverMessage ?? "Select an organization and try again.", code: rawCode, retryable, requestId };
+      return { title: "No active organization.", detail: serverMessage ?? "Select an organization and try again.", code: rawCode, retryable, ...withRequestId };
 
     case "plan_limit_exceeded":
-      return { title: "Plan limit exceeded.", detail: serverMessage ?? "Upgrade your plan or wait until the next billing period.", code: rawCode, retryable, requestId };
+      return { title: "Plan limit exceeded.", detail: serverMessage ?? "Upgrade your plan or wait until the next billing period.", code: rawCode, retryable, ...withRequestId };
 
     case "trial_expired":
-      return { title: "Trial expired.", detail: serverMessage ?? "Upgrade to a paid plan to continue using Atlas.", code: rawCode, retryable, requestId };
+      return { title: "Trial expired.", detail: serverMessage ?? "Upgrade to a paid plan to continue using Atlas.", code: rawCode, retryable, ...withRequestId };
 
     case "subscription_required":
-      return { title: "Subscription required.", detail: serverMessage ?? "Your subscription has ended. Resubscribe from the billing page to continue using Atlas.", code: rawCode, retryable, requestId };
+      return { title: "Subscription required.", detail: serverMessage ?? "Your subscription has ended. Resubscribe from the billing page to continue using Atlas.", code: rawCode, retryable, ...withRequestId };
 
     case "billing_check_failed":
-      return { title: "Billing check failed.", detail: serverMessage ?? "Unable to verify billing status. Please try again.", code: rawCode, retryable, requestId };
+      return { title: "Billing check failed.", detail: serverMessage ?? "Unable to verify billing status. Please try again.", code: rawCode, retryable, ...withRequestId };
 
     case "workspace_check_failed":
-      return { title: "Workspace check failed.", detail: serverMessage ?? "Unable to verify workspace status. Please try again.", code: rawCode, retryable, requestId };
+      return { title: "Workspace check failed.", detail: serverMessage ?? "Unable to verify workspace status. Please try again.", code: rawCode, retryable, ...withRequestId };
 
     case "workspace_suspended":
-      return { title: "Workspace suspended.", detail: serverMessage ?? "Contact your workspace administrator to reactivate it.", code: rawCode, retryable, requestId };
+      return { title: "Workspace suspended.", detail: serverMessage ?? "Contact your workspace administrator to reactivate it.", code: rawCode, retryable, ...withRequestId };
 
     case "workspace_throttled":
-      return { title: "Workspace throttled.", detail: serverMessage ?? "Your workspace has been temporarily throttled due to unusual activity. Requests will be delayed.", code: rawCode, retryable, requestId };
+      return { title: "Workspace throttled.", detail: serverMessage ?? "Your workspace has been temporarily throttled due to unusual activity. Requests will be delayed.", code: rawCode, retryable, ...withRequestId };
 
     case "workspace_deleted":
-      return { title: "Workspace deleted.", detail: serverMessage ?? "This workspace has been permanently deleted. Create a new workspace to continue.", code: rawCode, retryable, requestId };
+      return { title: "Workspace deleted.", detail: serverMessage ?? "This workspace has been permanently deleted. Create a new workspace to continue.", code: rawCode, retryable, ...withRequestId };
 
     default: {
       const _exhaustive: never = rawCode;
-      return { title: serverMessage ?? `Something went wrong (${String(_exhaustive)}).`, requestId };
+      return { title: serverMessage ?? `Something went wrong (${String(_exhaustive)}).`, ...withRequestId };
     }
   }
 }

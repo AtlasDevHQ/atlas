@@ -44,10 +44,18 @@ export interface DashboardCardEqualityInput {
   position: number;
   sql: string;
   chartConfig: DashboardChartConfig | null;
-  /** Absent/undefined ≡ null ≡ a chart card (kind is derived from presence). */
-  content?: string | null;
-  /** Absent/undefined ≡ `[]` — a card with no event markers. */
-  annotations?: DashboardCardAnnotation[];
+  /**
+   * Absent/undefined ≡ null ≡ a chart card (kind is derived from presence).
+   *
+   * The explicit `| undefined` is deliberate under `exactOptionalPropertyTypes`
+   * (#4955): present-with-`undefined` is part of this boundary's documented
+   * contract — the comparison below normalizes it — and callers hold card
+   * shapes where the field genuinely arrives that way.
+   */
+  content?: string | null | undefined;
+  /** Absent/undefined ≡ `[]` — a card with no event markers. Explicit
+   *  `| undefined` deliberate, same grounds as `content` above. */
+  annotations?: DashboardCardAnnotation[] | undefined;
   connectionGroupId: string | null;
   layout: DashboardCardLayout | null;
 }

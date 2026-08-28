@@ -250,6 +250,25 @@ export function isBrainFactStatusFilter(value: unknown): value is BrainFactStatu
 export const BRAIN_PROPOSAL_PRODUCER = "proposal";
 
 /**
+ * `provenance.producer` value stamped by the autonomous suggester
+ * (#5488 — ADR-0036 §T9 lock 1's permitted autonomy).
+ *
+ * The second producer value the review surface branches on, and the line it
+ * draws is the one the issue's acceptance criteria name outright: a reviewer
+ * must be able to tell a machine's guess from a person's testimony. A claim
+ * carrying {@link BRAIN_PROPOSAL_PRODUCER} is a human's own words, confirmed by
+ * that human; a claim carrying this value was inferred by a model from a
+ * conversation nobody asked it to mine — same `human`-class session evidence,
+ * opposite epistemic standing. `provenance.source` cannot draw that line
+ * (both are `human`), which is the same reason the proposal constant exists.
+ *
+ * Lives here for that constant's exact reason: the API writer
+ * (`lib/brain/suggester.ts`) and the web queue's origin badge both need it,
+ * and the frontend may not import `@atlas/api`.
+ */
+export const BRAIN_SUGGESTER_PRODUCER = "suggester";
+
+/**
  * Discriminated on `visible`, for {@link BrainFactEpisodeViewSchema}'s reason
  * and with the same `z.strictObject` on the withheld arm — this is an ACL
  * boundary (#4836), so the withheld shape must be incapable of carrying

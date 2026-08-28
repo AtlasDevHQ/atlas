@@ -7,7 +7,12 @@
  * session to derive from. Nothing materializes a session eagerly — lock 3
  * rejected eager per-session episoding outright, and the source scan in
  * `__tests__/session-episode.test.ts` pins {@link materializeSessionEpisode}
- * to the proposal path so an eager caller fails a test before it ships.
+ * to the propose-time callers so an eager caller fails a test before it ships.
+ * Since #5488 there are two: the human `proposeFact` path (`proposal.ts`) and
+ * the autonomous suggester (`suggester.ts`) — which is still propose-time
+ * materialization, because the suggester mints the episode only at the moment
+ * it files a claim FROM the session, never on a bare sweep of sessions that
+ * yielded nothing.
  *
  * ## By-reference, per T3
  *

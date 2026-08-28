@@ -2018,6 +2018,57 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
   {
+    // The autonomous suggester's trust dial (#5488, ADR-0036 §T9 lock 1's
+    // permitted autonomy). WORKSPACE-scoped, default OFF, hot-reloaded — one
+    // platform fiber iterates the workspaces that opted in, resolved per tick
+    // (mirrors ATLAS_LEARN_PROMOTE_DECAY_ENABLED, #4582).
+    //
+    // `saasVisible: false`, and here the mirror deliberately BREAKS from the
+    // promote/decay precedent: that dial is a tenant-self-service toggle, but
+    // every ATLAS_BRAIN_* key is hidden from the generic settings page on
+    // Atlas Cloud — a page-level universal claim `check-brain-settings-doc.ts`
+    // enforces, and the closest sibling (the warehouse cadence, the other
+    // draft-filing cycle) already follows it. On SaaS the per-workspace
+    // opt-in row is therefore written by a platform admin on the tenant's
+    // behalf; still per-workspace, still explicit, just not self-serve.
+    //
+    // ⚠️ The platform-scope enrollment behaviour, stated because the tier
+    // chain makes it a footgun: on SaaS, enrollment reads EXPLICIT workspace
+    // overrides straight off the settings table (`lib/brain/suggester.ts`),
+    // so a platform-scoped `true` enrolls NOBODY — enrolling every tenant in
+    // an autonomous model-driven producer is exactly the accident lock 1's
+    // off-by-default exists to prevent. On self-hosted the deployment's own
+    // workspaces resolve through the normal tier chain, so the env var (or a
+    // platform override) opts the single-tenant install in with no
+    // per-workspace row to write.
+    key: "ATLAS_BRAIN_SUGGESTER_ENABLED",
+    section: "Knowledge Base",
+    label: "Company Atlas Autonomous Suggester",
+    description:
+      "Let Atlas scan this workspace's recently-idle conversations on its own cadence and stage any insights it finds as DRAFT suggestions on the review queue, marked as machine-suggested and distinct from a person's own proposals (off by default). It never publishes: every suggestion waits for a human reviewer, like every other draft. Turning it off stops new suggestions on the next run and never removes drafts already raised.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_BRAIN_SUGGESTER_ENABLED",
+    scope: "workspace",
+    saasVisible: false,
+  },
+  {
+    // The suggester fiber's cadence. Platform-scoped + requiresRestart for the
+    // promote/decay interval's exact reason: the fiber is forked once at boot
+    // (makeSchedulerLive), so its cadence is process-wide operator policy —
+    // only the on/off dial above is per-workspace.
+    key: "ATLAS_BRAIN_SUGGESTER_INTERVAL_HOURS",
+    section: "Knowledge Base",
+    label: "Autonomous Suggester Interval",
+    description: "Hours between autonomous suggester runs.",
+    type: "number",
+    default: "24",
+    envVar: "ATLAS_BRAIN_SUGGESTER_INTERVAL_HOURS",
+    requiresRestart: true,
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
     // Audience-membership sync (#4801, ADR-0036 §Access control). WORKSPACE-
     // scoped and default ON, unlike its extraction sibling above, because the
     // two knobs answer different questions. Extraction spends model budget, so

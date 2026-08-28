@@ -2496,4 +2496,80 @@ describe("agent-proposed origin is labelled (#5483, ADR-0036 §T9)", () => {
     await waitFor(() => expect(document.body.textContent).toContain("Provenance"));
     expect(document.body.textContent).not.toContain("their testimony");
   });
+
+  /**
+   * #5488's acceptance criterion, verbatim: a reviewer must be able to tell a
+   * machine's guess from a person's testimony. The autonomous suggester's rows
+   * are `human`-class session evidence exactly like a proposal's, so `source`
+   * cannot draw the line — the `producer` byte does, and this block pins both
+   * halves of it: the suggested row is labelled, and the proposal label does
+   * NOT leak onto it (nor the suggester's onto a proposal).
+   *
+   * `producer` is deliberately the literal `"suggester"`, not
+   * `BRAIN_SUGGESTER_PRODUCER`, for the proposal fixture's stated reason: this
+   * pins the wire byte the API sends, so a respelling of the constant fails
+   * here instead of the badge and the fixture agreeing their way past a broken
+   * label.
+   */
+  function suggestedCandidate() {
+    return candidate({
+      provenance: {
+        ...PROVENANCE,
+        source: "human",
+        producer: "suggester",
+        attribution: {
+          visible: true,
+          sourceId: "session:conv-1",
+          actor: "U-owner",
+          occurredAt: ISO,
+          actorIdentity: { state: "opaque" as const, erased: false },
+        },
+      },
+      episode: {
+        visible: true,
+        id: "ep-2",
+        source: "human",
+        sourceId: "session:conv-1",
+        sourceActor: "U-owner",
+        body: null,
+        bodyTruncated: false,
+        locator: "conversation:conv-1",
+        occurredAt: ISO,
+        ingestedAt: ISO,
+      },
+    });
+  }
+
+  test("labels a machine suggestion in the list", async () => {
+    const view = await renderPage([suggestedCandidate()]);
+    expect(view.container.textContent).toContain("Suggested");
+  });
+
+  test("a suggestion is not labelled as a proposal", async () => {
+    // The two origin chips discriminate on the same field; a predicate typo'd
+    // to a prefix match (or a shared badge) would light both — and the whole
+    // criterion is that the reviewer can tell WHICH kind of `human` row this is.
+    const suggested = await renderPage([suggestedCandidate()]);
+    expect(suggested.container.textContent).not.toContain("Proposed");
+  });
+
+  test("a proposal is not labelled as a suggestion", async () => {
+    const proposed = await renderPage([proposalCandidate()]);
+    expect(proposed.container.textContent).not.toContain("Suggested");
+  });
+
+  test("does not label a connector-extracted claim as suggested", async () => {
+    const view = await renderPage([candidate()]);
+    expect(view.container.textContent).not.toContain("Suggested");
+  });
+
+  test("says in the detail sheet what a suggestion's evidence is", async () => {
+    const view = await renderPage([suggestedCandidate()]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Provenance"));
+    // The sheet must say the machine part out loud where the trust call is
+    // made: nobody proposed or confirmed this.
+    expect(document.body.textContent).toContain("No person proposed or confirmed it");
+    expect(document.body.textContent).not.toContain("their testimony");
+  });
 });

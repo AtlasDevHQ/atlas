@@ -1247,11 +1247,17 @@ function buildMorphMap(){
   if(g.index){ idx=Array.prototype.slice.call(g.index.array); }
   else{ idx=[]; for(var q=0;q<pA.count;q++) idx.push(q); }
 
-  // Two midpoint subdivisions, re-projected to the local radius, so the
+  // Midpoint subdivisions, re-projected to the local radius, so the
   // in-between states bend smoothly instead of creasing along the source
-  // mesh's 510-vertex triangulation.
+  // mesh's 510-vertex triangulation. Two passes ≈ 7.8k vertices, and the
+  // morph rewrites all of them on CPU every scroll frame (~2.2ms/frame on a
+  // dev core, several-fold that on a low-end phone) — so a small viewport,
+  // which cannot show the second pass's smoothness anyway, takes one pass
+  // (~2k vertices, ~4× less per-frame work).
   var C=sphereCenter;
-  for(var pass=0;pass<2;pass++){
+  var stR=stage.getBoundingClientRect();
+  var passes=Math.min(stR.width,stR.height)<620?1:2;
+  for(var pass=0;pass<passes;pass++){
     var cache={}, nidx=[];
     var mid=function(a,b){
       var key=a<b?a+'_'+b:b+'_'+a;
@@ -1311,6 +1317,10 @@ function buildMorphMap(){
   mapGeo.setIndex(idx);
   sphere.material.side=THREE.DoubleSide;   // mid-unroll the curl shows its back
   mapMesh=new THREE.Mesh(mapGeo, sphere.material);
+  // Whenever this mesh is showing it spans the frame, so culling buys
+  // nothing — and skipping it lets applyMorph skip a per-frame
+  // computeBoundingSphere over every vertex.
+  mapMesh.frustumCulled=false;
   mapMesh.visible=false;
   scene.add(mapMesh);
   // Measure him, don't guess: the lift clearance comes from the real bounds
@@ -1375,7 +1385,6 @@ function applyMorph(m){
   }
   pos.needsUpdate=true;
   mapGeo.computeVertexNormals();
-  mapGeo.computeBoundingSphere();
   // The globe and the chart are the same surface; only one exists at a time.
   // Which one is showing is decided in the render loop, where the lift is
   // known — the swap happens at lift-off, not at the first morph step.
@@ -2088,7 +2097,15 @@ window.__atlas={
   setEl:function(v){ el=elTarget=v; },
   probe:function(){ return {mC:modelCenter.toArray(), mR:modelRadius, minY:modelMinY,
     sC:sphereCenter.toArray(), sR:sphereRadius,
-    bodyTop:bodyTopY, lift:LIFT, sphR:sphR}; }
+    bodyTop:bodyTopY, lift:LIFT, sphR:sphR}; },
+  // Times a forced full-morph sweep (the early-out is bypassed), per frame.
+  morphBench:function(){
+    if(!mapGeo) return null;
+    var t0=performance.now(), k=0;
+    for(var m=0;m<=1.0001;m+=0.02){ mapMorph=-1; applyMorph(m); k++; }
+    return {msPerFrame:(performance.now()-t0)/k,
+            verts:mapGeo.attributes.position.count};
+  }
 };
 })();
 </script>

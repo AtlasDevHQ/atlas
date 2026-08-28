@@ -676,7 +676,7 @@ var labelEls=CLASSES.map(function(d){
 var beatN=document.getElementById('beatN'), beatH=document.getElementById('beatH'), beatP=document.getElementById('beatP');
 var scrub=document.getElementById('scrub'), pct=document.getElementById('pct');
 
-var t=0, tTarget=0, curBeat=-1;
+var t=0, tTarget=0, curBeat=-1, bootClock=-1;
 var az=1.30, azTarget=1.30, el=0.06, elTarget=0.06;
 var dragging=false, lastX=0, lastY=0, idle=0;
 
@@ -866,7 +866,19 @@ function drawQuad(g,spec,x,y,w,h,S,reveal){
       pop=Math.max(0,Math.min(1,(r1-thr)/0.08));
       if(pop<=0) continue;
     }
-    drawMark(g,kinds[q],x+8*S+spots[q].cx,y+8*S+spots[q].cy,spots[q].r*pop,S);
+    var mx=x+8*S+spots[q].cx, my=y+8*S+spots[q].cy;
+    drawMark(g,kinds[q],mx,my,spots[q].r*pop,S);
+    // Each mark lands with the same sounding ring the globe's sources ping
+    // with — the one visual verb, both places: a reading taken there, a
+    // reading recorded here.
+    if(r1<1&&pop<1){
+      g.save();
+      g.globalAlpha=(1-pop)*0.7;
+      g.strokeStyle='#23CE9E';
+      g.lineWidth=1.3*S;
+      g.beginPath(); g.arc(mx,my,spots[q].r*(0.9+2.4*pop),0,Math.PI*2); g.stroke();
+      g.restore();
+    }
   }
 }
 
@@ -1585,7 +1597,12 @@ loader.parse(buf,'',function(gltf){
       w.hidden=false;
     }
     bootbar.style.transform='scaleX(1)';
-    setTimeout(function(){ boot.classList.add('gone'); },140);
+    setTimeout(function(){
+      boot.classList.add('gone');
+      // The overture clock: the source marks come online one by one from
+      // this moment, whether or not the reader has scrolled.
+      bootClock=performance.now()/1000;
+    },140);
   });
 }, function(err){
   fail('The model failed to load.', 'glTF parsing reported: ' + (err && err.message ? err.message : 'unknown error') + '. The page needs a re-publish with a valid export.');
@@ -1674,27 +1691,31 @@ function updateLabels(w,h){
   // each label hands off whole as its card — carrying the same title —
   // condenses out of the spot it was marking.
   var sm=THREE.MathUtils.smoothstep;
-  // The dots are on the globe almost from the load frame — the opening shot
-  // should already say "this globe has marked places" with no words at all.
-  // They come online one by one, each announced by a sounding ring, and the
-  // text joins once the descent brings it close enough to read.
+  // The overture: the marks come online one by one in the first seconds
+  // after boot — ping, ping, ping across the globe before the reader has
+  // scrolled at all. A homepage has to say "this globe has marked places,
+  // and it is listening" with no words and no scroll. The text joins once
+  // the descent brings it close enough to read.
   var tf=sm(t,0.15,0.25)*Math.min(1,(1-sm(t,0.52,0.555))+sm(t,0.60,0.64));
   var mNow=sm(t,MORPH_T0,MORPH_T1);
   var now=performance.now()/1000;
   for(var i=0;i<CLASSES.length;i++){
     var d=CLASSES[i], e=labelEls[i];
     var born=PLATE_T0+i*PLATE_DT0;
-    var tb=0.045+i*0.018;
+    // Age of this mark since its slot in the overture. Under reduced motion
+    // the marks are simply present from boot.
+    var bAge=bootClock<0?-1:(now-bootClock-0.9-i*0.55);
     // The dot snaps in, THEN the ring announces it — a ping over a dot still
     // fading in inherits its near-zero opacity and reads as nothing.
-    var vi=sm(t,tb,tb+0.025)*(1-sm(t,born,born+0.035));
-    // The ping phase: the birth ring is a function of t, so the scrub
-    // replays it; afterwards a soft ambient sounding every few seconds
-    // while the dot rides the globe (stilled before the fold, and under
+    var birth=reduced?(bootClock<0?0:1):sm(bAge,0,0.4);
+    var vi=birth*(1-sm(t,born,born+0.035));
+    // The ping phase: the birth ring rides just behind the dot's arrival;
+    // afterwards a soft ambient sounding every few seconds while the dot
+    // rides the globe (stilled before the fold, and under
     // prefers-reduced-motion).
     var q=-1;
-    if(!reduced){
-      var qb=(t-tb-0.025)/0.06;
+    if(!reduced&&bAge>=0){
+      var qb=(bAge-0.35)/1.1;
       if(qb>=0&&qb<1) q=qb;
       else if(qb>=1&&t<0.44){
         var qa=((now+i*2.13)%6.5)/1.4;

@@ -1155,6 +1155,8 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // Both entries already here from the first import (#5043).
         brainEntities: { imported: 0, skipped: 2 },
         brainActorIdentities: { imported: 0, skipped: 3 },
+        brainVocabularyProposals: { imported: 0, skipped: 0, refused: 0 },
+        brainPredicateCardinalities: { imported: 0, skipped: 0, refused: 0 },
       });
 
       // ── Catch-up import: an episode the target already has, carrying a

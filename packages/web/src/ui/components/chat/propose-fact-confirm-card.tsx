@@ -223,8 +223,10 @@ export function ProposeFactConfirmCard({ part }: { part: unknown }) {
               conversation takes the session's narrow grant seed — visible to
               you until a reviewer publishes it — where a session-less one
               takes the disclosed workspace grant. Deliberately NOT "the
-              reviewer decides who sees it": reviewer-side widening is issue
-              5483's, unbuilt, and this card must not promise it early. */}
+              reviewer decides who sees it": the review gate's widening (issue
+              5483) is the evidence-grant union at publish, not a per-fact
+              audience picker, so this card must not promise a choice the
+              reviewer does not have. */}
           <p className="mb-2 text-xs text-muted-foreground">
             {(confirmResult.confirm.session
               ? "This records a new claim in your company brain as a draft, with this conversation " +

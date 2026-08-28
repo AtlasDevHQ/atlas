@@ -1,3 +1,4 @@
+
 <title>Atlas in Bronze</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -25,6 +26,20 @@
   --paper:#F6EFE4;       /* --atlas-paper oklch(0.955 0.017 83)  */
   --muted:#868686;       /* --code-muted  oklch(0.62  0     0)   */
 
+  /* The Coverage Plate's own palette, mirrored from packages/web globals.css
+   * (light values — the cards are paper) so the hero's plates and the shipped
+   * surface (#5422, ADR-0041) are one drawing. The ramp is ordinal on the
+   * forest hue; --plate-stale is the app's --destructive and encodes nothing
+   * but that one state. */
+  --plate-surveyed:#00592E;
+  --plate-inscope:#458461;
+  --plate-visible:#7EAB90;
+  --plate-stale:#E7000B;
+  --plate-hatch:#B1BAB4;
+  --plate-rule:#D2DAD5;
+  --plate-ink:#16241C;      /* --atlas-ink */
+  --plate-ink-soft:#46564C; /* --atlas-ink-muted */
+
   --hair:rgba(56,156,106,.22);
   --panel:rgba(16,20,18,.72);
 }
@@ -36,10 +51,14 @@ body{
   color:var(--paper);
   font-family:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   -webkit-font-smoothing:antialiased;
-  overflow:hidden;
 }
 
-.stage{position:relative;height:100svh;width:100%;overflow:hidden;touch-action:none}
+/* The page scrolls like a page. The track gives the journey its length; the
+   stage rides sticky inside it, and scroll progress IS the journey position —
+   no hijacked wheel, no pinch-and-zoom feel. pan-y leaves vertical touch to
+   the browser (the story) and horizontal drags to the orbit. */
+.track{height:560vh}
+.stage{position:sticky;top:0;height:100svh;width:100%;overflow:hidden;touch-action:pan-y}
 #gl{position:absolute;inset:0;width:100%;height:100%;display:block}
 .vignette{
   position:absolute;inset:0;pointer-events:none;
@@ -57,7 +76,7 @@ body{
 }
 .boot.gone{opacity:0;pointer-events:none}
 .boot .bar{width:150px;height:1px;background:rgba(56,156,106,.22);overflow:hidden}
-.boot .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s ease}
+.boot .bar i{display:block;height:100%;width:100%;background:var(--accent);transform:scaleX(0);transform-origin:0 50%;transition:transform .25s ease}
 .boot p{
   margin:0;font:400 10px/1 "IBM Plex Mono",monospace;
   letter-spacing:.22em;text-transform:uppercase;color:var(--muted);
@@ -84,6 +103,89 @@ body{
   font:400 10px/1 "IBM Plex Mono",ui-monospace,monospace;font-style:normal;
   color:var(--muted);margin-left:7px;letter-spacing:.06em;
 }
+
+/* ---------- the handoff (beat 05) ---------- */
+/* The frame the journey ends on: the Coverage Plate as the product draws it.
+   The overlay is laid out from t=0 (the flight targets are measured off it)
+   and only becomes visible as the plates land on it. Pointer events pass
+   through — the scrub still owns the journey. */
+.handoff{position:absolute;inset:0;pointer-events:none;z-index:7}
+.handoff .ground{
+  position:absolute;inset:0;opacity:0;
+  background:radial-gradient(120% 100% at 50% 0%, #FBF7EF 0%, var(--paper) 55%, #EFE6D6 100%);
+}
+.sheetcard{
+  position:absolute;left:50%;top:max(48px,6vh);transform:translateX(-50%);
+  width:min(1080px, calc(100vw - 40px));opacity:0;
+  background:#FDFBF7;color:var(--plate-ink);
+  border:1px solid var(--plate-rule);border-radius:12px;
+  box-shadow:0 24px 70px rgba(22,36,28,.16), 0 3px 12px rgba(22,36,28,.07);
+}
+.sheetcard header{
+  display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;
+  gap:4px 24px;border-bottom:1px solid var(--plate-rule);padding:15px 24px;
+}
+.sheetcard h2{
+  margin:0;font:600 15px/1.3 "IBM Plex Sans",system-ui,sans-serif;
+  letter-spacing:-.01em;color:var(--plate-ink);
+}
+.sheetcard header p{
+  margin:0;font:400 11.5px/1.5 "IBM Plex Sans",system-ui,sans-serif;
+  color:var(--plate-ink-soft);max-width:72ch;
+}
+.sheetpane{padding:18px 24px}
+.sheet{position:relative}
+.sheet canvas{position:absolute;display:block}
+.sheet .neat{position:absolute;border:1px solid var(--plate-rule)}
+.sheet .sq-t{
+  position:absolute;white-space:nowrap;color:var(--plate-ink);
+  font:600 12.5px/1 "IBM Plex Sans",system-ui,sans-serif;
+}
+.sheet .sq-t.blank{font-weight:400;font-style:italic}
+.sheet .sq-s{
+  position:absolute;white-space:nowrap;color:var(--plate-ink-soft);
+  font:italic 400 11px/1 "IBM Plex Sans",system-ui,sans-serif;
+}
+.sheet .sq-m{
+  position:absolute;white-space:nowrap;color:var(--plate-ink-soft);
+  font:700 9.5px/1 "IBM Plex Sans",system-ui,sans-serif;letter-spacing:1.6px;
+}
+.sheet .sq-mbox{position:absolute;border:1px solid var(--plate-rule)}
+/* Compact by default — names only, one wrapping row — so the whole card fits
+   the hero frame above the beat copy. The shipped component's glosses come
+   back where the viewport has room for them. */
+.sheetlegend{
+  display:flex;flex-wrap:wrap;gap:9px 20px;
+  border-top:1px solid var(--plate-rule);padding:14px 24px 16px;
+}
+.sheetlegend>div{display:flex;align-items:flex-start;gap:9px}
+.sheetlegend canvas{display:block;margin-top:1px;flex:none}
+.sheetlegend b{
+  display:block;font:600 12px/1.35 "IBM Plex Sans",system-ui,sans-serif;
+  color:var(--plate-ink);
+}
+.sheetlegend b.un{font-style:italic;font-weight:400}
+.sheetlegend small{
+  display:none;font:400 11.5px/1.45 "IBM Plex Sans",system-ui,sans-serif;
+  color:var(--plate-ink-soft);max-width:52ch;
+}
+@media (min-height:1080px) and (min-width:1160px){
+  .sheetlegend{display:grid;grid-template-columns:1fr 1fr;gap:12px 32px;padding:18px 24px 20px}
+  .sheetlegend small{display:block}
+}
+@media (max-width:760px){
+  .sheetcard header p{display:none}
+}
+
+/* Beat 05 turns the frame light; the chrome that sits on it trades paper ink
+   for plate ink. Driven by .lit from the journey position, eased in CSS. */
+.mark strong,.mark small,.hint,.beat .n,.beat h1,.beat p{transition:color .45s ease}
+.stage.lit .mark strong{color:var(--plate-ink)}
+.stage.lit .mark small{color:var(--plate-ink-soft)}
+.stage.lit .hint{color:var(--plate-ink-soft)}
+.stage.lit .beat .n{color:var(--brand)}
+.stage.lit .beat h1{color:var(--plate-ink)}
+.stage.lit .beat p{color:var(--plate-ink-soft)}
 
 /* ---------- chrome ---------- */
 .chrome{position:absolute;inset:0;pointer-events:none;z-index:10}
@@ -222,15 +324,30 @@ input[type=range]:focus-visible{outline:1px solid var(--accent);outline-offset:5
 }
 </style>
 
+<div class="track">
 <div class="stage">
   <canvas id="gl"></canvas>
   <div class="vignette"></div>
   <div class="labels" id="labels"></div>
 
+  <div class="handoff" aria-hidden="true">
+    <div class="ground" id="ground"></div>
+    <section class="sheetcard" id="sheetcard">
+      <header>
+        <h2>The coverage plate</h2>
+        <p>One quadrangle per source, one sounding per survey unit &mdash; a channel,
+        a mailbox, an entity&ndash;dimension pair. Different sources count different
+        things, so the quads do not add up and nothing here is a total.</p>
+      </header>
+      <div class="sheetpane"><div class="sheet" id="sheet"></div></div>
+      <div class="sheetlegend" id="sheetLegend"></div>
+    </section>
+  </div>
+
   <div class="chrome">
     <div class="mark"><strong>Atlas</strong><small id="markFinish">hero study 03 &middot; patina</small></div>
 
-    <div class="hint">drag to orbit<br>scroll to descend</div>
+    <div class="hint">drag to orbit<br>scroll to travel</div>
 
     <div class="beat">
       <span class="n" id="beatN">Beat 01 &mdash; the titan</span>
@@ -241,8 +358,8 @@ input[type=range]:focus-visible{outline:1px solid var(--accent);outline-offset:5
     <div class="deck">
       <button id="light" class="stylebtn" aria-pressed="false" aria-controls="lab">Light</button>
       <button id="style" class="stylebtn" aria-pressed="true">Patina</button>
-      <label for="scrub">Descent</label>
-      <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="Descend from the titan to the plates">
+      <label for="scrub">Journey</label>
+      <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="Travel from the titan down to the surface, across the unrolled chart, and into the coverage sheet">
       <span class="readout" id="pct">0%</span>
     </div>
   </div>
@@ -277,6 +394,8 @@ input[type=range]:focus-visible{outline:1px solid var(--accent);outline-offset:5
     <p id="bootmsg">Casting the titan</p>
   </div>
 </div>
+</div>
+
 
 <script>/*__THREE__*/</script>
 <script>
@@ -475,30 +594,59 @@ function applyPreset(P,keepManual){
   applyLightValues();
 }
 
-/* ================= the descent ================= */
+/* ================= the journey ================= */
+/* Down, and then IN \u2014 the camera never pulls back past the globe again.
+   Beats 01\u201302 descend to the surface; in beat 03 the globe unrolls in place
+   into a flat chart, the way an atlas is a globe taken apart; in beat 04 the
+   source regions lift off the chart as plates; beat 05 lands them on the
+   product's one sheet and the frame goes light. The whole journey is a zoom
+   INTO what Atlas tracks; the myth ends on the product. */
 var BEATS=[
   [0.00,"Beat 01 \u2014 the titan","He carries the whole thing.",
    "One sphere, one silhouette. Everything the company knows, held up at arm's length."],
-  [0.34,"Beat 02 \u2014 the descent","The surface stops being a picture.",
-   "Coastlines were never texture. Every cell is a real record, packed tight enough to read as a world."],
-  [0.68,"Beat 03 \u2014 the plates","Countries become plates.",
-   "An atlas is a book of plates. Each one lifts off the sphere as a page of the company's own atlas."]
+  [0.20,"Beat 02 \u2014 the descent","The surface stops being a picture.",
+   "Coastlines were never texture. Every mark is a source Atlas can actually read \u2014 a channel, a mailbox, a pair of columns."],
+  [0.40,"Beat 03 \u2014 the chart","The world opens flat.",
+   "A globe is an atlas rolled up. Unrolled, the world he carries reads as a chart \u2014 and every region of it is a source."],
+  [0.62,"Beat 04 \u2014 the plates","Regions become plates.",
+   "One quadrangle per source, one sounding per survey unit \u2014 each region of the chart condenses into a page of the record."],
+  [0.82,"Beat 05 \u2014 the survey","This is what he holds up.",
+   "The Coverage Plate, as the product draws it: nothing invented, nothing left out. The company's knowledge \u2014 carried, and accounted for."]
 ];
-var DOMAINS=[
-  ["Revenue","1.4M rows",   0.28,  0.62],
-  ["Pipeline","312K rows",  1.15,  0.30],
-  ["Customers","88K rows",  2.05,  0.70],
-  ["Churn","24K rows",      2.85, -0.15],
-  ["Support","640K rows",   3.75,  0.42],
-  ["Product Usage","9.1M rows", 4.55, -0.40],
-  ["Headcount","2.3K rows", 5.40,  0.12]
+/* The five source classes the Coverage Surface counts, in `vocabulary.ts`'s own
+   order, each anchored at a longitude/latitude on the globe. The sheet state is
+   illustrative \u2014 this is a brand piece, not a live read \u2014 but every rule it
+   draws under is the shipped one (#5422, ADR-0041): no numbers anywhere,
+   unsurveyed hatched and named rather than omitted, a torn edge where the
+   survey stops short of what the credentials can see, and People off the
+   survey rather than empty on it. */
+var CLASSES=[
+  {id:"chat", title:"Chat", units:"chat channels", unit:"chat channel", lon:0.28, lat:0.62,
+   render:"soundings", torn:true,
+   runs:[["surveyed-current",17],["surveyed-stale",4],["surveyed-unverified",6],
+         ["in-scope-no-evidence",8],["visible-not-in-scope",13]]},
+  {id:"transcript", title:"Meeting transcripts", units:"meeting recordings",
+   unit:"meeting recording", lon:1.62, lat:0.28,
+   render:"soundings", torn:false,
+   runs:[["surveyed-current",5],["surveyed-unverified",3],
+         ["in-scope-no-evidence",4],["visible-not-in-scope",6]]},
+  {id:"email", title:"Mail", units:"mailboxes", unit:"mailbox", lon:2.90, lat:-0.18,
+   render:"unsurveyed", state:"never enumerated"},
+  {id:"warehouse", title:"Warehouse", units:"entity\u2013dimension pairs",
+   unit:"entity\u2013dimension pair", lon:4.15, lat:0.46,
+   render:"soundings", torn:false,
+   runs:[["surveyed-current",31],["surveyed-stale",5],["in-scope-no-evidence",24]]},
+  {id:"human", title:"People", units:"people", unit:"person", lon:5.40, lat:0.12,
+   render:"off-survey"}
 ];
 
-var labelEls=DOMAINS.map(function(d){
+var labelEls=CLASSES.map(function(d){
   var el=document.createElement('div'); el.className='lbl';
   var dot=document.createElement('i'), ln=document.createElement('span');
-  var b=document.createElement('b'); b.textContent=d[0];
-  var em=document.createElement('em'); em.textContent=d[1];
+  var b=document.createElement('b'); b.textContent=d.title;
+  // The unit noun, never a count: a number here would be the fabricated
+  // denominator ADR-0041 refuses, printed on a hero.
+  var em=document.createElement('em'); em.textContent=d.units;
   b.appendChild(em);
   el.appendChild(dot); el.appendChild(ln); el.appendChild(b);
   document.getElementById('labels').appendChild(el);
@@ -515,6 +663,741 @@ var dragging=false, lastX=0, lastY=0, idle=0;
 function setBeat(i){
   if(i===curBeat) return; curBeat=i;
   beatN.textContent=BEATS[i][1]; beatH.textContent=BEATS[i][2]; beatP.textContent=BEATS[i][3];
+}
+
+/* ================= the plates ================= */
+/* The plates are the product's own Coverage Plate cards
+   (packages/web/.../brain-coverage/plate.tsx), transcribed to canvas 2D and
+   drawn at runtime into CanvasTextures, so they cost code, not payload. Kept
+   literal on purpose — a hero that draws the surface differently from the
+   surface is a third wording of it, and this repo has twice recorded what
+   that costs. The faces are the page's own (IBM Plex, already loaded by the
+   chrome); if they fail to arrive the cards degrade to the same fallback
+   stacks as the rest of the page. */
+var AZ0=1.30;                                   // the composition faces the load-time camera
+var F0=new THREE.Vector3(Math.sin(AZ0),0,Math.cos(AZ0));
+var R0=new THREE.Vector3(Math.cos(AZ0),0,-Math.sin(AZ0));
+var UPV=new THREE.Vector3(0,1,0);
+var PAPER_HEX='#F6EFE4';
+/* The plate palette, hex-mirrored from the CSS tokens above so the canvas and
+   the legend chips stay one drawing. */
+var P_SURV='#00592E', P_INSCOPE='#458461', P_VISIBLE='#7EAB90',
+    P_STALE='#E7000B', P_HATCH='#B1BAB4', P_RULE='#D2DAD5',
+    P_INK='#16241C', P_INKSOFT='#46564C';
+/* The shipped sheet's geometry (plate.tsx), which everything below scales. */
+var SHEET_W=1000, S_PAD=22, S_QUAD_H=148, S_LABEL=36, S_GAP=14, S_MARGIN=52, S_NEAT=1;
+var SHEET_H=S_PAD+S_QUAD_H+S_LABEL+S_PAD;       // the neatlined survey area
+var SHEET_TOTAL=SHEET_H+S_MARGIN;               // plus the off-survey margin band
+var SHEET_QW=(SHEET_W-2*S_PAD-3*S_GAP)/4;       // four survey quads share the row
+/* The halo card: its quadrangle is drawn at the sheet quad's own aspect and
+   at exactly CARD_S× the sheet's pixel scale — same normalized insets, same
+   jitter stream — so when beat 05 lands a card on its quadrangle the
+   soundings align mark for mark. */
+var CARD_W=512, CARD_QX=26, CARD_QY=60, CARD_QW=460;
+var CARD_S=CARD_QW/SHEET_QW;
+var CARD_QH=Math.round(S_QUAD_H*CARD_S);        // 298
+var CARD_H=CARD_QY+CARD_QH+110;                 // room for title + caption
+var PLATE_W=CARD_W/CARD_H;
+
+function lcg(seed){
+  var s=(seed>>>0)||1;
+  return function(){ s=(s*1664525+1013904223)>>>0; return s/4294967296; };
+}
+function roman(n){ return ['I','II','III','IV','V','VI','VII','VIII'][n-1]; }
+
+/* ---- drawing the sheet ----
+   A transcription of plate.tsx: the five marks, the jittered sounding grid,
+   the hatch, the torn edge — at 2.2× the shipped card's pixel scale so the
+   texture stays crisp at the far frame. */
+
+/** Fisher-Yates over a deterministic stream — a quad never reshuffles between renders. */
+function xrng(seed){
+  var s=seed>>>0||1;
+  return function(){
+    s^=s<<13; s>>>=0; s^=s>>17; s^=s<<5; s>>>=0;
+    return s/4294967296;
+  };
+}
+function seedOf(text){
+  var a=7;
+  for(var i=0;i<text.length;i++) a=(a*31+text.charCodeAt(i))>>>0;
+  return a;
+}
+
+/* A jittered grid rather than a free scatter: free scatter clumps and leaves
+   holes, and on this sheet a hole reads as unsurveyed ground. S scales the
+   shipped component's pixel values, so the texture cards, the DOM sheet and
+   the legend chips all draw the same geometry at their own resolutions —
+   which is what lets beat 05's crossfade land marks on marks. */
+function placements(count,w,h,next,S){
+  if(count<=0) return [];
+  var cols=Math.max(1,Math.ceil(Math.sqrt(count*w/h)));
+  var rows=Math.max(1,Math.ceil(count/cols));
+  var cw=w/cols, chh=h/rows;
+  var r=Math.min(3.4*S,Math.max(1.5*S,Math.min(cw,chh)*0.3));
+  var out=[];
+  for(var i=0;i<count;i++){
+    var col=i%cols, row=Math.floor(i/cols);
+    out.push({cx:(col+0.5)*cw+(next()-0.5)*cw*0.5,
+              cy:(row+0.5)*chh+(next()-0.5)*chh*0.5, r:r});
+  }
+  return out;
+}
+
+var MARK_ORDER=['surveyed-current','surveyed-stale','surveyed-unverified',
+                'in-scope-no-evidence','visible-not-in-scope'];
+var MARK_NAME={
+  'surveyed-current':'Surveyed, current',
+  'surveyed-stale':'Surveyed, stale',
+  'surveyed-unverified':'Surveyed, unverified',
+  'in-scope-no-evidence':'In scope, nothing read yet',
+  'visible-not-in-scope':'Visible, not in scope'
+};
+
+function drawMark(g,kind,cx,cy,r,S){
+  function circle(rr,fill,stroke,lw){
+    g.beginPath(); g.arc(cx,cy,rr,0,Math.PI*2);
+    if(fill){ g.fillStyle=fill; g.fill(); }
+    if(stroke){ g.strokeStyle=stroke; g.lineWidth=lw; g.stroke(); }
+  }
+  if(kind==='surveyed-current'){
+    circle(r,P_SURV);
+  }else if(kind==='surveyed-stale'){
+    circle(r,P_SURV);
+    circle(r+2.1*S,null,P_STALE,1.3*S);
+  }else if(kind==='surveyed-unverified'){
+    circle(r,P_SURV);
+    // The hollow centre is the secondary encoding the legend leans on: it
+    // separates this from `current` for a reader who cannot use the ring.
+    circle(Math.max(0.8*S,r*0.45),PAPER_HEX);
+  }else if(kind==='in-scope-no-evidence'){
+    circle(r,null,P_INSCOPE,1.5*S);
+    circle(1.2*S,P_INSCOPE);
+  }else{
+    circle(r*0.85,null,P_VISIBLE,1.4*S);
+  }
+}
+
+/* The quad outline, torn on the right where the map ends. A ragged edge
+   carries no quantity, which is the whole requirement — "any denominator that
+   includes it is fabricated". */
+function traceQuad(g,x,y,w,h,torn,S){
+  g.beginPath();
+  if(!torn){ g.rect(x,y,w,h); return; }
+  var tooth=6*S, teeth=9, step=h/teeth;
+  g.moveTo(x,y); g.lineTo(x+w-tooth,y);
+  var px=x+w-tooth, py=y;
+  for(var i=0;i<teeth;i++){
+    px+=(i%2===0?tooth:-tooth); py+=step;
+    g.lineTo(px,py);
+  }
+  g.lineTo(x,y+h); g.closePath();
+}
+
+/* Clips to the current path, so trace before filling. `frac` draws only the
+   leftmost fraction of the lines — beat 05 hatches the unsurveyed ground in
+   rather than materialising it. */
+function hatchFill(g,x,y,w,h,S,frac){
+  g.save(); g.clip();
+  g.strokeStyle=P_HATCH; g.lineWidth=1.7*S;
+  var x1=x-h+(w+h)*(frac===undefined?1:frac);
+  for(var hx=x-h; hx<x1; hx+=7*S){
+    g.beginPath(); g.moveTo(hx,y+h); g.lineTo(hx+h,y); g.stroke();
+  }
+  g.restore();
+}
+
+/* Beat 05's reveal order is the survey's own funnel — seen, then scoped, then
+   read, then aged. It is how the product ranks the states, told as time. */
+var REVEAL_ORDER=['visible-not-in-scope','in-scope-no-evidence',
+                  'surveyed-current','surveyed-unverified','surveyed-stale'];
+
+/** One quad, at its real pixel size so the soundings stay circular.
+    Hatch means unsurveyed. A class that is not SURVEYABLE is a different
+    statement, and the shipped sheet draws it as an empty box for that reason —
+    one fill, one meaning. `reveal` (0..1, default 1) staggers the soundings
+    in, in REVEAL_ORDER with per-mark jitter, so the sheet is surveyed before
+    the reader rather than pasted in. */
+function drawQuad(g,spec,x,y,w,h,S,reveal){
+  var r1=reveal===undefined?1:reveal;
+  var torn=spec.render==='soundings'&&spec.torn;
+  if(spec.render==='unsurveyed'){
+    traceQuad(g,x,y,w,h,false);
+    hatchFill(g,x,y,w,h,S,Math.min(1,r1/0.55));
+  }
+  traceQuad(g,x,y,w,h,torn,S);
+  g.strokeStyle=P_RULE; g.lineWidth=S; g.stroke();
+  if(spec.render!=='soundings') return;
+  var next=xrng(seedOf(spec.id)), kinds=[];
+  for(var i=0;i<spec.runs.length;i++){
+    for(var k=0;k<spec.runs[i][1];k++) kinds.push(spec.runs[i][0]);
+  }
+  // Interleave, so tiers read as mixed ground rather than as bands — a banded
+  // quad would read as an ordering nobody measured.
+  for(var j=kinds.length-1;j>0;j--){
+    var m=Math.floor(next()*(j+1)), tmp=kinds[j]; kinds[j]=kinds[m]; kinds[m]=tmp;
+  }
+  var spots=placements(kinds.length,w-16*S,h-16*S,next,S);
+  for(var q=0;q<spots.length;q++){
+    var pop=1;
+    if(r1<1){
+      var jit=((q*2654435761)>>>0)/4294967296;
+      var thr=0.10+0.52*(REVEAL_ORDER.indexOf(kinds[q])/5)+jit*0.16;
+      pop=Math.max(0,Math.min(1,(r1-thr)/0.08));
+      if(pop<=0) continue;
+    }
+    drawMark(g,kinds[q],x+8*S+spots[q].cx,y+8*S+spots[q].cy,spots[q].r*pop,S);
+  }
+}
+
+/* One plate card: number, quadrangle, title, caption — the shipped card's
+   anatomy at texture scale. The caption is what one sounding IS, said per
+   plate: the plates count different things, so nothing is comparable across
+   them, and no card carries a number. */
+function drawPlate(idx){
+  var d=CLASSES[idx];
+  var c=document.createElement('canvas'); c.width=CARD_W; c.height=CARD_H;
+  var g=c.getContext('2d');
+  g.fillStyle=PAPER_HEX; g.fillRect(0,0,CARD_W,CARD_H);
+  // the faintest print grain, so the card reads as stock rather than as fill
+  var rnd=lcg(idx*7919+13);
+  g.fillStyle='rgba(70,86,76,0.05)';
+  for(var i=0;i<400;i++) g.fillRect(rnd()*CARD_W, rnd()*CARD_H, 1.3, 1.3);
+  g.strokeStyle=P_RULE; g.lineWidth=2; g.strokeRect(1,1,CARD_W-2,CARD_H-2);
+
+  g.textAlign='left'; g.fillStyle=P_INKSOFT;
+  try{ g.letterSpacing='3.5px'; }catch(e){ /* pre-Chrome-99 canvas: spacing is cosmetic */ }
+  g.font='500 17px "IBM Plex Mono", ui-monospace, monospace';
+  g.fillText('PLATE '+roman(idx+1), 26, 46);
+  try{ g.letterSpacing='0px'; }catch(e){ /* ditto */ }
+
+  drawQuad(g,d,CARD_QX,CARD_QY,CARD_QW,CARD_QH,CARD_S);
+
+  g.fillStyle=P_INK;
+  // Italic when nothing is surveyed, after the chart convention.
+  g.font=(d.render==='soundings'?'500':'italic 400')+' 27px "IBM Plex Sans", system-ui, sans-serif';
+  g.fillText(d.title, 26, CARD_QY+CARD_QH+42);
+  g.fillStyle=P_INKSOFT;
+  g.font='italic 400 22px "IBM Plex Sans", system-ui, sans-serif';
+  g.fillText(d.render==='soundings' ? 'one sounding = one '+d.unit
+           : d.render==='off-survey' ? 'not a surveyable class'
+           : d.state, 26, CARD_QY+CARD_QH+74);
+  return c;
+}
+
+/* ---- the legend cartouche ----
+   HTML, not texture: the mark names must stay screen-legible at the far frame,
+   and they are the product's names in the product's casing — the vocabulary a
+   reader learns here is the one they meet again on the real surface. The chips
+   are drawn by the same drawMark the plates use, so legend and sheet cannot
+   drift apart. */
+function chipCanvas(w,h,draw){
+  var DPR=Math.min(devicePixelRatio||1,2);
+  var c=document.createElement('canvas');
+  c.width=w*DPR; c.height=h*DPR;
+  c.style.width=w+'px'; c.style.height=h+'px';
+  var g=c.getContext('2d'); g.scale(DPR,DPR);
+  draw(g); return c;
+}
+
+/* ---- the sheet: beat 05's destination ----
+   A transcription of plate.tsx's Sheet + Legend: the neatlined survey row,
+   the OFF SURVEY margin band, the glossed legend. Quads are the same drawQuad
+   the halo cards use, at the sheet's own scale, so the flight in beat 05 can
+   land card on quadrangle, sounding on sounding. Laid out (invisibly) from
+   boot, because it is the flight's measuring stick. */
+var sheetEl=document.getElementById('sheet'),
+    sheetCardEl=document.getElementById('sheetcard'),
+    sheetLegendEl=document.getElementById('sheetLegend'),
+    groundEl=document.getElementById('ground');
+var SURVEY=CLASSES.filter(function(d){ return d.render!=='off-survey'; });
+var OFFS=CLASSES.filter(function(d){ return d.render==='off-survey'; });
+var sheetDom=null, sheetScale=1, lastReveal=-1;
+
+/* The glosses are the shipped MARK_COPY details, trimmed only where they
+   point at the admin page's own cards below the plate — the hero has no
+   cards below. */
+var MARK_DETAIL={
+  'surveyed-current':'Atlas has read it, and last time it asked, the source had not moved.',
+  'surveyed-stale':'Atlas has read it, and the source has moved on since — a measured lag, not a guess.',
+  'surveyed-unverified':'Atlas has read it, but cannot say whether the source has moved since. Hollow centre: nothing has looked lately.',
+  'in-scope-no-evidence':'Somebody put it in the perimeter and no evidence has come out of it.',
+  'visible-not-in-scope':'Atlas’s credentials can see it exists. Nobody has put it in the perimeter.'
+};
+
+function buildSheetLegend(){
+  function entry(cnv,name,detail,italic){
+    var d=document.createElement('div');
+    var tx=document.createElement('div');
+    var b=document.createElement('b'); b.textContent=name;
+    if(italic) b.className='un';
+    var sm=document.createElement('small'); sm.textContent=detail;
+    tx.appendChild(b); tx.appendChild(sm);
+    d.appendChild(cnv); d.appendChild(tx); sheetLegendEl.appendChild(d);
+  }
+  MARK_ORDER.forEach(function(kind){
+    entry(chipCanvas(34,14,function(g){
+      [6,17,28].forEach(function(cx){ drawMark(g,kind,cx,7,3.1,1); });
+    }),MARK_NAME[kind],MARK_DETAIL[kind]);
+  });
+  entry(chipCanvas(34,14,function(g){
+    g.beginPath(); g.rect(1,1,32,12); hatchFill(g,1,1,32,12,0.85);
+    g.strokeStyle=P_RULE; g.lineWidth=1; g.strokeRect(1,1,32,12);
+  }),'Unsurveyed',
+  'Nothing is surveyed here. Drawn rather than left out, and set in italic — the word beneath each says which kind of nothing it is.',true);
+  entry(chipCanvas(34,14,function(g){
+    traceQuad(g,1,1,32,12,true,1);
+    g.strokeStyle=P_RULE; g.lineWidth=1; g.stroke();
+  }),'Torn edge',
+  'The survey stops short of what these credentials can see. There is no count of what lies past it — any number would be invented.');
+}
+
+function buildSheetDom(){
+  if(sheetDom) return;
+  sheetDom={quads:[],titles:[],states:[]};
+  var frag=document.createDocumentFragment();
+  var neat=document.createElement('div'); neat.className='neat';
+  frag.appendChild(neat); sheetDom.neat=neat;
+  SURVEY.forEach(function(d){
+    var cv=document.createElement('canvas'); frag.appendChild(cv);
+    sheetDom.quads.push(cv);
+    var ti=document.createElement('div');
+    ti.className='sq-t'+(d.render!=='soundings'?' blank':'');
+    ti.textContent=d.title; frag.appendChild(ti); sheetDom.titles.push(ti);
+    var st=null;
+    if(d.render==='unsurveyed'){
+      st=document.createElement('div'); st.className='sq-s'; st.textContent=d.state;
+    }else if(d.render==='soundings'&&d.torn){
+      st=document.createElement('div'); st.className='sq-s';
+      st.textContent='torn edge'; st.style.textAlign='right';
+    }
+    if(st) frag.appendChild(st);
+    sheetDom.states.push(st);
+  });
+  var ml=document.createElement('div'); ml.className='sq-m'; ml.textContent='OFF SURVEY';
+  frag.appendChild(ml); sheetDom.marginLabel=ml;
+  var mb=document.createElement('div'); mb.className='sq-mbox';
+  frag.appendChild(mb); sheetDom.marginBox=mb;
+  var mt=document.createElement('div'); mt.className='sq-s';
+  mt.textContent=OFFS[0].title+' — not a surveyable class';
+  frag.appendChild(mt); sheetDom.marginText=mt;
+  sheetEl.appendChild(frag);
+  sheetDom.header=sheetCardEl.querySelector('header');
+  buildSheetLegend();
+  layoutSheet();
+}
+
+function layoutSheet(){
+  if(!sheetDom) return;
+  var w=sheetEl.clientWidth;      // the sheet's own content box, pane padding excluded
+  if(w<=0) return;
+  var s=w/SHEET_W; sheetScale=s;
+  var DPR=Math.min(devicePixelRatio||1,2);
+  sheetEl.style.height=(SHEET_TOTAL*s)+'px';
+  var n=sheetDom.neat.style;
+  n.left=n.top=(S_NEAT*s)+'px';
+  n.width=((SHEET_W-2*S_NEAT)*s)+'px'; n.height=((SHEET_H-2*S_NEAT)*s)+'px';
+  SURVEY.forEach(function(d,k){
+    var qx=(S_PAD+k*(SHEET_QW+S_GAP))*s, qy=S_PAD*s, qw=SHEET_QW*s, qh=S_QUAD_H*s;
+    var cv=sheetDom.quads[k];
+    cv.style.left=qx+'px'; cv.style.top=qy+'px';
+    cv.style.width=qw+'px'; cv.style.height=qh+'px';
+    cv.width=Math.max(1,Math.round(qw*DPR)); cv.height=Math.max(1,Math.round(qh*DPR));
+    var ti=sheetDom.titles[k];
+    ti.style.left=(qx+s)+'px'; ti.style.top=(qy+qh+5*s)+'px';
+    ti.style.fontSize=Math.max(8.5,12.5*s)+'px';
+    var st=sheetDom.states[k];
+    if(st){
+      st.style.left=(qx+s)+'px'; st.style.top=(qy+qh+19*s)+'px';
+      st.style.width=(qw-2*s)+'px';
+      st.style.fontSize=Math.max(8,11*s)+'px';
+    }
+  });
+  sheetDom.marginLabel.style.left=(S_PAD*s)+'px';
+  sheetDom.marginLabel.style.top=((SHEET_H+12)*s)+'px';
+  sheetDom.marginLabel.style.fontSize=Math.max(7.5,9.5*s)+'px';
+  var mb=sheetDom.marginBox.style;
+  mb.left=(S_PAD*s)+'px'; mb.top=((SHEET_H+26)*s)+'px';
+  mb.width=mb.height=(16*s)+'px';
+  sheetDom.marginText.style.left=((S_PAD+24)*s)+'px';
+  sheetDom.marginText.style.top=((SHEET_H+28)*s)+'px';
+  sheetDom.marginText.style.fontSize=Math.max(8,12*s)+'px';
+  redrawSheet(lastReveal<0?0:lastReveal,true);
+}
+
+function redrawSheet(r,force){
+  if(!sheetDom) return;
+  if(!force && Math.abs(r-lastReveal)<=0.006) return;
+  lastReveal=r;
+  var s=sheetScale, DPR=Math.min(devicePixelRatio||1,2);
+  SURVEY.forEach(function(d,k){
+    var cv=sheetDom.quads[k], g=cv.getContext('2d');
+    g.setTransform(DPR,0,0,DPR,0,0);
+    g.clearRect(0,0,cv.width,cv.height);
+    drawQuad(g,d,0,0,SHEET_QW*s,S_QUAD_H*s,s,r);
+  });
+  function op(el,a){ if(el) el.style.opacity=String(Math.max(0,Math.min(1,a))); }
+  op(sheetDom.neat,(r-0.02)/0.10);
+  op(sheetDom.header,(r-0.08)/0.18);
+  sheetDom.titles.forEach(function(el){ op(el,(r-0.32)/0.14); });
+  sheetDom.states.forEach(function(el){ op(el,(r-0.46)/0.14); });
+  op(sheetDom.marginLabel,(r-0.52)/0.12);
+  op(sheetDom.marginBox,(r-0.56)/0.12);
+  op(sheetDom.marginText,(r-0.60)/0.12);
+  op(sheetLegendEl,(r-0.50)/0.24);
+}
+
+/* Where a plate lands on the screen: its class's quadrangle — or, for an
+   off-survey class, the little box in the margin band it gets tucked into. */
+function landingRect(i){
+  var sr=sheetEl.getBoundingClientRect();
+  var s=sr.width/SHEET_W, d=CLASSES[i];
+  if(d.render==='off-survey'){
+    return {x:sr.left+S_PAD*s, y:sr.top+(SHEET_H+26)*s, w:16*s, h:16*s};
+  }
+  var k=SURVEY.indexOf(d);
+  return {x:sr.left+(S_PAD+k*(SHEET_QW+S_GAP))*s, y:sr.top+S_PAD*s,
+          w:SHEET_QW*s, h:S_QUAD_H*s};
+}
+
+var plates=[], platesGroup=null;
+
+/* ================= the unrolling (beat 03) ================= */
+/* The globe opens flat, in place, into a RECTANGULAR chart — the unrolled
+   surface itself, longitude across, latitude up, the way a wall map prints.
+   The morph works on the real sphere mesh (midpoint-subdivided, exact uvs):
+   each vertex keeps its own texel and travels sphere -> cylinder -> sheet, a
+   scroll unrolling toward the reader, tangent at the point that faced them.
+   The engraving warps exactly as a map projection warps — stretched toward
+   the poles — and the polar caps are trimmed, so the band ends in the same
+   torn edge the Coverage Plate itself draws. The chart shares the globe's
+   material: same maps, same patina, one look. */
+var mapMesh=null, mapGeo=null, mapMorph=-1, sphR=1;
+var mapLook=new THREE.Vector3();
+var mapTheta=null, mapLat=null, mapR=null;
+var LAT_CAP=1.15;                    // trim the poles: the band, not a lens
+var classAnchor=[];
+
+function wrapPI(a){ return Math.atan2(Math.sin(a),Math.cos(a)); }
+
+function buildMorphMap(){
+  if(!sphere || !sphere.geometry.attributes.uv) return;   // no uvs: keep the globe
+  sphere.updateWorldMatrix(true,false);
+  var g=sphere.geometry, pA=g.attributes.position, uA=g.attributes.uv;
+  var v3=new THREE.Vector3();
+  var P=[], U=[], rSum=0;
+  for(var i=0;i<pA.count;i++){
+    v3.fromBufferAttribute(pA,i).applyMatrix4(sphere.matrixWorld);
+    P.push(v3.x,v3.y,v3.z);
+    U.push(uA.getX(i),uA.getY(i));
+    rSum+=v3.distanceTo(sphereCenter);
+  }
+  sphR=rSum/pA.count;
+  var idx;
+  if(g.index){ idx=Array.prototype.slice.call(g.index.array); }
+  else{ idx=[]; for(var q=0;q<pA.count;q++) idx.push(q); }
+
+  // Two midpoint subdivisions, re-projected to the local radius, so the
+  // in-between states bend smoothly instead of creasing along the source
+  // mesh's 510-vertex triangulation.
+  var C=sphereCenter;
+  for(var pass=0;pass<2;pass++){
+    var cache={}, nidx=[];
+    var mid=function(a,b){
+      var key=a<b?a+'_'+b:b+'_'+a;
+      var hit=cache[key];
+      if(hit!==undefined) return hit;
+      var mx=(P[a*3]+P[b*3])/2, my=(P[a*3+1]+P[b*3+1])/2, mz=(P[a*3+2]+P[b*3+2])/2;
+      var ra=Math.hypot(P[a*3]-C.x,P[a*3+1]-C.y,P[a*3+2]-C.z);
+      var rb=Math.hypot(P[b*3]-C.x,P[b*3+1]-C.y,P[b*3+2]-C.z);
+      var dx=mx-C.x,dy=my-C.y,dz=mz-C.z;
+      var dl=Math.hypot(dx,dy,dz)||1, rt=(ra+rb)/2/dl;
+      var vi=P.length/3;
+      P.push(C.x+dx*rt, C.y+dy*rt, C.z+dz*rt);
+      U.push((U[a*2]+U[b*2])/2,(U[a*2+1]+U[b*2+1])/2);
+      cache[key]=vi; return vi;
+    };
+    for(var f=0;f<idx.length;f+=3){
+      var a=idx[f],b=idx[f+1],c=idx[f+2];
+      var ab=mid(a,b), bc=mid(b,c), ca=mid(c,a);
+      nidx.push(a,ab,ca, ab,b,bc, ca,bc,c, ab,bc,ca);
+    }
+    idx=nidx;
+  }
+  var n=P.length/3;
+
+  // Every vertex reduces to (theta, lat, r) about the globe's centre, with
+  // theta measured from the longitude that faces the reader — the chart's
+  // middle. The reconstruction at morph 0 is exact, so the swap from the
+  // real globe mesh is seamless.
+  mapTheta=new Float32Array(n); mapLat=new Float32Array(n); mapR=new Float32Array(n);
+  for(var i2=0;i2<n;i2++){
+    var x=P[i2*3]-C.x, y=P[i2*3+1]-C.y, z=P[i2*3+2]-C.z;
+    var r=Math.hypot(x,y,z)||1;
+    // in the AZ0 frame: xm right, y up, zm toward the reader
+    var xm=x*R0.x+y*R0.y+z*R0.z, zm=x*F0.x+y*F0.y+z*F0.z;
+    mapTheta[i2]=Math.atan2(xm,zm);
+    mapLat[i2]=Math.asin(Math.max(-1,Math.min(1,y/r)));
+    mapR[i2]=r;
+  }
+
+  // Drop what the rectangle cannot carry: triangles that straddle the cut
+  // meridian at the back (they would stretch across the whole band), and the
+  // polar caps (a rectangle's poles are all stretch and no engraving). The
+  // ragged boundary they leave is the chart's own torn edge.
+  var clean=[];
+  for(var f2=0;f2<idx.length;f2+=3){
+    var i0=idx[f2],i1=idx[f2+1],i2b=idx[f2+2];
+    var t0=mapTheta[i0],t1=mapTheta[i1],t2=mapTheta[i2b];
+    if(Math.max(t0,t1,t2)-Math.min(t0,t1,t2)>Math.PI) continue;
+    if(Math.max(Math.abs(mapLat[i0]),Math.abs(mapLat[i1]),Math.abs(mapLat[i2b]))>LAT_CAP) continue;
+    clean.push(i0,i1,i2b);
+  }
+  idx=clean;
+
+  mapGeo=new THREE.BufferGeometry();
+  mapGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n*3),3));
+  mapGeo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(U),2));
+  mapGeo.setIndex(idx);
+  sphere.material.side=THREE.DoubleSide;   // mid-unroll the curl shows its back
+  mapMesh=new THREE.Mesh(mapGeo, sphere.material);
+  mapMesh.visible=false;
+  scene.add(mapMesh);
+  mapLook.copy(C).addScaledVector(F0,sphR);
+
+  // Each class anchors to the mesh vertex nearest its label's coordinates,
+  // and rides that vertex through the unroll.
+  classAnchor=CLASSES.map(function(d){
+    var dir=new THREE.Vector3(
+      Math.cos(d.lat)*Math.sin(d.lon), Math.sin(d.lat), Math.cos(d.lat)*Math.cos(d.lon));
+    var tx=C.x+dir.x*sphR, ty=C.y+dir.y*sphR, tz=C.z+dir.z*sphR;
+    var best=0, bd=Infinity;
+    for(var k=0;k<n;k++){
+      var th=mapTheta[k], la=mapLat[k], rr=mapR[k];
+      var px=C.x+(R0.x*Math.sin(th)+F0.x*Math.cos(th))*Math.cos(la)*rr+UPV.x*Math.sin(la)*rr;
+      var py=C.y+(R0.y*Math.sin(th)+F0.y*Math.cos(th))*Math.cos(la)*rr+UPV.y*Math.sin(la)*rr;
+      var pz=C.z+(R0.z*Math.sin(th)+F0.z*Math.cos(th))*Math.cos(la)*rr+UPV.z*Math.sin(la)*rr;
+      var dd=(px-tx)*(px-tx)+(py-ty)*(py-ty)+(pz-tz)*(pz-tz);
+      if(dd<bd){ bd=dd; best=k; }
+    }
+    return best;
+  });
+  applyMorph(0);
+}
+
+/* One vertex of the unroll: latitude flattens first (sphere to cylinder),
+   then the longitude unrolls (cylinder to sheet, tangent at the chart's
+   middle). At m=0 this reproduces the vertex exactly. */
+function morphVert(th,la,r,m,out){
+  var lp=THREE.MathUtils.lerp, sm=THREE.MathUtils.smoothstep;
+  var m1=sm(Math.min(1,m*2),0,1), m2=sm(Math.max(0,m*2-1),0,1);
+  var rr=lp(r,sphR,m1);
+  var k=lp(Math.cos(la),1,m1);
+  var Rb=Math.max(1e-5,rr*k);
+  var inv=Math.max(1e-4,1-m2);
+  var R=Rb/inv, phi=th*inv;
+  var x=R*Math.sin(phi), z=R*Math.cos(phi)-R+Rb;
+  var y=rr*lp(Math.sin(la),la,m1);
+  return out.copy(sphereCenter)
+    .addScaledVector(R0,x).addScaledVector(UPV,y).addScaledVector(F0,z);
+}
+var _mp=new THREE.Vector3();
+
+function applyMorph(m){
+  if(!mapMesh || Math.abs(m-mapMorph)<0.0025) return;
+  mapMorph=m;
+  var pos=mapGeo.attributes.position;
+  var n=pos.count;
+  for(var i=0;i<n;i++){
+    morphVert(mapTheta[i],mapLat[i],mapR[i],m,_mp);
+    pos.setXYZ(i,_mp.x,_mp.y,_mp.z);
+  }
+  pos.needsUpdate=true;
+  mapGeo.computeVertexNormals();
+  mapGeo.computeBoundingSphere();
+  // The globe and the chart are the same surface; only one exists at a time.
+  var flat=m>0.001;
+  mapMesh.visible=flat;
+  sphere.visible=!flat;
+}
+
+/* Where a class's anchor vertex is right now, and where it lands when flat. */
+function anchorPos(i,out){
+  if(!mapGeo){
+    var d=CLASSES[i];
+    return out.set(Math.cos(d.lat)*Math.sin(d.lon),Math.sin(d.lat),
+      Math.cos(d.lat)*Math.cos(d.lon)).multiplyScalar(sphereRadius*1.02).add(sphereCenter);
+  }
+  var p=mapGeo.attributes.position, vi=classAnchor[i];
+  return out.set(p.getX(vi),p.getY(vi),p.getZ(vi));
+}
+function anchorFlat(i,out){
+  if(!mapGeo) return anchorPos(i,out);
+  var vi=classAnchor[i];
+  return morphVert(mapTheta[vi],mapLat[vi],mapR[vi],1,out);
+}
+/* The hover pose pulls in from the band's edges so no rising card leaves the
+   frame; the birth point itself stays true to the region. */
+function anchorHover(i,out){
+  if(!mapGeo) return anchorPos(i,out);
+  var vi=classAnchor[i];
+  var th=Math.max(-2.3,Math.min(2.3,mapTheta[vi]));
+  var la=Math.max(-0.75,Math.min(0.75,mapLat[vi]));
+  return morphVert(th,la,mapR[vi],1,out);
+}
+
+function buildPlates(){
+  if(platesGroup || !root) return;
+  platesGroup=new THREE.Group();
+  var aniso=renderer.capabilities.getMaxAnisotropy();
+
+  // blank verso shared by every page
+  var backC=document.createElement('canvas'); backC.width=256; backC.height=320;
+  var bg=backC.getContext('2d');
+  bg.fillStyle=PAPER_HEX; bg.fillRect(0,0,256,320);
+  var brnd=lcg(97);
+  bg.fillStyle='rgba(31,92,69,0.05)';
+  for(var bi=0;bi<300;bi++) bg.fillRect(brnd()*256,brnd()*320,1.2,1.2);
+  var backTex=new THREE.CanvasTexture(backC);
+  backTex.colorSpace=THREE.SRGBColorSpace;
+
+  for(var i=0;i<CLASSES.length;i++){
+    var tex=new THREE.CanvasTexture(drawPlate(i));
+    tex.colorSpace=THREE.SRGBColorSpace;
+    tex.anisotropy=aniso;
+    var mat=new THREE.MeshStandardMaterial({
+      map:tex, roughness:0.88, metalness:0,
+      // In a dark vitrine an unlit page goes grey; a whisper of self-light
+      // keeps the paper reading as paper without glowing.
+      emissive:0xF6EFE4, emissiveMap:tex, emissiveIntensity:0.26,
+      side:THREE.FrontSide, transparent:true, opacity:0
+    });
+    var geo=new THREE.PlaneGeometry(PLATE_W,1,16,1);
+    // barely bowed: these are plates of a survey, stiffer than book pages
+    var rnd=lcg(i*131+7), bow=0.025+rnd()*0.025;
+    var posAttr=geo.attributes.position;
+    for(var v=0;v<posAttr.count;v++){
+      var vx=posAttr.getX(v)/(PLATE_W/2);
+      posAttr.setZ(v, (1-vx*vx)*-bow*0.5+bow*0.5);
+    }
+    geo.computeVertexNormals();
+    var mesh=new THREE.Mesh(geo,mat);
+    // The reader can orbit behind the halo; a plate's back must be blank
+    // paper, not the front in mirror writing. Same geometry, back faces only.
+    var backMat=new THREE.MeshStandardMaterial({
+      map:backTex, roughness:0.9, metalness:0,
+      emissive:0xF6EFE4, emissiveMap:backTex, emissiveIntensity:0.3,
+      side:THREE.BackSide, transparent:true, opacity:0
+    });
+    mesh.add(new THREE.Mesh(geo,backMat));
+    mesh.visible=false;
+    platesGroup.add(mesh);
+
+    // Each card is born ON the flat chart, at the point its class's label
+    // was marking, and condenses toward the reader — the region becoming its
+    // own record. It never leaves the neighbourhood of where it was born;
+    // beat 05's landing does the rest.
+    var p0=anchorFlat(i,new THREE.Vector3()).addScaledVector(F0,0.03);
+    var hover=anchorHover(i,new THREE.Vector3())
+      .addScaledVector(F0,modelRadius*0.22)
+      .addScaledVector(UPV,(i%2?0.04:-0.02)*modelRadius);
+    var qF=new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(0,AZ0,(i%2?-1:1)*0.02,'YXZ'));
+    var P={mesh:mesh, q0:qF, q1:qF, s0:sphereRadius*0.22, s1:modelRadius*0.34};
+    P.curve=new THREE.CubicBezierCurve3(
+      p0,
+      p0.clone().addScaledVector(F0,modelRadius*0.08),
+      hover.clone().addScaledVector(F0,-modelRadius*0.05),
+      hover);
+    P.t0=0.60+i*0.030; P.t1=0.76+i*0.024;
+    plates.push(P);
+  }
+  scene.add(platesGroup);
+}
+
+var _f=new THREE.Vector3(), _ray=new THREE.Vector3(), _land=new THREE.Vector3();
+function updatePlates(){
+  if(!platesGroup) return;
+  var sm=THREE.MathUtils.smoothstep, lp=THREE.MathUtils.lerp;
+
+  /* Beat 05's handoff, all pure functions of t so the scrub can run it
+     backwards: the flight to the sheet (e5), then a SHORT crossfade — a
+     white card at half opacity over a dark scene is grey fog, so the cover
+     is quick — then the survey revealing itself on the sheet. */
+  var e5base=t;
+  groundEl.style.opacity=sm(t,0.868,0.915).toFixed(3);
+  sheetCardEl.style.opacity=sm(t,0.875,0.92).toFixed(3);
+  if(sheetDom) redrawSheet(sm(t,0.90,0.99));
+
+  var flip=t>0.80&&sheetDom;
+  var D=0, wpp=0;
+  if(flip){
+    camera.getWorldDirection(_f);
+    D=camera.position.distanceTo(_look)*0.35;
+    wpp=2*D*Math.tan(camera.fov*Math.PI/360)/H;
+  }
+
+  for(var i=0;i<plates.length;i++){
+    var P=plates[i];
+    var p=sm(t,P.t0,P.t1);
+    if(p<=0.001){ P.mesh.visible=false; continue; }
+    P.mesh.visible=true;
+    var ep=1-Math.pow(1-p,2.6);
+    P.curve.getPoint(ep,P.mesh.position);
+    P.mesh.quaternion.slerpQuaternions(P.q0,P.q1,ep);
+    var us=lp(P.s0,P.s1,ep);
+    P.mesh.scale.setScalar(us);
+
+    if(flip){
+      // Land the card on its quadrangle: unproject the DOM rect onto a
+      // fronto-parallel plane at view depth D, where the projection is
+      // exactly linear, and stretch the card so its quad sub-rect matches
+      // the rect pixel for pixel. The bow flattens with the z scale.
+      // Arrivals cascade left-to-right — papers being laid on a desk in
+      // order, not a formation snapping to a grid.
+      var e5=sm(e5base,0.80+i*0.008,0.868+i*0.008);
+      if(e5>0){
+        var rect=landingRect(i);
+        var cardHpx=CARD_H*rect.h/CARD_QH;
+        var cx=rect.x+rect.w/2;
+        var cy=rect.y+rect.h/2+(CARD_H/2-(CARD_QY+CARD_QH/2))*rect.h/CARD_QH;
+        _ray.set(2*cx/W-1, 1-2*cy/H, 0.5).unproject(camera).sub(camera.position);
+        _land.copy(camera.position).addScaledVector(_ray, D/_ray.dot(_f));
+        var syT=cardHpx*wpp;
+        var sxT=(CARD_W*rect.w/CARD_QW)*wpp/PLATE_W;
+        P.mesh.position.lerp(_land,e5);
+        P.mesh.quaternion.slerp(camera.quaternion,e5);
+        P.mesh.scale.set(lp(us,sxT,e5), lp(us,syT,e5), lp(us,us*0.02,e5));
+      }
+    }
+
+    // Overlapping settled pages must depth-sort as opaques, or the fan's
+    // draw order shimmers as the camera moves.
+    var op=Math.min(1,p*5);
+    // The DOM sheet takes over from the aligned plates; the off-survey card
+    // bows out earlier, before its squash into the margin box gets grotesque.
+    op*=1-sm(t,0.895,0.93);
+    if(CLASSES[i].render==='off-survey') op*=1-sm(t,0.86,0.90);
+    var solid=op>0.999;
+    P.mesh.material.opacity=op;
+    P.mesh.material.transparent=!solid;
+    // Mid-flight a page is edge-on to every light and goes grey; let it carry
+    // more of its own light while it travels, then settle back to paper.
+    P.mesh.material.emissiveIntensity=lp(0.44,0.26,p);
+    var back=P.mesh.children[0];
+    if(back){ back.material.opacity=op; back.material.transparent=!solid; }
+  }
+}
+
+function whenFonts(cb){
+  if(!document.fonts||!document.fonts.load){ cb(); return; }
+  var done=false, go=function(){ if(!done){ done=true; cb(); } };
+  Promise.all([
+    document.fonts.load('500 17px "IBM Plex Mono"'),
+    document.fonts.load('500 27px "IBM Plex Sans"'),
+    document.fonts.load('400 22px "IBM Plex Sans"')
+  ]).then(go,go);
+  setTimeout(go,2500);   // a stalled font must not hold the plates hostage
 }
 
 /* ================= model ================= */
@@ -565,17 +1448,17 @@ function b64ToBuf(s){
 }
 
 var root=null, sphere=null, body=null;
-var sphereCenter=new THREE.Vector3(), sphereRadius=1, modelCenter=new THREE.Vector3(), modelRadius=1;
+var sphereCenter=new THREE.Vector3(), sphereRadius=1, modelCenter=new THREE.Vector3(), modelRadius=1, modelMinY=0;
 var bronzeMats=[], patina=true;
 
-bootbar.style.width='35%';
+bootbar.style.transform='scaleX(0.35)';
 
 var loader=new GLTFLoader();
 var buf;
 try{ buf=b64ToBuf(GLB_B64); }
 catch(e){ fail('The model didn\u2019t decode.','The embedded geometry is malformed. Re-publish the page from a clean export.'); return; }
 
-bootbar.style.width='62%';
+bootbar.style.transform='scaleX(0.62)';
 bootmsg.textContent='Raising the globe';
 
 loader.parse(buf,'',function(gltf){
@@ -606,6 +1489,7 @@ loader.parse(buf,'',function(gltf){
   box.setFromObject(root);
   box.getCenter(modelCenter);
   modelRadius=box.getSize(new THREE.Vector3()).length()*0.5;
+  modelMinY=box.min.y;
 
   if(sphere){
     var sb=new THREE.Box3().setFromObject(sphere);
@@ -617,11 +1501,13 @@ loader.parse(buf,'',function(gltf){
 
   scene.add(root);
 
+  buildMorphMap();
+  whenFonts(function(){ buildPlates(); buildSheetDom(); });
 
   applyPreset(PRESETS[0]);
   resize(); render();
 
-  bootbar.style.width='82%';
+  bootbar.style.transform='scaleX(0.82)';
   bootmsg.textContent='Casting the surface';
 
   var jobs=[['body_base',body,'map',true],['body_norm',body,'normalMap',false],
@@ -646,7 +1532,7 @@ loader.parse(buf,'',function(gltf){
       w.textContent=missing+' of 4 surface maps failed to decode — showing untextured metal.';
       w.hidden=false;
     }
-    bootbar.style.width='100%';
+    bootbar.style.transform='scaleX(1)';
     setTimeout(function(){ boot.classList.add('gone'); },140);
   });
 }, function(err){
@@ -654,36 +1540,82 @@ loader.parse(buf,'',function(gltf){
 });
 
 /* ================= camera path ================= */
+/* Four segments, each eased with smoothstep so the joins arrive at zero
+   velocity and read as the story settling on a beat. The journey only ever
+   goes IN: down to the surface, a step back just far enough to read the
+   chart the globe unrolls into, a lean toward it, then the dive that hands
+   the frame to the sheet.
+     0 -> T1   the descent, titan to globe surface
+     T1 -> T2  the unrolling: the surface opens into the chart, framed
+     T2 -> T3  the lean, while the regions rise as plates
+     T3 -> 1   the dive into the sheet                                     */
+var T1=0.34, T2=0.60, T3=0.80;
 var _p=new THREE.Vector3(), _look=new THREE.Vector3();
+function chartDist(base){
+  // A narrow viewport can't fit the chart at the design distance; back off
+  // proportionally instead of cropping it.
+  return base*Math.max(1, Math.pow(1.45/Math.max(camera.aspect,0.4), 1.0));
+}
 function updateCamera(){
-  var e=t*t*(3-2*t);                       // smoothstep: ease the whole descent
-  var look=_look.copy(modelCenter).lerp(sphereCenter,e);
-  var dist=THREE.MathUtils.lerp(modelRadius*2.58, sphereRadius*2.15, e);
-  var elev=el + THREE.MathUtils.lerp(0.10,-0.02,e);
+  var sm=THREE.MathUtils.smoothstep, lp=THREE.MathUtils.lerp;
+  var mR=modelRadius, sR=sphereRadius;
+  var dist, elevBias, fov, e;
+  if(t<=T1){
+    e=sm(t/T1,0,1);
+    _look.copy(modelCenter).lerp(sphereCenter,e);
+    dist=lp(mR*2.58, sR*2.15, e);
+    elevBias=lp(0.10,-0.02,e);
+    fov=lp(38,52,e);
+  }else if(t<=T2){
+    e=sm((t-T1)/(T2-T1),0,1);
+    _look.copy(sphereCenter).lerp(mapLook,e);
+    dist=lp(sR*2.15, chartDist(mR*2.35), e);
+    elevBias=lp(-0.02,0.0,e);
+    fov=lp(52,44,e);
+  }else if(t<=T3){
+    e=sm((t-T2)/(T3-T2),0,1);
+    _look.copy(mapLook);
+    dist=lp(chartDist(mR*2.35), chartDist(mR*2.25), e);
+    elevBias=0.0;
+    fov=44;
+  }else{
+    e=sm((t-T3)/(1-T3),0,1);
+    _look.copy(mapLook);
+    dist=lp(chartDist(mR*2.25), chartDist(mR*1.70), e);
+    elevBias=0.0;
+    fov=44;
+  }
+  var look=_look;
+  var elev=el+elevBias;
   var ca=Math.cos(elev), sa=Math.sin(elev);
   _p.set(Math.sin(az)*ca, sa, Math.cos(az)*ca).multiplyScalar(dist).add(look);
   camera.position.copy(_p);
   camera.lookAt(look);
   rig.rotation.y=az;
-  camera.fov=THREE.MathUtils.lerp(38,52,e);
+  camera.fov=fov;
   camera.updateProjectionMatrix();
 }
 
 /* ================= labels ================= */
-var _v=new THREE.Vector3();
+var _v=new THREE.Vector3(), _sn=new THREE.Vector3(), _cn=new THREE.Vector3();
 function updateLabels(w,h){
-  var vis=THREE.MathUtils.smoothstep(t,0.30,0.58);
-  for(var i=0;i<DOMAINS.length;i++){
-    var d=DOMAINS[i], e=labelEls[i];
+  // The labels ride their regions through the unroll, then hand off to the
+  // plates as each card — carrying the same title — condenses out of the
+  // spot they were marking.
+  var sm=THREE.MathUtils.smoothstep;
+  var vis=sm(t,0.20,0.30)*(1-sm(t,0.60,0.68));
+  var mNow=sm(t,0.40,0.60);
+  for(var i=0;i<CLASSES.length;i++){
+    var d=CLASSES[i], e=labelEls[i];
     if(vis<=0.001){ e.style.opacity='0'; continue; }
-    var lon=d[2]+az*0.5, lat=d[3];
-    _v.set(Math.cos(lat)*Math.sin(lon), Math.sin(lat), Math.cos(lat)*Math.cos(lon))
-      .multiplyScalar(sphereRadius*1.02).add(sphereCenter);
-    var facing=_v.clone().sub(sphereCenter).normalize()
-      .dot(camera.position.clone().sub(sphereCenter).normalize());
+    anchorPos(i,_v);
+    // On the sphere a label facing away fades; on the chart everything faces
+    // the reader, so the gate opens with the unroll.
+    var facing=_sn.copy(_v).sub(sphereCenter).normalize()
+      .dot(_cn.copy(camera.position).sub(sphereCenter).normalize());
+    var front=THREE.MathUtils.lerp(sm(facing,0.02,0.42),1,mNow);
     _v.project(camera);
     var x=(_v.x*0.5+0.5)*w, y=(-_v.y*0.5+0.5)*h;
-    var front=THREE.MathUtils.smoothstep(facing,0.02,0.42);
     e.style.transform='translate('+x.toFixed(1)+'px,'+y.toFixed(1)+'px)';
     e.style.opacity=(vis*front).toFixed(3);
   }
@@ -695,10 +1627,19 @@ function setT(v){
   scrub.value=String(Math.round(tTarget*1000));
   pct.textContent=Math.round(tTarget*100)+'%';
 }
-scrub.addEventListener('input',function(){ setT(+scrub.value/1000); });
-stage.addEventListener('wheel',function(ev){
-  ev.preventDefault(); setT(tTarget+ev.deltaY*0.0009); idle=0;
-},{passive:false});
+/* Scroll owns the journey. The slider is a map of it: dragging it scrolls,
+   scrolling moves it, and both funnel through the one scroll handler. */
+function scrollMax(){
+  return Math.max(1,document.documentElement.scrollHeight-innerHeight);
+}
+function onScroll(){
+  setT(scrollY/scrollMax()); idle=0;
+}
+addEventListener('scroll',onScroll,{passive:true});
+scrub.addEventListener('input',function(){
+  scrollTo(0,(+scrub.value/1000)*scrollMax());
+});
+onScroll();
 
 stage.addEventListener('pointerdown',function(ev){
   if(ev.target.closest('.deck')) return;
@@ -794,6 +1735,7 @@ function resize(){
   W=Math.max(1,r.width|0); H=Math.max(1,r.height|0);
   renderer.setSize(W,H,false);
   camera.aspect=W/H; camera.updateProjectionMatrix();
+  layoutSheet();
 }
 addEventListener('resize',resize);
 
@@ -807,17 +1749,39 @@ function render(){
 
   if(!dragging && !reduced){
     idle++;
-    if(idle>150) azTarget += 0.00042;      // a slow turn once the viewer settles
+    // A slow turn once the viewer settles — stilled before the unroll, which
+    // is composed to be read from the front.
+    if(idle>150) azTarget += 0.00042*(1-THREE.MathUtils.smoothstep(t,0.30,0.42));
   }
+  // The chart opens facing the load azimuth; as it does, the orbit is gently
+  // taken back so the reader is never left staring at its edge.
+  if(t>0.40){
+    var kc=0.06*THREE.MathUtils.smoothstep(t,0.40,0.56);
+    azTarget+=wrapPI(AZ0-azTarget)*kc;
+    elTarget*=(1-kc*0.8);
+  }
+  applyMorph(THREE.MathUtils.smoothstep(t,0.40,0.60));
+  stage.classList.toggle('lit', t>0.90);
 
   var bi=0;
   for(var k=0;k<BEATS.length;k++) if(t>=BEATS[k][0]) bi=k;
   setBeat(bi);
 
   updateCamera();
+  updatePlates();
   updateLabels(W,H);
   renderer.render(scene,camera);
 }
 setBeat(0);
+
+/* Test hook: lets the headless verification pin the journey and the orbit to
+   exact values instead of scrubbing through the easing. Not part of the UI. */
+window.__atlas={
+  setT:function(v){ setT(v); t=tTarget; },
+  setAz:function(v){ az=azTarget=v; },
+  setEl:function(v){ el=elTarget=v; },
+  probe:function(){ return {mC:modelCenter.toArray(), mR:modelRadius, minY:modelMinY,
+    sC:sphereCenter.toArray(), sR:sphereRadius}; }
+};
 })();
 </script>

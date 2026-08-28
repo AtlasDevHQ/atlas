@@ -97,5 +97,6 @@ brand/atlas-hero-3d/src/atlas-original*.glb
 # per iteration. The published Artifact is the deliverable; this dir is source.
 brand/atlas-hero-3d/atlas-hero.html
 brand/atlas-hero-3d/src/three-bundle.js
+brand/atlas-hero-3d/verify-out/
 brand/atlas-hero-3d/src/node_modules/
 brand/atlas-hero-3d/src/bun.lock

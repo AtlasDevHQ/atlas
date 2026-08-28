@@ -87,6 +87,8 @@
 
 import { randomUUID } from "node:crypto";
 
+import { BRAIN_PROPOSAL_PRODUCER } from "@useatlas/schemas";
+
 import { createLogger } from "@atlas/api/lib/logger";
 import { ORG_PRINCIPAL, type BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 // The lineage edge, imported rather than restated (the same
@@ -471,7 +473,11 @@ export async function proposeFact(
             },
           ],
           vocabulary,
-          producer: "proposal",
+          // The shared wire constant, not a local literal: the review surface's
+          // origin badge branches on this exact value (#5483), and the two
+          // packages sharing one spelling is what keeps the label from drifting
+          // off the writer.
+          producer: BRAIN_PROPOSAL_PRODUCER,
           // An authored claim is not extracted from anything.
           extractedAt: null,
           sourcePrincipal,

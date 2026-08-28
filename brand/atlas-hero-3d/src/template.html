@@ -202,6 +202,20 @@ body{
 .stage.lit .beat .n{color:var(--brand)}
 .stage.lit .beat h1{color:var(--plate-ink)}
 .stage.lit .beat p{color:var(--plate-ink-soft)}
+/* Where color-mix exists, the relight rides the scroll itself (--litf, set
+   per frame) instead of snapping at a threshold with a time-eased transition
+   — scrubbed backwards it un-dawns just as smoothly. The .lit rules above
+   stay as the fallback; the render loop drives exactly one of the two. */
+@supports (color: color-mix(in oklab, red 50%, blue)) {
+  .stage.mix .mark strong,.stage.mix .mark small,.stage.mix .hint,
+  .stage.mix .beat .n,.stage.mix .beat h1,.stage.mix .beat p{transition:none}
+  .stage.mix .mark strong{color:color-mix(in oklab, var(--paper), var(--plate-ink) calc(var(--litf,0)*100%))}
+  .stage.mix .mark small{color:color-mix(in oklab, var(--muted), var(--plate-ink-soft) calc(var(--litf,0)*100%))}
+  .stage.mix .hint{color:color-mix(in oklab, var(--muted), var(--plate-ink-soft) calc(var(--litf,0)*100%))}
+  .stage.mix .beat .n{color:color-mix(in oklab, var(--accent), var(--brand) calc(var(--litf,0)*100%))}
+  .stage.mix .beat h1{color:color-mix(in oklab, var(--paper), var(--plate-ink) calc(var(--litf,0)*100%))}
+  .stage.mix .beat p{color:color-mix(in oklab, var(--muted), var(--plate-ink-soft) calc(var(--litf,0)*100%))}
+}
 
 /* ---------- chrome ---------- */
 .chrome{position:absolute;inset:0;pointer-events:none;z-index:10}
@@ -343,7 +357,7 @@ input[type=range]:focus-visible{outline:1px solid var(--accent);outline-offset:5
 <div class="track">
 <div class="stage">
   <canvas id="gl"></canvas>
-  <div class="vignette"></div>
+  <div class="vignette" id="vignette"></div>
   <div class="labels" id="labels"></div>
 
   <div class="handoff" aria-hidden="true">
@@ -422,7 +436,13 @@ var TEX_B64 = /*__TEX__*/;
 
 var boot=document.getElementById('boot'), bootbar=document.getElementById('bootbar'), bootmsg=document.getElementById('bootmsg');
 var canvas=document.getElementById('gl'), stage=document.querySelector('.stage');
+var vignette=document.getElementById('vignette');
 var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+/* Scroll-driven relight where color-mix is available (the .mix rules); the
+   .lit threshold + CSS transition is the fallback. One mechanism at a time. */
+var litMix = !!(window.CSS && CSS.supports &&
+                CSS.supports('color','color-mix(in oklab, red 50%, blue)'));
+if(litMix) stage.classList.add('mix');
 
 function fail(title,msg){
   var d=document.createElement('div'); d.className='err';
@@ -617,17 +637,23 @@ function applyPreset(P,keepManual){
    source regions lift off the chart as plates; beat 05 lands them on the
    product's one sheet and the frame goes light. The whole journey is a zoom
    INTO what Atlas tracks; the myth ends on the product. */
+/* Homepage voice (#5518), second pass. The division of labour: the headline
+   captions the MOTION (short, the thing on screen), and the body text says
+   what it means for the PRODUCT \u2014 sources read, a record per source, an
+   honest account. The first rewrite kept the cartography in both, and read
+   as a page about mapmaking; the map is the picture's job, so the words
+   don't repeat it. No survey vocabulary the drawings haven't taught. */
 var BEATS=[
-  [0.00,"Beat 01 \u2014 the titan","He carries the whole thing.",
-   "One sphere, one silhouette. Everything the company knows, held up at arm's length."],
-  [0.20,"Beat 02 \u2014 the descent","The surface stops being a picture.",
-   "Coastlines were never texture. Every mark is a source Atlas can actually read \u2014 a channel, a mailbox, a pair of columns."],
-  [0.40,"Beat 03 \u2014 the chart","The world opens flat.",
-   "A globe is an atlas rolled up. Unrolled, the world he carries reads as a chart \u2014 and every region of it is a source."],
-  [0.62,"Beat 04 \u2014 the plates","Regions become plates.",
-   "One quadrangle per source, one sounding per survey unit \u2014 each region of the chart condenses into a page of the record."],
-  [0.82,"Beat 05 \u2014 the survey","This is what he holds up.",
-   "The Coverage Plate, as the product draws it: nothing invented, nothing left out. The company's knowledge \u2014 carried, and accounted for."]
+  [0.00,"01 \u2014 the titan","He carries the whole thing.",
+   "Your company knows more than any one person can hold. Atlas is built to carry it \u2014 all of it, at once."],
+  [0.20,"02 \u2014 the descent","The surface stops being a picture.",
+   "Every mark is a real source: chat channels, meeting recordings, mailboxes, warehouse tables. Atlas reads them where they live."],
+  [0.40,"03 \u2014 the chart","The world opens flat.",
+   "Atlas listens to all of them at once, so nothing your company knows is lost for living in the wrong tool."],
+  [0.62,"04 \u2014 the plates","Regions become records.",
+   "What it hears doesn't stay a feeling. Every source gets its own page of the record: what's been read, what's waiting, what's out of reach."],
+  [0.82,"05 \u2014 the survey","This is what he holds up.",
+   "An honest account of what your company knows \u2014 and of what it doesn't, which matters just as much. Nothing invented, nothing left out."]
 ];
 /* The five source classes the Coverage Surface counts, in `vocabulary.ts`'s own
    order, each anchored at a longitude/latitude on the globe. The sheet state is
@@ -944,7 +970,67 @@ var sheetEl=document.getElementById('sheet'),
     groundEl=document.getElementById('ground');
 var SURVEY=CLASSES.filter(function(d){ return d.render!=='off-survey'; });
 var OFFS=CLASSES.filter(function(d){ return d.render==='off-survey'; });
+var SURVEY_GI=SURVEY.map(function(d){ return CLASSES.indexOf(d); });
 var sheetDom=null, sheetScale=1, lastReveal=-1;
+
+/* ---- the world in the record (#5518) ----
+   A faint embossed ghost of the globe's engraving under each quadrangle: the
+   patch of the world that quad condensed from, cropped around the class's
+   anchor UV — the mesh's own texture coordinates, so it is georeferenced by
+   construction. Pre-rendered once per class as ink-on-transparent, normalized
+   by the crop's own luminance range (no ctx.filter, which WebKit long
+   lacked): the engraved lines come out as strokes a few percent from paper —
+   an emboss, not a photograph. redrawSheet lays it under the marks, clipped
+   by the quad's own outline, torn edge included, so the world ends where the
+   survey does. Any failure here degrades to the plain sheet. */
+var ghostSrc=null, ghosts=null;
+var GHOST_W=512, GHOST_SPAN=0.22;    // crop ~a fifth of the band per class
+function buildGhosts(){
+  if(!ghostSrc || !classUV.length || ghosts) return;
+  var iw=ghostSrc.width, ih=ghostSrc.height;
+  var out={};
+  try{
+    for(var i=0;i<CLASSES.length;i++){
+      if(CLASSES[i].render==='off-survey') continue;
+      var gw=GHOST_W, gh=Math.round(GHOST_W*S_QUAD_H/SHEET_QW);
+      var cw=Math.min(iw,Math.round(iw*GHOST_SPAN));
+      var ch=Math.min(ih,Math.round(cw*gh/gw));
+      var cx=Math.max(0,Math.min(iw-cw,Math.round(classUV[i][0]*iw-cw/2)));
+      var cy=Math.max(0,Math.min(ih-ch,Math.round(classUV[i][1]*ih-ch/2)));
+      var c=document.createElement('canvas'); c.width=gw; c.height=gh;
+      var g=c.getContext('2d');
+      g.drawImage(ghostSrc,cx,cy,cw,ch,0,0,gw,gh);
+      // High-pass, not threshold: an emboss is line work. A broad bright
+      // patch of the bake is area, and area thresholded to ink reads as a
+      // stain — so the stroke is each pixel's positive deviation from a
+      // local average (a downscale/upscale bounce, the cheapest blur there
+      // is), which keeps the engraved lines and drops the fields between.
+      var lo=document.createElement('canvas');
+      lo.width=Math.max(1,gw>>3); lo.height=Math.max(1,gh>>3);
+      lo.getContext('2d').drawImage(c,0,0,lo.width,lo.height);
+      var bc=document.createElement('canvas'); bc.width=gw; bc.height=gh;
+      var bg=bc.getContext('2d');
+      bg.imageSmoothingEnabled=true;
+      bg.drawImage(lo,0,0,gw,gh);
+      var img=g.getImageData(0,0,gw,gh), px=img.data;
+      var bpx=bg.getImageData(0,0,gw,gh).data;
+      for(var k=0;k<px.length;k+=4){
+        var l =0.2126* px[k]+0.7152* px[k+1]+0.0722* px[k+2];
+        var lb=0.2126*bpx[k]+0.7152*bpx[k+1]+0.0722*bpx[k+2];
+        var a=Math.max(0,Math.min(1,((l-lb)-5)/34));
+        px[k]=22; px[k+1]=36; px[k+2]=28;          // --plate-ink
+        px[k+3]=Math.round(a*255);
+      }
+      g.putImageData(img,0,0);
+      out[i]=c;
+    }
+    ghosts=out;
+  }catch(err){
+    // A tainted canvas or OOM leaves the sheet plain rather than broken.
+    console.debug('engraving ghost skipped:',err&&err.message?err.message:String(err));
+    ghosts=null;
+  }
+}
 
 /* The glosses are the shipped MARK_COPY details, trimmed only where they
    point at the admin page's own cards below the plate — the hero has no
@@ -1043,6 +1129,9 @@ function layoutSheet(){
       st.style.left=(qx+s)+'px'; st.style.top=(qy+qh+19*s)+'px';
       st.style.width=(qw-2*s)+'px';
       st.style.fontSize=Math.max(8,11*s)+'px';
+      // At phone scale the italic glosses collide with the neighbouring
+      // quads' titles; the titles and the drawings carry the sheet there.
+      st.style.display=s<0.5?'none':'';
     }
   });
   sheetDom.marginLabel.style.left=(S_PAD*s)+'px';
@@ -1066,6 +1155,20 @@ function redrawSheet(r,force){
     var cv=sheetDom.quads[k], g=cv.getContext('2d');
     g.setTransform(DPR,0,0,DPR,0,0);
     g.clearRect(0,0,cv.width,cv.height);
+    // The world under the survey: the engraving's ghost surfaces with the
+    // ink, beneath the marks, inside the quad's own boundary.
+    var gh=ghosts&&ghosts[SURVEY_GI[k]];
+    if(gh){
+      var ga=0.16*Math.max(0,Math.min(1,(r-0.06)/0.30));
+      if(ga>0){
+        g.save();
+        traceQuad(g,0,0,SHEET_QW*s,S_QUAD_H*s,d.render==='soundings'&&d.torn,s);
+        g.clip();
+        g.globalAlpha=ga;
+        g.drawImage(gh,0,0,SHEET_QW*s,S_QUAD_H*s);
+        g.restore();
+      }
+    }
     drawQuad(g,d,0,0,SHEET_QW*s,S_QUAD_H*s,s,r);
   });
   function op(el,a){ if(el) el.style.opacity=String(Math.max(0,Math.min(1,a))); }
@@ -1112,7 +1215,7 @@ var mapMesh=null, mapGeo=null, mapMorph=-1, sphR=1;
 var mapLook=new THREE.Vector3();
 var mapTheta=null, mapLat=null, mapR=null;
 var LAT_CAP=1.15;                    // trim the poles: the band, not a lens
-var classAnchor=[];
+var classAnchor=[], classUV=[];
 /* The staging beat that keeps the unroll off the titan: before anything
    flattens, the globe rises off his shoulders (t 0.34..0.46) by LIFT — enough
    that the surface's lowest possible edge across BOTH morph phases (the
@@ -1143,11 +1246,17 @@ function buildMorphMap(){
   if(g.index){ idx=Array.prototype.slice.call(g.index.array); }
   else{ idx=[]; for(var q=0;q<pA.count;q++) idx.push(q); }
 
-  // Two midpoint subdivisions, re-projected to the local radius, so the
+  // Midpoint subdivisions, re-projected to the local radius, so the
   // in-between states bend smoothly instead of creasing along the source
-  // mesh's 510-vertex triangulation.
+  // mesh's 510-vertex triangulation. Two passes ≈ 7.8k vertices, and the
+  // morph rewrites all of them on CPU every scroll frame (~2.2ms/frame on a
+  // dev core, several-fold that on a low-end phone) — so a small viewport,
+  // which cannot show the second pass's smoothness anyway, takes one pass
+  // (~2k vertices, ~4× less per-frame work).
   var C=sphereCenter;
-  for(var pass=0;pass<2;pass++){
+  var stR=stage.getBoundingClientRect();
+  var passes=Math.min(stR.width,stR.height)<620?1:2;
+  for(var pass=0;pass<passes;pass++){
     var cache={}, nidx=[];
     var mid=function(a,b){
       var key=a<b?a+'_'+b:b+'_'+a;
@@ -1207,6 +1316,10 @@ function buildMorphMap(){
   mapGeo.setIndex(idx);
   sphere.material.side=THREE.DoubleSide;   // mid-unroll the curl shows its back
   mapMesh=new THREE.Mesh(mapGeo, sphere.material);
+  // Whenever this mesh is showing it spans the frame, so culling buys
+  // nothing — and skipping it lets applyMorph skip a per-frame
+  // computeBoundingSphere over every vertex.
+  mapMesh.frustumCulled=false;
   mapMesh.visible=false;
   scene.add(mapMesh);
   // Measure him, don't guess: the lift clearance comes from the real bounds
@@ -1234,6 +1347,11 @@ function buildMorphMap(){
     }
     return best;
   });
+  // The anchor vertex's own texture coordinate: where this class lives on the
+  // engraving. It is what lets the sheet show each quadrangle the exact patch
+  // of the world it condensed from, with no projection guesswork.
+  classUV=classAnchor.map(function(vi){ return [U[vi*2],U[vi*2+1]]; });
+  buildGhosts();
   applyMorph(0);
 }
 
@@ -1266,7 +1384,6 @@ function applyMorph(m){
   }
   pos.needsUpdate=true;
   mapGeo.computeVertexNormals();
-  mapGeo.computeBoundingSphere();
   // The globe and the chart are the same surface; only one exists at a time.
   // Which one is showing is decided in the render loop, where the lift is
   // known — the swap happens at lift-off, not at the first morph step.
@@ -1350,30 +1467,68 @@ function buildPlates(){
     mesh.visible=false;
     platesGroup.add(mesh);
 
-    // Each card is born ON the flat chart, at the point its class's label
-    // was marking, and condenses toward the reader — the region becoming its
-    // own record. It never leaves the neighbourhood of where it was born;
-    // beat 05's landing does the rest.
-    var p0=anchorFlat(i,new THREE.Vector3()).addScaledVector(F0,0.03);
-    var hover=anchorHover(i,new THREE.Vector3())
-      .addScaledVector(F0,modelRadius*0.22)
-      .addScaledVector(UPV,(i%2?0.04:-0.02)*modelRadius);
     var qF=new THREE.Quaternion().setFromEuler(
       new THREE.Euler(0,AZ0,(i%2?-1:1)*0.02,'YXZ'));
-    // s1 sized so the quadrangle's soundings — not the caption — carry the
-    // card at the hover framing: the drawing is the meaning.
     var P={mesh:mesh, q0:qF, q1:qF, s0:sphereRadius*0.22, s1:modelRadius*0.38};
-    P.curve=new THREE.CubicBezierCurve3(
-      p0,
-      p0.clone().addScaledVector(F0,modelRadius*0.08),
-      hover.clone().addScaledVector(F0,-modelRadius*0.05),
-      hover);
     // Condensation is fully settled before any flight begins — a card still
     // condensing when the flight takes it reads as being yanked.
     P.t0=PLATE_T0+i*PLATE_DT0; P.t1=0.765+i*0.014;
     plates.push(P);
   }
+  layoutPlates();
   scene.add(platesGroup);
+}
+
+/* Where each card comes to rest before beat 05's flight — re-laid on resize,
+   because the formation is a composition in the frame. A wide frame spreads
+   the cards over the regions they rose from. A portrait frame cannot: five
+   cards across a band fitted to its width read at a third of design size
+   (that was the mobile beat 04 nobody could parse), so there they cascade
+   into a stack down the middle — a hand of survey pages, dealt top to
+   bottom in the same left-to-right order they land on the sheet, each born
+   at its region and rising into its slot. */
+function layoutPlates(){
+  if(!plates.length) return;
+  var portrait=camera.aspect<0.8 && !!mapGeo;
+  // The beat-04 framing, reconstructed with the camera path's own numbers,
+  // so the stack is sized in frame terms rather than model terms.
+  var d=chartDist(modelRadius*2.3);
+  var fovH=Math.tan(44*Math.PI/360);
+  var frameH=2*d*fovH, frameW=frameH*camera.aspect;
+  for(var i=0;i<plates.length;i++){
+    var P=plates[i];
+    // Born ON the flat chart, at the point its class's label was marking —
+    // the region becoming its own record. That much is true in every frame.
+    var p0=anchorFlat(i,new THREE.Vector3()).addScaledVector(F0,0.03);
+    var hover;
+    if(portrait){
+      // Two pages across, laid in reading order — the same order their
+      // quadrangles sit on the sheet they are about to land in. A single
+      // shingled pile was tried first and buried every card's title strip
+      // under the next card; a grid gives each page its whole face, sized
+      // so two of them span the frame. The odd page (People, the off-survey
+      // class) centres the last row. The pile sits above the beat copy.
+      P.s1=0.42*frameW/PLATE_W;
+      var cw=P.s1*PLATE_W, rowStep=P.s1*1.10;
+      var col=i%2, row=(i/2)|0;
+      hover=new THREE.Vector3().copy(mapLook)
+        .addScaledVector(UPV,frameH*0.26-row*rowStep)
+        .addScaledVector(R0,(i===4)?0:(col?1:-1)*cw*0.53)
+        .addScaledVector(F0,modelRadius*(0.22+0.01*i));
+    }else{
+      // s1 sized so the quadrangle's soundings — not the caption — carry
+      // the card at the hover framing: the drawing is the meaning.
+      P.s1=modelRadius*0.38;
+      hover=anchorHover(i,new THREE.Vector3())
+        .addScaledVector(F0,modelRadius*0.22)
+        .addScaledVector(UPV,(i%2?0.04:-0.02)*modelRadius);
+    }
+    P.curve=new THREE.CubicBezierCurve3(
+      p0,
+      p0.clone().addScaledVector(F0,modelRadius*0.08),
+      hover.clone().addScaledVector(F0,-modelRadius*0.05),
+      hover);
+  }
 }
 
 var _f=new THREE.Vector3(), _ray=new THREE.Vector3(), _land=new THREE.Vector3();
@@ -1386,13 +1541,15 @@ function updatePlates(){
      white card at half opacity over a dark scene is grey fog, so the cover
      is quick — then the survey revealing itself on the sheet. */
   var e5base=t;
-  /* The turn to paper is a dawn, not a curtain: the GL scene's own exposure
-     floods up first (in the render loop), so by the time this paper ground
-     eases in over the flying cards the frame is already luminous — a slow
-     ramp without the grey fog a veil over a dark scene makes. The sheet
+  /* The turn to paper is a dawn, not a curtain: the GL scene's exposure AND
+     its field flood up first (render loop: the exposure ramp plus the
+     scene.background night→ember→paper warm-up), so by the time this paper
+     ground eases in over the flying cards the whole frame is already
+     luminous — a slow ramp without the grey fog a veil over a dark scene
+     makes. The sheet
      still starts inking itself while the aligned cards cover it, so when
      they fade there is a drawn survey underneath, never white-on-white. */
-  groundEl.style.opacity=sm(t,0.855,0.92).toFixed(3);
+  groundEl.style.opacity=sm(t,0.845,0.925).toFixed(3);
   sheetCardEl.style.opacity=sm(t,0.868,0.905).toFixed(3);
   if(sheetDom) redrawSheet(sm(t,0.885,0.98));
 
@@ -1588,6 +1745,12 @@ loader.parse(buf,'',function(gltf){
     return decodeImage(b64).then(function(img){
       j[1].material[j[2]]=makeTexture(img,j[3]);
       j[1].material.needsUpdate=true;
+      if(j[0]==='sphere_base'){
+        // The engraving doubles as the sheet's embossed ghost; the sheet may
+        // already be laid out, so re-ink it once the ghosts exist.
+        ghostSrc=img; buildGhosts();
+        if(sheetDom) redrawSheet(lastReveal<0?0:lastReveal,true);
+      }
       return true;
     },function(err){
       console.debug('texture '+j[0]+' failed:', err && err.message ? err.message : String(err));
@@ -1745,8 +1908,14 @@ function updateLabels(w,h){
     _v.project(camera);
     var x=(_v.x*0.5+0.5)*w, y=(-_v.y*0.5+0.5)*h;
     e.style.transform='translate('+x.toFixed(1)+'px,'+y.toFixed(1)+'px)';
-    e.style.setProperty('--tf',tf.toFixed(3));
-    e.style.opacity=(vi*front).toFixed(3);
+    // Frame-edge grace, for narrow viewports where an anchor can sit at the
+    // silhouette's edge: a label runs rightward from its dot, so the words
+    // fade first against the right edge, and a dot carried off the left
+    // takes its whole label with it — never a clipped word hanging mid-air.
+    var lEdge=Math.max(0,Math.min(1,(x-12)/36));
+    var rEdge=Math.max(0,Math.min(1,(w-70-x)/170));
+    e.style.setProperty('--tf',(tf*rEdge).toFixed(3));
+    e.style.opacity=(vi*front*lEdge).toFixed(3);
   }
 }
 
@@ -1858,6 +2027,14 @@ document.getElementById('l_copy').addEventListener('click',function(){
 });
 
 /* ================= loop ================= */
+/* The dawn's field ramp. Night matches the untouched clear; ember is the warm
+   dark the light comes up through (a straight black→paper lerp passes through
+   the grey the dawn exists to avoid); paper is the CSS ground's outer tone,
+   pre-tonemap — ACES at the flooded exposure lands it on the real thing. */
+var DAWN_NIGHT=new THREE.Color(0x000000),
+    DAWN_EMBER=new THREE.Color(0x2A1C10),
+    DAWN_PAPER=new THREE.Color(0xEFE6D6),
+    dawnBg=new THREE.Color();
 var W=1,H=1;
 function resize(){
   var r=stage.getBoundingClientRect();
@@ -1865,6 +2042,7 @@ function resize(){
   renderer.setSize(W,H,false);
   camera.aspect=W/H; camera.updateProjectionMatrix();
   layoutSheet();
+  layoutPlates();   // the hover formation is a composition in the frame
 }
 addEventListener('resize',resize);
 
@@ -1903,10 +2081,34 @@ function render(){
   // The dawn: the vitrine floods with light while the cards fly, BEFORE the
   // paper ground arrives — the turn out of the dark is continuous brightness,
   // not a theme swap. Set per-frame so it composes with the lab's exposure.
-  var dawn=THREE.MathUtils.smoothstep(t,0.80,0.895);
+  // An exposure flood alone lit the OBJECTS and left the FIELD black, so the
+  // paper still arrived as a curtain (mean frame luminance stepped 0.47→0.86
+  // inside t 0.86..0.90). Now the field itself dawns: scene.background warms
+  // night → ember → paper under the rising exposure, and the vignette lifts
+  // with it, so the DOM ground eases in over an already-luminous frame.
+  var dawn=THREE.MathUtils.smoothstep(t,0.775,0.90);
   renderer.toneMappingExposure=
     ((typeof L.exp==='number'&&isFinite(L.exp))?L.exp:1.05)*(1+0.9*dawn);
-  stage.classList.toggle('lit', t>0.88);
+  var d1=THREE.MathUtils.smoothstep(t,0.775,0.845);
+  // The paper phase is shaped perceptually: the lerp runs in linear light,
+  // where the first few percent toward paper read as a leap — ^1.6 spends
+  // the scroll where the eye needs it.
+  var d2=Math.pow(THREE.MathUtils.smoothstep(t,0.815,0.895),1.6);
+  if(d1>0){
+    // Pre-tonemap values: ACES + the flooded exposure carry the ramp the rest
+    // of the way, so by full opacity the field meets the CSS paper ground.
+    dawnBg.lerpColors(DAWN_NIGHT,DAWN_EMBER,d1).lerp(DAWN_PAPER,d2);
+    scene.background=dawnBg;
+  }else{
+    scene.background=null;               // the vitrine's own dark, untouched
+  }
+  vignette.style.opacity=(1-dawn).toFixed(3);
+  // The relight rides the field: its 50% crossing sits where the dawning
+  // ground passes mid-luminance, so the text is never paper-on-paper or
+  // ink-on-night.
+  if(litMix) stage.style.setProperty('--litf',
+    THREE.MathUtils.smoothstep(t,0.82,0.90).toFixed(3));
+  else stage.classList.toggle('lit', t>0.86);
 
   var bi=0;
   for(var k=0;k<BEATS.length;k++) if(t>=BEATS[k][0]) bi=k;
@@ -1927,7 +2129,15 @@ window.__atlas={
   setEl:function(v){ el=elTarget=v; },
   probe:function(){ return {mC:modelCenter.toArray(), mR:modelRadius, minY:modelMinY,
     sC:sphereCenter.toArray(), sR:sphereRadius,
-    bodyTop:bodyTopY, lift:LIFT, sphR:sphR}; }
+    bodyTop:bodyTopY, lift:LIFT, sphR:sphR}; },
+  // Times a forced full-morph sweep (the early-out is bypassed), per frame.
+  morphBench:function(){
+    if(!mapGeo) return null;
+    var t0=performance.now(), k=0;
+    for(var m=0;m<=1.0001;m+=0.02){ mapMorph=-1; applyMorph(m); k++; }
+    return {msPerFrame:(performance.now()-t0)/k,
+            verts:mapGeo.attributes.position.count};
+  }
 };
 })();
 </script>

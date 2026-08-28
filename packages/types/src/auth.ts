@@ -59,6 +59,59 @@ export type AtlasMode = (typeof ATLAS_MODES)[number];
 export const ADMIN_ROLES = ["owner", "admin", "platform_admin"] as const;
 export type AdminRole = (typeof ADMIN_ROLES)[number];
 
+// ── Permission flags (granular RBAC) ───────────────────────────────
+
+/**
+ * Granular permission flags consumed by the enterprise custom-role surface
+ * (`@atlas/ee/auth/roles`) and the API's `admin-router.ts` permission
+ * middleware.
+ *
+ * ⚠️ **Publication sequencing (#5194).** This tuple's move here from
+ * `packages/api/src/lib/auth/permissions.ts` is deliberately split: the
+ * monorepo consumers keep their own copy until this version is PUBLISHED to
+ * npm, because Deploy Validation builds `packages/api` against the published
+ * `@useatlas/types` — a re-export of a symbol npm doesn't have yet fails the
+ * scaffold build (`Export PERMISSIONS doesn't exist in target module`), which
+ * is what reverted the first attempt. Until issue 5194's steps 3–4 land, the
+ * api module holds the live copy the monorepo consumes and the two tuples
+ * must stay identical; step 4 replaces that copy with a re-export from here.
+ *
+ * ⚠️ **This package publishes to npm, so these flag ids are public
+ * contract**: removing or renaming a flag is a breaking change for external
+ * consumers, not an internal refactor. Additions are safe; renames need a
+ * major-version conversation.
+ *
+ * Flag semantics, the per-route enforcement tables, and the add-a-flag
+ * checklist (backfill migration, `BUILTIN_ROLES`, `LEGACY_ROLE_PERMISSIONS`)
+ * live with the enforcement code in `packages/api/src/lib/auth/permissions.ts`
+ * and `packages/api/src/api/routes/dashboards.ts` — deliberately not
+ * duplicated here, where they would drift unwatched.
+ */
+export const PERMISSIONS = [
+  "query",
+  "query:raw_data",
+  // dashboards:read / dashboards:write split on "does this persist", not on
+  // HTTP method (#5189); dashboards:share is a distinct authority — minting a
+  // PUBLIC share token publishes workspace data to the unauthenticated
+  // internet, which is not a degree of editing (#5192).
+  "dashboards:read",
+  "dashboards:write",
+  "dashboards:share",
+  "admin:users",
+  "admin:connections",
+  "admin:settings",
+  "admin:audit",
+  "admin:roles",
+  "admin:semantic",
+] as const;
+
+export type Permission = (typeof PERMISSIONS)[number];
+
+/** Validate that a string is a known permission flag. */
+export function isValidPermission(p: string): p is Permission {
+  return (PERMISSIONS as readonly string[]).includes(p);
+}
+
 // ── Client-side auth interfaces ────────────────────────────────────
 // Shared between @atlas/web and @useatlas/react so each package has
 // a single source of truth for auth client shapes.

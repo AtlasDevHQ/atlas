@@ -108,6 +108,7 @@ import {
   reconcileFacts,
   withBrainTransaction,
   type ReconcileExecutor,
+  type ReconcileReport,
   type ReconcileTransactionRunner,
   type UnkeyedSlot,
 } from "@atlas/api/lib/brain/reconcile";
@@ -363,7 +364,15 @@ export async function proposeFact(
   const validFrom = claim.validFrom ?? at;
   const reason = claim.reason?.trim();
 
-  let report;
+  // Annotated rather than left to evolving-`let` inference, so the shape the
+  // catch-guarded assignment must produce is stated where a reader looks.
+  let report: {
+    readonly report: ReconcileReport;
+    readonly episodeId: string;
+    readonly sessionEpisodeId: string | null;
+    /** `true` = this propose minted the episode, `false` = reused, `null` = no session. */
+    readonly sessionEpisodeCreated: boolean | null;
+  };
   try {
     report = await withTransaction(async (tx: ReconcileExecutor) => {
       // ── Lock 3, first half: the session becomes a tier-3 episode HERE ──
@@ -513,6 +522,7 @@ export async function proposeFact(
         report: reconcileReport,
         episodeId,
         sessionEpisodeId: sessionEpisode?.episodeId ?? null,
+        sessionEpisodeCreated: sessionEpisode?.created ?? null,
       };
     });
   } catch (err) {
@@ -535,7 +545,7 @@ export async function proposeFact(
     throw err;
   }
 
-  const { report: reconcileReport, episodeId, sessionEpisodeId } = report;
+  const { report: reconcileReport, episodeId, sessionEpisodeId, sessionEpisodeCreated } = report;
   const outcome = reconcileReport.outcomes[0];
 
   if (outcome === undefined) {
@@ -603,6 +613,7 @@ export async function proposeFact(
         // still happened in the session — but no lineage edge is written: the
         // fact predates the session. `null` on a session-less proposal.
         sessionEpisodeId,
+        sessionEpisodeCreated,
         factId: outcome.factId,
         evidenceAdded: outcome.evidenceAdded,
         requestId,
@@ -624,8 +635,11 @@ export async function proposeFact(
       workspaceId: ctx.workspaceId,
       episodeId,
       // The tier-3 session episode the draft derives from (#5486); `null` on a
-      // session-less proposal.
+      // session-less proposal. `sessionEpisodeCreated` says whether THIS
+      // propose lazily minted it or reused the one an earlier propose did —
+      // the operator-visible half of the idempotence contract.
       sessionEpisodeId,
+      sessionEpisodeCreated,
       factId: outcome.factId,
       provisional: outcome.provisional,
       tensionEdges: outcome.tensionEdges,

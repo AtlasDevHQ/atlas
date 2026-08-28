@@ -278,6 +278,13 @@ export interface MaterializeSessionEpisodeRequest {
  * session has. On reuse the stored grant is read back verbatim — what the
  * episode already carried is a fact about the row, never re-derived
  * (`correction.ts`'s #5037 lesson, applied to grants).
+ *
+ * A SHARED conversation (`conversations.share_mode = 'org'`, or a share
+ * token) still seeds `[the actor]`, deliberately: a share link is revocable
+ * ACCESS to a rendering, not audience membership, and deriving a durable
+ * grant from it would freeze an ephemeral state into an immutable episode
+ * row. Anyone the claim should reach is the reviewer's widening decision
+ * (#5483), not this seed's.
  */
 export async function materializeSessionEpisode(
   tx: ReconcileExecutor,

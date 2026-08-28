@@ -12370,6 +12370,18 @@
                   "token": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "session": {
+                    "type": "object",
+                    "properties": {
+                      "conversationId": {
+                        "type": "string",
+                        "format": "uuid"
+                      }
+                    },
+                    "required": [
+                      "conversationId"
+                    ]
                   }
                 },
                 "required": [

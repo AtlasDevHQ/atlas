@@ -152,6 +152,7 @@ void mock.module("@atlas/api/lib/brain/proposal", () => ({
   PROPOSAL_EPISODE_INSERT_SQL: "INSERT",
   PROPOSAL_REFUSAL_REASONS: {
     malformedClaim: "MALFORMED_CLAIM",
+    sessionNotFound: "SESSION_NOT_FOUND",
   } satisfies typeof import("@atlas/api/lib/brain/proposal").PROPOSAL_REFUSAL_REASONS,
   proposalGrantTokens: () => ["org"],
   proposeFact: async (request: Record<string, unknown>) => {
@@ -185,7 +186,14 @@ function app() {
 
 /** A staged confirm payload with a real, correctly-bound token. */
 function stagedBody(
-  overrides: { subject?: string; predicate?: string; object?: string; reason?: string; validFrom?: string } = {},
+  overrides: {
+    subject?: string;
+    predicate?: string;
+    object?: string;
+    reason?: string;
+    validFrom?: string;
+    session?: { conversationId: string };
+  } = {},
 ) {
   const claim = {
     subject: overrides.subject ?? CLAIM.subject,
@@ -194,9 +202,20 @@ function stagedBody(
     ...(overrides.validFrom !== undefined ? { validFrom: overrides.validFrom } : {}),
     ...(overrides.reason !== undefined ? { reason: overrides.reason } : {}),
   };
-  const token = mintProposalConfirmToken({ workspaceId: "ws-1", claim });
-  return { ...claim, token };
+  const token = mintProposalConfirmToken({
+    workspaceId: "ws-1",
+    claim,
+    ...(overrides.session !== undefined ? { session: overrides.session } : {}),
+  });
+  return {
+    ...claim,
+    ...(overrides.session !== undefined ? { session: overrides.session } : {}),
+    token,
+  };
 }
+
+/** The session ref #5486's tests stage. */
+const SESSION = { conversationId: "11111111-2222-4333-8444-555555555555" };
 
 function post(body: unknown): Request {
   return new Request("http://localhost/api/v1/brain-proposals/confirm", {
@@ -266,6 +285,19 @@ describe("POST /api/v1/brain-proposals/confirm", () => {
     expect(proposeCalls[0]?.vocabulary).toBe(IDENTITY_VOCABULARY);
   });
 
+  it("#5486 — threads a staged session through to the verb, verified against the token", async () => {
+    const res = await app().fetch(post(stagedBody({ session: SESSION })));
+    expect(res.status).toBe(200);
+    expect(proposeCalls).toHaveLength(1);
+    expect(proposeCalls[0]?.session).toEqual(SESSION);
+  });
+
+  it("#5486 — a session-less confirm hands the verb no session at all", async () => {
+    const res = await app().fetch(post(stagedBody()));
+    expect(res.status).toBe(200);
+    expect(proposeCalls[0]).not.toHaveProperty("session");
+  });
+
   it("parses validFrom into a Date on its way into the verb", async () => {
     await app().fetch(post(stagedBody({ validFrom: "2026-01-15T00:00:00Z" })));
     const claim = proposeCalls[0]?.claim as Record<string, unknown>;
@@ -316,6 +348,40 @@ describe("the confirm token gate", () => {
     const staged = stagedBody();
     const res = await app().fetch(post({ ...staged, reason: "injected" }));
     expect(res.status).toBe(400);
+    expectNoWrite();
+  });
+
+  it("⭐ #5486 — rejects a session added, dropped, or swapped after staging", async () => {
+    // The provenance the human consented to is the provenance that lands: the
+    // session is in the token's one hash, so a tampered card cannot attach a
+    // different conversation (whose ACL context would seed the grant) or
+    // detach the one the card named.
+    const withSession = stagedBody({ session: SESSION });
+    const withoutSession = stagedBody();
+
+    // Added after staging.
+    let res = await app().fetch(post({ ...withoutSession, session: SESSION }));
+    expect(res.status).toBe(400);
+    // Dropped after staging.
+    const { session: _dropped, ...detached } = withSession;
+    res = await app().fetch(post(detached));
+    expect(res.status).toBe(400);
+    // Swapped after staging.
+    res = await app().fetch(
+      post({
+        ...withSession,
+        session: { conversationId: "99999999-2222-4333-8444-555555555555" },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expectNoWrite();
+  });
+
+  it("#5486 — rejects a non-uuid session id at the schema, before any token work", async () => {
+    const res = await app().fetch(
+      post({ ...stagedBody(), session: { conversationId: "not-a-uuid" } }),
+    );
+    expect(res.status).toBe(422);
     expectNoWrite();
   });
 

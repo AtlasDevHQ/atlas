@@ -1741,6 +1741,13 @@ chat.openapi(chatRoute, async (c) => {
               // the REST tool binding in `agent.ts` through this frame. Stamped
               // only when true; absent ⇒ writes are refused before staging.
               ...(writeConfirmUi ? { restWriteConfirmationUi: true } : {}),
+              // #5486 — the conversation's identity reaches the `proposeFact`
+              // staging tool through this frame, so a confirmed proposal can
+              // derive from its session's lazily-materialized episode. Always
+              // set by this point (a fresh conversation was created above);
+              // stamped conditionally anyway so the legacy shape holds if that
+              // ever changes.
+              ...(conversationId ? { conversationId } : {}),
             },
             () =>
               runAgent({
@@ -2102,6 +2109,9 @@ chat.openapi(chatResumeRoute, async (c) => {
         agentOrigin: "chat",
         actor: { kind: "human" },
         ...(writeConfirmUi ? { restWriteConfirmationUi: true } : {}),
+        // #5486 — kept in lockstep with the initial-turn frame: a resumed turn
+        // stages proposals against the same conversation it belongs to.
+        ...(conversationId ? { conversationId } : {}),
       },
       async () => {
         // Serviceability gate — a resumed turn needs the same capability a fresh

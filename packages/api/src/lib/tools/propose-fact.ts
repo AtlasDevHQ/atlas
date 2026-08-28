@@ -156,6 +156,15 @@ export const proposeFactTool = tool({
     const reqCtx = getRequestContext();
     const requestId = reqCtx?.requestId;
     const workspaceId = reqCtx?.user?.activeOrganizationId;
+    // #5486 — the session this staging happened in, read off the request
+    // context the chat route stamped, NEVER off the model's input (the
+    // `inputSchema` does not admit it, so the model cannot attach someone
+    // else's conversation as provenance). When present it rides the confirm
+    // payload, bound into the token, and the confirmed fact derives from the
+    // session's lazily-materialized tier-3 episode with the session's ACL
+    // context as its grant seed. Absent (a caller outside a conversation),
+    // the proposal takes the disclosed workspace grant, as before.
+    const conversationId = reqCtx?.conversationId;
 
     if (!hasInternalDB()) {
       return {
@@ -233,6 +242,7 @@ export const proposeFactTool = tool({
         // token starts failing for reasons nobody can reproduce.
         workspaceId: ctx.workspaceId,
         claim,
+        ...(conversationId !== undefined ? { session: { conversationId } } : {}),
       });
     } catch (err) {
       log.error(
@@ -262,7 +272,11 @@ export const proposeFactTool = tool({
     return {
       status: "needs_confirmation" as const,
       summary: buildProposalSummary(claim),
-      confirm: { ...claim, token },
+      confirm: {
+        ...claim,
+        ...(conversationId !== undefined ? { session: { conversationId } } : {}),
+        token,
+      },
     } satisfies ProposeFactStaged;
   },
 });

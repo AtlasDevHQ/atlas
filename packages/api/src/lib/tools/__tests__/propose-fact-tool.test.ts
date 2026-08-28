@@ -35,6 +35,7 @@ let mockRequestContext:
   | {
       requestId?: string;
       user?: { id?: string; role?: string; activeOrganizationId?: string };
+      conversationId?: string;
     }
   | undefined;
 let mockHasInternalDB = true;
@@ -118,6 +119,7 @@ void mock.module("@atlas/api/lib/brain/proposal", () => ({
   PROPOSAL_EPISODE_INSERT_SQL: "INSERT",
   PROPOSAL_REFUSAL_REASONS: {
     malformedClaim: "MALFORMED_CLAIM",
+    sessionNotFound: "SESSION_NOT_FOUND",
   } satisfies typeof import("@atlas/api/lib/brain/proposal").PROPOSAL_REFUSAL_REASONS,
   proposalGrantTokens: () => ["org"],
   proposeFact: async (request: Record<string, unknown>) => {
@@ -309,6 +311,54 @@ describe("staging — the tool never writes", () => {
     // it from what the card POSTs. `JSON.stringify` drops `undefined` keys, so a
     // payload that CARRIED them would hash differently on the two sides and every
     // such proposal would fail its own confirm.
+    const out = await run();
+    const confirm = out.confirm as Record<string, unknown>;
+    expect(Object.keys(confirm).sort()).toEqual(["object", "predicate", "subject", "token"]);
+  });
+
+  it("#5486 — stages the session from the request context, bound into the token", async () => {
+    // The conversation id comes off the context the chat route stamped, never
+    // off model input (`inputSchema` does not admit it) — so a prompt-injected
+    // turn cannot attach someone else's conversation as the fact's provenance.
+    mockRequestContext = {
+      ...mockRequestContext,
+      conversationId: "11111111-2222-4333-8444-555555555555",
+    };
+    const out = await run();
+    const confirm = out.confirm as Record<string, unknown>;
+    expect(confirm.session).toEqual({
+      conversationId: "11111111-2222-4333-8444-555555555555",
+    });
+    expectNoWrite();
+
+    // The binding covers it: the exact staged shape verifies, and the same
+    // token with the session dropped or swapped does not — a tampered card
+    // cannot detach the claim from the conversation the human saw.
+    const { verifyProposalConfirmToken } = await import("@atlas/api/lib/brain/proposal-confirm");
+    const claim = { subject: "Ana", predicate: "is the DRI for", object: "billing" };
+    const bound = verifyProposalConfirmToken(String(confirm.token), {
+      workspaceId: "org-1",
+      claim,
+      session: { conversationId: "11111111-2222-4333-8444-555555555555" },
+    });
+    expect(bound.ok).toBe(true);
+    const dropped = verifyProposalConfirmToken(String(confirm.token), {
+      workspaceId: "org-1",
+      claim,
+    });
+    expect(dropped.ok).toBe(false);
+    const swapped = verifyProposalConfirmToken(String(confirm.token), {
+      workspaceId: "org-1",
+      claim,
+      session: { conversationId: "99999999-2222-4333-8444-555555555555" },
+    });
+    expect(swapped.ok).toBe(false);
+  });
+
+  it("#5486 — a caller with no conversation stages the pre-session shape, byte-compatible", async () => {
+    // No `session` key at all (not `session: undefined` — the hash canonicalizes
+    // but the payload shape is the wire contract), so surfaces without a
+    // conversation keep the disclosed workspace-grant flow unchanged.
     const out = await run();
     const confirm = out.confirm as Record<string, unknown>;
     expect(Object.keys(confirm).sort()).toEqual(["object", "predicate", "subject", "token"]);

@@ -74,6 +74,14 @@ const ConfirmRequestSchema = BrainProposalClaimSchema.extend({
   // HERE and not on the shared schema: it is this endpoint's concern, and a tool
   // `inputSchema` advertising it would invite the model to invent one.
   token: z.string().min(1, "confirm token is required"),
+  // #5486 — the session the proposal was staged in, echoed back verbatim by the
+  // card. Optional (a session-less proposal is the pre-#5486 shape) and, like
+  // `token`, this endpoint's concern rather than the shared claim schema's: the
+  // tool stamps it from the request context, never from model input. Bound in
+  // the token, so a payload whose session was added, dropped, or swapped after
+  // staging fails verification below; ownership of the conversation is then
+  // re-checked inside the write's own transaction.
+  session: z.object({ conversationId: z.string().uuid() }).optional(),
 });
 
 /**
@@ -280,6 +288,7 @@ export function createBrainProposalsRoute() {
       const verification = verifyProposalConfirmToken(input.token, {
         workspaceId: ctx.workspaceId,
         claim,
+        ...(input.session !== undefined ? { session: input.session } : {}),
       });
       if (!verification.ok) {
         // `no-key` is a server/operator misconfiguration, not an
@@ -340,6 +349,13 @@ export function createBrainProposalsRoute() {
       try {
         outcome = await proposeFact({
           ctx,
+          // #5486 — verified against the token above, so this is the session
+          // the human's card named at staging. `proposeFact` materializes its
+          // tier-3 episode lazily, inside the write transaction, after
+          // re-checking the conversation is this actor's own in this
+          // workspace; a ref that fails that check is an ordinary 400 refusal
+          // below, not a 500.
+          ...(input.session !== undefined ? { session: input.session } : {}),
           claim: {
             // The verified claim, with the ONE field the verb takes in another
             // representation. `validFrom` travels as an ISO string through the

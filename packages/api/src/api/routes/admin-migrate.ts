@@ -2867,7 +2867,7 @@ export async function importBundle(
             proposed_by, proposed_at, reviewed_by, reviewed_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (workspace_id, predicate_key) DO NOTHING
-         RETURNING predicate_key`,
+         RETURNING 1 AS inserted`,
         [
           orgId,
           entry.predicateKey,

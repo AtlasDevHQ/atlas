@@ -119,6 +119,26 @@ function missingTimestamps(row: Record<string, unknown>, keys: readonly string[]
 }
 
 /**
+ * The two #5113 sections' enum vocabularies, mirroring their tables' CHECKs
+ * (`ck_brain_vocabulary_proposal_*`, `ck_brain_predicate_cardinality_*`) so a
+ * bad value is refused at validation with a row index rather than as a 23514
+ * that aborts the whole import naming no section.
+ *
+ * `applying` is deliberately absent from the proposal statuses: it is a
+ * region-local claim token that never commits at the source (claim/apply/stamp
+ * share one transaction) and must never land at a destination whose decide
+ * path would believe it owns the claim.
+ */
+const VOCABULARY_PROPOSAL_WIRE_STATUSES = ["pending", "approved", "rejected"] as const;
+const VOCABULARY_PROPOSAL_SOURCE_CLASSES = ["warehouse_key", "extractor", "seam", "human"] as const;
+const PREDICATE_CARDINALITY_VALUES = ["single", "multi"] as const;
+const PREDICATE_CARDINALITY_STATUSES = ["pending", "approved", "rejected"] as const;
+const PREDICATE_CARDINALITY_SOURCE_CLASSES = ["warehouse_structural", "correction_event", "human"] as const;
+
+/** A decided row — the half that outranks a `pending` in the #5113 merges. */
+const isDecidedStatus = (status: string): boolean => status === "approved" || status === "rejected";
+
+/**
  * The pre-#4460 bundle version — four sections only (conversations, semantic
  * entities, learned patterns, settings). Still accepted so bundles produced by
  * older exporters import cleanly; the v2 sections simply come back 0/0.
@@ -1162,6 +1182,121 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
     }
   }
 
+  // --- The alias queue + its rejection memory (#5023, exported by #5113) ---
+  // Every enum is checked HERE rather than left to the table's CHECKs, for the
+  // section-wide reason: a 23514 mid-import aborts the whole transaction with a
+  // constraint name and no section, where this names the row and the field.
+  if ("brainVocabularyProposals" in obj && obj.brainVocabularyProposals !== undefined) {
+    if (!Array.isArray(obj.brainVocabularyProposals)) {
+      return { ok: false, error: "Invalid 'brainVocabularyProposals' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainVocabularyProposals.length; i++) {
+      const p = obj.brainVocabularyProposals[i] as Record<string, unknown> | null;
+      if (!p || typeof p !== "object" || typeof p.fromNorm !== "string" || typeof p.toNorm !== "string") {
+        return { ok: false, error: `brainVocabularyProposals[${i}]: must have 'fromNorm' and 'toNorm' (strings).` };
+      }
+      if (!isSlotPosition(p.slotPosition)) {
+        return { ok: false, error: `brainVocabularyProposals[${i}].slotPosition: must be one of ${SLOT_POSITIONS.join(", ")}.` };
+      }
+      if (p.fromNorm === "" || p.toNorm === "") {
+        return { ok: false, error: `brainVocabularyProposals[${i}]: neither norm may be empty — an empty key joins every other degenerate row.` };
+      }
+      if (p.fromNorm === p.toNorm) {
+        return { ok: false, error: `brainVocabularyProposals[${i}]: 'fromNorm' and 'toNorm' are both "${p.fromNorm}" — the table's not-self CHECK refuses it.` };
+      }
+      // Norm discipline, on `brainVocabularyEdges`' reasoning verbatim: the
+      // proposal table stores lexical norms, this path carries values verbatim
+      // rather than rewriting another region's row, and a stored non-norm is a
+      // pair identity that can never match the producer's re-emission — which
+      // would defeat the rejection memory the section exists to carry.
+      for (const [side, raw] of [
+        ["fromNorm", p.fromNorm],
+        ["toNorm", p.toNorm],
+      ] as const) {
+        const normed = lexicalNorm(raw);
+        if (normed !== raw) {
+          return { ok: false, error: `brainVocabularyProposals[${i}].${side}: "${raw}" is not a lexical norm (it normalizes to "${normed}"). Re-export from a region running #5023 or later.` };
+        }
+      }
+      if (typeof p.directed !== "boolean") {
+        return { ok: false, error: `brainVocabularyProposals[${i}].directed: must be a boolean.` };
+      }
+      if (typeof p.sourceClass !== "string" || !VOCABULARY_PROPOSAL_SOURCE_CLASSES.includes(p.sourceClass as (typeof VOCABULARY_PROPOSAL_SOURCE_CLASSES)[number])) {
+        return { ok: false, error: `brainVocabularyProposals[${i}].sourceClass: must be one of ${VOCABULARY_PROPOSAL_SOURCE_CLASSES.join(", ")}.` };
+      }
+      if (typeof p.confidence !== "number" || Number.isNaN(p.confidence) || p.confidence < 0 || p.confidence > 1) {
+        return { ok: false, error: `brainVocabularyProposals[${i}].confidence: must be a number in [0, 1].` };
+      }
+      // `applying` is refused HERE even though the exporter filters it: it is a
+      // claim token for a transaction in another region, and importing it would
+      // land a row the destination's decide path believes it owns.
+      if (typeof p.status !== "string" || !VOCABULARY_PROPOSAL_WIRE_STATUSES.includes(p.status as (typeof VOCABULARY_PROPOSAL_WIRE_STATUSES)[number])) {
+        return { ok: false, error: `brainVocabularyProposals[${i}].status: must be one of ${VOCABULARY_PROPOSAL_WIRE_STATUSES.join(", ")} ('applying' is a region-local claim state and never travels).` };
+      }
+      if (typeof p.proposedBy !== "string" || p.proposedBy === "") {
+        return { ok: false, error: `brainVocabularyProposals[${i}].proposedBy: must be a non-empty string — every proposal has an author.` };
+      }
+      // Present-and-nullable, on `brainVocabularyEdges.approvedBy`'s reasoning:
+      // `null` MEANS "machine decision", so an omission tolerated as null would
+      // silently claim one on the column an audit of a re-key reads first.
+      if (!("reviewedBy" in p) || (p.reviewedBy !== null && typeof p.reviewedBy !== "string")) {
+        return { ok: false, error: `brainVocabularyProposals[${i}].reviewedBy: must be present, and a string or null (null is a machine decision — omitting it would silently claim one).` };
+      }
+      const tsError = missingTimestamps(p, ["proposedAt"]);
+      if (tsError) return { ok: false, error: `brainVocabularyProposals[${i}].${tsError}` };
+      if (p.reviewedAt !== null && p.reviewedAt !== undefined) {
+        if (typeof p.reviewedAt !== "string" || Number.isNaN(Date.parse(p.reviewedAt))) {
+          return { ok: false, error: `brainVocabularyProposals[${i}].reviewedAt: must be a parseable ISO-8601 timestamp or null.` };
+        }
+      }
+    }
+  }
+
+  // --- Canonical-predicate cardinality decisions (#5027, exported by #5113) ---
+  if ("brainPredicateCardinalities" in obj && obj.brainPredicateCardinalities !== undefined) {
+    if (!Array.isArray(obj.brainPredicateCardinalities)) {
+      return { ok: false, error: "Invalid 'brainPredicateCardinalities' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainPredicateCardinalities.length; i++) {
+      const c = obj.brainPredicateCardinalities[i] as Record<string, unknown> | null;
+      if (!c || typeof c !== "object" || typeof c.predicateKey !== "string" || c.predicateKey === "") {
+        return { ok: false, error: `brainPredicateCardinalities[${i}].predicateKey: must be a non-empty string — a degenerate key would file every unkeyable predicate under one supersession license.` };
+      }
+      // A predicate key is `alias(lexicalNorm(surface))` and an alias target is
+      // itself a norm, so a key that is not one can never match any fact's
+      // `predicate_key` — a `single` entry that fires on nothing, or worse, a
+      // rejected row that blocks nothing.
+      {
+        const normed = lexicalNorm(c.predicateKey);
+        if (normed !== c.predicateKey) {
+          return { ok: false, error: `brainPredicateCardinalities[${i}].predicateKey: "${c.predicateKey}" is not a lexical norm (it normalizes to "${normed}"). Cardinality entries key on canonical predicates, which are norms.` };
+        }
+      }
+      if (typeof c.cardinality !== "string" || !PREDICATE_CARDINALITY_VALUES.includes(c.cardinality as (typeof PREDICATE_CARDINALITY_VALUES)[number])) {
+        return { ok: false, error: `brainPredicateCardinalities[${i}].cardinality: must be one of ${PREDICATE_CARDINALITY_VALUES.join(", ")}.` };
+      }
+      if (typeof c.status !== "string" || !PREDICATE_CARDINALITY_STATUSES.includes(c.status as (typeof PREDICATE_CARDINALITY_STATUSES)[number])) {
+        return { ok: false, error: `brainPredicateCardinalities[${i}].status: must be one of ${PREDICATE_CARDINALITY_STATUSES.join(", ")}.` };
+      }
+      if (typeof c.sourceClass !== "string" || !PREDICATE_CARDINALITY_SOURCE_CLASSES.includes(c.sourceClass as (typeof PREDICATE_CARDINALITY_SOURCE_CLASSES)[number])) {
+        return { ok: false, error: `brainPredicateCardinalities[${i}].sourceClass: must be one of ${PREDICATE_CARDINALITY_SOURCE_CLASSES.join(", ")}.` };
+      }
+      if (typeof c.proposedBy !== "string" || c.proposedBy === "") {
+        return { ok: false, error: `brainPredicateCardinalities[${i}].proposedBy: must be a non-empty string — the table's CHECK refuses an unattributed row.` };
+      }
+      if (!("reviewedBy" in c) || (c.reviewedBy !== null && typeof c.reviewedBy !== "string")) {
+        return { ok: false, error: `brainPredicateCardinalities[${i}].reviewedBy: must be present, and a string or null (null is a machine decision — omitting it would silently claim one).` };
+      }
+      const tsError = missingTimestamps(c, ["proposedAt"]);
+      if (tsError) return { ok: false, error: `brainPredicateCardinalities[${i}].${tsError}` };
+      if (c.reviewedAt !== null && c.reviewedAt !== undefined) {
+        if (typeof c.reviewedAt !== "string" || Number.isNaN(Date.parse(c.reviewedAt))) {
+          return { ok: false, error: `brainPredicateCardinalities[${i}].reviewedAt: must be a parseable ISO-8601 timestamp or null.` };
+        }
+      }
+    }
+  }
+
   return { ok: true, bundle: obj as unknown as ExportBundle };
 }
 
@@ -1266,6 +1401,23 @@ const ImportResultSchema = z.object({
   // hold one warehouse row — there is no contradictory decision to refuse.
   brainEntities: z.object({ imported: z.number(), skipped: z.number() }),
   brainActorIdentities: z.object({ imported: z.number(), skipped: z.number() }),
+  // Three counters, on `brainVocabularyEdges`' reasoning (#5113): two regions
+  // can hold CONTRADICTORY human decisions about one pair, so the import has an
+  // outcome that is not "already here". `refused` = a decided arriving row that
+  // contradicts a decided destination row — kept out, logged, never overwritten.
+  brainVocabularyProposals: z.object({
+    imported: z.number(),
+    skipped: z.number(),
+    refused: z.number(),
+  }),
+  // Three counters; `refused` additionally covers the re-canonicalization arm:
+  // an entry whose predicate the destination's post-merge closure aliases onto
+  // a different norm is refused outright rather than silently re-keyed (#5113).
+  brainPredicateCardinalities: z.object({
+    imported: z.number(),
+    skipped: z.number(),
+    refused: z.number(),
+  }),
 });
 
 /**
@@ -1360,6 +1512,8 @@ const importRoute = createRoute({
                 brainEnrollments: z.number().optional(),
                 brainEntities: z.number().optional(),
                 brainActorIdentities: z.number().optional(),
+                brainVocabularyProposals: z.number().optional(),
+                brainPredicateCardinalities: z.number().optional(),
               }),
             }),
             conversations: z.array(z.unknown()),
@@ -1399,6 +1553,14 @@ const importRoute = createRoute({
             // designed behaviour.
             brainEntities: z.array(z.unknown()).optional(),
             brainActorIdentities: z.array(z.unknown()).optional(),
+            // The alias queue's rejection memory + canonical-predicate
+            // cardinality (#5113). Undeclared, `strip` drops both sections
+            // before the importer runs — and the loss is the quiet kind these
+            // sections exist to prevent: the destination's producer re-proposes
+            // what a human removed, and for a warehouse-derived entity edge
+            // AUTO-APPROVES it (#4507).
+            brainVocabularyProposals: z.array(z.unknown()).optional(),
+            brainPredicateCardinalities: z.array(z.unknown()).optional(),
           }),
         },
       },
@@ -2008,6 +2170,8 @@ export async function importBundle(
     brainEnrollments: { imported: 0, skipped: 0, namingDropped: 0, namingApplied: 0 },
     brainEntities: { imported: 0, skipped: 0 },
     brainActorIdentities: { imported: 0, skipped: 0 },
+    brainVocabularyProposals: { imported: 0, skipped: 0, refused: 0 },
+    brainPredicateCardinalities: { imported: 0, skipped: 0, refused: 0 },
   };
 
   // --- 1. Conversations + Messages ---
@@ -2495,6 +2659,326 @@ export async function importBundle(
       reason: refusal.message,
     }));
 
+  // --- 9a. The alias queue + its permanent rejection memory (#5023, #5113) ---
+  //
+  // AFTER the edge merge and BESIDE it deliberately: this is memory ABOUT the
+  // edges, and the `rejected` rows are the state that stops a producer
+  // re-writing what a human removed — lost, a warehouse-derived entity pair is
+  // re-proposed at the destination and AUTO-APPROVES (#4507 across a region
+  // boundary).
+  //
+  // Restored INLINE rather than delegated the way the edges are, and the
+  // contrast is `brainEnrollments`' argument one section over: an arriving edge
+  // must be screened by the four `approveAliasEdge` rules that would drift if
+  // spelled twice, so it earns `mergeApprovedEdges`. A proposal row has no
+  // closure to rebuild and no forest invariant to hold — its whole merge is
+  // decided by the pair's unique slot (`uq_brain_vocabulary_proposal_pair`) and
+  // the status lattice below.
+  //
+  // MERGE RULE, keyed on the UNORDERED pair (the table's own identity, so a
+  // producer cannot route around a rejection by emitting the pair reversed):
+  //
+  //   - pair absent here          → INSERT verbatim (imported)
+  //   - same status both sides    → skipped (idempotent re-import)
+  //   - arriving DECIDED over a destination `pending` → the decision lands
+  //     (imported): a decision outranks a queue entry, and the rejected arm is
+  //     the one that closes #4507. Only status/reviewedBy/reviewedAt move —
+  //     the destination row keeps its own proposer and direction, on
+  //     `enrolledBy`'s no-re-attribution rule.
+  //   - arriving `pending` over a destination decision → skipped: the queue
+  //     entry re-derives and the decision already stands.
+  //   - two CONTRADICTORY decisions → REFUSED: the destination's human
+  //     decision is kept, on `mergeApprovedEdges`' destination-wins reasoning,
+  //     and the arriving decision is logged with enough of the source row to
+  //     re-author it. Surfaced, never silently overwritten.
+  //
+  // ⚠️ The edge merge above deliberately does NOT consult this memory (#5036's
+  // scope), so a source-approved edge over a destination-REJECTED pair still
+  // lands in section 9 while the arriving `approved` proposal is refused here.
+  // The refusal line is what surfaces that tension; `removeAliasEdge` is the
+  // destination admin's remedy, and re-ordering the two sections would not
+  // remove it — it would only decide it silently in the other direction.
+  //
+  // ⚠️ The MIRROR direction exists too: an arriving `approved` proposal can
+  // land over a destination `pending` here while `mergeApprovedEdges` refused
+  // its edge (cycle / second parent). The pair's unique slot then holds an
+  // `approved` row with no in-force edge, and the QUEUE cannot re-establish
+  // the alias — a re-proposal meets the already-approved row. Not silent: the
+  // edge refusal is surfaced with persisted `refusalDetails`, and
+  // `authorAliasEdge` (which bypasses the queue) is the remedy there.
+  //
+  // ⚠️ THE LOCK IS TAKEN FOR THESE TWO SECTIONS TOO, on section 10's "taken for
+  // the READ" reasoning. Section 9 acquires it only when the bundle carries
+  // EDGES, and a bundle can carry proposals or cardinality entries with none.
+  // Unlocked, two races open: (a) every other writer to the proposal table
+  // (`proposeAliasEdge`, the decide seam) runs under this lock, so an unlocked
+  // SELECT-then-INSERT here can 23505 against a concurrent proposer and take
+  // the whole import with it; (b) the cardinality screen below reads the
+  // predicate CLOSURE, and a concurrent `decideAliasProposal` approval rebuilds
+  // that closure mid-read — the screen would then judge an entry against a
+  // vocabulary this region no longer holds. `pg_advisory_xact_lock` is
+  // re-entrant, so this costs nothing when section 9 already took it.
+  if (
+    (bundle.brainVocabularyProposals ?? []).length > 0 ||
+    (bundle.brainPredicateCardinalities ?? []).length > 0
+  ) {
+    await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, orgId]);
+  }
+  for (const proposal of bundle.brainVocabularyProposals ?? []) {
+    const existing = await client.query(
+      `SELECT id, status FROM brain_vocabulary_proposal
+        WHERE workspace_id = $1 AND slot_position = $2
+          AND pair_low = LEAST($3, $4) AND pair_high = GREATEST($3, $4)`,
+      [orgId, proposal.slotPosition, proposal.fromNorm, proposal.toNorm],
+    );
+    const held = existing.rows[0] as { id: string; status: string } | undefined;
+    if (held === undefined) {
+      await client.query(
+        `INSERT INTO brain_vocabulary_proposal
+           (id, workspace_id, slot_position, from_norm, to_norm, directed, source_class,
+            confidence, status, proposed_by, proposed_at, reviewed_by, reviewed_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [
+          crypto.randomUUID(),
+          orgId,
+          proposal.slotPosition,
+          proposal.fromNorm,
+          proposal.toNorm,
+          proposal.directed,
+          proposal.sourceClass,
+          proposal.confidence,
+          proposal.status,
+          proposal.proposedBy,
+          // Verbatim, never re-stamped — the dates say when the SOURCE region
+          // proposed and reviewed, and a destination re-stamping them would
+          // assert readings it never took (`brain_actor_identity`'s rule).
+          proposal.proposedAt,
+          proposal.reviewedBy,
+          proposal.reviewedAt,
+        ],
+      );
+      result.brainVocabularyProposals.imported++;
+    } else if (held.status === proposal.status) {
+      result.brainVocabularyProposals.skipped++;
+    } else if (held.status === "pending" && isDecidedStatus(proposal.status)) {
+      const applied = await client.query(
+        `UPDATE brain_vocabulary_proposal
+            SET status = $2, reviewed_by = $3, reviewed_at = $4
+          WHERE id = $1 AND workspace_id = $5 AND status = 'pending'`,
+        [held.id, proposal.status, proposal.reviewedBy, proposal.reviewedAt, orgId],
+      );
+      // The status predicate re-checks under the lock; zero rows means the row
+      // changed between the SELECT and here (the enrollments section's
+      // concurrent-change arm, one table over). Counted `refused` and warned —
+      // an `imported` that wrote nothing would report a decision as landed.
+      if ((applied.rowCount ?? 0) > 0) {
+        result.brainVocabularyProposals.imported++;
+      } else {
+        result.brainVocabularyProposals.refused++;
+        log.warn(
+          { orgId, correlationId, slotPosition: proposal.slotPosition, fromNorm: proposal.fromNorm, toNorm: proposal.toNorm, arrivingStatus: proposal.status },
+          "Region import: the arriving vocabulary-proposal decision matched no pending row to update — it was decided concurrently. The source decision is NOT applied; re-author it here if it is the right one",
+        );
+      }
+    } else if (proposal.status === "pending") {
+      result.brainVocabularyProposals.skipped++;
+    } else {
+      result.brainVocabularyProposals.refused++;
+      log.warn(
+        {
+          orgId,
+          correlationId,
+          slotPosition: proposal.slotPosition,
+          fromNorm: proposal.fromNorm,
+          toNorm: proposal.toNorm,
+          arrivingStatus: proposal.status,
+          existingStatus: held.status,
+          reviewedBy: proposal.reviewedBy,
+          reviewedAt: proposal.reviewedAt,
+        },
+        // FUTURE tense, on the vocabulary merge's reasoning exactly: this runs
+        // inside the import transaction, and a rollback means nothing was
+        // dropped because nothing was applied.
+        "Region import WILL DROP an arriving vocabulary-proposal decision when this transaction " +
+          "commits — this region's own human decision for the pair contradicts it and is kept. " +
+          "Re-author it here if the source region's reading is the right one",
+      );
+    }
+  }
+
+  // --- 9a-ii. Canonical-predicate cardinality decisions (#5027, #5113) ---
+  //
+  // AFTER the edge merge, and the ordering is the section's whole safety
+  // argument: the key screen below reads the destination's POST-MERGE
+  // predicate closure, so an entry is judged against the vocabulary this
+  // region will actually hold — not the one it held before the source's edges
+  // landed.
+  //
+  // ⚠️ THE RE-CANONICALIZATION SCREEN is the arm the old `stays` deferral
+  // existed for. `predicate_key` is `alias(lexicalNorm(surface))` UNDER THE
+  // SOURCE'S vocabulary; if THIS region's closure aliases that norm onto a
+  // different target, the arriving entry names a slot this region files
+  // elsewhere. Landing it verbatim would leave a `single` license on a key no
+  // fact here carries (silent), and RE-KEYING it onto the destination's target
+  // would make an unrelated slot destructively supersedable with no preview —
+  // the direction bundle-scope.ts calls the one that is not affordable. So it
+  // is REFUSED, per row, visibly: counted, and logged with the key both ways.
+  // Re-authoring at the destination (where a human can see both norms) is the
+  // remedy, and under-supersession until then is the recoverable direction.
+  for (const entry of bundle.brainPredicateCardinalities ?? []) {
+    const closure = await client.query(
+      `SELECT effective_target FROM brain_vocabulary_target
+        WHERE workspace_id = $1 AND slot_position = 'predicate' AND norm = $2`,
+      [orgId, entry.predicateKey],
+    );
+    const reKeyedTo = (closure.rows[0] as { effective_target: string } | undefined)
+      ?.effective_target;
+    if (reKeyedTo !== undefined) {
+      // A closure row exists only for a norm aliased AWAY (`not_self` CHECK),
+      // so its presence IS the disagreement — no comparison needed.
+      result.brainPredicateCardinalities.refused++;
+      log.warn(
+        {
+          orgId,
+          correlationId,
+          predicateKey: entry.predicateKey,
+          canonicalHere: reKeyedTo,
+          cardinality: entry.cardinality,
+          status: entry.status,
+          reviewedBy: entry.reviewedBy,
+        },
+        "Region import WILL DROP an arriving predicate-cardinality entry when this transaction " +
+          "commits — this region's vocabulary canonicalizes its predicate onto a different norm, " +
+          "and re-keying it silently would license supersession on a slot no human curated. " +
+          "Re-author the decision here against the canonical predicate this region holds",
+      );
+      continue;
+    }
+    const existing = await client.query(
+      `SELECT status, cardinality FROM brain_predicate_cardinality
+        WHERE workspace_id = $1 AND predicate_key = $2`,
+      [orgId, entry.predicateKey],
+    );
+    const held = existing.rows[0] as { status: string; cardinality: string } | undefined;
+    if (held === undefined) {
+      // `ON CONFLICT DO NOTHING` + RETURNING rather than a bare INSERT: the
+      // table's OWN writers (`proposeSingleCardinality`, the authoring upsert)
+      // are atomic single statements that take no advisory lock, so the
+      // vocabulary lock above does not serialize them — a concurrent proposer
+      // can take the key's only slot between the SELECT and here, and a bare
+      // INSERT would then 23505 the whole import. Zero rows is that race:
+      // counted `refused` and warned (destination-wins, like every conflict in
+      // this section), never retried blind.
+      const inserted = await client.query(
+        `INSERT INTO brain_predicate_cardinality
+           (workspace_id, predicate_key, cardinality, status, source_class,
+            proposed_by, proposed_at, reviewed_by, reviewed_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (workspace_id, predicate_key) DO NOTHING
+         RETURNING 1 AS inserted`,
+        [
+          orgId,
+          entry.predicateKey,
+          entry.cardinality,
+          entry.status,
+          entry.sourceClass,
+          entry.proposedBy,
+          entry.proposedAt,
+          entry.reviewedBy,
+          entry.reviewedAt,
+        ],
+      );
+      if (inserted.rows.length > 0) {
+        result.brainPredicateCardinalities.imported++;
+      } else {
+        // The concurrent row decides the outcome the way a pre-held row would
+        // have: an IDENTICAL decision (same status, and same value or both
+        // rejected) is the skip arm arriving late, and counting it `refused`
+        // would report a human conflict where there is agreement — the
+        // reconciliation still balances either way, but `refused` is the
+        // counter an operator acts on. Anything else stays destination-wins,
+        // refused and warned; the racy arm deliberately does NOT re-enter the
+        // decision-over-pending lattice, because a concurrent `pending` row's
+        // proposer is actively working the key right now and destination-wins
+        // is the direction that never overwrites a human mid-decision.
+        const raced = await client.query(
+          `SELECT status, cardinality FROM brain_predicate_cardinality
+            WHERE workspace_id = $1 AND predicate_key = $2`,
+          [orgId, entry.predicateKey],
+        );
+        const racedHeld = raced.rows[0] as { status: string; cardinality: string } | undefined;
+        if (
+          racedHeld !== undefined &&
+          racedHeld.status === entry.status &&
+          (racedHeld.cardinality === entry.cardinality || racedHeld.status === "rejected")
+        ) {
+          result.brainPredicateCardinalities.skipped++;
+        } else {
+          result.brainPredicateCardinalities.refused++;
+          log.warn(
+            {
+              orgId,
+              correlationId,
+              predicateKey: entry.predicateKey,
+              arrivingStatus: entry.status,
+              existingStatus: racedHeld?.status ?? null,
+              existingCardinality: racedHeld?.cardinality ?? null,
+            },
+            "Region import: a predicate-cardinality entry appeared concurrently while importing this one — this region's row is kept and the arriving entry is NOT applied; re-author it here if it is the right one",
+          );
+        }
+      }
+    } else if (
+      held.status === entry.status &&
+      // Two REJECTED rows agree in effect whatever value each declined: the
+      // memory — a rejection occupying the key's only slot — is identical.
+      (held.cardinality === entry.cardinality || held.status === "rejected")
+    ) {
+      result.brainPredicateCardinalities.skipped++;
+    } else if (held.status === "pending" && isDecidedStatus(entry.status)) {
+      // A decision outranks a queue entry. The value moves WITH the decision —
+      // an approval of `single` over a pending `multi` is an approval of
+      // `single` — but the destination row keeps its own proposer, on
+      // `enrolledBy`'s no-re-attribution rule. The status predicate re-checks
+      // under the statement's own snapshot (`decidePredicateCardinality`'s
+      // shape); zero rows is a concurrent decision, counted and warned.
+      const applied = await client.query(
+        `UPDATE brain_predicate_cardinality
+            SET cardinality = $3, status = $4, reviewed_by = $5, reviewed_at = $6
+          WHERE workspace_id = $1 AND predicate_key = $2 AND status = 'pending'`,
+        [orgId, entry.predicateKey, entry.cardinality, entry.status, entry.reviewedBy, entry.reviewedAt],
+      );
+      if ((applied.rowCount ?? 0) > 0) {
+        result.brainPredicateCardinalities.imported++;
+      } else {
+        result.brainPredicateCardinalities.refused++;
+        log.warn(
+          { orgId, correlationId, predicateKey: entry.predicateKey, arrivingStatus: entry.status },
+          "Region import: the arriving predicate-cardinality decision matched no pending row to update — it was decided concurrently. The source decision is NOT applied; re-author it here if it is the right one",
+        );
+      }
+    } else if (entry.status === "pending") {
+      result.brainPredicateCardinalities.skipped++;
+    } else {
+      result.brainPredicateCardinalities.refused++;
+      log.warn(
+        {
+          orgId,
+          correlationId,
+          predicateKey: entry.predicateKey,
+          arrivingStatus: entry.status,
+          arrivingCardinality: entry.cardinality,
+          existingStatus: held.status,
+          existingCardinality: held.cardinality,
+          reviewedBy: entry.reviewedBy,
+        },
+        "Region import WILL DROP an arriving predicate-cardinality decision when this transaction " +
+          "commits — this region's own human decision for the predicate contradicts it and is " +
+          "kept. Re-author it here if the source region's reading is the right one",
+      );
+    }
+  }
+
   // --- 9b. The Slack ingest-scope narrowings (#5203) ---
   // Written BEFORE the episodes below, and that ordering is load-bearing: the
   // destination's first sync resolves scope from this table, and an exclusion
@@ -2791,9 +3275,10 @@ export async function importBundle(
   // the bundle imports clean, every count reads fine, and every migrated claim
   // comes out `opaque` — a workspace that could name its authors before the
   // cutover cannot afterwards, with no error anywhere. ADR-0036 §T5's amendment
-  // decided snapshots travel for exactly that reason. (Evidence the enumeration
-  // does drift: `brain_predicate_cardinality` is absent from this file today —
-  // deliberately, per its `bundle-scope.ts` entry, but nothing here says so.)
+  // decided snapshots travel for exactly that reason. (The evidence this
+  // comment used to cite — `brain_predicate_cardinality`, absent from this file
+  // under a recorded deferral — has since been closed: #5113 wires it in
+  // section 9a-ii above.)
   //
   // Ordered BEFORE the facts below, and unlike the entity store's ordering note
   // this one is not merely for a reader: nothing enforces it with an FK — the

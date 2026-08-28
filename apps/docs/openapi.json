@@ -63001,6 +63001,12 @@
                           },
                           "brainActorIdentities": {
                             "type": "number"
+                          },
+                          "brainVocabularyProposals": {
+                            "type": "number"
+                          },
+                          "brainPredicateCardinalities": {
+                            "type": "number"
                           }
                         },
                         "required": [
@@ -63081,6 +63087,14 @@
                     "items": {}
                   },
                   "brainActorIdentities": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "brainVocabularyProposals": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "brainPredicateCardinalities": {
                     "type": "array",
                     "items": {}
                   }
@@ -63424,6 +63438,44 @@
                         "imported",
                         "skipped"
                       ]
+                    },
+                    "brainVocabularyProposals": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        },
+                        "refused": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped",
+                        "refused"
+                      ]
+                    },
+                    "brainPredicateCardinalities": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        },
+                        "refused": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped",
+                        "refused"
+                      ]
                     }
                   },
                   "required": [
@@ -63443,7 +63495,9 @@
                     "brainSlackChannelExclusions",
                     "brainEnrollments",
                     "brainEntities",
-                    "brainActorIdentities"
+                    "brainActorIdentities",
+                    "brainVocabularyProposals",
+                    "brainPredicateCardinalities"
                   ]
                 }
               }

@@ -265,6 +265,8 @@ describe("migration types", () => {
       // satisfied by another's counters.
       brainEntities: { imported: 7, skipped: 3 },
       brainActorIdentities: { imported: 9, skipped: 4 },
+      brainVocabularyProposals: { imported: 2, skipped: 1, refused: 1 },
+      brainPredicateCardinalities: { imported: 3, skipped: 0, refused: 2 },
     };
 
     expect(result.conversations.imported + result.conversations.skipped).toBe(7);

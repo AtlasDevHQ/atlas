@@ -134,6 +134,18 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     // migrated claim comes out `opaque`. And it carries an OPERATOR'S ERASURE
     // as a tombstone, which — dropped — the destination's first audience cycle
     // would silently undo.
+    //
+    // And again by #5113 with the vocabulary's OTHER two properties — the
+    // proposal queue's permanent rejection memory and the canonical-predicate
+    // cardinality entries. Both were recorded deferrals, not derived-data
+    // calls: each entry named its preconditions (#5035 keyed imported facts,
+    // #5036 specified the vocabulary merge), and both have landed. A
+    // `rejected` proposal is a human's decision that two norms are NOT the
+    // same slot — lost, a warehouse producer re-proposes the pair in the
+    // destination and AUTO-APPROVES it (#4507's failure); a cardinality entry
+    // is what licenses supersession at all. Merge rules live with the entries
+    // in bundle-scope.ts; the import refuses (never silently re-keys) an
+    // entry whose predicate the destination canonicalizes differently.
     expect([...EXPORTED_TABLES].toSorted()).toEqual([
       "agent_session_memory",
       "brain_actor_identity",
@@ -142,9 +154,11 @@ describe("bundle-scope drift tripwire (#4460)", () => {
       "brain_entity",
       "brain_episodes",
       "brain_facts",
+      "brain_predicate_cardinality",
       "brain_slack_channel",
       "brain_slack_ingest_scope",
       "brain_vocabulary_edge",
+      "brain_vocabulary_proposal",
       "conversations",
       "dashboard_cards",
       "dashboard_user_drafts",

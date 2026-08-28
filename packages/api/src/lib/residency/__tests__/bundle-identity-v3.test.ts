@@ -72,11 +72,11 @@ function stripComments(source: string): string {
  * result and passes `"subject_key"` as a log label; neither puts a key anywhere
  * a consumer can reach. A second SQL statement does.
  *
- * `granted` is the projection span the caller already validated, removed before
- * the sweep so the exception is subtracted exactly once.
+ * `granted` is the projection span(s) the caller already validated, removed
+ * before the sweep so each exception is subtracted exactly once.
  */
-function strayProjections(source: string, granted: string): string[] {
-  const rest = source.replace(granted, " ");
+function strayProjections(source: string, ...granted: string[]): string[] {
+  const rest = granted.reduce((acc, span) => acc.replace(span, " "), source);
   const spans = [
     ...rest.matchAll(/\bSELECT((?:(?!SELECT)[\s\S])*?)\bFROM\b/gi),
     ...rest.matchAll(/\bRETURNING\b([^`;]*)/gi),
@@ -172,8 +172,32 @@ describe("the v3 bundle carries exactly the identity ADR-0037 §8 grants (#5035)
     // Scoped to projections rather than to the whole file on purpose: the row
     // mapper legitimately READS `f.subject_key` off the result and passes
     // `"subject_key"` as a log label, and neither puts a key anywhere new.
-    // What §8 grants is one statement; what it does not grant is a second one.
-    expect(strayProjections(source, projection)).toEqual([]);
+    // What §8 grants is one statement; what it does not grant is an UNNAMED
+    // second one.
+    //
+    // ⚠️ #5113 added exactly one more NAMED grant: `brain_predicate_cardinality`
+    // rides the bundle, and its OWN key column is `predicate_key` — that is the
+    // entry's identity, not a fact key leaking onto the wire. The grant is as
+    // narrow as the original: the second statement is located by its FROM
+    // clause, asserted unique, and asserted to name predicate_key and NOTHING
+    // ELSE from the family — so a fact key smuggled through the cardinality
+    // query fails here exactly as it would anywhere else.
+    const cardinalityQueries = [
+      ...source.matchAll(/SELECT((?:(?!SELECT)[\s\S])*?)FROM brain_predicate_cardinality\b/gi),
+    ].map((m) => m[1]!);
+    expect(
+      cardinalityQueries.length,
+      "export.ts no longer contains exactly one `SELECT … FROM brain_predicate_cardinality` (#5113) — this pin grants that one statement its own key column and nothing else.",
+    ).toBe(1);
+    const cardinalityFamily = [
+      ...cardinalityQueries[0]!.matchAll(/\b(?:[a-z_]+\.)?([a-z_]+(?:_key|_cmp))\b/g),
+    ].map((m) => m[1]!);
+    expect(
+      cardinalityFamily,
+      "the cardinality export projection may name its own `predicate_key` and no other key- or cmp-shaped column — anything else is a fact key wearing the #5113 grant's coat.",
+    ).toEqual(["predicate_key"]);
+
+    expect(strayProjections(source, projection, cardinalityQueries[0]!)).toEqual([]);
   });
 
   it("binds the same five in the importer's INSERT, and drops predicate_cardinality", () => {

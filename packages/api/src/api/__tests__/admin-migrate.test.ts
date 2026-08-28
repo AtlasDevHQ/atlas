@@ -317,6 +317,8 @@ describe("bundle round-trip shape", () => {
       brainEnrollments: { imported: 3, skipped: 1, namingDropped: 2, namingApplied: 4 },
       brainEntities: { imported: 6, skipped: 2 },
       brainActorIdentities: { imported: 8, skipped: 3 },
+      brainVocabularyProposals: { imported: 2, skipped: 1, refused: 1 },
+      brainPredicateCardinalities: { imported: 3, skipped: 0, refused: 2 },
     };
 
     const total = (r: { imported: number; skipped: number }) => r.imported + r.skipped;

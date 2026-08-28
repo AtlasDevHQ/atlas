@@ -19,12 +19,13 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createPlatformRouter } from "./admin-router";
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
+  SCIMProvenance,
 } from "@atlas/api/lib/effect/services";
 import {
   hasInternalDB,
@@ -256,7 +257,7 @@ const purgeWorkspaceRoute = createRoute({
   path: "/workspaces/{id}/purge",
   tags: ["Platform Admin"],
   summary: "Purge workspace (GDPR hard delete)",
-  description: "SaaS only. Permanently removes ALL workspace data — conversations, messages, company-brain claims and episodes, knowledge-base documents, semantic layer, dashboards, integrations and their encrypted credentials, members, and orphaned users. Two deliberate exceptions: the admin action log is retained with its identifying columns scrubbed (counted separately as `adminActionLogAnonymized`), and pending Stripe teardown records are kept until they settle. The workspace must already be soft-deleted. This action is irreversible. Check `complete` — when false, `skippedTables` names the work that did not run (relations absent from this region, plus the deletes and writes gated behind them). For a skipped DELETE that data was NOT deleted; for a skipped WRITE the consequence is different, so read `message`, which names it per entry.",
+  description: "SaaS only. Permanently removes ALL workspace data — conversations, messages, company-brain claims and episodes, knowledge-base documents, semantic layer, dashboards, integrations and their encrypted credentials, the SCIM directory-sync catalog (connections, credentials, provisioned-user projections, groups), members, and orphaned users. Two deliberate exceptions: the admin action log is retained with its identifying columns scrubbed (counted separately as `adminActionLogAnonymized`), and pending Stripe teardown records are kept until they settle. The workspace must already be soft-deleted. This action is irreversible. Check `complete` — when false, `skippedTables` names the work that did not run (relations absent from this region, plus the deletes and writes gated behind them). For a skipped DELETE that data was NOT deleted; for a skipped WRITE the consequence is different, so read `message`, which names it per entry.",
   responses: {
     200: {
       description: "Workspace purged",
@@ -823,6 +824,62 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       }, 409);
     }
 
+    // SCIM decommission BEFORE the purge cascade (#5515): the 1.7 catalog's
+    // teardown is a LIFECYCLE, not a DELETE — `decommissionSCIMManagedConnection`
+    // reconciles the users the connection provisioned (releasing anyone who
+    // survives in another workspace from this connection's management) with a
+    // cursor and a lease, and a raw DELETE past it would skip that
+    // reconciliation silently (see `deleteConnection` in ee/src/auth/scim.ts).
+    // So the purge COMPOSES with it: each active connection is decommissioned
+    // through the plugin here, and `hardDeleteWorkspace`'s domain-keyed scim*
+    // DELETEs below are the completeness guarantee that removes what the
+    // lifecycle deliberately keeps for audit (the connection rows, events and
+    // tombstones), plus everything on a deploy where this step failed.
+    //
+    // Failures are warnings, not aborts, and — unlike Stripe's — they do NOT
+    // flip `complete` to false: a billing warning means data SURVIVES remotely,
+    // while a decommission failure leaves nothing behind, because the
+    // transaction below deletes every scim* row for the domain regardless. The
+    // warning is operational ("the IdP-side lifecycle didn't run cleanly"),
+    // not an erasure qualifier.
+    //
+    // On non-enterprise deploys the Noop layer answers `available: false` and
+    // this whole block is a no-op.
+    const scim = yield* SCIMProvenance;
+    const scimWarnings: string[] = [];
+    if (scim.available) {
+      const scimConnections = yield* scim.listConnections(workspaceId).pipe(
+        Effect.catchAllCause((cause) => {
+          const err = Cause.squash(cause);
+          scimWarnings.push(
+            "Could not list SCIM connections for pre-purge decommission: " +
+              `${err instanceof Error ? err.message : String(err)}. Their rows are still ` +
+              "deleted by the purge transaction.",
+          );
+          return Effect.succeed([]);
+        }),
+      );
+      for (const connection of scimConnections) {
+        yield* scim.deleteConnection(workspaceId, connection.id).pipe(
+          Effect.catchAllCause((cause) => {
+            const err = Cause.squash(cause);
+            scimWarnings.push(
+              `SCIM connection ${connection.id} could not be decommissioned through the ` +
+                `plugin lifecycle: ${err instanceof Error ? err.message : String(err)}. ` +
+                "Its rows are still deleted by the purge transaction.",
+            );
+            return Effect.succeed(false);
+          }),
+        );
+      }
+      if (scimWarnings.length > 0) {
+        log.warn(
+          { workspaceId, requestId, scimWarnings },
+          "SCIM pre-purge decommission did not complete cleanly — the purge cascade still removes every scim* row for this workspace",
+        );
+      }
+    }
+
     // Stripe teardown BEFORE the purge cascade (#3425): the cascade
     // destroys the organization row carrying the plugin-owned
     // stripeCustomerId (#3417), so the customer must be deleted while the
@@ -973,6 +1030,7 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
         adminActionLogAnonymized,
         skippedTables,
         ...stripeAuditMetadata(billing),
+        ...(scimWarnings.length > 0 ? { scimWarnings } : {}),
       },
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     });
@@ -1016,7 +1074,13 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       // missed, and the wire schema is a plain array.
       skippedTables: [...skippedTables],
       complete: !incomplete,
-      ...withWarnings(billing),
+      // Billing warnings + SCIM decommission warnings ride the same field.
+      // Only the billing ones drive `incomplete` (see the flag above): a
+      // billing warning means data survives remotely, a SCIM one only that the
+      // plugin lifecycle was skipped for rows the transaction deleted anyway.
+      ...(billing.warnings.length > 0 || scimWarnings.length > 0
+        ? { warnings: [...billing.warnings, ...scimWarnings] }
+        : {}),
     }, 200);
   }), {
     label: "purge workspace (GDPR)",

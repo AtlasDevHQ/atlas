@@ -47,6 +47,7 @@ import {
   PURGED_TABLES,
   RETAINED_TABLES,
   WORKSPACE_SCOPE_COLUMNS,
+  SCIM_PLUGIN_TABLES,
   type PurgeParentLink,
   type PurgeTableScope,
 } from "../purge-scope";
@@ -1004,15 +1005,39 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     // nothing both leave zero rows behind for a workspace that was never
     // seeded. Since exactly one row per table was seeded, every reported count
     // must be >= 1 — a 0 here means the DELETE ran against the wrong column.
+    //
+    // The scim* fields are the DERIVED exemption (#5515): those relations are
+    // plugin-owned (created by better-auth's schema-diff only where EE SCIM
+    // ran) and this fixture deliberately does not stand them up, so their
+    // counts are legitimately 0 here — the never-enabled arm, asserted
+    // complete-not-skipped by the test below. The seeded-class arm, where
+    // these counts must be non-zero, is `scim-purge-pg.test.ts`.
+    const scimCountFields: readonly string[] = SCIM_PLUGIN_TABLES;
     const zeroCounts = Object.entries(result.counts)
       .filter(([, n]) => n === 0)
-      .map(([field]) => field);
+      .map(([field]) => field)
+      .filter((field) => !scimCountFields.includes(field));
     expect(
       zeroCounts,
       `Purge reported 0 rows for: ${zeroCounts.join(", ")}. Every purged table was seeded ` +
         `with exactly one row, so a 0 means that DELETE matched nothing — most likely the ` +
         `wrong scope column (org_id vs workspace_id vs reference_id).`,
     ).toEqual([]);
+  });
+
+  it("treats a never-enabled scim catalog as COMPLETE, not as skipped work (#5515)", () => {
+    // The scim* relations do not exist in this fixture, which is the normal
+    // state of every deploy where EE SCIM never ran. That must read as
+    // "nothing to purge", NOT as region drift: a skippedTables entry here
+    // would flip `complete: false` on every self-hosted purge and make the
+    // one boolean on a DPA erasure receipt meaningless. The opposite state —
+    // a PRESENT catalog actually being emptied — is scim-purge-pg.test.ts.
+    for (const table of SCIM_PLUGIN_TABLES) {
+      expect(
+        result.skippedTables,
+        `${table} is absent because SCIM was never enabled — that is not skipped work`,
+      ).not.toContain(table);
+    }
   });
 
   it("does not touch the neighbouring workspace (blast radius)", async () => {

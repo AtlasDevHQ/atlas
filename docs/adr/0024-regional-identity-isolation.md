@@ -4,7 +4,7 @@
 **Date:** 2026-06-25
 **Milestone:** [v0.1.0 — Public Launch](https://github.com/AtlasDevHQ/atlas/milestone/74)
 **Issues:** [#3967](https://github.com/AtlasDevHQ/atlas/issues/3967) (residency-routing defect, v0.1.0 blocker), found by [#3943](https://github.com/AtlasDevHQ/atlas/issues/3943) (`/verify-prod-signup`)
-**See also:** [CONTEXT.md](../../CONTEXT.md) › "region" (Flagged ambiguities)
+**See also:** [Conversation scope](../contexts/conversation-scope/CONTEXT.md) › "region" (Flagged ambiguities)
 
 ## Context
 

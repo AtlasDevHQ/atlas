@@ -16,7 +16,7 @@ way: **the draft is the one home for private work — its data and its edits.**
 ## Decision 1 — the draft cache
 
 A draft card carries its **own cached data** (the *draft cache*, see
-`CONTEXT.md` § Dashboard editing). Executing a card while holding a draft —
+[Dashboard editing](../contexts/dashboard-editing/CONTEXT.md)). Executing a card while holding a draft —
 refresh, parameter change, retry, first load — reads and writes the draft
 cache, never the published card's cached data and never the shared Query
 Cache. The draft execution path is reachable for draft-only cards (the

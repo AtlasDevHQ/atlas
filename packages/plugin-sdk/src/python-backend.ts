@@ -23,6 +23,7 @@ import {
   type PluginPythonData,
   type PluginPythonOptions,
   type PluginPythonResult,
+  type PluginSandboxNetworkPolicy,
 } from "./types";
 
 /** Minimal logger surface (pino / PluginLogger compatible). */
@@ -159,6 +160,101 @@ export async function installPythonPackages(
   }
 }
 
+/**
+ * Assert that a provider sandbox object actually carries the method an egress
+ * bound is applied through, and throw an actionable upgrade hint when it does
+ * not.
+ *
+ * Shared rather than hand-rolled per plugin because the security property is in
+ * the *shape*, not the wording: this must throw. A provider guard that returned
+ * `false`, warned, or fell through would skip enforcement on exactly the
+ * deployment least likely to notice — an installed SDK older than the one the
+ * plugin was verified against. Single-sourcing it keeps that from drifting the
+ * way #5500's two hand-rolled not-found predicates already had.
+ */
+export function requireSandboxMethod(
+  sandbox: unknown,
+  method: string,
+  packageName: string,
+  minVersion: string,
+): void {
+  const holder = sandbox as Record<string, unknown> | null | undefined;
+  if (typeof holder?.[method] !== "function") {
+    throw new Error(
+      `the installed ${packageName} has no sandbox.${method}() — ` +
+        `upgrade ${packageName} to ${minVersion}`,
+    );
+  }
+}
+
+/**
+ * The subset of {@link PluginSandboxNetworkPolicy} a provider actually has to
+ * map. {@link enforcePythonEgress} resolves the other shapes away first, so a
+ * provider's mapping is total with no unreachable branch — and, in particular,
+ * has no path on which it can decide an empty allowlist means "allow".
+ */
+export type EnforceablePythonEgress =
+  | { readonly mode: "deny-all" }
+  | { readonly mode: "allowlist"; readonly hosts: readonly string[] };
+
+/**
+ * Narrow a freshly created sandbox's egress to the host's per-request policy,
+ * failing closed if the provider will not take it.
+ *
+ * **Call this after {@link installPythonPackages} and before the first user
+ * code runs.** That ordering is the whole reason a provider whose allowlist
+ * excludes PyPI can still install pandas — it is the same two-phase shape the
+ * in-tree Vercel backend uses (create wide, `pip install`, then lock down), and
+ * it matters more on Daytona, whose pre-approved essential-services lists are
+ * documented as *not* applying once a sandbox carries a custom allow list.
+ *
+ * **The throw is the point.** A provider that cannot apply the bound must not
+ * go on to run the agent's Python: `executePython` ships raw query-result rows,
+ * so a run with an unenforced egress policy is the exfiltration path the policy
+ * exists to close. Failing here surfaces as a named backend-start failure;
+ * proceeding would be a silent downgrade, which is exactly what declaring
+ * `pythonEgressControl: "enforced"` promises does not happen.
+ *
+ * **Only an explicit `allow-all` resolves to no call at all**, because it is the
+ * one policy that asks for no bound: the session is a fresh per-request sandbox
+ * that already starts unrestricted, so there is nothing to relax, and calling
+ * the provider anyway would invent a failure mode (Daytona's per-sandbox
+ * overrides need a Tier 3/4 organization) for a request that bounds nothing.
+ *
+ * Everything else fails closed, matching the host's own normalisation in
+ * `toPluginNetworkPolicy` — *"fail-closed on anything unrecognised … never
+ * allow-all"*:
+ * - an **absent** policy is `deny-all`, not "no bound". The in-tree host always
+ *   passes one, so this is latent — but a plugin declaring
+ *   `pythonEgressControl: "enforced"` declares it unconditionally, and a
+ *   third-party host that omits the field must not silently receive less than
+ *   the declaration promises. `toPluginNetworkPolicy` maps `null` the same way.
+ * - an **`allowlist` with no hosts** is `deny-all`, never allow-all.
+ */
+export async function enforcePythonEgress(
+  policy: PluginSandboxNetworkPolicy | undefined,
+  providerName: string,
+  apply: (policy: EnforceablePythonEgress) => Promise<void>,
+): Promise<void> {
+  if (policy?.mode === "allow-all") return;
+
+  const resolved: EnforceablePythonEgress =
+    policy?.mode === "allowlist" && policy.hosts.length > 0
+      ? { mode: "allowlist", hosts: policy.hosts }
+      : { mode: "deny-all" };
+
+  try {
+    await apply(resolved);
+  } catch (err) {
+    throw new Error(
+      `Failed to apply the ${providerName} Python sandbox egress policy (${resolved.mode}) — ` +
+        `refusing to run Python with an unenforced network bound: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+}
+
 /** Matches the in-tree backends' 1 MB rejection message verbatim. */
 const OUTPUT_TOO_LARGE_ERROR =
   "Python output exceeded 1 MB limit — reduce print() output or use _atlas_table for large results.";
@@ -212,7 +308,17 @@ export function createFileTransportPythonBackend(
     sessionPromise = null;
     if (!old) return;
     old
-      .then((session) => session.destroy())
+      .then(
+        (session) => session.destroy(),
+        () => {
+          // intentionally ignored: the session never came up, so there is
+          // nothing to tear down. `exec` already returns this same error to the
+          // caller; re-reporting it here as a *teardown* failure would
+          // misattribute it — and a fail-closed egress refusal is now a routine
+          // way for creation to fail, so that misattribution would be the first
+          // thing an operator saw.
+        },
+      )
       .catch((err: unknown) => {
         warn(
           `[${adapter.providerName}] Failed to destroy Python sandbox during cleanup: ${detailOf(err)}`,

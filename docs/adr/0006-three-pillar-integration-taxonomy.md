@@ -32,7 +32,7 @@ Two rules ride alongside the taxonomy:
 
 1. **One user-facing surface per pillar.** A given catalog row appears on exactly one admin page, determined by its pillar. The install **handler** (OAuth / Form / Static-bot per ADR-0003-adjacent install-models doc) is orthogonal — a Datasource can use OAuth (Salesforce), a Chat Platform can use Static-bot (Telegram). Pillar determines *where it appears*; handler determines *how credentials are obtained*. Conflating the two would put OAuth Datasources on the integrations page just because OAuth catalog cards live there today — that's an install-mechanism leak into user-facing taxonomy.
 
-2. **Multi-pillar systems carry multiple catalog rows.** GitHub-as-Action-Target ships as catalog slug `github` (Action Target pillar). A future GitHub-as-Datasource ships as `github-data` (Datasource pillar). Each row has its own install, its own credentials, its own disconnect. This extends the existing pattern from CONTEXT.md's "Multi-mode integrations" section (Linear-OAuth vs Linear-APIkey as separate rows): the rule generalizes to one catalog row per `(system, pillar, install_mode)`.
+2. **Multi-pillar systems carry multiple catalog rows.** GitHub-as-Action-Target ships as catalog slug `github` (Action Target pillar). A future GitHub-as-Datasource ships as `github-data` (Datasource pillar). Each row has its own install, its own credentials, its own disconnect. This extends the existing pattern from [Install models](../contexts/install-models/CONTEXT.md)'s "Multi-mode integrations" section (Linear-OAuth vs Linear-APIkey as separate rows): the rule generalizes to one catalog row per `(system, pillar, install_mode)`.
 
 ## Alternatives considered
 
@@ -82,8 +82,8 @@ One GitHub catalog row, `pillars: ["action", "datasource"]`, single install gran
 
 ## References
 
-- Pillar definitions: `CONTEXT.md` → "Pillars" section
-- One-surface-per-pillar rule: `CONTEXT.md` → "One user-facing surface per pillar"
-- Multi-pillar pattern: `CONTEXT.md` → "Multi-pillar systems"
+- Pillar definitions: [Pillars](../contexts/pillars/CONTEXT.md)
+- One-surface-per-pillar rule: [Pillars](../contexts/pillars/CONTEXT.md) → "One user-facing surface per pillar"
+- Multi-pillar pattern: [Install models](../contexts/install-models/CONTEXT.md) → "Multi-pillar systems"
 - Catalog wire shape today: `packages/api/src/api/routes/integrations.ts`, `packages/web/src/ui/lib/admin-schemas.ts` (`IntegrationsCatalogEntry`)
 - See [ADR-0007](./0007-unified-install-pipeline.md) for the install-pipeline unification that makes this taxonomy enforceable at the schema layer.

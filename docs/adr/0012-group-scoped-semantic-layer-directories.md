@@ -4,7 +4,7 @@
 **Date:** 2026-06-05
 **Builds on:** #2340 / #2412 (multi-environment semantic layer — `semantic_entities.connection_group_id`), [ADR-0011](./0011-unified-conversation-scope.md) (Connection group as the SQL-routing unit)
 **Design:** [docs/design/semantic-onboarding.md](../design/semantic-onboarding.md)
-**Glossary:** [CONTEXT.md § Semantic layer scoping](../../CONTEXT.md)
+**Glossary:** [Semantic layer scoping](../contexts/semantic-layer-scoping/CONTEXT.md)
 
 ## Context
 

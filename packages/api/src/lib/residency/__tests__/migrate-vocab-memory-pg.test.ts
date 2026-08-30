@@ -138,7 +138,13 @@ describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113
                'producer:correction', '2026-07-02T00:00:00Z', 'user-reviewer', '2026-07-03T00:00:00Z')`,
       [SOURCE_ORG],
     );
-  });
+    // Explicit budget: this hook runs the FULL migration set, which on a loaded
+    // CI runner takes longer than bun's 5s default hook timeout — the sibling
+    // roundtrip suite passes the same budget for the same reason. Without it the
+    // hook is killed mid-`runMigrations`, the in-flight migration then fails
+    // against the already-dropped scratch schema ("no schema has been selected
+    // to create in"), and the suite reports as a flake rather than a timeout.
+  }, PG_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
     if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;

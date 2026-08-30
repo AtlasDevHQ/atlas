@@ -245,6 +245,8 @@ When a workspace has a REST Datasource connected, the Python sandbox's **network
 | **Vercel Sandbox** | SaaS (`app.useatlas.dev`) | Denied by default; narrowed **per request** to **exactly the connected datasource's host(s)** | A prompt-injected request to any other host (`attacker.example.com`, an internal metadata endpoint, …) is blocked by the sandbox itself |
 | **Sidecar** | Self-hosted (Railway, Docker) | **No policy — the sandbox network is open** | The sidecar has no per-request network policy; outbound traffic from the sandbox is **not** restricted to the datasource host |
 | **nsjail** | Self-hosted (Docker/VM) | No network at all | nsjail blocks all egress |
+| **E2B / Daytona (BYOC, priority 0)** | Any (per-workspace connection) | Denied by default; narrowed **per request** to the connected datasource's host(s), on the org's **own** provider account | Same bound as the Vercel Sandbox, enforced by the provider. The plugin applies it after installing Python packages and before any agent code runs, and **fails the run** if the provider refuses it — see below |
+| **Railway (BYOC)** | Any (per-workspace connection) | **No policy — explore only** | Railway's egress question is unresolved, so the plugin ships no Python surface at all |
 
 ### SaaS (Vercel Sandbox) — bounded, per-request
 
@@ -257,8 +259,17 @@ On SaaS the per-request Firecracker microVM starts `deny-all` and is narrowed, *
 
 > **Why no in-sandbox authenticated client (yet).** A bounded, *authenticated* in-sandbox `AtlasRestClient` would let the agent loop over the upstream in code. But a network credential is injected per host and is **method-agnostic** — and untrusted agent code that can reach an HTTP client can issue any method — so an in-sandbox authenticated client cannot enforce "read-only in this release". That composition path is therefore deferred to a later slice that mediates read-only at a method-aware host-side point (pairs with the per-endpoint write allowlist). This slice ships only the network boundary.
 
+### BYOC plugin providers (E2B / Daytona) — the same bound, on the org's account
+
+A workspace that connects E2B or Daytona runs `executePython` at priority 0, on its **own** provider account. Those plugins apply the same per-request allowlist the Vercel Sandbox gets, through the provider's own primitive (`sandbox.updateNetwork` on E2B, `sandbox.updateNetworkSettings` on Daytona), and declare `pythonEgressControl: "enforced"` so the host does not log a gap. Two properties differ from the Vercel path and matter operationally:
+
+- **The bound is applied after the package install, not at sandbox creation.** The sandbox reaches PyPI while it is still wide, then narrows before any agent code runs — the same two-phase shape `python-sandbox.ts` uses. It is required on Daytona, whose pre-approved essential-services lists stop applying once a sandbox carries a custom allow list.
+- **A refused policy fails the run.** A Daytona **Tier 1/2** organization cannot set per-sandbox network overrides at all; an installed provider SDK older than the plugin's peer floor has no method to call. Either way `executePython` returns a named error rather than running in an unbounded sandbox. `explore` is unaffected.
+
+Providers that ship no Python surface (Railway today) are unchanged by this — their egress question is why they are explore-only.
+
 ### Self-hosted (Sidecar / nsjail) — the asymmetry
 
-> **Operator warning.** On self-hosted deployments that use the **sidecar**, the sandbox network is **open** — there is no `networkPolicy` equivalent. Atlas's per-request host allowlist only applies on the Vercel Sandbox. Outbound traffic from the self-hosted Python/explore sandbox is **not** restricted to the datasource host, so a self-hosted instance has a **larger exfiltration surface than SaaS**. To approximate the SaaS boundary, restrict the sidecar container's outbound networking at the platform layer (egress firewall / network policy). The `just-bash` dev fallback inherits the host environment and is never used for `executePython` (Python requires a real sandbox backend).
+> **Operator warning.** On self-hosted deployments that use the **sidecar**, the sandbox network is **open** — there is no `networkPolicy` equivalent, and Atlas's per-request host allowlist is not applied there. (It *is* applied on the Vercel Sandbox and on the E2B/Daytona BYOC providers; nsjail blocks egress outright.) Outbound traffic from the sidecar-backed Python/explore sandbox is **not** restricted to the datasource host, so such an instance has a **larger exfiltration surface than SaaS**. To approximate the SaaS boundary, restrict the sidecar container's outbound networking at the platform layer (egress firewall / network policy). The `just-bash` dev fallback inherits the host environment and is never used for `executePython` (Python requires a real sandbox backend).
 
 On every backend, the REST datasource's authenticated reads go through the host-side `executeRestOperation` tool — the credential and the read-only guard live server-side, outside any sandbox.

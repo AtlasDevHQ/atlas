@@ -573,6 +573,8 @@ sandbox: {
   // Required in spirit whenever createPython is present. Omitted is treated
   // as "unsupported" — the honest default: say whether your provider can
   // actually enforce options.networkPolicy, don't imply it by omission.
+  // Declare "enforced" only if you apply the policy AND fail the run when the
+  // provider refuses it — see enforcePythonEgress below.
   pythonEgressControl: "unsupported",
 },
 ```
@@ -580,15 +582,27 @@ sandbox: {
 Most providers should not implement the wire protocol themselves. `@useatlas/plugin-sdk` ships the shared **file-transport backend** — it owns the wrapper script, result/chart collection, package install, and retry-after-infra-failure; the plugin supplies only a `PythonSandboxSession` mapping six primitives onto the provider SDK (`mkdir`, `writeFile`, `run`, `readFile`, `listDir`, `destroy`, plus a `workDir`). The e2b and daytona plugins are the reference implementations:
 
 ```typescript
-import { createFileTransportPythonBackend, installPythonPackages } from "@useatlas/plugin-sdk";
+import {
+  createFileTransportPythonBackend,
+  enforcePythonEgress,
+  installPythonPackages,
+} from "@useatlas/plugin-sdk";
 
 createPython(options) {
   return createFileTransportPythonBackend(options, {
     providerName: "MyProvider",
     async createSession() {
       const sandbox = await mySdk.create();
-      await installPythonPackages(sessionFor(sandbox), config.pythonPackages, "MyProvider", log);
-      return sessionFor(sandbox); // PythonSandboxSession over the provider SDK
+      const session = sessionFor(sandbox); // PythonSandboxSession over the provider SDK
+      await installPythonPackages(session, config.pythonPackages, "MyProvider", log);
+      // AFTER the install (a narrowed sandbox cannot reach PyPI) and BEFORE
+      // any agent code runs. Only if you declare "enforced".
+      await enforcePythonEgress(options.networkPolicy, "MyProvider", (policy) =>
+        policy.mode === "deny-all"
+          ? sandbox.blockAllEgress()
+          : sandbox.allowEgressTo(policy.hosts),
+      );
+      return session;
     },
   });
 },
@@ -597,11 +611,12 @@ createPython(options) {
 Supporting helpers and constants (all exported from `@useatlas/plugin-sdk`):
 
 - **`installPythonPackages(session, packages, providerName, logger?)`** — pip-installs the configured package list into a fresh session before the first run.
+- **`enforcePythonEgress(policy, providerName, apply)`** — maps the host's `options.networkPolicy` onto your provider's primitive. It resolves `allow-all`, an absent policy and an empty allowlist away first, so `apply` only ever sees `deny-all` or a non-empty `allowlist` (`EnforceablePythonEgress`), and it turns a provider refusal into a throw — which is what makes `pythonEgressControl: "enforced"` a promise rather than a hope. Call it inside `createSession`, after `installPythonPackages`.
 - **`shellQuote(value)`** — quotes a path for providers whose exec surface takes one command string rather than an argv array.
 - **`isNotFoundSdkError(err)`** — the shared "no such file" predicate: a missing result file is a *normal* outcome (the interpreter died before the wrapper wrote one) that must become `null`, while other read failures propagate. Single-sourced because two plugins guessing at it had already drifted.
 - **`directoryEntryNames(entries)`** — normalizes provider `listDir` results to bare entry names.
 - **`PLUGIN_PYTHON_RESULT_FILE_ENV`** / **`PLUGIN_PYTHON_CHART_DIR_ENV`** / **`PLUGIN_PYTHON_CHART_PATTERN`** — the env vars the wrapper script reads for the result-JSON path and chart directory, and the `chart_*.png` pattern the backend collects.
-- Types: `PluginPythonOptions`, `PluginPythonBackend` (`exec`, optional `execStream` with `PluginPythonProgressEvent`, optional `close`), `PluginPythonResult`, `PluginPythonData`, `PluginPythonChart`, `PluginRechartsChart`, `PythonSandboxSession`, `PythonBackendAdapter`.
+- Types: `PluginPythonOptions`, `PluginPythonBackend` (`exec`, optional `execStream` with `PluginPythonProgressEvent`, optional `close`), `PluginPythonResult`, `PluginPythonData`, `PluginPythonChart`, `PluginRechartsChart`, `PythonSandboxSession`, `PythonBackendAdapter`, `EnforceablePythonEgress`.
 
 ## `createPlugin` vs `definePlugin`
 

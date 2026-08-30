@@ -8,7 +8,7 @@
 
 ## Context
 
-A Workspace Connection (per CONTEXT.md: the OAuth-completed link between a single customer Workspace and a single Platform) carries two distinct kinds of data:
+A Workspace Connection (per [Chat Platform mechanics](../contexts/chat-platform-mechanics/CONTEXT.md): the OAuth-completed link between a single customer Workspace and a single Platform) carries two distinct kinds of data:
 
 - **Install metadata** — when the Connection was created, by whom, what plan it counts under, per-workspace install configuration (channel allowlist, proactive enable flag, etc.). Changes infrequently, benefits from typed columns and explicit foreign keys.
 - **Credentials** — the per-platform bot token, app token, refresh token, signing secret. Per-Platform-shaped (Slack token shape ≠ Teams token shape ≠ Discord token shape). Read every event, written rarely.

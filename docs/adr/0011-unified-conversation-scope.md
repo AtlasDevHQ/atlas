@@ -18,7 +18,7 @@ Separately, the picker's selection was never truly per-conversation: SQL routing
 
 ## Decision
 
-**The env picker becomes the *scope picker* (`ChatScopePicker`) — a per-conversation control over Conversation scope, with two axes.** (Terminology: CONTEXT.md → *Conversation scope*. Umbrella = **Conversation scope**; axes = **SQL routing** / **REST scope**.)
+**The env picker becomes the *scope picker* (`ChatScopePicker`) — a per-conversation control over Conversation scope, with two axes.** (Terminology: [*Conversation scope*](../contexts/conversation-scope/CONTEXT.md). Umbrella = **Conversation scope**; axes = **SQL routing** / **REST scope**.)
 
 1. **SQL routing** — unchanged: a connection group + Auto/Pin/All routing mode over its members (`executeSQL`).
 2. **REST scope** — new, first-class, with two states:
@@ -45,4 +45,4 @@ Separately, the picker's selection was never truly per-conversation: SQL routing
 - **Include-set instead of exclude-set.** Rejected: a newly-added REST datasource would silently fall out of scope, fighting workspace-global-by-default.
 - **Exclude-set only, no REST-only focus.** Considered as the minimal model; rejected in favour of adding focus so a "REST-only" question (no SQL) is expressible directly rather than by unchecking every other datasource while SQL still runs.
 - **Pure client UI preference for REST.** Rejected: a conversation's REST scope would differ per browser and not survive a device switch or a shared link; scope must be per-conversation authoritative like SQL routing already is.
-- **"Reach" / "routing" as the umbrella term.** Rejected in favour of "Conversation scope" (CONTEXT.md).
+- **"Reach" / "routing" as the umbrella term.** Rejected in favour of "Conversation scope" ([Conversation scope](../contexts/conversation-scope/CONTEXT.md)).

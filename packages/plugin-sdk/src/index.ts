@@ -125,12 +125,15 @@ export type { Context, MiddlewareHandler } from "./hono";
 export {
   createFileTransportPythonBackend,
   directoryEntryNames,
+  enforcePythonEgress,
   installPythonPackages,
   isNotFoundSdkError,
+  requireSandboxMethod,
   shellQuote,
 } from "./python-backend";
 
 export type {
+  EnforceablePythonEgress,
   PythonBackendAdapter,
   PythonBackendLogger,
   PythonSandboxRunResult,

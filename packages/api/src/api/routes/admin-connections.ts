@@ -1368,12 +1368,20 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     }
   } else if (urlChanged) {
     try {
-      connections.register(id, { url: newUrl, description: newDescription ?? undefined, schema: newSchema ?? undefined });
+      connections.register(id, {
+            url: newUrl,
+            ...(newDescription != null ? { description: newDescription } : {}),
+            ...(newSchema != null ? { schema: newSchema } : {}),
+          });
       await connections.healthCheck(id);
     } catch (err) {
       let rollbackFailed = false;
       try {
-        connections.register(id, { url: currentUrl, description: currentDescription ?? undefined, schema: currentSchema ?? undefined });
+        connections.register(id, {
+            url: currentUrl,
+            ...(currentDescription != null ? { description: currentDescription } : {}),
+            ...(currentSchema != null ? { schema: currentSchema } : {}),
+          });
       } catch (restoreErr) {
         rollbackFailed = true;
         log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
@@ -1387,7 +1395,11 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     }
   } else {
     try {
-      connections.register(id, { url: newUrl, description: newDescription ?? undefined, schema: newSchema ?? undefined });
+      connections.register(id, {
+            url: newUrl,
+            ...(newDescription != null ? { description: newDescription } : {}),
+            ...(newSchema != null ? { schema: newSchema } : {}),
+          });
     } catch (err) {
       log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to re-register connection with updated metadata");
       return c.json({ error: "internal_error", message: "Failed to update connection.", requestId }, 500);
@@ -1441,7 +1453,11 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
           currentDecryptedConfig,
         );
       } else {
-        connections.register(id, { url: currentUrl, description: currentDescription ?? undefined, schema: currentSchema ?? undefined });
+        connections.register(id, {
+            url: currentUrl,
+            ...(currentDescription != null ? { description: currentDescription } : {}),
+            ...(currentSchema != null ? { schema: currentSchema } : {}),
+          });
       }
     } catch (restoreErr) {
       rollbackFailed = true;

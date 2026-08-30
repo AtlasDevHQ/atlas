@@ -115,6 +115,29 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * preflight is best-effort and must never turn a successful create/update
  * into a 500.
  */
+/**
+ * Make absence real on recipients parsed by `RecipientSchema` (#5522).
+ *
+ * Zod's `.optional()` infers `teamId?: string | undefined`, while the
+ * `SlackRecipient` / `WebhookRecipient` domain types declare the exact
+ * `teamId?: string` / `headers?: Record<string, string>`. Rebuilding here drops
+ * the optional slots that hold `undefined`, so a parsed value matches the domain
+ * shape without widening the domain interfaces. Each subject is read once.
+ */
+function toRecipients(parsed: readonly z.infer<typeof RecipientSchema>[]): Recipient[] {
+  return parsed.map((r): Recipient => {
+    if (r.type === "slack") {
+      const { channel, teamId } = r;
+      return { type: "slack", channel, ...(teamId !== undefined ? { teamId } : {}) };
+    }
+    if (r.type === "webhook") {
+      const { url, headers } = r;
+      return { type: "webhook", url, ...(headers !== undefined ? { headers } : {}) };
+    }
+    return { type: "email", address: r.address };
+  });
+}
+
 function recipientsForChannel(
   recipients: Recipient[] | undefined,
   channel: DeliveryChannel | undefined,
@@ -389,13 +412,16 @@ authed.openapi(
 
       const createOpts = {
         ownerId: user?.id ?? "anonymous",
-        orgId,
+        // `orgId` / `connectionGroupId` are `?: string | null` on the callee, and
+        // its SQL builder collapses null and absent identically — so `?? null`
+        // is exact here, not a widening (#5522).
+        orgId: orgId ?? null,
         name: parsed.name,
         question: parsed.question,
         cronExpression: parsed.cronExpression,
         deliveryChannel: parsed.deliveryChannel,
-        recipients: parsed.recipients,
-        connectionGroupId: parsed.connectionGroupId,
+        recipients: toRecipients(parsed.recipients),
+        connectionGroupId: parsed.connectionGroupId ?? null,
         approvalMode: parsed.approvalMode,
       };
       const createResult = yield* Effect.promise(() => createScheduledTask(createOpts));
@@ -418,7 +444,7 @@ authed.openapi(
       // way; the admin can configure the sender afterwards.
       const warnings = yield* Effect.promise(() =>
         checkDeliverySenders(
-          recipientsForChannel(parsed.recipients, parsed.deliveryChannel),
+          recipientsForChannel(toRecipients(parsed.recipients), parsed.deliveryChannel),
           orgId,
         ),
       );
@@ -529,7 +555,30 @@ scheduledTasks.openapi(tickRoute, async (c) => {
         failures: successOutcome.tasksFailed,
       },
     });
-    return c.json(successOutcome, 200);
+    // Hono's `c.json()` requires every value to be a `JSONValue`, and its
+    // `JSONRespondReturn` widens an optional slot back to `T | undefined` on the
+    // way through — so a payload carrying ANY optional property is rejected
+    // under `exactOptionalPropertyTypes`, however the literal is written.
+    //
+    // Project each optional onto `| null`, the convention this repo already uses
+    // at the same seam (`admin-openapi-datasources.ts`). The 200 body is declared
+    // as a free-form record in this route's OpenAPI responses, so an explicit
+    // `null` is within contract, and it reads the same as the omission did: no
+    // dashboards were due this tick. Nothing asserts on the key's absence
+    // (#5522).
+    return c.json(
+      {
+        tasksFound: successOutcome.tasksFound,
+        tasksDispatched: successOutcome.tasksDispatched,
+        tasksCompleted: successOutcome.tasksCompleted,
+        tasksFailed: successOutcome.tasksFailed,
+        dashboardsRefreshed: successOutcome.dashboardsRefreshed ?? null,
+        dashboardsFailed: successOutcome.dashboardsFailed ?? null,
+        dashboardShellsCleaned: successOutcome.dashboardShellsCleaned ?? null,
+        error: successOutcome.error ?? null,
+      },
+      200,
+    );
   }), { label: "scheduler tick" });
 });
 
@@ -646,7 +695,23 @@ authed.openapi(
         }
       }
 
-      const updateResult = yield* Effect.promise(() => updateScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}, parsed));
+      // A PATCH body omits what it does not touch, and `updateScheduledTask`
+      // reads presence to mean "replace this". Zod types every optional as
+      // `T | undefined`, so rebuild the payload with absence made real (#5522).
+      const { name, question, cronExpression, deliveryChannel, recipients, connectionGroupId, approvalMode, enabled } = parsed;
+      const taskUpdates = {
+        ...(name !== undefined ? { name } : {}),
+        ...(question !== undefined ? { question } : {}),
+        ...(cronExpression !== undefined ? { cronExpression } : {}),
+        ...(deliveryChannel !== undefined ? { deliveryChannel } : {}),
+        ...(recipients !== undefined ? { recipients: toRecipients(recipients) } : {}),
+        ...(connectionGroupId !== undefined ? { connectionGroupId } : {}),
+        ...(approvalMode !== undefined ? { approvalMode } : {}),
+        ...(enabled !== undefined ? { enabled } : {}),
+      };
+      const updateResult = yield* Effect.promise(() =>
+        updateScheduledTask(id, { orgId: orgId ?? null }, taskUpdates),
+      );
       if (!updateResult.ok) {
         const fail = crudFailResponse(updateResult.reason, requestId);
         return c.json(fail.body, fail.status);
@@ -688,7 +753,7 @@ authed.openapi(
       const warnings = yield* Effect.promise(() =>
         checkDeliverySenders(
           recipientsForChannel(
-            parsed.recipients ?? updated.data.recipients,
+            parsed.recipients ? toRecipients(parsed.recipients) : updated.data.recipients,
             parsed.deliveryChannel ?? updated.data.deliveryChannel,
           ),
           orgId,

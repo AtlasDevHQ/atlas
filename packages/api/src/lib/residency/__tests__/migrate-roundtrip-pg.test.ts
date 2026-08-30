@@ -37,7 +37,7 @@ import {
 } from "../../../api/routes/admin-migrate";
 import { PROVISIONAL_PREDICATE } from "@atlas/api/lib/brain/candidates";
 import { buildCleanupStatements, runSourceCleanupSweep } from "../cleanup";
-import { recordVocabularyRefusals } from "../migrate";
+import { recordMigrationRefusals } from "../migrate";
 import type { ImportResult } from "@useatlas/types";
 
 /**
@@ -1159,8 +1159,8 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // Both entries already here from the first import (#5043).
         brainEntities: { imported: 0, skipped: 2 },
         brainActorIdentities: { imported: 0, skipped: 3 },
-        brainVocabularyProposals: { imported: 0, skipped: 0, refused: 0 },
-        brainPredicateCardinalities: { imported: 0, skipped: 0, refused: 0 },
+        brainVocabularyProposals: { imported: 0, skipped: 0, refused: 0, refusalDetails: [] },
+        brainPredicateCardinalities: { imported: 0, skipped: 0, refused: 0, refusalDetails: [] },
       });
 
       // ── Catch-up import: an episode the target already has, carrying a
@@ -2951,6 +2951,35 @@ describeIfPg("a refused alias edge's record outlives the source cleanup (#5112)"
     reason: '"price" is already aliased to "cost" in this region',
   };
 
+  // #5533 — the two #5113 sections' payloads, whose columns this writer test also
+  // has to confront with the real table. Distinct field VALUES from `REFUSAL`'s
+  // throughout, so a writer that put one section's array in another's column
+  // fails here rather than in a live migration.
+  const PROPOSAL_REFUSAL = {
+    slotPosition: "subject",
+    fromNorm: "acme corp",
+    toNorm: "acme corporation",
+    arrivingStatus: "rejected",
+    existingStatus: "approved",
+    reviewedBy: "source-reviewer",
+    reviewedAt: "2026-06-02T00:00:00.000Z",
+    refusal: "contradictory-decision",
+    reason: "this region's own decision for the pair contradicts it and is kept",
+  };
+
+  const CARDINALITY_REFUSAL = {
+    predicateKey: "ships to",
+    arrivingCardinality: "single",
+    arrivingStatus: "approved",
+    existingCardinality: null,
+    existingStatus: null,
+    canonicalHere: "delivers to",
+    reviewedBy: "source-curator",
+    reviewedAt: "2026-06-03T00:00:00.000Z",
+    refusal: "predicate-re-canonicalized",
+    reason: "this region canonicalizes the predicate onto a different norm",
+  };
+
   const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
 
   beforeAll(async () => {
@@ -3089,7 +3118,7 @@ describeIfPg("a refused alias edge's record outlives the source cleanup (#5112)"
       // Both are hand-written statements about the same two columns, so neither
       // confronts the writer's SQL with the migrated table.
       //
-      // Measured: renaming the column in `recordVocabularyRefusals` to
+      // Measured: renaming the column in `recordMigrationRefusals` to
       // `vocabulary_refusals_json` left every other test green, because the substring
       // the mock suite greps for (`vocabulary_edges_refused`) is on the same statement.
       // In production that throws, and since `refused > 0` aborts, it fails EVERY
@@ -3099,8 +3128,17 @@ describeIfPg("a refused alias edge's record outlives the source cleanup (#5112)"
         { ...REFUSAL, fromNorm: "writer-a" },
         { ...REFUSAL, fromNorm: "writer-b", approvedBy: null, existingTarget: null },
       ];
+      // #5533 — three sections, three columns pairs, and every count DISTINCT from
+      // every other count and from every array length in this test. That is what
+      // makes a writer that crossed two `$n` placeholders fail: with matching
+      // numbers such a swap round-trips clean.
+      const proposalPayload = [
+        { ...PROPOSAL_REFUSAL, fromNorm: "writer-p" },
+        { ...PROPOSAL_REFUSAL, fromNorm: "writer-q", existingStatus: null, reviewedBy: null, reviewedAt: null },
+      ];
+      const cardinalityPayload = [{ ...CARDINALITY_REFUSAL, predicateKey: "writer-k" }];
 
-      // The row starts WITHOUT the two columns populated, so anything read back was
+      // The row starts WITHOUT the six columns populated, so anything read back was
       // put there by the function under test.
       await pool.query(
         `INSERT INTO region_migrations
@@ -3109,17 +3147,23 @@ describeIfPg("a refused alias edge's record outlives the source cleanup (#5112)"
         [WRITER_MIGRATION, `${ORG}-writer`],
       );
 
-      await recordVocabularyRefusals(WRITER_MIGRATION, {
-        refused: 5,
-        details: payload,
-        malformedDetails: 1,
+      await recordMigrationRefusals(WRITER_MIGRATION, {
+        vocabularyEdges: { refused: 5, details: payload, malformedDetails: 1 },
+        vocabularyProposals: { refused: 7, details: proposalPayload, malformedDetails: 0 },
+        predicateCardinalities: { refused: 3, details: cardinalityPayload, malformedDetails: 2 },
       });
 
       const row = await pool.query<{
         vocabulary_edges_refused: number | null;
         vocabulary_refusals: unknown;
+        vocabulary_proposals_refused: number | null;
+        vocabulary_proposal_refusals: unknown;
+        predicate_cardinalities_refused: number | null;
+        predicate_cardinality_refusals: unknown;
       }>(
-        `SELECT vocabulary_edges_refused, vocabulary_refusals
+        `SELECT vocabulary_edges_refused, vocabulary_refusals,
+                vocabulary_proposals_refused, vocabulary_proposal_refusals,
+                predicate_cardinalities_refused, predicate_cardinality_refusals
            FROM region_migrations WHERE id = $1`,
         [WRITER_MIGRATION],
       );
@@ -3141,6 +3185,30 @@ describeIfPg("a refused alias edge's record outlives the source cleanup (#5112)"
       const stored = row.rows[0].vocabulary_refusals as Array<Record<string, unknown>>;
       expect(stored[1].approvedBy).toBeNull();
       expect(stored[1].existingTarget).toBeNull();
+
+      // #5533 — the two new column pairs, same treatment. 7 refused with 2
+      // payloads and 3 refused with 1: every number differs from the edges' pair
+      // and from the other section's, so a crossed placeholder cannot round-trip.
+      expect(row.rows[0].vocabulary_proposals_refused).toBe(7);
+      expect(row.rows[0].vocabulary_proposal_refusals).toEqual(proposalPayload);
+      expect(row.rows[0].predicate_cardinalities_refused).toBe(3);
+      expect(row.rows[0].predicate_cardinality_refusals).toEqual(cardinalityPayload);
+      // And the nullable fields survived as `null` on these payloads too — the
+      // property `screenRefusalDetails` depends on, since a MISSING key and a key
+      // whose value is `null` mean different things on every one of these shapes.
+      const storedProposals = row.rows[0].vocabulary_proposal_refusals as Array<
+        Record<string, unknown>
+      >;
+      expect(storedProposals[1].existingStatus).toBeNull();
+      expect(storedProposals[1].reviewedBy).toBeNull();
+      expect(storedProposals[1].reviewedAt).toBeNull();
+      const storedCardinalities = row.rows[0].predicate_cardinality_refusals as Array<
+        Record<string, unknown>
+      >;
+      expect(storedCardinalities[0].existingCardinality).toBeNull();
+      expect(storedCardinalities[0].existingStatus).toBeNull();
+      // The re-canonicalization arm's whole recovery payload.
+      expect(storedCardinalities[0].canonicalHere).toBe("delivers to");
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -3159,17 +3227,23 @@ describeIfPg("a refused alias edge's record outlives the source cleanup (#5112)"
         [EMPTY_MIGRATION, `${ORG}-writer-empty`],
       );
 
-      await recordVocabularyRefusals(EMPTY_MIGRATION, {
-        refused: 0,
-        details: [],
-        malformedDetails: 0,
+      await recordMigrationRefusals(EMPTY_MIGRATION, {
+        vocabularyEdges: { refused: 0, details: [], malformedDetails: 0 },
+        vocabularyProposals: { refused: 0, details: [], malformedDetails: 0 },
+        predicateCardinalities: { refused: 0, details: [], malformedDetails: 0 },
       });
 
       const row = await pool.query<{
         vocabulary_edges_refused: number | null;
         vocabulary_refusals: unknown;
+        vocabulary_proposals_refused: number | null;
+        vocabulary_proposal_refusals: unknown;
+        predicate_cardinalities_refused: number | null;
+        predicate_cardinality_refusals: unknown;
       }>(
-        `SELECT vocabulary_edges_refused, vocabulary_refusals
+        `SELECT vocabulary_edges_refused, vocabulary_refusals,
+                vocabulary_proposals_refused, vocabulary_proposal_refusals,
+                predicate_cardinalities_refused, predicate_cardinality_refusals
            FROM region_migrations WHERE id = $1`,
         [EMPTY_MIGRATION],
       );
@@ -3177,6 +3251,14 @@ describeIfPg("a refused alias edge's record outlives the source cleanup (#5112)"
       expect(row.rows[0].vocabulary_edges_refused).toBe(0);
       // NULL, not `[]`.
       expect(row.rows[0].vocabulary_refusals).toBeNull();
+      // #5533 — all three sections, because the `0`-versus-NULL distinction is what
+      // makes a NULL on any of these columns mean "this build never asked" rather
+      // than "we forgot", and a writer that left the two new counts NULL on a
+      // bundle carrying no proposals would erase exactly that meaning.
+      expect(row.rows[0].vocabulary_proposals_refused).toBe(0);
+      expect(row.rows[0].vocabulary_proposal_refusals).toBeNull();
+      expect(row.rows[0].predicate_cardinalities_refused).toBe(0);
+      expect(row.rows[0].predicate_cardinality_refusals).toBeNull();
     },
     PG_TEST_TIMEOUT_MS,
   );

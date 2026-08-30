@@ -2,11 +2,66 @@ import { describe, it, expect } from "bun:test";
 import {
   API_KEY_MARKER_CLAIM,
   RESERVED_API_KEY_CLAIM_KEYS,
+  apiKeyMetadataNamesOrg,
   boundClaimsToMinter,
   buildApiKeyMetadata,
   parseApiKeyMetadata,
   type ApiKeyMetadata,
 } from "../api-key-metadata";
+
+describe("apiKeyMetadataNamesOrg()", () => {
+  const ORG = "org_123";
+  const stored = JSON.stringify(buildApiKeyMetadata({ orgId: ORG, role: "member" }));
+
+  it("matches the shape the plugin actually stores (one JSON.stringify)", () => {
+    // `apikey.metadata` is declared `type: "string"` with a stringify
+    // transform, so the column is text holding an object's JSON.
+    expect(apiKeyMetadataNamesOrg(stored, ORG)).toBe(true);
+    expect(apiKeyMetadataNamesOrg(stored, "org_other")).toBe(false);
+  });
+
+  it("matches an already-decoded object", () => {
+    expect(apiKeyMetadataNamesOrg(buildApiKeyMetadata({ orgId: ORG, role: "owner" }), ORG)).toBe(true);
+  });
+
+  it("sees through the plugin's DOUBLE-stringified legacy shape", () => {
+    // @better-auth/api-key ships parseDoubleStringifiedMetadata precisely
+    // because older versions wrote this; a purge that could not read it would
+    // leave the OLDEST keys behind, which is the one residue class that has
+    // had the longest to accumulate.
+    expect(apiKeyMetadataNamesOrg(JSON.stringify(stored), ORG)).toBe(true);
+  });
+
+  it("stops at the declared unwrap budget (a triple-stringified bag is not read)", () => {
+    // Pins MAX_METADATA_UNWRAPS at its boundary, so widening or narrowing the
+    // budget is a visible change rather than a silent one. Nothing writes this
+    // shape; the assertion is that the bound is where the constant says.
+    expect(apiKeyMetadataNamesOrg(JSON.stringify(JSON.stringify(stored)), ORG)).toBe(false);
+  });
+
+  it("answers false — never throws — for values that are not metadata at all", () => {
+    // Totality is the requirement, not politeness: this runs inside the purge
+    // transaction, where a throw on one malformed row aborts an entire
+    // workspace erasure.
+    for (const raw of [null, undefined, "", "not json at all", "{unclosed", 42, true, [ORG], "[]"]) {
+      expect(apiKeyMetadataNamesOrg(raw, ORG), `${JSON.stringify(raw)} must not match`).toBe(false);
+    }
+  });
+
+  it("takes a bag naming this org even without the workspace marker", () => {
+    // Deliberately looser than parseApiKeyMetadata on exactly this axis: the
+    // marker is a fail-closed gate for AUTHORIZATION, and an erasure's
+    // fail-closed direction is the opposite one — take the row.
+    expect(apiKeyMetadataNamesOrg(JSON.stringify({ orgId: ORG }), ORG)).toBe(true);
+    expect(parseApiKeyMetadata({ orgId: ORG })).toBeNull();
+  });
+
+  it("does not match a bag whose orgId is nested rather than bound", () => {
+    // Only the top-level binding counts; `orgId` appearing somewhere inside a
+    // claim bag is not what mint wrote as the workspace binding.
+    expect(apiKeyMetadataNamesOrg(JSON.stringify({ claims: { orgId: ORG } }), ORG)).toBe(false);
+  });
+});
 
 describe("buildApiKeyMetadata()", () => {
   it("stamps the workspace marker + orgId + role", () => {

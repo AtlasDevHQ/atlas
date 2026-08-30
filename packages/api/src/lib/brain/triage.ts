@@ -28,7 +28,18 @@
  * did. A triaged-out episode therefore stays a visible, queryable, re-queueable
  * outcome: clearing the mark (`REQUEUE_TRIAGED_SQL` in `extract.ts`) puts the
  * episode back on the drain at its original `ingested_at` position, with no
- * backfill and no repair sweep.
+ * backfill and no repair sweep. A human does that from
+ * `POST /api/v1/admin/brain-triage/requeue`, beside the per-rule counts that
+ * motivate it (#5534) — `lib/brain/triage-requeue.ts` is the store module, and
+ * carries the record of why that surface is an admin route rather than an
+ * operator subcommand.
+ *
+ * ⚠️ Retiring an id from {@link TRIAGE_RULE_IDS} does NOT clear the marks it
+ * wrote — they stay on the rows under a reason this deploy no longer knows.
+ * That is survivable rather than a leak: the backlog surface reports such a
+ * bucket as `known: false`, and the all-rules re-queue reaches it. But a
+ * per-rule re-queue cannot name it, so retiring a rule with a live backlog
+ * means re-queueing it first.
  *
  * ## ⚠️ The stage-1 seam (#5336, out of scope here)
  *

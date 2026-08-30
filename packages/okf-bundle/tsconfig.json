@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "types": ["bun", "node"],
+    // #5522 — this package has graduated to exactOptionalPropertyTypes; the
+    // enforcing gate is tsconfig.exact-optional.json in the root `type` script.
+    // This copy is for editors, which pick the nearest tsconfig.
+    "exactOptionalPropertyTypes": true
+  },
+  "include": ["src", "__tests__"]
+}

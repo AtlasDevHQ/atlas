@@ -1750,6 +1750,19 @@ export const regionMigrations = pgTable(
     // the annotation would buy nothing and assert something false.
     vocabularyEdgesRefused: integer("vocabulary_edges_refused"),
     vocabularyRefusals: jsonb("vocabulary_refusals"),
+    // #5533 (migration 0212) — the same count/payload pair for the two
+    // vocabulary-memory tables #5113 put on the bundle. Every note above applies
+    // unchanged: NULL means UNKNOWN rather than zero, the count is not derivable
+    // from the capped array, and the `jsonb` stays BARE so a reader must narrow.
+    //
+    // Separate columns per section rather than one merged array, because the three
+    // payload shapes differ and one array would collapse three independent
+    // `length < refused` truncation signals into one that cannot say which section
+    // was truncated. The SQL migration carries the full argument.
+    vocabularyProposalsRefused: integer("vocabulary_proposals_refused"),
+    vocabularyProposalRefusals: jsonb("vocabulary_proposal_refusals"),
+    predicateCardinalitiesRefused: integer("predicate_cardinalities_refused"),
+    predicateCardinalityRefusals: jsonb("predicate_cardinality_refusals"),
   },
   (t) => [
     index("idx_region_migrations_workspace").on(t.workspaceId),
@@ -2166,7 +2179,7 @@ export const operatorIntegrationCredentials = pgTable(
   ],
 );
 
-// workspace_action_credentials (0212, #3766) — WORKSPACE-tier action-target
+// workspace_action_credentials (0213, #3766) — WORKSPACE-tier action-target
 // credentials: a TENANT's own Jira/Linear/GitHub/Salesforce, set by a workspace
 // admin from Admin → Integrations without operator involvement or a redeploy,
 // encrypted at rest. One row per (workspace_id, target).

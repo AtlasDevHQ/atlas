@@ -98,7 +98,13 @@ export class IngestCapExceededError extends Error {
     this.cap = cap;
     this.actual = actual;
     this.limit = limit;
-    this.docPath = docPath;
+    // Assigned only when a per-doc cap named a document. This is a TYPE-level
+    // fix: `docPath` is exact-optional, so `this.docPath = docPath` with a
+    // `string | undefined` no longer type-checks. At runtime the key still
+    // exists either way — `useDefineForClassFields` is on under target ES2022,
+    // so the bare declaration above already defines it as undefined. Nothing
+    // reads `"docPath" in err`; every consumer tests the value.
+    if (docPath !== undefined) this.docPath = docPath;
   }
 }
 

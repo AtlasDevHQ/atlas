@@ -1,7 +1,7 @@
 /**
  * Workspace-tier action-target credential store (#3766).
  *
- * Backs the `workspace_action_credentials` table (migration 0212). Stores a
+ * Backs the `workspace_action_credentials` table (migration 0213). Stores a
  * TENANT's own credentials for an action target — their Jira, their Linear —
  * encrypted at rest, one row per `(workspace_id, target)`. Set from the
  * workspace Admin surface without operator involvement or a redeploy.
@@ -29,7 +29,7 @@
  * it up automatically.
  *
  * @see ADR-0046 — per-workspace action credentials
- * @see packages/api/src/lib/db/migrations/0212_workspace_action_credentials.sql
+ * @see packages/api/src/lib/db/migrations/0213_workspace_action_credentials.sql
  */
 
 import { z } from "zod";

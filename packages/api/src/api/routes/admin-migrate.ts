@@ -17,7 +17,11 @@ import { createRoute, z } from "@hono/zod-openapi";
 // npm. `@useatlas/schemas` never publishes; `prepare-templates.sh` (step 5e)
 // copies its SOURCE into every template behind a `tsconfig` path alias, so the
 // scaffold gets this file and this schema from the same commit.
-import { VocabularyRefusalDetailSchema } from "@useatlas/schemas";
+import {
+  PredicateCardinalityRefusalDetailSchema,
+  VocabularyProposalRefusalDetailSchema,
+  VocabularyRefusalDetailSchema,
+} from "@useatlas/schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { EPISODE_SOURCES, isEpisodeSource } from "@atlas/api/lib/brain/sources";
 import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/internal";
@@ -137,6 +141,33 @@ const PREDICATE_CARDINALITY_SOURCE_CLASSES = ["warehouse_structural", "correctio
 
 /** A decided row — the half that outranks a `pending` in the #5113 merges. */
 const isDecidedStatus = (status: string): boolean => status === "approved" || status === "rejected";
+
+/**
+ * Append a refusal payload while the cap allows, and drop it silently after (#5533).
+ *
+ * ⚠️ THE CAP IS APPLIED HERE, WHERE THE EDGE MERGE APPLIES IT WITH `.slice()`, and
+ * the difference in shape is forced rather than chosen. `mergeApprovedEdges` hands
+ * back a finished array, so one `.slice(0, CAP)` bounds it. The two #5113 sections
+ * decide row by row inside a loop that also runs queries, so there is no array to
+ * slice — a bounded push at each arm is the same bound expressed where the payload
+ * is built.
+ *
+ * ⚠️ THE COUNTER IS INCREMENTED BY THE CALLER, NEVER HERE, and that separation is
+ * the cap contract rather than an oversight. `refused` must stay the TRUE total
+ * while the array is capped, because `refusalDetails.length < refused` is the ONLY
+ * truncation signal — there is no `truncated` flag, on the standing reasoning that
+ * a flag and a derivable comparison can disagree and only one of them can be right.
+ * Folding the increment in here would make it impossible for them to diverge, which
+ * sounds safer and would in fact delete the signal: the array would then always
+ * equal the count, and a truncated record would be indistinguishable from a
+ * complete one at exactly the moment the source's own rows are deleted.
+ *
+ * Silent past the cap on purpose: the drop is already reported, by the comparison,
+ * on every line and row that carries both numbers.
+ */
+function pushCappedRefusal<T>(details: T[], detail: T): void {
+  if (details.length < VOCABULARY_REFUSAL_DETAIL_CAP) details.push(detail);
+}
 
 /**
  * The pre-#4460 bundle version — four sections only (conversations, semantic
@@ -1409,6 +1440,21 @@ const ImportResultSchema = z.object({
     imported: z.number(),
     skipped: z.number(),
     refused: z.number(),
+    // The refused decisions themselves (#5533) — `brainVocabularyEdges`'
+    // treatment, referenced rather than restated: one definition in
+    // `@useatlas/schemas` carrying both pins, every item field REQUIRED
+    // (`.nullable()` is pinned, `.optional()` is pinned by nothing), and the
+    // `.max()` as published DOCUMENTATION of a bound the producer enforces.
+    //
+    // #5113 shipped these two sections with counter + target-region log only,
+    // recording the gap at both `bundle-scope.ts` entries. It is the same gap
+    // #5112 closed for edges and for the same asset class: `cleanup.ts` deletes
+    // the source's own rows after the grace period, so a refused human decision
+    // that lives only in the target's log retention outlives the data it
+    // describes by exactly that retention and no longer.
+    refusalDetails: z
+      .array(VocabularyProposalRefusalDetailSchema)
+      .max(VOCABULARY_REFUSAL_DETAIL_CAP),
   }),
   // Three counters; `refused` additionally covers the re-canonicalization arm:
   // an entry whose predicate the destination's post-merge closure aliases onto
@@ -1417,6 +1463,14 @@ const ImportResultSchema = z.object({
     imported: z.number(),
     skipped: z.number(),
     refused: z.number(),
+    // #5533, on the section above's contract. The one payload difference is
+    // `canonicalHere`: the re-canonicalization arm's recovery instruction names
+    // a predicate the SOURCE region does not know this region files it under, so
+    // without the key stated both ways the operator is told a decision was
+    // dropped and not what to re-author it against.
+    refusalDetails: z
+      .array(PredicateCardinalityRefusalDetailSchema)
+      .max(VOCABULARY_REFUSAL_DETAIL_CAP),
   }),
 });
 
@@ -2170,8 +2224,8 @@ export async function importBundle(
     brainEnrollments: { imported: 0, skipped: 0, namingDropped: 0, namingApplied: 0 },
     brainEntities: { imported: 0, skipped: 0 },
     brainActorIdentities: { imported: 0, skipped: 0 },
-    brainVocabularyProposals: { imported: 0, skipped: 0, refused: 0 },
-    brainPredicateCardinalities: { imported: 0, skipped: 0, refused: 0 },
+    brainVocabularyProposals: { imported: 0, skipped: 0, refused: 0, refusalDetails: [] },
+    brainPredicateCardinalities: { imported: 0, skipped: 0, refused: 0, refusalDetails: [] },
   };
 
   // --- 1. Conversations + Messages ---
@@ -2774,9 +2828,46 @@ export async function importBundle(
       if ((applied.rowCount ?? 0) > 0) {
         result.brainVocabularyProposals.imported++;
       } else {
+        // ⚠️ RE-READ rather than recording `held.status`, which was `pending` at the
+        // SELECT above and is stale by definition on this arm — that staleness IS the
+        // arm. Reporting it as `existingStatus` would put a value on the recovery
+        // record that was already false when the refusal was decided, which is worse
+        // than `null`. Under READ COMMITTED each statement takes a fresh snapshot, so
+        // this sees the decision that defeated the UPDATE.
+        //
+        // ⚠️ DEFENSIVE HERE, LOAD-BEARING ONE TABLE OVER, and the asymmetry is worth
+        // stating so nobody "simplifies" the wrong one. Every other writer to
+        // `brain_vocabulary_proposal` runs under the advisory lock this loop already
+        // holds (see the section header), so the window between the SELECT and the
+        // UPDATE is closed and this arm should be unreachable — the query is here
+        // because "should be unreachable" is not a thing to record a payload from.
+        // `brain_predicate_cardinality`'s own writers take NO lock (its section says
+        // so explicitly), so the equivalent re-read there is reachable in normal
+        // operation.
+        const raced = await client.query(
+          `SELECT status FROM brain_vocabulary_proposal
+            WHERE id = $1 AND workspace_id = $2`,
+          [held.id, orgId],
+        );
+        const racedStatus = (raced.rows[0] as { status: string } | undefined)?.status ?? null;
         result.brainVocabularyProposals.refused++;
+        const reason =
+          "The arriving decision matched no pending row to update — the destination decided " +
+          "this pair concurrently and its decision is kept. Re-author here if the source " +
+          "region's reading is the right one.";
+        pushCappedRefusal(result.brainVocabularyProposals.refusalDetails, {
+          slotPosition: proposal.slotPosition,
+          fromNorm: proposal.fromNorm,
+          toNorm: proposal.toNorm,
+          arrivingStatus: proposal.status,
+          existingStatus: racedStatus,
+          reviewedBy: proposal.reviewedBy,
+          reviewedAt: proposal.reviewedAt,
+          refusal: "concurrent-decision",
+          reason,
+        });
         log.warn(
-          { orgId, correlationId, slotPosition: proposal.slotPosition, fromNorm: proposal.fromNorm, toNorm: proposal.toNorm, arrivingStatus: proposal.status },
+          { orgId, correlationId, slotPosition: proposal.slotPosition, fromNorm: proposal.fromNorm, toNorm: proposal.toNorm, arrivingStatus: proposal.status, existingStatus: racedStatus },
           "Region import: the arriving vocabulary-proposal decision matched no pending row to update — it was decided concurrently. The source decision is NOT applied; re-author it here if it is the right one",
         );
       }
@@ -2784,6 +2875,25 @@ export async function importBundle(
       result.brainVocabularyProposals.skipped++;
     } else {
       result.brainVocabularyProposals.refused++;
+      // The payload is exactly this warn's fields (#5533), by construction rather
+      // than by coincidence — one shape carries the recovery information whether it
+      // is read out of a log line here or out of the source's
+      // `region_migrations.vocabulary_proposal_refusals` column, which is the same
+      // property `VocabularyRefusalDetail` was built with for edges.
+      pushCappedRefusal(result.brainVocabularyProposals.refusalDetails, {
+        slotPosition: proposal.slotPosition,
+        fromNorm: proposal.fromNorm,
+        toNorm: proposal.toNorm,
+        arrivingStatus: proposal.status,
+        existingStatus: held.status,
+        reviewedBy: proposal.reviewedBy,
+        reviewedAt: proposal.reviewedAt,
+        refusal: "contradictory-decision",
+        reason:
+          "This region's own human decision for the pair contradicts the arriving one and is " +
+          "kept, on the vocabulary merge's destination-wins reasoning. Re-author here if the " +
+          "source region's reading is the right one.",
+      });
       log.warn(
         {
           orgId,
@@ -2837,6 +2947,31 @@ export async function importBundle(
       // A closure row exists only for a norm aliased AWAY (`not_self` CHECK),
       // so its presence IS the disagreement — no comparison needed.
       result.brainPredicateCardinalities.refused++;
+      // ⚠️ `existingCardinality`/`existingStatus` are `null` HERE, and it is not a
+      // shortcut. This arm refuses BEFORE the key's own row is consulted, on
+      // purpose: `predicateKey` is not this region's slot, so a row found under it
+      // would describe a different predicate and reporting it as "what the
+      // destination holds" would be a false statement on a recovery record. What
+      // the destination holds IS `canonicalHere`, which is the field this arm
+      // exists to carry — the key stated both ways is the whole re-authoring
+      // instruction, and the source region has no other way to learn the second
+      // norm.
+      pushCappedRefusal(result.brainPredicateCardinalities.refusalDetails, {
+        predicateKey: entry.predicateKey,
+        arrivingCardinality: entry.cardinality,
+        arrivingStatus: entry.status,
+        existingCardinality: null,
+        existingStatus: null,
+        canonicalHere: reKeyedTo,
+        reviewedBy: entry.reviewedBy,
+        reviewedAt: entry.reviewedAt,
+        refusal: "predicate-re-canonicalized",
+        reason:
+          "This region's vocabulary canonicalizes the arriving predicate onto a different norm, " +
+          "so the entry names a slot this region files elsewhere. Re-keying it silently would " +
+          "license supersession on a slot no human at either region curated. Re-author the " +
+          "decision here against `canonicalHere`.",
+      });
       log.warn(
         {
           orgId,
@@ -2915,6 +3050,25 @@ export async function importBundle(
           result.brainPredicateCardinalities.skipped++;
         } else {
           result.brainPredicateCardinalities.refused++;
+          // `racedHeld` undefined is a row that appeared and was deleted again
+          // between the failed INSERT and this read — `null` says the destination
+          // held nothing for the key at that moment, which is exactly what the
+          // nullable field means everywhere else on this shape.
+          pushCappedRefusal(result.brainPredicateCardinalities.refusalDetails, {
+            predicateKey: entry.predicateKey,
+            arrivingCardinality: entry.cardinality,
+            arrivingStatus: entry.status,
+            existingCardinality: racedHeld?.cardinality ?? null,
+            existingStatus: racedHeld?.status ?? null,
+            canonicalHere: null,
+            reviewedBy: entry.reviewedBy,
+            reviewedAt: entry.reviewedAt,
+            refusal: "concurrent-insert",
+            reason:
+              "An entry for this predicate appeared concurrently while the arriving one was " +
+              "being imported, and the destination's row is kept. Re-author here if the source " +
+              "region's reading is the right one.",
+          });
           log.warn(
             {
               orgId,
@@ -2951,9 +3105,33 @@ export async function importBundle(
       if ((applied.rowCount ?? 0) > 0) {
         result.brainPredicateCardinalities.imported++;
       } else {
+        // Re-read for the proposal section's reason: `held` is `pending` and stale
+        // by definition on this arm, and a recovery record must not carry a value
+        // that was already false when the refusal was decided.
+        const raced = await client.query(
+          `SELECT status, cardinality FROM brain_predicate_cardinality
+            WHERE workspace_id = $1 AND predicate_key = $2`,
+          [orgId, entry.predicateKey],
+        );
+        const racedHeld = raced.rows[0] as { status: string; cardinality: string } | undefined;
         result.brainPredicateCardinalities.refused++;
+        pushCappedRefusal(result.brainPredicateCardinalities.refusalDetails, {
+          predicateKey: entry.predicateKey,
+          arrivingCardinality: entry.cardinality,
+          arrivingStatus: entry.status,
+          existingCardinality: racedHeld?.cardinality ?? null,
+          existingStatus: racedHeld?.status ?? null,
+          canonicalHere: null,
+          reviewedBy: entry.reviewedBy,
+          reviewedAt: entry.reviewedAt,
+          refusal: "concurrent-decision",
+          reason:
+            "The arriving decision matched no pending row to update — the destination decided " +
+            "this predicate concurrently and its decision is kept. Re-author here if the source " +
+            "region's reading is the right one.",
+        });
         log.warn(
-          { orgId, correlationId, predicateKey: entry.predicateKey, arrivingStatus: entry.status },
+          { orgId, correlationId, predicateKey: entry.predicateKey, arrivingStatus: entry.status, existingStatus: racedHeld?.status ?? null, existingCardinality: racedHeld?.cardinality ?? null },
           "Region import: the arriving predicate-cardinality decision matched no pending row to update — it was decided concurrently. The source decision is NOT applied; re-author it here if it is the right one",
         );
       }
@@ -2961,6 +3139,21 @@ export async function importBundle(
       result.brainPredicateCardinalities.skipped++;
     } else {
       result.brainPredicateCardinalities.refused++;
+      pushCappedRefusal(result.brainPredicateCardinalities.refusalDetails, {
+        predicateKey: entry.predicateKey,
+        arrivingCardinality: entry.cardinality,
+        arrivingStatus: entry.status,
+        existingCardinality: held.cardinality,
+        existingStatus: held.status,
+        canonicalHere: null,
+        reviewedBy: entry.reviewedBy,
+        reviewedAt: entry.reviewedAt,
+        refusal: "contradictory-decision",
+        reason:
+          "This region's own human decision for the predicate contradicts the arriving one and " +
+          "is kept, on the vocabulary merge's destination-wins reasoning. Re-author here if the " +
+          "source region's reading is the right one.",
+      });
       log.warn(
         {
           orgId,
@@ -3885,10 +4078,105 @@ function logVocabularyRefusalsCommitted(
   orgId: string,
   result: ImportResult,
 ): void {
-  const { refused, refusalDetails } = result.brainVocabularyEdges;
-  if (refused === 0) return;
-  logRefusalConfirmation(correlationId, orgId, refused, refusalDetails);
+  // ⚠️ THREE SECTIONS SINCE #5533, and the two additions are not scope creep on
+  // the payload work — they close the same hole one table over. Both #5113
+  // sections already emit their per-row warns in the FUTURE tense ("WILL DROP …
+  // when this transaction commits"), which is correct for the same reason it is
+  // correct for edges: they run inside the caller's transaction and a later
+  // section can still roll the whole import back. The cost of that correctness is
+  // that nothing ever said the drop HAPPENED — so an operator following the
+  // recovery path could not tell a committed loss from a rolled-back attempt whose
+  // retry succeeded. Shipping durable payloads for a loss that is never confirmed
+  // would leave the record and the announcement disagreeing about whether there is
+  // anything to recover.
+  //
+  // Each section is announced on its OWN line rather than folded into one. The
+  // payload shapes differ (a pair and two statuses; a key, two values and a second
+  // norm), and a single line carrying three heterogeneous arrays is one an
+  // operator has to take apart before it says anything.
+  for (const section of REFUSAL_CONFIRMATION_SECTIONS) {
+    const { refused, refusalDetails } = result[section];
+    // Silent at zero, per section: a `refused: 0` confirmation would fire on every
+    // import that carries a vocabulary at all and train an operator to skip the line.
+    if (refused === 0) continue;
+    logRefusalConfirmation(section, correlationId, orgId, refused, refusalDetails);
+  }
 }
+
+/**
+ * The sections whose post-`COMMIT` confirmation {@link logVocabularyRefusalsCommitted}
+ * emits — DERIVED from the wire type, never listed by hand.
+ *
+ * `migrate.ts`'s `_refusalSectionsReviewed` idiom, applied on the target side. A
+ * section that grows a `refusalDetails` payload and is not added here would refuse
+ * rows, persist them, and never confirm the drop — the exact asymmetry #5533 exists
+ * to remove, re-introduced silently by a future section.
+ *
+ * ⚠️ The completeness guarantee is `_everyRefusalSectionConfirmed` below, NOT an
+ * annotation on the array — an earlier version of this sentence credited "the
+ * annotation", which is the one construction the note under the list forbids
+ * precisely because it makes the pin vacuous. Read both together.
+ */
+type RefusalPayloadSection = {
+  [K in keyof ImportResult]: ImportResult[K] extends { refusalDetails: unknown[] } ? K : never;
+}[keyof ImportResult];
+
+// ⚠️ `as const satisfies`, NEVER a `readonly RefusalPayloadSection[]` ANNOTATION.
+// The annotation widens the array's element type back to the full union, which
+// makes `(typeof …)[number]` equal `RefusalPayloadSection` and the completeness pin
+// below trivially true — it would compile with sections MISSING, which is the one
+// thing it exists to catch. `RECONCILED_SECTIONS` uses `as const satisfies` two
+// modules over for exactly this reason.
+const REFUSAL_CONFIRMATION_SECTIONS = [
+  "brainVocabularyEdges",
+  "brainVocabularyProposals",
+  "brainPredicateCardinalities",
+] as const satisfies readonly RefusalPayloadSection[];
+
+/**
+ * Completeness half of the bound above — the `satisfies` proves every listed member
+ * genuinely carries payloads, and this proves none is missing. Same two-sided split,
+ * and same reason, as `RECONCILED_SECTIONS`.
+ */
+type _UnconfirmedRefusalSection = Exclude<
+  RefusalPayloadSection,
+  (typeof REFUSAL_CONFIRMATION_SECTIONS)[number]
+>;
+const _everyRefusalSectionConfirmed: [_UnconfirmedRefusalSection] extends [never]
+  ? true
+  : never = true;
+void _everyRefusalSectionConfirmed;
+
+/**
+ * What each confirmed section's line calls the rows it dropped.
+ *
+ * ⚠️ `decisions` is not one phrase for all three. A refused EDGE is always an
+ * `approved` decision — the merge only ever sees approved edges — while both #5113
+ * sections refuse `rejected` decisions just as readily, and a `rejected` row is the
+ * memory that stops a producer re-writing what a human removed. Calling those
+ * "approved" would misdescribe the loss in the direction that makes it sound
+ * smaller.
+ */
+const REFUSAL_CONFIRMATION_COPY: Record<
+  RefusalPayloadSection,
+  { readonly subject: string; readonly decisions: string; readonly sourceTable: string }
+> = {
+  brainVocabularyEdges: {
+    subject: "Vocabulary merge DID DROP arriving alias edges",
+    decisions: "approved human review decisions",
+    sourceTable: "brain_vocabulary_edge",
+  },
+  brainVocabularyProposals: {
+    subject: "Region import DID DROP arriving vocabulary-proposal decisions",
+    decisions: "human review decisions (approved or rejected)",
+    sourceTable: "brain_vocabulary_proposal",
+  },
+  brainPredicateCardinalities: {
+    subject: "Region import DID DROP arriving predicate-cardinality decisions",
+    decisions: "human review decisions (approved or rejected)",
+    sourceTable: "brain_predicate_cardinality",
+  },
+};
 
 /**
  * The confirmation's body, wrapped so it CANNOT fail the request (panel round 1).
@@ -3912,17 +4200,24 @@ function logVocabularyRefusalsCommitted(
  * The catch logs at `error` and re-narrows, so the failure is never silent: what is
  * lost is the confirmation, and that loss is itself announced.
  */
-function logRefusalConfirmation(
+// ⚠️ GENERIC IN THE SECTION, so `section` and the array beside it cannot drift.
+// Typed `readonly unknown[]` — as the first cut had it — nothing stops a future
+// caller emitting the edge copy over the cardinality payload, and `migrate.ts`
+// justifies its own three-branch repetition on exactly that ground ("a table would
+// have to erase all three to `unknown` — the one thing the screens exist to
+// prevent"). Same argument, so the same treatment.
+function logRefusalConfirmation<K extends RefusalPayloadSection>(
+  section: K,
   correlationId: string,
   orgId: string,
   refused: number,
-  refusalDetails: ImportResult["brainVocabularyEdges"]["refusalDetails"],
+  refusalDetails: ImportResult[K]["refusalDetails"],
 ): void {
   try {
-    emitRefusalConfirmation(correlationId, orgId, refused, refusalDetails);
+    emitRefusalConfirmation(section, correlationId, orgId, refused, refusalDetails);
   } catch (err) {
     log.error(
-      { err: err instanceof Error ? err.message : String(err), correlationId, orgId, refused },
+      { err: err instanceof Error ? err.message : String(err), section, correlationId, orgId, refused },
       "Import COMMITTED and its refusal confirmation could not be emitted — the data landed and " +
         "the refusals ARE dropped; the per-refusal WILL DROP lines carrying this correlationId " +
         "are the surviving record",
@@ -3930,16 +4225,19 @@ function logRefusalConfirmation(
   }
 }
 
-function emitRefusalConfirmation(
+function emitRefusalConfirmation<K extends RefusalPayloadSection>(
+  section: K,
   correlationId: string,
   orgId: string,
   refused: number,
-  refusalDetails: ImportResult["brainVocabularyEdges"]["refusalDetails"],
+  refusalDetails: ImportResult[K]["refusalDetails"],
 ): void {
+  const { subject, decisions, sourceTable } = REFUSAL_CONFIRMATION_COPY[section];
   log.warn(
     {
       correlationId,
       orgId,
+      section,
       refused,
       // Both numbers, always. `refused` is the truth and `refusalDetails` is
       // capped, so a reader who sees only the array reads a smaller loss than
@@ -3949,10 +4247,10 @@ function emitRefusalConfirmation(
       detailCap: VOCABULARY_REFUSAL_DETAIL_CAP,
       refusalDetails,
     },
-    "Vocabulary merge DID DROP arriving alias edges — the import COMMITTED, so this many " +
-      "approved human review decisions are permanently not applied in this region. Every " +
+    `${subject} — the import COMMITTED, so this many ` +
+      `${decisions} are permanently not applied in this region. Every ` +
       "preceding 'WILL DROP' line carrying this correlationId is now a fact. The source " +
-      "region's own brain_vocabulary_edge rows are the recovery path and its cleanup deletes " +
+      `region's own ${sourceTable} rows are the recovery path and its cleanup deletes ` +
       "them once the grace period expires; the same payloads are recorded on the source's " +
       "region_migrations row, which cleanup never touches.",
   );

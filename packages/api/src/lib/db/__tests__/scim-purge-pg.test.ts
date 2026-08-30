@@ -132,6 +132,15 @@ const BETTER_AUTH_BOOTSTRAP_SQL = `
     email TEXT,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
   );
+  CREATE TABLE IF NOT EXISTS "apikey" (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    start TEXT,
+    key TEXT,
+    "referenceId" TEXT NOT NULL,
+    metadata TEXT,
+    "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
 `;
 
 /**

@@ -3006,3 +3006,96 @@ export interface BrainFactRetirableListResponse {
   readonly observations: readonly BrainFactRetirableObservation[];
   readonly total: number;
 }
+
+// ---------------------------------------------------------------------------
+// Stage-0 triage: the backlog, and the verb that clears it (#5534)
+// ---------------------------------------------------------------------------
+
+/**
+ * One triage rule's share of the held-back backlog.
+ *
+ * `rule` is the stored `brain_episodes.triage_reason` — the id of the stage-0
+ * rule that routed the episode out. It is a `string`, not a union over today's
+ * rule ids, deliberately: the column holds whatever a past deploy wrote, and a
+ * rule retired from the vocabulary leaves its marks on the rows. `known` is how
+ * a client tells the two apart without hard-coding the vocabulary.
+ */
+export interface BrainTriageBacklogBucket {
+  /** The stored `triage_reason`. */
+  readonly rule: string;
+  /** Episodes this rule is currently holding off the extraction drain. */
+  readonly episodes: number;
+  /**
+   * `false` when this deploy no longer knows the rule id. The bucket is still
+   * real and still re-queueable — through the all-rules arm, which is the one
+   * that reaches an orphaned reason.
+   */
+  readonly known: boolean;
+}
+
+/**
+ * `GET /api/v1/admin/brain-triage` — what stage-0 triage is holding (#5534).
+ *
+ * Counts and rule ids only. No episode body, locator, actor or source id
+ * reaches this response: a rule id says "some deterministic rule matched this
+ * episode's SHAPE", which is exactly what the published rule list already says,
+ * and nothing about what the episode contains.
+ *
+ * `rules` is the vocabulary this deploy knows, each with the rationale an admin
+ * reads before deciding a rule was too aggressive. It is the same list the
+ * server evaluates — served here so the console does not carry a second copy
+ * that can drift from it.
+ */
+export interface BrainTriageBacklogResponse {
+  /** Episodes held off the drain by ANY rule, workspace-wide. */
+  readonly total: number;
+  /** Per-rule breakdown, largest bucket first. Empty when nothing is held. */
+  readonly byRule: readonly BrainTriageBacklogBucket[];
+  /** The rule vocabulary this deploy evaluates, in evaluation order. */
+  readonly rules: readonly BrainTriageRuleDescriptor[];
+  /**
+   * Whether the stage-0 gate is currently ON for this deploy
+   * (`ATLAS_BRAIN_EXTRACTION_TRIAGE_ENABLED`). With the gate off nothing new is
+   * ever marked, so a non-zero `total` beside `enabled: false` means "marks a
+   * previous run left behind", which is a different situation from a growing
+   * backlog and must not render as the same panel.
+   */
+  readonly enabled: boolean;
+}
+
+/** One stage-0 rule, as an admin reads it. */
+export interface BrainTriageRuleDescriptor {
+  /** The id stored in `triage_reason` and accepted by the re-queue's `rule`. */
+  readonly id: string;
+  /** Why bodies matching this rule cannot carry a promotable claim. */
+  readonly rationale: string;
+}
+
+/**
+ * `POST /api/v1/admin/brain-triage/requeue` — the request body (#5534).
+ *
+ * `rule` omitted or `null` re-queues EVERY triaged-out episode in the
+ * workspace: the "the gate itself was too aggressive" case, and the only arm
+ * that reaches marks written under a rule this deploy no longer knows.
+ * A rule id narrows to that rule's verdicts — the "the ack list was wrong"
+ * case, which is why the underlying statement takes the parameter at all.
+ */
+export interface BrainTriageRequeueRequest {
+  readonly rule?: string | null;
+}
+
+/**
+ * `POST /api/v1/admin/brain-triage/requeue` — what it did (#5534).
+ *
+ * ⚠️ `requeued` is not recoverable from the database afterwards. Clearing a
+ * mark sets both triage columns back to NULL, so nothing in `brain_episodes`
+ * records that these particular rows were ever triaged out; the admin-action
+ * audit row is the only durable account of the act, and this number is what it
+ * carries.
+ */
+export interface BrainTriageRequeueResponse {
+  /** Episodes put back on the drain at their original `ingested_at` position. */
+  readonly requeued: number;
+  /** The scope applied, echoed: a rule id, or `null` for every rule. */
+  readonly rule: string | null;
+}

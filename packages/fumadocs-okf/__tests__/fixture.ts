@@ -28,17 +28,22 @@ export function page(
     url: `/${path.replace(/\.(mdx|md)$/i, "").replace(/(^|\/)index$/i, "")}`,
     data: {
       ...fm,
-      getText: noGetText
-        ? undefined
-        : async (type: "processed" | "raw") => {
-            if (type === "processed" && missingProcessed) {
-              // fumadocs-mdx's verbatim error for the missing config opt-in.
-              throw new Error(
-                "getText('processed') requires `includeProcessedMarkdown` to be enabled in your collection config.",
-              );
-            }
-            return body;
-          },
+      // `noGetText` models a source that is not fumadocs-mdx: the doc method
+      // is ABSENT there, not present-and-undefined, which is what the
+      // adapter's `typeof page.data.getText !== "function"` branch sees.
+      ...(noGetText
+        ? {}
+        : {
+            getText: async (type: "processed" | "raw") => {
+              if (type === "processed" && missingProcessed) {
+                // fumadocs-mdx's verbatim error for the missing config opt-in.
+                throw new Error(
+                  "getText('processed') requires `includeProcessedMarkdown` to be enabled in your collection config.",
+                );
+              }
+              return body;
+            },
+          }),
     },
   };
 }

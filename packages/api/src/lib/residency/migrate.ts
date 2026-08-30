@@ -30,7 +30,12 @@
 // `tsconfig` paths, so the scaffold gets this file and this schema from the same
 // commit. That copy is what makes the import safe, not the absence of a
 // registry entry — and `check-template-drift.sh` is what keeps it true.
-import { VocabularyRefusalDetailSchema } from "@useatlas/schemas";
+import {
+  PredicateCardinalityRefusalDetailSchema,
+  VocabularyProposalRefusalDetailSchema,
+  VocabularyRefusalDetailSchema,
+} from "@useatlas/schemas";
+import type { ZodType } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { hasInternalDB, internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
@@ -43,6 +48,8 @@ import type {
   ExportBundle,
   ExportManifest,
   ImportResult,
+  PredicateCardinalityRefusalDetail,
+  VocabularyProposalRefusalDetail,
   VocabularyRefusalDetail,
 } from "@useatlas/types";
 // ⚠️ From `lib/brain/vocabulary`, NOT from `@useatlas/types` beside the type it
@@ -161,7 +168,83 @@ const REFUSAL_ACCOUNTING = [
   "brainPredicateCardinalities",
 ] as const satisfies readonly RefusalCapableSection[];
 
-const REFUSAL_ACCOUNTING_SECTIONS: ReadonlySet<string> = new Set(REFUSAL_ACCOUNTING);
+type RefusalAccountingSection = (typeof REFUSAL_ACCOUNTING)[number];
+
+/**
+ * What the pre-cutover disclosure calls each accounting section's loss (#5533).
+ *
+ * ⚠️ A `Record` OVER THE ACCOUNTING LIST, not a lookup with a fallback. Adding a
+ * section to `REFUSAL_ACCOUNTING` without deciding what its disclosure says is then
+ * a compile error rather than a migration that warns about alias edges while
+ * refusing something else — which is what the single hard-coded sentence did the
+ * moment #5113 gave two more sections a `refused` counter.
+ *
+ * `column` is the `region_migrations` column holding that section's payloads, and
+ * `undefined` means the section has NO payload contract. The disclosure's recovery
+ * clause is emitted only when it is set, because an instruction to go and read a
+ * column that does not exist is worse than no instruction — the same rule
+ * `cleanup.ts` applies to an empty one.
+ */
+const REFUSAL_DISCLOSURE: Record<
+  RefusalAccountingSection,
+  {
+    readonly subject: string;
+    readonly decisions: string;
+    readonly sourceTable: string;
+    readonly column?: string;
+  }
+> = {
+  brainVocabularyEdges: {
+    subject: "curated alias edges",
+    decisions: "approved human review decisions",
+    sourceTable: "brain_vocabulary_edge",
+    column: "vocabulary_refusals",
+  },
+  // Structurally zero today — its only non-imported arm is `DO NOTHING` on an
+  // existing row, which is `skipped`. Present because `REFUSAL_ACCOUNTING` lists it
+  // deliberately, so that a future conflict rule arrives with its copy already
+  // decided rather than falling back to another section's.
+  brainSlackChannelExclusions: {
+    subject: "Slack ingest-scope narrowings",
+    decisions: "human scope decisions",
+    sourceTable: "brain_slack_channel",
+  },
+  brainVocabularyProposals: {
+    subject: "arriving alias-proposal decisions",
+    decisions: "human review decisions (approved or rejected)",
+    sourceTable: "brain_vocabulary_proposal",
+    column: "vocabulary_proposal_refusals",
+  },
+  brainPredicateCardinalities: {
+    subject: "arriving predicate-cardinality decisions",
+    decisions: "human review decisions (approved or rejected)",
+    sourceTable: "brain_predicate_cardinality",
+    column: "predicate_cardinality_refusals",
+  },
+};
+
+/**
+ * Is this section's `refused` ACCOUNTING rather than loss — and if so, what does its
+ * disclosure say?
+ *
+ * ⚠️ ONE LIST, NOT TWO. This used to be a `ReadonlySet` built from
+ * `REFUSAL_ACCOUNTING` beside the record above, and two structures that must agree
+ * are two structures that can disagree — the record is keyed on
+ * `RefusalAccountingSection`, so membership and copy are now the SAME fact and a
+ * section cannot be accounted-for without a sentence to say so.
+ *
+ * The `as RefusalAccountingSection` is RELOCATED here, not removed — `Object.hasOwn`
+ * narrows the object, not the key, so the assertion below still does the work. What
+ * the move buys is that it now sits one line under the runtime check that justifies
+ * it, instead of at a call site where the check was three statements away.
+ */
+function refusalDisclosureFor(
+  section: string,
+): (typeof REFUSAL_DISCLOSURE)[RefusalAccountingSection] | undefined {
+  return Object.hasOwn(REFUSAL_DISCLOSURE, section)
+    ? REFUSAL_DISCLOSURE[section as RefusalAccountingSection]
+    : undefined;
+}
 
 /**
  * Completeness half of the bound above: every section that HAS both a manifest
@@ -347,19 +430,49 @@ export type OperationResult =
  * malformed and screened out. `malformedDetails` separates the last, because that one
  * is a bug in a region rather than a documented bound.
  */
-export interface VocabularyRefusalEvidence {
+export interface RefusalEvidence<TDetail> {
   readonly refused: number;
-  readonly details: readonly VocabularyRefusalDetail[];
+  readonly details: readonly TDetail[];
   /** Entries the target sent that this build could not read. */
   readonly malformedDetails: number;
 }
 
+/** #5112's evidence — the refused alias EDGES. Kept as a name for its call sites. */
+export type VocabularyRefusalEvidence = RefusalEvidence<VocabularyRefusalDetail>;
+
+/**
+ * Every refusal-carrying section's evidence from one target response (#5533).
+ *
+ * ⚠️ ONE OBJECT, THREE SECTIONS, and they are kept apart rather than concatenated.
+ * The three payload shapes are genuinely different (an edge's slot and approver; a
+ * proposal's pair and two statuses; a cardinality's key, two values and a second
+ * canonical norm), each lands in its OWN `region_migrations` column, and each has
+ * its own `length < refused` comparison to make. Merging them would need a
+ * discriminator on the wire that no region sends, and would turn three independent
+ * truncation signals into one that cannot say which section was truncated.
+ *
+ * ⚠️ A section added here without a column to write it to is a compile error at
+ * `transferBundleToTarget`'s `return { … }`, which must name every member — NOT,
+ * as an earlier version of this said, at `recordMigrationRefusals`, which merely
+ * destructures three of them. Destructuring a subset is legal TypeScript, so that
+ * site would have stayed green. The safety property is real; only the mechanism was
+ * misnamed, and a pin that names the wrong site is one nobody can check.
+ */
+export interface MigrationRefusalEvidence {
+  readonly vocabularyEdges: RefusalEvidence<VocabularyRefusalDetail>;
+  readonly vocabularyProposals: RefusalEvidence<VocabularyProposalRefusalDetail>;
+  readonly predicateCardinalities: RefusalEvidence<PredicateCardinalityRefusalDetail>;
+}
+
 /** What {@link screenRefusalDetails} kept, and how many entries it could not read. */
-export interface ScreenedRefusalDetails {
-  readonly details: readonly VocabularyRefusalDetail[];
+export interface ScreenedDetails<TDetail> {
+  readonly details: readonly TDetail[];
   /** Entries the target sent that this build could not read. */
   readonly malformed: number;
 }
+
+/** #5112's screen result. Kept as a name for its call sites. */
+export type ScreenedRefusalDetails = ScreenedDetails<VocabularyRefusalDetail>;
 
 /**
  * Screen `refusalDetails` out of a target region's JSON (#5112).
@@ -419,10 +532,51 @@ export interface ScreenedRefusalDetails {
  * live beside the schema; the reasoning and the numbers are there.
  */
 export function screenRefusalDetails(raw: unknown): ScreenedRefusalDetails {
+  return screenDetailsAgainst(raw, VocabularyRefusalDetailSchema);
+}
+
+/**
+ * The alias-PROPOSAL screen (#5533) — {@link screenRefusalDetails}' contract on the
+ * neighbouring payload. Exported for the same reason: the integration path can only
+ * carry as many refusals as the fixture exports rows, so the cap arm and the
+ * malformed arms are unreachable from there.
+ */
+export function screenProposalRefusalDetails(
+  raw: unknown,
+): ScreenedDetails<VocabularyProposalRefusalDetail> {
+  return screenDetailsAgainst(raw, VocabularyProposalRefusalDetailSchema);
+}
+
+/** The predicate-CARDINALITY screen (#5533). See {@link screenProposalRefusalDetails}. */
+export function screenCardinalityRefusalDetails(
+  raw: unknown,
+): ScreenedDetails<PredicateCardinalityRefusalDetail> {
+  return screenDetailsAgainst(raw, PredicateCardinalityRefusalDetailSchema);
+}
+
+/**
+ * The screen itself, parameterized by schema (#5533).
+ *
+ * ⚠️ ONE IMPLEMENTATION FOR ALL THREE PAYLOADS, and that is the #5303 lesson applied
+ * a second time rather than a tidiness preference. #5303's finding was that the
+ * screen had drifted from the type because it was coupled to it BY HAND; three
+ * hand-copied screens over three schemas would re-create exactly that, three times
+ * over, with the same failure mode — a payload silently stripped of a field that is
+ * the last surviving copy of a human review decision.
+ *
+ * The polarity, the per-entry parse and the pre-loop `.slice()` are all
+ * {@link screenRefusalDetails}' — read its docstring for why each is what it is.
+ * The one thing to keep in mind here is that they now hold for three callers, so
+ * changing any of them changes all three.
+ */
+function screenDetailsAgainst<TDetail>(
+  raw: unknown,
+  schema: ZodType<TDetail>,
+): ScreenedDetails<TDetail> {
   if (raw === undefined || raw === null) return { details: [], malformed: 0 };
   if (!Array.isArray(raw)) return { details: [], malformed: 1 };
 
-  const details: VocabularyRefusalDetail[] = [];
+  const details: TDetail[] = [];
   let malformed = 0;
   // Bounded HERE as well as at the producer, and BEFORE the loop. The producer's
   // cap is a promise about a well-behaved region; this one is a property of what
@@ -437,7 +591,7 @@ export function screenRefusalDetails(raw: unknown): ScreenedRefusalDetails {
     // payload into zero recovered refusals — the opposite of this function's
     // polarity. A bad entry is DROPPED and counted; the good ones beside it
     // survive.
-    const parsed = VocabularyRefusalDetailSchema.safeParse(entry);
+    const parsed = schema.safeParse(entry);
     if (!parsed.success) {
       malformed++;
       continue;
@@ -455,9 +609,10 @@ export function screenRefusalDetails(raw: unknown): ScreenedRefusalDetails {
  * Uses ATLAS_INTERNAL_SECRET for service-to-service auth. The target endpoint
  * is derived from the region's apiUrl in the residency config.
  *
- * On success it returns the target's vocabulary-refusal evidence (#5112) — the
- * count AND the payloads — because this is the only point at which the source
- * ever sees them, and the source is the region that schedules the delete.
+ * On success it returns the target's refusal evidence (#5112, extended to the two
+ * #5113 vocabulary-memory sections by #5533) — the counts AND the payloads —
+ * because this is the only point at which the source ever sees them, and the
+ * source is the region that schedules the delete.
  */
 async function transferBundleToTarget(
   bundle: ExportBundle,
@@ -465,7 +620,7 @@ async function transferBundleToTarget(
   orgId: string,
   migrationId: string,
 ): Promise<
-  | { ok: true; vocabularyRefusals: VocabularyRefusalEvidence }
+  | { ok: true; refusals: MigrationRefusalEvidence }
   | { ok: false; error: string }
 > {
   const secret = process.env.ATLAS_INTERNAL_SECRET;
@@ -577,7 +732,14 @@ async function transferBundleToTarget(
   // makes a later NULL on the column mean "this build never asked" rather than "we
   // forgot". Zero is the honest value in that case: a source that exported no edges
   // cannot have had one refused.
-  let vocabularyRefusals: VocabularyRefusalEvidence = { refused: 0, details: [], malformedDetails: 0 };
+  //
+  // ⚠️ ALL THREE INITIALIZED, for the reason above applied per section (#5533): a
+  // bundle can carry edges and no proposals, or the reverse, and the section the
+  // bundle did not carry must still record a `0` rather than leaving its column
+  // NULL — NULL is reserved for "this build never asked".
+  let vocabularyEdges: RefusalEvidence<VocabularyRefusalDetail> = { refused: 0, details: [], malformedDetails: 0 };
+  let vocabularyProposals: RefusalEvidence<VocabularyProposalRefusalDetail> = { refused: 0, details: [], malformedDetails: 0 };
+  let predicateCardinalities: RefusalEvidence<PredicateCardinalityRefusalDetail> = { refused: 0, details: [], malformedDetails: 0 };
 
   for (const section of RECONCILED_SECTIONS) {
     // Ground truth from the payload where the section IS a top-level array;
@@ -686,7 +848,8 @@ async function transferBundleToTarget(
     }
 
     const refused = got?.refused ?? 0;
-    const refusalIsAccounting = REFUSAL_ACCOUNTING_SECTIONS.has(section);
+    const disclosure = refusalDisclosureFor(section);
+    const refusalIsAccounting = disclosure !== undefined;
     if (refused > 0 && !refusalIsAccounting) {
       log.warn(
         { migrationId, section, refused },
@@ -741,45 +904,48 @@ async function transferBundleToTarget(
     // CUTOVER (#5112). `refused > 0` is not the condition: a target that refuses
     // nothing still tells us `0`, and recording that `0` is what makes a later
     // NULL on the column mean "this build never asked" rather than "we forgot".
+    //
+    // ⚠️ THREE SECTIONS SINCE #5533, one branch each rather than a shared loop over
+    // a table of screens. Each screen returns a DIFFERENT payload type and each
+    // result lands in a differently-typed variable, so a table would have to erase
+    // all three to `unknown` — which is the one thing the screens exist to prevent.
+    // The repetition is three lines; the shared half (the two warns, and the
+    // evidence it builds) is `captureRefusalPayloads`.
+    //
+    // ⚠️ EACH ARM ASSIGNS BOTH, and `captured` is NOT re-derived from `section`
+    // afterwards. It was, in this change's first cut: a second `section === …`
+    // ternary spelling the same mapping a second time, with nothing tying the two
+    // together. That is the defect this very change removed one block down — the
+    // hard-coded `section === "brainVocabularyEdges" ? … : undefined` that left
+    // `detailsRecorded` and `malformedDetails` `undefined` on every other
+    // section — reintroduced by its own fix. A fourth payload section added to the
+    // chain and missed in the ternary would set `disclosure.column`, so the warn
+    // would tell the operator to "read `detailsRecorded` on this line first" while
+    // that field was absent: a recovery instruction naming a field that is not
+    // there, which is the same defect as one naming an empty column. One
+    // assignment per arm makes the two impossible to disagree.
+    let captured: RefusalEvidence<unknown> | undefined;
     if (section === "brainVocabularyEdges") {
-      const screened = screenRefusalDetails(got?.refusalDetails);
-      vocabularyRefusals = {
-        refused,
-        details: screened.details,
-        malformedDetails: screened.malformed,
-      };
-      // ⚠️ TWO WARNS THAT DO NOT DEPEND ON `refused > 0`, because both describe a
-      // TARGET BUG rather than a loss, and a target bug is worth saying out loud
-      // whether or not anything was refused. Round 1 of this PR's review found both
-      // numbers computed and then discarded unless the disclosure below fired — so
-      // a target answering `refused: 0` with a garbage `refusalDetails` produced a
-      // count in hand and not one byte of signal.
-      if (screened.malformed > 0) {
-        log.warn(
-          { migrationId, section, refused, malformedDetails: screened.malformed },
-          "Target region sent refusal payloads this build could not read — they were DROPPED " +
-            "rather than stored, which is the right polarity (the count still reconciles and the " +
-            "source keeps its own rows) but it is a bug in the target region: its payload does " +
-            "not match the contract it answered on.",
-        );
-      }
-      // The inverse of the load-bearing `details.length < refused` comparison. More
-      // payloads than the target's own count contradicts itself, and this module
-      // already refuses an unusable COUNTER on the reasoning that a count which
-      // cannot be trusted is not a count — the same argument applies to a payload
-      // set that disagrees with the count beside it. Not fatal: the count is the
-      // reconciled value and the extra payloads are merely stored.
-      if (screened.details.length > refused) {
-        log.warn(
-          { migrationId, section, refused, detailsRecorded: screened.details.length },
-          "Target region sent MORE refusal payloads than its own refused counter — target bug. " +
-            "The counter is what reconciles and what the audit trail records; the surplus " +
-            "payloads are stored as-is.",
-        );
-      }
+      captured = vocabularyEdges = captureRefusalPayloads(
+        migrationId, section, refused, screenRefusalDetails(got?.refusalDetails),
+      );
+    } else if (section === "brainVocabularyProposals") {
+      captured = vocabularyProposals = captureRefusalPayloads(
+        migrationId, section, refused, screenProposalRefusalDetails(got?.refusalDetails),
+      );
+    } else if (section === "brainPredicateCardinalities") {
+      captured = predicateCardinalities = captureRefusalPayloads(
+        migrationId, section, refused, screenCardinalityRefusalDetails(got?.refusalDetails),
+      );
     }
+    // `undefined` means this section has no payload contract — every section in
+    // `RECONCILED_SECTIONS` except the three above, which includes the one
+    // refusal-ACCOUNTING section that carries no payloads
+    // (`brainSlackChannelExclusions`). The numbers and the recovery clause below
+    // both key off it being present, so a payload-less section is never told to
+    // read a field that is not on its line.
 
-    if (refusalIsAccounting && refused > 0) {
+    if (disclosure && refused > 0) {
       log.warn(
         {
           migrationId,
@@ -790,10 +956,8 @@ async function transferBundleToTarget(
           // signal that the source's own rows are the only copy for some of it,
           // and `malformedDetails > 0` separates "the target sent something this
           // build cannot read" from the documented cap.
-          detailsRecorded:
-            section === "brainVocabularyEdges" ? vocabularyRefusals.details.length : undefined,
-          malformedDetails:
-            section === "brainVocabularyEdges" ? vocabularyRefusals.malformedDetails : undefined,
+          detailsRecorded: captured?.details.length,
+          malformedDetails: captured?.malformedDetails,
         },
         // ⚠️ CONDITIONAL TENSE, and it points at THIS region's own data.
         //
@@ -809,25 +973,32 @@ async function transferBundleToTarget(
         // per-edge detail lives; what changed is that this region's own rows are
         // named first and called the copy that needs no cooperation.
         //
-        // The source does not need them. It still HOLDS its own
-        // `brain_vocabulary_edge` rows, in its own database, for the whole grace
-        // period — the operator's job is to look before the window closes, not
-        // to go reading a foreign log stream.
-        "Target region REFUSED curated alias edges during import — that many approved human " +
-          "review decisions will NOT be applied in the destination. If this migration completes, " +
-          "THIS region's own brain_vocabulary_edge rows are deleted once the cleanup grace " +
-          "period expires: export or re-author them from this region's database before then. " +
-          "Which specific edges were refused is logged in the target region. The full set is also " +
-          "still in THIS region's own brain_vocabulary_edge until cleanup runs, and that is the " +
-          "copy that needs no cooperation from anyone." +
+        // The source does not need them. It still HOLDS its own rows, in its own
+        // database, for the whole grace period — the operator's job is to look
+        // before the window closes, not to go reading a foreign log stream.
+        //
+        // ⚠️ PER-SECTION SINCE #5533, not one sentence about alias edges. Three of
+        // the four accounting sections now refuse rows out of three DIFFERENT
+        // tables, and a disclosure that names `brain_vocabulary_edge` while
+        // reporting a refused predicate-cardinality decision sends the operator to
+        // a table that does not hold it — which is the same defect as naming an
+        // empty column, one step earlier.
+        `Target region REFUSED ${disclosure.subject} during import — that many ` +
+          `${disclosure.decisions} will NOT be applied in the destination. If this migration ` +
+          `completes, THIS region's own ${disclosure.sourceTable} rows are deleted once the ` +
+          "cleanup grace period expires: export or re-author them from this region's database " +
+          "before then. Which specific rows were refused is logged in the target region. The " +
+          `full set is also still in THIS region's own ${disclosure.sourceTable} until cleanup ` +
+          "runs, and that is the copy that needs no cooperation from anyone." +
           // ⚠️ SECTION-SCOPED, because `detailsRecorded` is only populated for the
-          // vocabulary section — this warn is shared with `brainSlackChannelExclusions`,
-          // whose `refused` is structurally zero today but which would otherwise be told
-          // to read a field that is not on its line. A recovery instruction naming an
-          // absent field is the same defect as one naming an empty column.
-          (section === "brainVocabularyEdges"
+          // sections with a payload contract — this warn is shared with
+          // `brainSlackChannelExclusions`, whose `refused` is structurally zero today
+          // but which would otherwise be told to read a field that is not on its line.
+          // A recovery instruction naming an absent field is the same defect as one
+          // naming an empty column.
+          (disclosure.column
             ? " Whatever payloads the target returned are recorded on THIS migration's " +
-              "region_migrations row (vocabulary_refusals), which is platform-classified and " +
+              `region_migrations row (${disclosure.column}), which is platform-classified and ` +
               "outlives the cleanup — but read `detailsRecorded` on this line first: it is how " +
               "many actually landed here, and a target predating the payload contract reports a " +
               "count with none."
@@ -836,68 +1007,142 @@ async function transferBundleToTarget(
     }
   }
 
-  return { ok: true, vocabularyRefusals };
+  return {
+    ok: true,
+    refusals: { vocabularyEdges, vocabularyProposals, predicateCardinalities },
+  };
 }
 
 /**
- * Record the target's refusal evidence on the SOURCE's own migration row (#5112).
+ * Build one section's refusal evidence out of a screen result, and say out loud
+ * anything the screen found wrong with the target's payload (#5112, #5533).
+ *
+ * ⚠️ TWO WARNS THAT DO NOT DEPEND ON `refused > 0`, because both describe a TARGET
+ * BUG rather than a loss, and a target bug is worth saying out loud whether or not
+ * anything was refused. Round 1 of #5112's review found both numbers computed and
+ * then discarded unless the disclosure fired — so a target answering `refused: 0`
+ * with a garbage `refusalDetails` produced a count in hand and not one byte of
+ * signal.
+ */
+function captureRefusalPayloads<TDetail>(
+  migrationId: string,
+  section: string,
+  refused: number,
+  screened: ScreenedDetails<TDetail>,
+): RefusalEvidence<TDetail> {
+  if (screened.malformed > 0) {
+    log.warn(
+      { migrationId, section, refused, malformedDetails: screened.malformed },
+      "Target region sent refusal payloads this build could not read — they were DROPPED " +
+        "rather than stored, which is the right polarity (the count still reconciles and the " +
+        "source keeps its own rows) but it is a bug in the target region: its payload does " +
+        "not match the contract it answered on.",
+    );
+  }
+  // The inverse of the load-bearing `details.length < refused` comparison. More
+  // payloads than the target's own count contradicts itself, and this module
+  // already refuses an unusable COUNTER on the reasoning that a count which
+  // cannot be trusted is not a count — the same argument applies to a payload
+  // set that disagrees with the count beside it. Not fatal: the count is the
+  // reconciled value and the extra payloads are merely stored.
+  if (screened.details.length > refused) {
+    log.warn(
+      { migrationId, section, refused, detailsRecorded: screened.details.length },
+      "Target region sent MORE refusal payloads than its own refused counter — target bug. " +
+        "The counter is what reconciles and what the audit trail records; the surplus " +
+        "payloads are stored as-is.",
+    );
+  }
+  return { refused, details: screened.details, malformedDetails: screened.malformed };
+}
+
+/**
+ * Record the target's refusal evidence on the SOURCE's own migration row (#5112,
+ * extended to the two #5113 vocabulary-memory sections by #5533).
  *
  * This is the durability step the whole issue is about. Everything else in this
  * flow is a log line or a counter; `region_migrations` is `platform`-classified in
  * `bundle-scope.ts`, so `runSourceCleanupSweep` never deletes it — which makes
- * these two columns the one artifact that outlives the grace-period delete of the
- * `brain_vocabulary_edge` rows they describe.
+ * these six columns the one artifact that outlives the grace-period delete of the
+ * `brain_vocabulary_edge`, `brain_vocabulary_proposal` and
+ * `brain_predicate_cardinality` rows they describe.
+ *
+ * ## ONE STATEMENT, SIX COLUMNS
+ *
+ * Not three writes. Three would open a window in which one section's evidence is
+ * durable and another's is not, and the abort decision below is made against the
+ * TOTAL — so a partial write would have to be either re-attempted or reasoned about
+ * per section, for no gain. One `UPDATE` either lands the whole record or lands
+ * none of it, which is the only state its caller (`executeRegionMigration`) can act
+ * on.
  *
  * ## Failing here ABORTS the migration when there is something to lose
  *
  * The polarity is chosen against the irreversible act, exactly as
  * `transferBundleToTarget`'s counter check is. Continuing past a failed write with
- * `refused > 0` would cut over and schedule the destructive cleanup while the only
- * durable record of N approved human decisions is a log line in another region —
- * the precise state this issue exists to remove, re-entered through the error
- * path. Throwing here happens BEFORE cutover, so nothing is deleted and the
- * workspace is still served from this region.
+ * anything refused would cut over and schedule the destructive cleanup while the
+ * only durable record of N human decisions is a log line in another region — the
+ * precise state this issue exists to remove, re-entered through the error path.
+ * Throwing here happens BEFORE cutover, so nothing is deleted and the workspace is
+ * still served from this region.
  *
- * With `refused === 0` a failed write costs a `0` nobody will act on, so it warns
- * and carries on: a migration that is going to lose nothing should not fail on the
- * bookkeeping for the loss.
+ * ⚠️ The threshold is the SUM across all three sections, not the edge count. A
+ * migration that refused no edges and three predicate-cardinality decisions has
+ * exactly as much to lose, and reading only `vocabularyEdges.refused` here would
+ * carry on past a failed write for it — silently re-opening the hole for the two
+ * sections #5533 exists to close.
+ *
+ * With nothing refused anywhere a failed write costs a `0` nobody will act on, so it
+ * warns and carries on: a migration that is going to lose nothing should not fail on
+ * the bookkeeping for the loss.
  *
  * ## Exported for its own real-Postgres test, and that is not a convenience.
  *
  * Both existing halves of this feature's coverage are hand-written statements ABOUT
- * these two columns: the mock suite greps `capturedQueries` for a substring and
+ * these columns: the mock suite greps `capturedQueries` for a substring and
  * inspects `params` without ever executing the SQL, and the pg falsifier seeds the
  * row with its own `INSERT`. So a typo'd column name, a missing `::jsonb` cast, or a
  * dropped `JSON.stringify` was invisible to both — measured: renaming the column in
  * this statement to `vocabulary_refusals_json` left every test green, while in
- * production it makes `recordVocabularyRefusals` throw and (because `refused > 0`
- * aborts) fails EVERY migration that carries a refusal.
+ * production it makes this function throw and (because a refusal aborts) fails EVERY
+ * migration that carries one.
  *
- * `migrate-roundtrip-pg.test.ts` now drives this function against the migrated
- * schema, which is the only thing that confronts the statement with the real table.
+ * `migrate-roundtrip-pg.test.ts` drives this function against the migrated schema,
+ * which is the only thing that confronts the statement with the real table.
  */
-export async function recordVocabularyRefusals(
+export async function recordMigrationRefusals(
   migrationId: string,
-  evidence: VocabularyRefusalEvidence,
+  evidence: MigrationRefusalEvidence,
 ): Promise<void> {
+  const { vocabularyEdges, vocabularyProposals, predicateCardinalities } = evidence;
+  const totalRefused =
+    vocabularyEdges.refused + vocabularyProposals.refused + predicateCardinalities.refused;
   try {
     await internalQuery(
       `UPDATE region_migrations
           SET vocabulary_edges_refused = $2,
-              vocabulary_refusals = $3::jsonb
+              vocabulary_refusals = $3::jsonb,
+              vocabulary_proposals_refused = $4,
+              vocabulary_proposal_refusals = $5::jsonb,
+              predicate_cardinalities_refused = $6,
+              predicate_cardinality_refusals = $7::jsonb
         WHERE id = $1`,
       [
         migrationId,
-        evidence.refused,
+        vocabularyEdges.refused,
         // `null` rather than `'[]'` when there is nothing to record, so a query
         // for "migrations with recoverable payloads" is `IS NOT NULL` and does not
         // have to know that an empty array means the same thing.
-        evidence.details.length === 0 ? null : JSON.stringify(evidence.details),
+        jsonbPayload(vocabularyEdges.details),
+        vocabularyProposals.refused,
+        jsonbPayload(vocabularyProposals.details),
+        predicateCardinalities.refused,
+        jsonbPayload(predicateCardinalities.details),
       ],
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (evidence.refused > 0) {
+    if (totalRefused > 0) {
       // ⚠️ THE DRIVER TEXT GOES TO THE LOG, NEVER INTO THE THROWN MESSAGE — and the
       // first version of this did interpolate it, which was the leak this whole
       // scrubbing discussion is about, committed by the fix for it.
@@ -915,11 +1160,20 @@ export async function recordVocabularyRefusals(
       // with the `migrationId` as the join key, which is the same split the import
       // routes' 500s already use (generic body, `requestId` as the handle).
       log.error(
-        { err: message, migrationId, refused: evidence.refused },
-        "Failed to record refused alias edges on the migration row — aborting before cutover",
+        {
+          err: message,
+          migrationId,
+          refused: totalRefused,
+          // Broken out, because the three losses have three different recovery
+          // paths and an operator reading this needs to know which table to look in.
+          vocabularyEdgesRefused: vocabularyEdges.refused,
+          vocabularyProposalsRefused: vocabularyProposals.refused,
+          predicateCardinalitiesRefused: predicateCardinalities.refused,
+        },
+        "Failed to record refused vocabulary decisions on the migration row — aborting before cutover",
       );
       throw new Error(
-        `Failed to record ${evidence.refused} refused alias edge(s) on the migration row. ` +
+        `Failed to record ${totalRefused} refused vocabulary decision(s) on the migration row. ` +
           `Migration ${migrationId} aborted BEFORE cutover; no source data has been deleted and the ` +
           `workspace is still served from this region. Continuing would schedule the source cleanup ` +
           `with no durable record of the refused decisions — the target region's log would be the ` +
@@ -933,6 +1187,27 @@ export async function recordVocabularyRefusals(
         "refused, so no recovery payload was lost; continuing",
     );
   }
+}
+
+/**
+ * A payload array as a `jsonb` parameter, or `null` when there is nothing to record.
+ *
+ * `null` rather than `'[]'`, so a query for "migrations with recoverable payloads"
+ * is `IS NOT NULL` and does not additionally have to know that an empty array means
+ * the same thing.
+ *
+ * ⚠️ ONE READER FOLDS THE TWO TOGETHER, AND IT ONLY READS ONE OF THESE COLUMNS.
+ * `cleanup.ts`'s delete-time audit selects `COALESCE(jsonb_array_length(
+ * vocabulary_refusals), 0)` — the EDGE column alone. The two #5533 columns have no
+ * reader yet, so the `null` convention here is a property of the write side that
+ * nothing downstream depends on so far. Stated exactly because the first version of
+ * this comment claimed `cleanup.ts` reads "these columns", which is false for four
+ * of the six and would have sent the next maintainer looking for a symmetry that
+ * does not exist. Extending that audit to the two new sections is the deliberate
+ * follow-up recorded on #5533's PR.
+ */
+function jsonbPayload(details: readonly unknown[]): string | null {
+  return details.length === 0 ? null : JSON.stringify(details);
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,12 +1313,22 @@ export async function executeRegionMigration(
     // window where the target has committed a partial import — refusals included
     // — and the source holds no record of it, which is exactly the window a
     // cutover failure lands in. Writing here means the record exists even for a
-    // migration that never completes, and `recordVocabularyRefusals` throwing
+    // migration that never completes, and `recordMigrationRefusals` throwing
     // aborts while nothing has been deleted.
-    await recordVocabularyRefusals(migrationId, transferResult.vocabularyRefusals);
-    const vocabularyEdgesRefused = transferResult.vocabularyRefusals.refused;
+    await recordMigrationRefusals(migrationId, transferResult.refusals);
+    const vocabularyEdgesRefused = transferResult.refusals.vocabularyEdges.refused;
+    const vocabularyProposalsRefused = transferResult.refusals.vocabularyProposals.refused;
+    const predicateCardinalitiesRefused = transferResult.refusals.predicateCardinalities.refused;
 
-    log.info({ migrationId, vocabularyEdgesRefused }, "Phase 2 complete: data transferred to target region");
+    log.info(
+      {
+        migrationId,
+        vocabularyEdgesRefused,
+        vocabularyProposalsRefused,
+        predicateCardinalitiesRefused,
+      },
+      "Phase 2 complete: data transferred to target region",
+    );
 
     // ── Phase 3: Cutover ─────────────────────────────────────────────
     log.info({ migrationId, step: MIGRATION_STEPS.cutting_over }, "Phase 3: Updating region assignment");
@@ -1105,8 +1390,18 @@ export async function executeRegionMigration(
       // `log.warn` in phase 2 sitting beside an audit event built for this. A
       // non-zero value here means the delete this event schedules is what makes
       // the source's copies unrecoverable.
+      //
+      // ⚠️ ALL THREE SINCE #5533. This event names the timer, and the timer now
+      // expires three tables' worth of curated decisions, not one — reporting only
+      // the edges here would understate exactly what the delete makes permanent.
       vocabularyEdgesRefused,
-      vocabularyRefusalDetailsRecorded: transferResult.vocabularyRefusals.details.length,
+      vocabularyRefusalDetailsRecorded: transferResult.refusals.vocabularyEdges.details.length,
+      vocabularyProposalsRefused,
+      vocabularyProposalRefusalDetailsRecorded:
+        transferResult.refusals.vocabularyProposals.details.length,
+      predicateCardinalitiesRefused,
+      predicateCardinalityRefusalDetailsRecorded:
+        transferResult.refusals.predicateCardinalities.details.length,
     });
 
     log.info(
@@ -1126,8 +1421,11 @@ export async function executeRegionMigration(
       // answer different questions and an operator reads them at different times:
       // "did this migration lose any curated decisions" is a property of the
       // migration, and it must be answerable from the terminal event without
-      // correlating back to the scheduling event that preceded it.
+      // correlating back to the scheduling event that preceded it. All three
+      // sections since #5533, on the scheduling event's reasoning.
       vocabularyEdgesRefused,
+      vocabularyProposalsRefused,
+      predicateCardinalitiesRefused,
     });
 
     log.info({ migrationId, workspaceId, sourceRegion, targetRegion, completedAt, vocabularyEdgesRefused }, "Migration completed successfully");
@@ -1150,7 +1448,7 @@ export async function executeRegionMigration(
     // and internal column spellings all survive it. It is a floor, not a filter.
     //
     // What actually keeps driver text off this field is the throw sites not putting it
-    // there: `recordVocabularyRefusals` (#5112) logs the DB error at `error` and throws
+    // there: `recordMigrationRefusals` (#5112, #5533) logs the DB error at `error` and throws
     // a message with none of it. `transferBundleToTarget`'s `Network error connecting
     // to target region: ${msg}` still interpolates a `fetch` error carrying the
     // internal region host — PRE-EXISTING, unchanged here, and filed as a follow-up

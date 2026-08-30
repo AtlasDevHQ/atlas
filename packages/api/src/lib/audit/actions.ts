@@ -636,6 +636,30 @@ export const ADMIN_ACTIONS = {
      * the class counts, never a row's contents.
      */
     gateExport: "brain.gate_export",
+    /**
+     * An admin cleared stage-0 triage marks, putting episodes back on the
+     * extraction drain (#5534, `POST /api/v1/admin/brain-triage/requeue`).
+     * `targetId` is the WORKSPACE (org) id — the act is workspace-scoped and
+     * names no single episode; `metadata` carries `rule` (the id, or `null` for
+     * every rule) and `requeued` (rows cleared).
+     *
+     * ⚠️ **This row is the ONLY durable record of the act**, which is not true
+     * of `tensionSweep` beside it. Re-queueing sets `triaged_out_at` and
+     * `triage_reason` back to NULL, so `brain_episodes` retains no trace that
+     * these rows were ever triaged: after the write there is no query that can
+     * answer "which episodes were re-queued, by whom, under what scope". That
+     * is why the route emits it with `logAdminActionAwait` rather than the
+     * fire-and-forget helper the sweep uses — and why, when the awaited write
+     * rejects, the route reports a 500 whose message says the re-queue
+     * COMMITTED and names the count, instead of inviting a retry of an act that
+     * already happened.
+     *
+     * Emitted for a `requeued: 0` run too, on `tensionSweep`'s reasoning: "an
+     * admin re-queued `known_ack` and nothing moved" is what makes a later
+     * non-zero run interpretable, and its absence would read as "nobody has
+     * re-queued".
+     */
+    triageRequeue: "brain.triage_requeue",
   },
   /**
    * Without these entries a compromised admin could shrink retentionDays

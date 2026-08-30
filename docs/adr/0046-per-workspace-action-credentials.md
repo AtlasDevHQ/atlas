@@ -34,7 +34,7 @@ The workspace is threaded to the executor through a new `ActionExecutionContext`
 
 ## Storage: a new table, not `integration_credentials`
 
-`workspace_action_credentials` (migration 0212), keyed `(workspace_id, target)`, encrypted via `db/secret-encryption.ts` and registered in `INTEGRATION_TABLES` so F-47 rotation and the F-42 residue audit pick it up with no per-table code.
+`workspace_action_credentials` (migration 0213), keyed `(workspace_id, target)`, encrypted via `db/secret-encryption.ts` and registered in `INTEGRATION_TABLES` so F-47 rotation and the F-42 residue audit pick it up with no per-table code.
 
 Extending [ADR-0005](0005-integration-credentials-table.md)'s `integration_credentials` was the obvious alternative and was rejected on shape. That table holds OAuth refresh-token *bundles* for lazy-loaded integration plugins, keyed against a catalog row, with a lifecycle driven by 401-triggered refresh. Action-target credentials are static admin-entered field maps keyed by a target slug, with no catalog row and no refresh lifecycle. Jira makes the collision concrete: the Jira *query* plugin already stores an OAuth bundle in `integration_credentials` for this same workspace, while the Jira *action* uses Basic auth with an account email and API token. One table would key two incompatible payloads on the same natural key.
 

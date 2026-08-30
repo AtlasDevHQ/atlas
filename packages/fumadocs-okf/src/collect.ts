@@ -71,10 +71,15 @@ interface FumadocsDocPage extends DocSourcePage {
 }
 
 function toDocPage(page: FumadocsOkfPage): FumadocsDocPage {
+  // `url` is read eagerly, so absence can stay absence (the metadata below
+  // must stay lazy — see the comment on the getters). Read ONCE into a local:
+  // a structural shim may back it with a getter, and repeating `page.url` in
+  // the condition and the value would read it twice.
+  const url = page.url;
   return {
     page,
     path: page.path,
-    url: page.url,
+    ...(url !== undefined ? { url } : {}),
     // Metadata stays LAZY, mirroring the loader surface: a structural shim
     // may back `data.title` with a getter that reads/parses the file (the
     // docs portal does exactly that), and the core only touches these after
@@ -106,13 +111,21 @@ export function bridgeFumadocsSource(
   const { filter, transform, tags, skipApiReference, ...rest } = options;
   return {
     source: { getPages: () => source.getPages().map(toDocPage) },
+    // Each hook is spread in only when the caller supplied it: the core's
+    // options are exact-optional, and an unset hook must arrive absent rather
+    // than present-and-undefined.
     options: {
       ...rest,
-      isApiReferenceStub:
-        (skipApiReference ?? true) ? (p) => isApiReferencePage(p.page.path) : undefined,
-      filter: filter && ((p) => filter(p.page)),
-      transform: transform && ((body, p) => transform(body, p.page)),
-      tags: typeof tags === "function" ? (p) => tags(p.page) : tags,
+      ...((skipApiReference ?? true)
+        ? { isApiReferenceStub: (p: FumadocsDocPage) => isApiReferencePage(p.page.path) }
+        : {}),
+      ...(filter ? { filter: (p: FumadocsDocPage) => filter(p.page) } : {}),
+      ...(transform
+        ? { transform: (body: string, p: FumadocsDocPage) => transform(body, p.page) }
+        : {}),
+      ...(tags !== undefined
+        ? { tags: typeof tags === "function" ? (p: FumadocsDocPage) => tags(p.page) : tags }
+        : {}),
     },
   };
 }

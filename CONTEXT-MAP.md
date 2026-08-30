@@ -4,11 +4,11 @@ Atlas uses the **multi-context** domain-doc layout (adopted 2026-08-17). This fi
 every bounded context and points at the `CONTEXT.md` that governs it. Consumer rules:
 [docs/agents/domain.md](docs/agents/domain.md).
 
-## Status: the split is underway — 13 of 18 extracted
+## Status: the split is underway — 14 of 18 extracted
 
 ⚠️ **Read the *Governed by* column before following any path below.** It says, per context,
-whether that context has its own file yet. Thirteen do; the other five are still sections of
-the root [`CONTEXT.md`](CONTEXT.md), which shrank from ~85 KB to ~27 KB as they left.
+whether that context has its own file yet. Fourteen do; the other four are still sections of
+the root [`CONTEXT.md`](CONTEXT.md), which shrank from ~85 KB to ~22 KB as they left.
 
 This map lists no path that does not exist. A map naming files that were never written would
 be the same defect this repo spent 2026-08-17 removing from its agent docs — a pointer that
@@ -34,7 +34,7 @@ the Company Atlas context alone spans `packages/api/src/lib/brain/**`, `/admin/b
 | Pillars (the product's four-pillar frame) | [`docs/contexts/pillars/CONTEXT.md`](docs/contexts/pillars/CONTEXT.md) | the frame the rest hangs off |
 | Company Atlas | [`docs/contexts/company-atlas/CONTEXT.md`](docs/contexts/company-atlas/CONTEXT.md) | ADR-0038; stored as `brain_*`, see the two-vocabulary rule. ADR-0044 bounds what may be done with the material: fact content never enters model weights, and customer data is never a training corpus |
 | Chat Platform mechanics | [`docs/contexts/chat-platform-mechanics/CONTEXT.md`](docs/contexts/chat-platform-mechanics/CONTEXT.md) | eight chat-platform adapters |
-| Chat turn presentation | `CONTEXT.md` § Chat turn presentation | |
+| Chat turn presentation | [`docs/contexts/chat-turn-presentation/CONTEXT.md`](docs/contexts/chat-turn-presentation/CONTEXT.md) | |
 | Conversation scope | [`docs/contexts/conversation-scope/CONTEXT.md`](docs/contexts/conversation-scope/CONTEXT.md) | |
 | Knowledge Base mechanics | [`docs/contexts/knowledge-base-mechanics/CONTEXT.md`](docs/contexts/knowledge-base-mechanics/CONTEXT.md) | ADR-0028 |
 | Semantic layer scoping | [`docs/contexts/semantic-layer-scoping/CONTEXT.md`](docs/contexts/semantic-layer-scoping/CONTEXT.md) | |

@@ -57,14 +57,17 @@ function asString(value: unknown): string | undefined {
 
 /** Narrow one raw dimension record onto the fields the renderer reads. */
 function toDimension(name: string, d: Record<string, unknown>): NormalizedDimension {
+  const sql = asString(d.sql);
+  const type = asString(d.type);
+  const description = asString(d.description);
   return {
     name,
-    sql: asString(d.sql),
-    type: asString(d.type),
-    description: asString(d.description),
+    ...(sql !== undefined ? { sql } : {}),
+    ...(type !== undefined ? { type } : {}),
+    ...(description !== undefined ? { description } : {}),
     primary_key: d.primary_key === true,
     virtual: d.virtual === true,
-    sample_values: Array.isArray(d.sample_values) ? d.sample_values : undefined,
+    ...(Array.isArray(d.sample_values) ? { sample_values: d.sample_values } : {}),
   };
 }
 
@@ -339,7 +342,7 @@ function renderMetricDoc(
     },
     stem,
     label,
-    description,
+    ...(description !== undefined ? { description } : {}),
   };
 }
 
@@ -425,7 +428,11 @@ export function exportToOkf(
     if (!entityName) continue;
     const link = renderedMetrics[i];
     const list = metricLinksByEntity.get(entityName) ?? [];
-    list.push({ file: `${link.stem}.md`, label: link.label, description: link.description });
+    list.push({
+      file: `${link.stem}.md`,
+      label: link.label,
+      ...(link.description !== undefined ? { description: link.description } : {}),
+    });
     metricLinksByEntity.set(entityName, list);
   }
 
@@ -451,11 +458,14 @@ export function exportToOkf(
       indexFile(
         "tables/index.md",
         "Tables",
-        layer.entities.map((e, i) => ({
-          href: entityDocs[i].path.replace(/^tables\//, ""),
-          label: asString(e.name) ?? e.table,
-          description: asString(e.description),
-        })),
+        layer.entities.map((e, i) => {
+          const description = asString(e.description);
+          return {
+            href: entityDocs[i].path.replace(/^tables\//, ""),
+            label: asString(e.name) ?? e.table,
+            ...(description !== undefined ? { description } : {}),
+          };
+        }),
       ),
     );
   }
@@ -464,7 +474,11 @@ export function exportToOkf(
       indexFile(
         "references/metrics/index.md",
         "Metrics",
-        renderedMetrics.map((r) => ({ href: `${r.stem}.md`, label: r.label, description: r.description })),
+        renderedMetrics.map((r) => ({
+          href: `${r.stem}.md`,
+          label: r.label,
+          ...(r.description !== undefined ? { description: r.description } : {}),
+        })),
       ),
     );
   }

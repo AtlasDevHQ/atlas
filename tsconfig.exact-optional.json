@@ -29,6 +29,25 @@
     // source into this program transitively. Listed so the manifest states
     // what the gate enforces; __tests__ sits outside src in this package.
     "packages/oauth-helper/src",
-    "packages/oauth-helper/__tests__"
+    "packages/oauth-helper/__tests__",
+    // Stage 3 (#5522). These are the last two packages whose source closure
+    // does not reach packages/api — every other unlisted package imports
+    // @atlas/api, which exports raw src/*.ts, so adding one pulls the whole
+    // api closure into this program (measured: cli 264 errors, mcp 220).
+    // Tests sit outside src in both.
+    "packages/okf-bundle/src",
+    "packages/okf-bundle/__tests__",
+    "packages/fumadocs-okf/src",
+    "packages/fumadocs-okf/__tests__",
+    // Graduated transitively with stage 3, and listed so the manifest states
+    // what the gate enforces: @atlas/fumadocs-okf's round-trip test imports
+    // @atlas/api/lib/knowledge/*, which reaches this directory. It is the one
+    // corner of packages/api whose closure stays clear of the api core; the
+    // rest of the package graduates as its own stage.
+    "packages/api/src/lib/semantic/okf",
+    "packages/okf-bundle/src",
+    "packages/okf-bundle/__tests__",
+    "packages/fumadocs-okf/src",
+    "packages/fumadocs-okf/__tests__"
   ]
 }

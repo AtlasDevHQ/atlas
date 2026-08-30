@@ -70,8 +70,20 @@ async function collectPage<P extends DocSourcePage>(
 
   const derived = deriveArchivePath(page.path);
   const path = [...prefixSegments, derived.path].join("/");
+  // Read each metadata field ONCE into a local: the seam's fields are
+  // routinely getters that read and parse the source file, so a
+  // `...(page.title !== undefined ? { title: page.title } : {})` spread would
+  // double every read (pinned by the adapter's lazy-metadata test).
+  const title = page.title;
+  const description = page.description;
   const content = renderOkfDocument(
-    { title: page.title, description: page.description },
+    {
+      // Conditional spreads, not `{ title }`: the page seam supplies metadata
+      // lazily (so the key is always present, possibly undefined), while
+      // OkfFrontmatter is the exact wire shape — absence has to become real here.
+      ...(title !== undefined ? { title } : {}),
+      ...(description !== undefined ? { description } : {}),
+    },
     tagsFor(page, options.tags),
     body,
   );
@@ -83,7 +95,7 @@ async function collectPage<P extends DocSourcePage>(
       bytes: new TextEncoder().encode(content).length,
       sourcePath: page.path,
     },
-    rename: derived.renamedFromReserved ? { from: page.path, to: path } : undefined,
+    ...(derived.renamedFromReserved ? { rename: { from: page.path, to: path } } : {}),
   };
 }
 

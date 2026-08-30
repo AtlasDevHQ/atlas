@@ -95,6 +95,7 @@ export {
   type CollectSkips,
   type DocSource,
   type DocSourcePage,
+  type IngestCapOverrides,
   type IngestCaps,
   type PackOptions,
   type ReservedRename,

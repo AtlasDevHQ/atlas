@@ -17,7 +17,7 @@
  * terms of the Fumadocs page so site build scripts keep their exact surface.
  */
 
-import type { CollectBaseOptions, IngestCaps } from "@atlas/okf-bundle";
+import type { CollectBaseOptions, IngestCapOverrides, IngestCaps } from "@atlas/okf-bundle";
 
 /** The per-page surface the adapter reads. Satisfied by a fumadocs `Page`. */
 export interface FumadocsOkfPage {
@@ -97,7 +97,7 @@ export interface BuildOptions extends CollectOptions {
    * defaults (`DEFAULT_INGEST_CAPS`); pass the raised values when the
    * target workspace's operator has tuned `ATLAS_KNOWLEDGE_INGEST_MAX_*`.
    */
-  readonly caps?: Partial<IngestCaps>;
+  readonly caps?: IngestCapOverrides;
 }
 
-export type { IngestCaps };
+export type { IngestCapOverrides, IngestCaps };

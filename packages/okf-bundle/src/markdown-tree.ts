@@ -237,8 +237,8 @@ function readEntry(root: string, rel: string, parseYaml: ParseYaml): TreeEntry {
   const data = split.data ?? {};
   return {
     meta: {
-      title: typeof data.title === "string" ? data.title : undefined,
-      description: typeof data.description === "string" ? data.description : undefined,
+      ...(typeof data.title === "string" ? { title: data.title } : {}),
+      ...(typeof data.description === "string" ? { description: data.description } : {}),
       // Passed through raw — the core's tag narrower (`normalizeFrontmatterTags`)
       // drops non-strings at render.
       tags: data.tags,

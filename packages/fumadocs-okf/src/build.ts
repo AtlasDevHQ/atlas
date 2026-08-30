@@ -24,5 +24,8 @@ export async function buildFumadocsOkfBundle(
 ): Promise<BuildResult> {
   const { caps, ...collectOptions } = options;
   const bridged = bridgeFumadocsSource(source, collectOptions);
-  return buildOkfBundle(bridged.source, { ...bridged.options, caps });
+  return buildOkfBundle(bridged.source, {
+    ...bridged.options,
+    ...(caps !== undefined ? { caps } : {}),
+  });
 }

@@ -98,7 +98,10 @@ export class IngestCapExceededError extends Error {
     this.cap = cap;
     this.actual = actual;
     this.limit = limit;
-    this.docPath = docPath;
+    // Assigned only when a per-doc cap named a document: `docPath` is an
+    // exact-optional property, so an absent one stays absent rather than
+    // becoming present-and-undefined.
+    if (docPath !== undefined) this.docPath = docPath;
   }
 }
 

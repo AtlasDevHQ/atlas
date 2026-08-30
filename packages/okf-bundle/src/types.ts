@@ -28,8 +28,23 @@ export interface DocSourcePage {
   readonly path: string;
   /** Rendered URL when the source has one. Optional — used only in messages. */
   readonly url?: string;
-  readonly title?: string;
-  readonly description?: string;
+  /**
+   * Page title, when the source's frontmatter carries one.
+   *
+   * `| undefined` is deliberate under `exactOptionalPropertyTypes`: this is an
+   * IMPLEMENTER-facing seam, and its documented implementation strategy is a
+   * lazy getter (see `createMarkdownTreeSource` and the Fumadocs adapter's
+   * `toDocPage` — the core only touches metadata after a page survives the
+   * filters, so an eager read would cost every skipped api-reference stub a
+   * file read). A getter always makes the key present, so an adapter cannot
+   * express "no title" by absence; it expresses it by value. Consumers read
+   * `string | undefined` either way. The exactness that matters is kept one
+   * layer down: {@link OkfFrontmatter} stays exact, so rendering a document
+   * still has to make absence real.
+   */
+  readonly title?: string | undefined;
+  /** Page description, when present. `| undefined` for the same lazy-getter reason as {@link DocSourcePage.title}. */
+  readonly description?: string | undefined;
   /** Frontmatter tags, when the source carries them. Non-string entries are ignored. */
   readonly tags?: unknown;
   /**
@@ -221,6 +236,25 @@ export interface PackOptions {
   readonly allowEmpty?: boolean;
 }
 
+/**
+ * Cap overrides: `Partial<IngestCaps>` that ALSO accepts an explicitly
+ * `undefined` field.
+ *
+ * The `| undefined` is the point, not a concession to the compiler. These
+ * values come from a site's build config (`caps: { maxDocs: cfg.maxDocs }`),
+ * where the field is routinely absent from the config and therefore
+ * `undefined` at the call site. `resolveIngestCaps` is written to treat that
+ * as absent — a naive spread would overwrite the default with `undefined` and
+ * silently disable generation-time validation, which is the regression its
+ * doc comment and the `an undefined cap override falls back to the default`
+ * test both exist to pin. Narrowing this to exact-optional would delete a
+ * supported (and JS-caller-reachable) shape from the contract while leaving
+ * the runtime guard untestable.
+ */
+export type IngestCapOverrides = {
+  readonly [K in keyof IngestCaps]?: IngestCaps[K] | undefined;
+};
+
 export interface BuildOptions<P extends DocSourcePage = DocSourcePage>
   extends CollectOptions<P>,
     PackOptions {
@@ -229,5 +263,5 @@ export interface BuildOptions<P extends DocSourcePage = DocSourcePage>
    * defaults ({@link DEFAULT_INGEST_CAPS}); pass the raised values when the
    * target workspace's operator has tuned `ATLAS_KNOWLEDGE_INGEST_MAX_*`.
    */
-  readonly caps?: Partial<IngestCaps>;
+  readonly caps?: IngestCapOverrides;
 }

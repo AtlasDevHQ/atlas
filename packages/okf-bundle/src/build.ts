@@ -27,6 +27,7 @@ import {
   type CollectResult,
   type DocSource,
   type DocSourcePage,
+  type IngestCapOverrides,
   type IngestCaps,
   type PackOptions,
 } from "./types";
@@ -140,7 +141,7 @@ export function mergeCollectResults(results: readonly CollectResult[]): CollectR
  * `validateIngestCaps` then silently evaluates false (generation-time
  * validation quietly disabled).
  */
-export function resolveIngestCaps(overrides?: Partial<IngestCaps>): IngestCaps {
+export function resolveIngestCaps(overrides?: IngestCapOverrides): IngestCaps {
   return {
     maxDocs: overrides?.maxDocs ?? DEFAULT_INGEST_CAPS.maxDocs,
     maxDocBytes: overrides?.maxDocBytes ?? DEFAULT_INGEST_CAPS.maxDocBytes,
@@ -159,9 +160,11 @@ export async function buildOkfBundle<P extends DocSourcePage>(
 ): Promise<BuildResult> {
   const collected = await collectPages(source, options);
   const caps = resolveIngestCaps(options.caps);
-  const { bytes, totalDocBytes } = packOkfBundle(collected.docs, caps, {
-    allowEmpty: options.allowEmpty,
-  });
+  const { bytes, totalDocBytes } = packOkfBundle(
+    collected.docs,
+    caps,
+    options.allowEmpty !== undefined ? { allowEmpty: options.allowEmpty } : {},
+  );
   return {
     bytes,
     docs: collected.docs,

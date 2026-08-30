@@ -83,20 +83,22 @@ does **not** implement `no-restricted-syntax` natively.
     the matcher methods reached through `.resolves`/`.rejects` as returning `void`
     (they share the synchronous `MatchersBuiltin` interface), so tsgolint sees
     `await <void>` and flags the `await` as redundant — even though at runtime those
-    methods return a real thenable that MUST be awaited to enforce the assertion.
+    methods return a real thenable that must be awaited (the ⚠️ note below refines what
+    a dropped `await` actually costs on bun 1.4).
     Not a bun-1.4 bump (that is a runtime rewrite; the matcher return types on bun
     `main` are still `void`). **Fix: a repo-side `bun` patch** (`patches/bun-types@1.4.0.patch`
-    via `patchedDependencies`) that rewrites only the async matcher path — a mapped type
-    repoints `resolves`/`rejects` so every matcher method returns `Promise<void>`, leaving
-    the synchronous `expect(x).toBe(y)` path (`void`) untouched. We chose the patch over a
+    via `patchedDependencies`) that rewrites only the async matcher path — a return-type
+    parameter `R` (default `void`) threaded through every `MatchersBuiltin` signature and
+    instantiated as `Promise<void>` on `resolves`/`rejects`, leaving the synchronous
+    `expect(x).toBe(y)` path (`void`) untouched. We chose the patch over a
     repo-side `declare module` augmentation because the augmentation only applies to files
     in a program that includes it, and the repo's programs diverge (several packages have
     no tsconfig; `packages/web` *excludes* its tests, so tsgolint builds inferred per-file
     programs for them) — the patch propagates to every test program uniformly and stays
     correct for future test files, with no per-package wiring. Because the sync path is
     preserved, `no-floating-promises` (now `error`) newly catches a missing `await` before a
-    `.rejects`/`.resolves` assertion — which surfaced one real latent bug (an un-awaited,
-    never-enforced rejection assertion in `lazy-loader.test.ts`). After the patch, 15
+    `.rejects`/`.resolves` assertion — which surfaced one real latent bug (an un-awaited
+    rejection assertion in `lazy-loader.test.ts`). After the patch, 15
     genuine residual redundant-awaits remained (previously masked by the 753 noise) and were
     removed: `await registry.registerDirect(...)` ×11 (`registerDirect` returns `void`) and
     `await validate!(...)` ×4 (synchronous mock returns). **Promoted `await-thenable`
@@ -110,6 +112,32 @@ does **not** implement `no-restricted-syntax` natively.
     `test.d.ts:928` is `resolves: Matchers<Awaited<T>>`), so #4441 stays open. The gate that
     actually catches a silently-dropped patch here is `bun run lint:type-aware` returning to
     753 `await-thenable` findings, not `bun install`.
+    - **Re-rolled 2026-08-30 (#4441): the original mapped type was silently erasing matcher
+      argument types.** The first implementation mapped over `MatchersBuiltin` with
+      `[K in keyof …]: … extends (...args: infer A) => unknown ? (...args: A) => Promise<void>`.
+      `infer A` captures only the *last* overload signature, and every value matcher upstream
+      is an overload pair (`toBe(expected: T)` / `toBe<X = T>(expected: NoInfer<X>)`), so the
+      async path lost argument checking entirely: verified in-tree by adding a bogus property
+      to a `.resolves.toEqual({…})` call in `demo-capture.test.ts`, which the mapped type
+      accepted silently and the `R`-parameter version reports as `TS2769`. All 1,382
+      `.resolves`/`.rejects` sites had unchecked matcher arguments for the life of the mapped
+      type. Threading `R` preserves both overloads and the precise argument types while
+      keeping `await-thenable` at 0 — re-verified after the re-roll: `lint:type-aware` output
+      byte-identical to the mapped-type baseline, `bun run type` clean, so the restored
+      checking surfaced no latent failures. Same shape proposed upstream on #4441.
+      *Re-rolling on a `bun-types` bump* is mechanical but no longer a two-line edit:
+      `bun patch bun-types@<v>`, reset the working copy to the pristine tarball, then in
+      `test.d.ts` rewrite every `): void;` inside `MatchersBuiltin` to `): R;`, add the
+      `R = void` parameter to `Matchers` and `MatchersBuiltin`, and set `not: Matchers<unknown, R>`
+      plus `resolves`/`rejects` to `Matchers<…, Promise<void>>`; `bun patch --commit`. Verify
+      with `bun run lint:type-aware` (0 `await-thenable`) **and** `bun run type` — the second
+      is what catches a re-roll that silently dropped argument checking again.
+    - ⚠️ **The "silently disabled assertion" framing is no longer accurate on bun 1.4.**
+      Dropping the `await` used to leave the assertion unenforced; the bun 1.4 runtime tracks
+      the un-awaited async assertion and **fails the test anyway** (verified with immediate
+      and `setTimeout`-delayed rejections, each attributed to the right test). The type
+      inaccuracy is still real and the 753 false positives are unchanged, but the static
+      `no-floating-promises` catch is now a second line of defence, not the only one.
   - **Wave 4 (config-artifact tail: `no-redundant-type-constituents` 42 → 17, #4433 + #4434).**
     Two independent fixes, each clearing findings that were *config artifacts* of the
     per-package type-aware program — not code smells the sanctioned `bun run type` (root

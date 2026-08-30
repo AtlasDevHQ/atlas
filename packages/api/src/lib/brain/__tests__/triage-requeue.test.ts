@@ -17,9 +17,11 @@
  *      than drop it — that backlog is reachable only through the all-rules arm,
  *      and only if something says it is there.
  *
- * The `-pg` sibling has the live-schema half: that the partial index is used and
- * that a cleared episode actually returns to the drain. Neither is answerable
- * with a double.
+ * `triage-requeue-pg.test.ts` has the live-schema half — that the composed CTE
+ * parses and runs at all, that a cleared episode actually returns to the drain
+ * in its original position, and that 0210's CHECK admits the cleared state.
+ * None of those is answerable with a double, and until that file existed no
+ * Postgres had ever parsed either statement.
  */
 
 import { beforeEach, describe, expect, mock, test } from "bun:test";

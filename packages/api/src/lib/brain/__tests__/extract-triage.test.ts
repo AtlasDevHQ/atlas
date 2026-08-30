@@ -337,4 +337,22 @@ describe("the SQL verbs", () => {
     // own verdicts.
     expect(REQUEUE_TRIAGED_SQL).toContain("$2::text IS NULL OR triage_reason = $2::text");
   });
+
+  test("the re-queue verb stays CLAUSE-FINAL, so it can be composed into a CTE", () => {
+    // #5534 wraps this exact string: `WITH requeued AS (<this> RETURNING 1)
+    // SELECT count(*)`. A trailing `RETURNING` here makes the composed
+    // statement `RETURNING … RETURNING 1` — a runtime syntax error on an act
+    // that is not undoable — and a `;` or a trailing `--` comment breaks it the
+    // same way. Every `toContain` pin in this file and in
+    // `triage-requeue.test.ts` stays green through all three, because they ask
+    // what the string CONTAINS and never what it ends with.
+    //
+    // The positive proof is `triage-requeue-pg.test.ts`, which executes the
+    // composition. This is the cheap guard that fails in the local suite, next
+    // to the constant, naming the reason.
+    expect(REQUEUE_TRIAGED_SQL).not.toMatch(/RETURNING/i);
+    expect(REQUEUE_TRIAGED_SQL).not.toContain(";");
+    expect(REQUEUE_TRIAGED_SQL).not.toMatch(/--/);
+    expect(REQUEUE_TRIAGED_SQL.trimEnd()).toMatch(/\)$/);
+  });
 });

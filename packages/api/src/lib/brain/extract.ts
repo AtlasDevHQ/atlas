@@ -486,6 +486,14 @@ export const MARK_TRIAGED_SQL = `UPDATE brain_episodes
  * loosens a rule re-queues only that rule's verdicts rather than every triaged
  * episode.
  *
+ * ⚠️ **Must stay CLAUSE-FINAL.** `triage-requeue.ts` composes this exact
+ * string into a data-modifying CTE — `WITH requeued AS (<this> RETURNING 1)` —
+ * so a trailing `RETURNING`, `;` or `--` comment added here makes the composed
+ * statement a runtime syntax error. Every `toContain` pin on both sides stays
+ * green through that; `extract-triage.test.ts` carries a negative pin and
+ * `triage-requeue-pg.test.ts` executes the composition, which are the two
+ * things that would actually catch it.
+ *
  * Its caller is `lib/brain/triage-requeue.ts`, behind
  * `POST /api/v1/admin/brain-triage/requeue` (#5534). ⚠️ Still nothing in the
  * FIBER calls it, and that half was never a scope cut: re-queueing is a

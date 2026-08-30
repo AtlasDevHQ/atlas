@@ -20,8 +20,15 @@
  *      would re-queue nothing and read as a second failure.
  *
  * Whether the SQL clears the right rows is `triage-requeue.test.ts`' question
- * against the statements and the `-pg` suites' against the schema; a double
- * cannot answer it.
+ * against the statements and `triage-requeue-pg.test.ts`' against the live
+ * schema; a double cannot answer it.
+ *
+ * ⚠️ So is WHO did it. This file mocks `@atlas/api/lib/audit` wholesale, so it
+ * asserts the audit ENTRY OBJECT — which carries no actor, because `actor_id`
+ * is resolved inside the function the double replaces.
+ * `admin-brain-triage-attribution.test.ts` is where that is proven, on #5448's
+ * shape, and it is not optional here: naming the human is the reason this
+ * surface is an admin route at all.
  */
 
 import { beforeEach, describe, expect, it, mock } from "bun:test";
@@ -142,8 +149,48 @@ void mock.module("@atlas/api/lib/brain/triage", () => ({
  * off-with-a-backlog case is the one the response field exists for.
  */
 let triageEnabled = false;
+// EVERY named export, on the sibling factories' terms: `mock.module` is
+// file-global, so a partial factory link-fails the moment anything else in this
+// file's graph imports an omitted name. It does not today — the route reaches
+// `extract` for one function — which is exactly the condition the rule exists
+// for, and `admin-brain-facts.test.ts`'s five factories each enumerate names
+// nobody currently uses for the same reason. The re-exported contract/batch
+// names are listed too, since `extract.ts` publishes them as its own.
 void mock.module("@atlas/api/lib/brain/extract", () => ({
+  BRAIN_EXTRACTION_ACTOR: "system:brain-extraction",
+  BATCH_SIZE: 25,
+  QUARANTINE_AFTER_FAILURES: 3,
+  QUARANTINE_PROBE_BASE_MS: 30 * 60 * 1000,
+  ALIAS_PROPOSAL_DEADLINE_MS: 15_000,
+  DRAIN_EPISODES_SQL: "SELECT 1 FROM brain_episodes",
+  STAMP_EXTRACTED_SQL: "UPDATE brain_episodes",
+  MARK_TRIAGED_SQL: "UPDATE brain_episodes",
+  REQUEUE_TRIAGED_SQL: "UPDATE brain_episodes",
+  EXTRACTION_SKIP_REASONS: [
+    "model_unavailable",
+    "no_body",
+    "quarantined",
+    "triaged",
+  ] as const,
+  isBrainExtractionEnabled: () => false,
+  isBrainExtractionBatchEnabled: () => false,
   isBrainExtractionTriageEnabled: () => triageEnabled,
+  getBrainExtractionIntervalMs: () => 60_000,
+  _resetBrainExtractionFailures: () => {},
+  backingOffIds: () => [] as string[],
+  llmFactExtractor: async () => [],
+  resolveExtractionModel: async () => null,
+  runBrainExtractionCycle: () => {
+    throw new Error("the extraction cycle must never run from a route test");
+  },
+  // `extract.ts` re-exports these from `extract-contract` / `extract-batch`
+  // and callers import them FROM `extract`, so the double owes them too.
+  BRAIN_EXTRACTION_PRODUCER: "brain:extraction",
+  EXTRACTION_SYSTEM_PROMPT: "",
+  ExtractionSchema: {},
+  extractionExcerpt: () => "",
+  extractionPrompt: () => "",
+  toFactCandidates: () => [],
 }));
 
 void mock.module("../admin-router", () => ({
@@ -277,10 +324,25 @@ describe("GET /", () => {
     expect(backlogCalls).toEqual([]);
   });
 
-  it("serves an owner, and a self-hosted unauthenticated-local reader", async () => {
+  it("serves an owner", async () => {
     memberRoleResult = "owner";
     expect((await adminBrainTriage.request("/")).status).toBe(200);
+  });
 
+  it("serves the unauthenticated-local arm — which this router cannot actually reach", async () => {
+    // ⚠️ Read the title literally. `triageTarget`'s `unauthenticated-local`
+    // case exists for EXHAUSTIVENESS over `BrainPrincipalContext` (a fourth
+    // origin must be a compile error, not an inherited default) and mirrors
+    // `sweepTarget` one router over. It is NOT reachable in production behind
+    // this router: `ATLAS_AUTH_MODE=none` yields `{ user: undefined }`
+    // (`lib/auth/middleware.ts`), and `requireOrgContext()` reads
+    // `authResult.user?.activeOrganizationId` and 400s before any handler runs.
+    //
+    // An earlier version of this test claimed inverting the arm "would lock
+    // every self-hosted install out of the surface". That was false — the arm
+    // is defensive, and the real self-hosted path onto this router is an
+    // authenticated admin. The test is kept because the arm is kept, and it
+    // says what it actually covers: the switch's own totality.
     AUTH_MODE = "none";
     AUTH_USER = undefined;
     expect((await adminBrainTriage.request("/")).status).toBe(200);
@@ -316,6 +378,19 @@ describe("POST /requeue", () => {
     await post({ rule: null });
     await post({});
     expect(requeueCalls.map((c) => c.rule)).toEqual([null, null]);
+  });
+
+  it("accepts a POST with NO body and no content-type — the bodyless all-rules arm", async () => {
+    // `body: { required: false }` exists for this shape, and `post()` above
+    // cannot reach it: it always sends a content-type and a serialized `{}`.
+    // What zod-openapi actually does here is call `addValidatedData("json", {})`
+    // — not leave the value `undefined`, which is what the route's comment used
+    // to claim and what `admin-revoke.ts` records as a throw. Three recorded
+    // beliefs, so the behaviour gets a test rather than a fourth comment.
+    const res = await adminBrainTriage.request("/requeue", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ requeued: 0, rule: null });
+    expect(requeueCalls).toEqual([{ workspaceId: CURRENT_ORG, rule: null }]);
   });
 
   it("narrows to one rule and records that scope on the audit row", async () => {

@@ -21,10 +21,11 @@
  * something. For an act whose only record is that row, "an operator" is not an
  * answer to "who".
  *
- * **2. It is not an operator-shaped act.** `docs/contexts/operator-vs-customer`
- * puts in the operator binary what touches tenant data destructively, across
- * tenants, outside the gate chain — `ops wipe`, `teardown-verify-accounts`,
- * `gate-export`. Re-queueing is the opposite on every axis: single-workspace,
+ * **2. It is not an operator-shaped act.** ADR-0025 step 4 (#4045) split the
+ * binary out so the workspace-facing CLI "never ships tenant-destructive
+ * direct-DB tooling", and what landed there matches: `ops wipe`,
+ * `teardown-verify-accounts`, `gate-export` — destructive, cross-tenant, or
+ * outside the gate chain. Re-queueing is none of those: single-workspace,
  * additive (it restores a queue position, deletes nothing), and something the
  * WORKSPACE's own admin is the right person to judge, because the judgement is
  * "our ack list was wrong" or "that rule is eating our messages". Routing it
@@ -49,6 +50,22 @@
  * and workspace-scoped, so both routes here would be exceptions to the
  * neighbouring file's stated invariants. `lib/brain/triage-requeue.ts` carries
  * the same argument for the store layer.
+ *
+ * ## What this router adds to the admin app's module graph
+ *
+ * `lib/brain/triage-requeue.ts` imports `extract.ts` for the re-queue statement
+ * (composing it, rather than keeping a second copy — see that module), and this
+ * file imports the gate's own switch from there. `admin.ts` is imported
+ * eagerly, so that makes `extract.ts` reachable from the admin API for the
+ * first time; `lib/effect/layers.ts` deliberately reaches it through `require`
+ * to keep the extraction fiber lazy, so the question is fair.
+ *
+ * Measured rather than worried about: 600 → 607 modules, and four of the seven
+ * are the triage/extract files themselves. The heavy shared graph underneath —
+ * `reconcile.ts`, `identity.ts`, `lib/db` — was already reachable through
+ * `admin-brain-facts.ts`. Restructuring to save four modules would mean moving
+ * a statement out of the module that owns the drain it undoes, which costs more
+ * than it buys. Re-measure before adding a fifth edge into `lib/brain/extract`.
  *
  * ## Counts without content, on a table that holds raw text
  *
@@ -84,6 +101,7 @@ import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type {
   AuthMode,
   BrainTriageBacklogResponse,
+  BrainTriageRequeueRequest,
   BrainTriageRequeueResponse,
 } from "@useatlas/types";
 import {
@@ -307,13 +325,29 @@ adminBrainTriage.openapi(requeueRoute, async (c) => {
         );
       }
 
-      // `body: { required: false }`, so an empty POST is the all-rules arm.
-      // `c.req.valid("json")` is `undefined` when no body was sent, and both
-      // `{}` and `{ rule: null }` mean the same thing — see the request
-      // schema's header on why admitting all three is not a distinction
-      // without meaning.
-      const parsed = c.req.valid("json") as { rule?: string | null } | undefined;
-      const rule = parsed?.rule ?? null;
+      // `body: { required: false }`, so a bodyless POST is the all-rules arm.
+      //
+      // ⚠️ Measured against the pinned `@hono/zod-openapi`, because the
+      // in-tree beliefs about this disagree: `admin-revoke.ts` records that
+      // `c.req.valid` "would throw on an absent body" and parses by hand. What
+      // actually happens on THIS shape is neither that nor `undefined` —
+      // `required: false` plus no `content-type` makes zod-openapi call
+      // `addValidatedData("json", {})`, so `c.req.valid("json")` is `{}`. The
+      // `?? null` below is therefore the working path, not a fallback.
+      //
+      // ⚠️ The one shape that does NOT reach here: `content-type:
+      // application/json` with an EMPTY body. The validator runs, `req.json()`
+      // throws, and hono answers its own 400 ("Malformed JSON in request
+      // body") with no `requestId`. That is a correct refusal of a malformed
+      // request and it is deliberately not intercepted — hand-parsing to
+      // reclaim the envelope would mean this route no longer validates against
+      // the schema it publishes. Send no `content-type`, or send `{}`.
+      //
+      // `{}` and `{ rule: null }` then mean the same thing — see the request
+      // schema's header on why admitting both is not a distinction without
+      // meaning.
+      const parsed = c.req.valid("json") as BrainTriageRequeueRequest;
+      const rule = parsed.rule ?? null;
 
       // A typo guard, not a safety property — an unknown id can only match
       // zero rows, and the all-rules arm reaches every mark regardless. It

@@ -130,8 +130,11 @@ export interface TriageBacklog {
  *
  * Backed by 0210's partial index — `(workspace_id, triage_reason) WHERE
  * triaged_out_at IS NOT NULL AND extracted_at IS NULL` — which this grouping
- * matches exactly, so the count is an index-only scan over the held rows
- * rather than a seq scan of the episode table.
+ * matches exactly, so the count is an index scan over the held rows rather
+ * than a seq scan of the episode table. (An index-ONLY scan additionally needs
+ * a current visibility map, which nothing here guarantees — the weaker claim is
+ * the one the schema supports, and `triage-requeue-pg.test.ts` asserts that
+ * shape rather than this sentence.)
  */
 export const TRIAGE_BACKLOG_SQL = `SELECT triage_reason AS rule,
               count(*)::int AS episodes

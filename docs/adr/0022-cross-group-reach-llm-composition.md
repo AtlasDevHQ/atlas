@@ -11,7 +11,7 @@
 
 The connection-environment model was designed when a workspace had **one datasource** (Postgres). A workspace now holds many heterogeneous datasources (Postgres, MySQL, ClickHouse, Elasticsearch, Snowflake, plus REST datasources like Stripe). Two facts revealed the model is inverted from what users want:
 
-1. **The #3253 multi-engine staging soak** had to *hack* heterogeneous engines (ClickHouse, Elasticsearch) into a single `config.group_id` via psql to make them appear in the picker — forcing different-schema datasources into the homogeneous-**Member** model (Members "share a schema," per CONTEXT.md), which they do not.
+1. **The #3253 multi-engine staging soak** had to *hack* heterogeneous engines (ClickHouse, Elasticsearch) into a single `config.group_id` via psql to make them appear in the picker — forcing different-schema datasources into the homogeneous-**Member** model (Members "share a schema," per [Semantic layer scoping](../contexts/semantic-layer-scoping/CONTEXT.md)), which they do not.
 2. **#3867(b):** the picker showed `mysql-staging` but the agent still cross-routed to ClickHouse on a failure — a *soft middle state*. We almost filed it as a bug; it is actually closer to the intended default. That is the tell: the model needs rethinking, not patching.
 
 The desired end state, from the #3868 grill: a user asks a question and the agent **figures out which of the workspace's datasources hold the answer**, queries them (possibly several), and composes the answer — cross-datasource is the *default*, not an exception.
@@ -28,11 +28,11 @@ The agent's default analytical surface is **every visible Connection group** in 
 
 ### 2. Cross-source answers are LLM composition, not federation
 
-When a question spans multiple groups (or a group + a REST datasource), the agent runs **one query per source** (`executeSQL` per group, `executeRestOperation` per REST datasource) and **correlates the result sets in its own reasoning**. The "join" is the LLM stitching result sets in context — *not* a SQL operation. Each individual query stays within one source's dialect, whitelist, and 4-layer AST validation. Atlas builds **no** cross-engine query engine. (CONTEXT.md → *Cross-source composition*.)
+When a question spans multiple groups (or a group + a REST datasource), the agent runs **one query per source** (`executeSQL` per group, `executeRestOperation` per REST datasource) and **correlates the result sets in its own reasoning**. The "join" is the LLM stitching result sets in context — *not* a SQL operation. Each individual query stays within one source's dialect, whitelist, and 4-layer AST validation. Atlas builds **no** cross-engine query engine. ([Conversation scope](../contexts/conversation-scope/CONTEXT.md) → *Cross-source composition*.)
 
 ### 3. Residency is orthogonal and out of scope
 
-Atlas-internal residency (`ResidencyResolver`, the per-workspace, immutable control-plane region) is **invisible to the agent** and is *not* an analytical axis. A workspace's Atlas-side data is never split across Atlas regions; the customer's own datasources may physically live anywhere, and the agent reaches all of them regardless of location. Cross-group reach therefore **never composes with residency** — there is no residency boundary for it to cross. Multi-residency-in-one-workspace is explicitly out of scope: that need is "two workspaces," not residency-aware reach. (CONTEXT.md → the "region" flagged ambiguity.)
+Atlas-internal residency (`ResidencyResolver`, the per-workspace, immutable control-plane region) is **invisible to the agent** and is *not* an analytical axis. A workspace's Atlas-side data is never split across Atlas regions; the customer's own datasources may physically live anywhere, and the agent reaches all of them regardless of location. Cross-group reach therefore **never composes with residency** — there is no residency boundary for it to cross. Multi-residency-in-one-workspace is explicitly out of scope: that need is "two workspaces," not residency-aware reach. ([Conversation scope](../contexts/conversation-scope/CONTEXT.md) → the "region" flagged ambiguity.)
 
 ### 4. Discovery via a compact, auto-generated Source catalog
 

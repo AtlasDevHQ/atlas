@@ -16,47 +16,50 @@ creating them upfront; `/domain-modeling` (reached via `/grill-with-docs` and
 `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get
 resolved.
 
-⚠️ **Read `CONTEXT-MAP.md` before assuming a context has its own file.** The map is
-mid-migration: the layout is multi-context, but most contexts are still covered by the root
-`CONTEXT.md` and have not been extracted yet. The map states which is which, per context,
-and it is authoritative. Do not infer a `packages/<name>/CONTEXT.md` from the layout — check
-the map, because a path that looks like it should exist and doesn't is how a reader stops
-searching.
+⚠️ **Read `CONTEXT-MAP.md` to find the file a context lives in.** Do not infer a
+`packages/<name>/CONTEXT.md` from the layout — contexts are domain concerns, not packages,
+and a path that looks like it should exist and doesn't is how a reader stops searching.
 
-Concretely, today: **three of the eighteen contexts have their own file** under
-`docs/contexts/` — Company Atlas, Deployment posture, Notebooks (#5302) — and the root
-`CONTEXT.md` still governs the other fifteen. The map's *Governed by* column is the
-per-context answer; this sentence is a summary and the map wins.
+Concretely, today: **the split is complete** — all eighteen contexts have their own file at
+`docs/contexts/<name>/CONTEXT.md` (#5302), and the root `CONTEXT.md` holds no context prose.
+It is kept as the front door: the vocabulary rule that applies to every context, plus a
+pointer back to the map. The map's *Governed by* column is still where you look, because it
+also carries what each context IS — *Deployment posture* was re-verified and its clean-break
+window is CLOSED, *Notebooks* is history only. This sentence is a summary and the map wins.
 
 ## File structure
 
 **Contexts here are domain concerns, not workspace packages.** That is worth stating,
 because the monorepo layout invites the wrong guess: Atlas is a bun workspace
-(`packages/*`, `apps/*`, `plugins/*`, `ee/`), but the existing `CONTEXT.md` is already
+(`packages/*`, `apps/*`, `plugins/*`, `ee/`), but the root `CONTEXT.md` was already
 organised by bounded context — *Company Atlas*, *Chat Platform mechanics*, *Knowledge Base
 mechanics*, *Semantic layer scoping*, *Dashboard editing*, *MCP & agent governance* — and
 most of those cut across several packages. The Company Atlas context alone spans
 `packages/api/src/lib/brain/**`, `packages/web`'s `/admin/brain`, and migrations.
 
-Split along those seams, not along `packages/*`:
+The split followed those seams, not `packages/*`:
 
 ```
 /
 ├── CONTEXT-MAP.md                     ← names every context, points at its CONTEXT.md
-├── CONTEXT.md                         ← the un-split remainder; still covers every
-│                                        context not yet extracted
+├── CONTEXT.md                         ← front door only: the vocabulary rule and a pointer
+│                                        to the map. No context prose lives here.
 ├── docs/adr/                          ← system-wide decisions (44 today)
-└── docs/contexts/
+└── docs/contexts/                     ← one directory per context, eighteen of them
     ├── company-atlas/CONTEXT.md       ← extracted 2026-08-17
-    ├── deployment-posture/CONTEXT.md  ← extracted 2026-08-17 (marked stale)
-    └── notebooks/CONTEXT.md           ← extracted 2026-08-17 (history only)
+    ├── deployment-posture/CONTEXT.md  ← extracted 2026-08-17 (re-verified 2026-08-18)
+    ├── notebooks/CONTEXT.md           ← extracted 2026-08-17 (history only)
+    └── …                              ← the other fifteen, extracted 2026-08-30
 ```
+
+**A new context is a new directory here plus a new row in the map, in the same commit.** The
+root `CONTEXT.md` is not a place to add context prose any more.
 
 ## Use the glossary's vocabulary
 
 When your output names a domain concept (an issue title, a refactor proposal, a hypothesis,
-a test name), use the term as defined in the governing `CONTEXT.md`. Don't drift to synonyms
-the glossary explicitly avoids.
+a test name), use the term as defined in that context's `docs/contexts/<name>/CONTEXT.md`.
+Don't drift to synonyms the glossary explicitly avoids.
 
 ⚠️ Atlas carries **two deliberate vocabularies** and they are not drift. The product noun is
 *Atlas*; the storage/internal noun is still *brain* (`brain_facts`, `lib/brain/**`,

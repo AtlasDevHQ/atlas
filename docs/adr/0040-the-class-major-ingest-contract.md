@@ -81,4 +81,4 @@ The general rule, maintainer-stated: env vars are a last resort — a good defau
 - **Refusing a class outright on missing scopes** — punishes public-channel value to protect private data that is never touched.
 - **Episodes from uploaded bundles** — a claim-injection lane wearing evidence provenance; `correct_fact` is the honest path.
 
-See also: [ADR-0036](./0036-atlas-as-company-brain.md) §T6 (the class-major frame this executes) · [ADR-0039](./0039-the-warehouse-producer-emits-only-what-a-human-enrolled.md) (the warehouse authority arm) · [ADR-0028](./0028-knowledge-base-fourth-pillar.md) §1 (confirmed) · `CONTEXT.md` → "Ingest contract" · [docs/prd/company-atlas.md](../prd/company-atlas.md) (conditions 5 and 7).
+See also: [ADR-0036](./0036-atlas-as-company-brain.md) §T6 (the class-major frame this executes) · [ADR-0039](./0039-the-warehouse-producer-emits-only-what-a-human-enrolled.md) (the warehouse authority arm) · [ADR-0028](./0028-knowledge-base-fourth-pillar.md) §1 (confirmed) · [Company Atlas](../contexts/company-atlas/CONTEXT.md) → "Ingest contract" · [docs/prd/company-atlas.md](../prd/company-atlas.md) (conditions 5 and 7).

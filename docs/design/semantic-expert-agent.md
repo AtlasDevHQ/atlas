@@ -218,7 +218,7 @@ Queries the `audit_log` and `learned_patterns` tables. Subject to org scoping in
 
 **Validation seam (retired standalone `validateProposal` tool, #4513)**
 
-Validation is a seam, not a tool (CONTEXT.md § Semantic improvement). There is no
+Validation is a seam, not a tool ([Semantic improvement](../contexts/semantic-improvement/CONTEXT.md)). There is no
 standalone `validateProposal` step whose verdict floats free — the gates are folded
 into the two seams where an Amendment lives:
 

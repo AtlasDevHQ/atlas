@@ -29,6 +29,7 @@ import {
   collectSemanticFiles,
   createFileTransportPythonBackend,
   directoryEntryNames,
+  enforcePythonEgress,
   installPythonPackages,
   isNotFoundSdkError,
   runHealthCheckWithTimeout,
@@ -36,6 +37,7 @@ import {
 } from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
+  EnforceablePythonEgress,
   PluginExploreBackend,
   PluginExecResult,
   PluginHealthResult,
@@ -130,6 +132,52 @@ async function createE2BSandbox(config: E2BSandboxConfig): Promise<any> {
 
 /** The sandbox directory Python executions are staged under. */
 const E2B_PYTHON_WORK_DIR = "/home/user/atlas-python";
+
+/**
+ * Every destination, in the form E2B's `denyOut` takes.
+ *
+ * A CIDR deliberately: E2B's schema states that "domain names are not supported
+ * for deny rules", so the deny half of the allowlist has to be expressed as
+ * addresses. Pairing it with `allowOut` is unambiguous rather than a guess about
+ * rule ordering — the same schema states that "allowed entries always take
+ * precedence over denied entries".
+ */
+const E2B_ALL_TRAFFIC = "0.0.0.0/0";
+
+/**
+ * Apply the host's per-request egress bound to a live E2B sandbox.
+ *
+ * `updateNetwork` is the *post-create* form deliberately: the sandbox has to
+ * reach PyPI for `installPythonPackages` before it is narrowed. The update
+ * replaces the egress configuration atomically — every field omitted here is
+ * cleared server-side, which is what makes this a bound rather than an addition
+ * to whatever the sandbox already carried.
+ *
+ * `deny-all` goes through `allowInternetAccess: false`, which E2B documents as
+ * equivalent to denying `0.0.0.0/0`. An allowlist sends the datasource hosts as
+ * `allowOut` — which accepts bare domain names — over a deny of everything.
+ *
+ * Verified against `e2b` 2.45.0; the peer range requires it.
+ */
+async function applyE2BEgress(
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  sandbox: any,
+  policy: EnforceablePythonEgress,
+): Promise<void> {
+  if (typeof sandbox.updateNetwork !== "function") {
+    throw new Error(
+      "the installed e2b SDK has no sandbox.updateNetwork() — upgrade e2b to >=2.45.0",
+    );
+  }
+  if (policy.mode === "deny-all") {
+    await sandbox.updateNetwork({ allowInternetAccess: false });
+    return;
+  }
+  await sandbox.updateNetwork({
+    allowOut: [...policy.hosts],
+    denyOut: [E2B_ALL_TRAFFIC],
+  });
+}
 
 /**
  * Adapt an E2B sandbox to the SDK's {@link PythonSandboxSession} primitives.
@@ -317,6 +365,13 @@ export function buildE2BSandboxPlugin(
               try {
                 await session.mkdir(E2B_PYTHON_WORK_DIR);
                 await installPythonPackages(session, config.pythonPackages, "E2B", log);
+                // Lock down AFTER the install and before any agent code runs —
+                // the same two-phase shape the in-tree Vercel backend uses, and
+                // the only ordering under which a deny-all bound and a working
+                // `pip install` can both be true.
+                await enforcePythonEgress(options.networkPolicy, "E2B", (policy) =>
+                  applyE2BEgress(sandbox, policy),
+                );
               } catch (err) {
                 await session.destroy();
                 throw err;
@@ -329,13 +384,21 @@ export function buildE2BSandboxPlugin(
       },
 
       /**
-       * E2B exposes no per-sandbox host allowlist, so the host's per-request
-       * REST egress bound cannot be applied here — declared rather than
-       * implied by omission (#4665). E2B BYOC deployments run inside the
-       * customer's own VPC, where egress is the customer's to bound at the
-       * network layer.
+       * The host's per-request REST egress bound IS applied here, via
+       * `sandbox.updateNetwork` after the package install and before any agent
+       * code runs — see `applyE2BEgress`. Verified against the `e2b` SDK
+       * 2.45.0, which is why the peer range requires it.
+       *
+       * This read `"unsupported"` until the re-verify on issue 4666: #5500
+       * declared it on the basis that E2B exposed no per-sandbox host
+       * allowlist, and by then it did.
+       *
+       * "Enforced" is upheld by failing closed, not by assuming the call
+       * succeeds — a rejected policy (an outdated SDK, a deployment that does
+       * not support egress rules) fails the Python run rather than downgrading
+       * it silently.
        */
-      pythonEgressControl: "unsupported",
+      pythonEgressControl: "enforced",
     },
 
     security: {

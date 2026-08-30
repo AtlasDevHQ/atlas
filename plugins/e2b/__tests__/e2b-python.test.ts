@@ -30,13 +30,28 @@ let runImpl: (command: string) => Promise<unknown> = async () => ({
 });
 let killed = 0;
 let created = 0;
+const networkCalls: Record<string, unknown>[] = [];
+/**
+ * Ordering matters more than either call on its own: the bound has to land
+ * after `pip install` (a narrowed sandbox cannot reach PyPI) and before any
+ * agent code runs. One timeline is the only way to assert both at once.
+ */
+const timeline: string[] = [];
+let updateNetworkImpl: (network: Record<string, unknown>) => Promise<void> = async () => {};
+let omitUpdateNetwork = false;
 
 const sandboxStub = {
   commands: {
     run: (command: string, options: Record<string, unknown>) => {
       runCalls.push({ command, options });
+      timeline.push(command.startsWith("'pip'") ? "pip" : `exec:${command.slice(0, 9)}`);
       return runImpl(command);
     },
+  },
+  updateNetwork: async (network: Record<string, unknown>) => {
+    networkCalls.push(network);
+    timeline.push("network");
+    await updateNetworkImpl(network);
   },
   files: {
     write: async (path: string, data: string) => {
@@ -62,14 +77,20 @@ const sandboxStub = {
   },
 };
 
-void mock.module("e2b", () => ({
-  Sandbox: {
-    create: async () => {
-      created++;
-      return sandboxStub;
-    },
-  },
-}));
+/**
+ * Shared by both mock registrations below — two copies could disagree about
+ * `omitUpdateNetwork` and quietly make the outdated-SDK test vacuous.
+ */
+async function createStub(): Promise<unknown> {
+  created++;
+  if (omitUpdateNetwork) {
+    const { updateNetwork: _omitted, ...rest } = sandboxStub;
+    return rest;
+  }
+  return sandboxStub;
+}
+
+void mock.module("e2b", () => ({ Sandbox: { create: createStub } }));
 
 // Dual-package hazard guard (#3409): the plugin loads the SDK with require().
 // e2b's exports map does not split import/require today, so the bare mock above
@@ -77,12 +98,7 @@ void mock.module("e2b", () => ({
 // turns these into failures rather than into live E2B API calls.
 try {
   void mock.module(require.resolve("e2b"), () => ({
-    Sandbox: {
-      create: async () => {
-        created++;
-        return sandboxStub;
-      },
-    },
+    Sandbox: { create: createStub },
   }));
 } catch {
   // intentionally ignored: SDK not installed — the bare-specifier mock above
@@ -125,18 +141,22 @@ beforeEach(() => {
   fsState.files.clear();
   fsState.dirs.clear();
   runCalls.length = 0;
+  networkCalls.length = 0;
+  timeline.length = 0;
   killed = 0;
   created = 0;
   runImpl = async () => ({ stdout: "", stderr: "", exitCode: 0 });
+  updateNetworkImpl = async () => {};
+  omitUpdateNetwork = false;
 });
 
 describe("e2b sandbox plugin — Python surface", () => {
   test("declares createPython and an honest egress posture", () => {
     const plugin = buildE2BSandboxPlugin(CONFIG);
     expect(typeof plugin.sandbox.createPython).toBe("function");
-    // E2B has no per-sandbox host allowlist, so the host's per-request egress
-    // bound cannot be applied — declared, not implied by omission.
-    expect(plugin.sandbox.pythonEgressControl).toBe("unsupported");
+    // "enforced" since the issue-4666 re-verify: the e2b SDK 2.45.0 does expose
+    // per-sandbox egress control, which #5500 predated.
+    expect(plugin.sandbox.pythonEgressControl).toBe("enforced");
   });
 
   test("round-trips code and data through the org's own E2B sandbox", async () => {
@@ -259,6 +279,118 @@ describe("e2b sandbox plugin — Python surface", () => {
     // The user code that needs a missing package reports its own ImportError,
     // which is far more actionable than a sandbox that refused to start.
     expect(result).toEqual({ success: true, output: "ok" });
+  });
+
+  // -------------------------------------------------------------------------
+  // Egress enforcement (issue 4666 re-verify of #5500's "unsupported")
+  // -------------------------------------------------------------------------
+
+  test("cuts the sandbox off the internet when the host asks for deny-all", async () => {
+    respondWithResult({ success: true });
+    const plugin = buildE2BSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "deny-all" } }),
+    );
+    await backend.exec("print(1)");
+
+    // E2B documents allowInternetAccess: false as equivalent to denying
+    // 0.0.0.0/0, and it says so in one field rather than two.
+    expect(networkCalls).toEqual([{ allowInternetAccess: false }]);
+  });
+
+  test("narrows to the host's datasource hosts on an allowlist", async () => {
+    respondWithResult({ success: true });
+    const plugin = buildE2BSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({
+        networkPolicy: { mode: "allowlist", hosts: ["crm.example.com", "api.example.com"] },
+      }),
+    );
+    await backend.exec("print(1)");
+
+    // allowOut paired with a deny of everything is E2B's own documented
+    // deny-everything-except idiom; allowOut alone would leave the default
+    // (all outbound allowed) in play if E2B ever reads an empty deny as open.
+    expect(networkCalls).toEqual([
+      {
+        allowOut: ["crm.example.com", "api.example.com"],
+        denyOut: ["0.0.0.0/0"],
+      },
+    ]);
+  });
+
+  test("locks down AFTER pip install and BEFORE any agent code runs", async () => {
+    // Narrowing first would cut the sandbox off from PyPI; narrowing last would
+    // run the agent's code unbounded.
+    respondWithResult({ success: true });
+    const plugin = buildE2BSandboxPlugin({ ...CONFIG, pythonPackages: ["pandas"] });
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "deny-all" } }),
+    );
+    await backend.exec("print(1)");
+
+    expect(timeline.indexOf("pip")).toBeLessThan(timeline.indexOf("network"));
+    expect(timeline.indexOf("network")).toBeLessThan(timeline.indexOf("exec:'python3'"));
+  });
+
+  test("leaves a fresh sandbox alone when the host asks for allow-all", async () => {
+    respondWithResult({ success: true });
+    const plugin = buildE2BSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "allow-all" } }),
+    );
+    await backend.exec("print(1)");
+
+    expect(networkCalls).toEqual([]);
+  });
+
+  test("an empty allowlist is deny-all, never allow-all", async () => {
+    respondWithResult({ success: true });
+    const plugin = buildE2BSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "allowlist", hosts: [] } }),
+    );
+    await backend.exec("print(1)");
+
+    expect(networkCalls).toEqual([{ allowInternetAccess: false }]);
+  });
+
+  test("fails the run closed when E2B rejects the policy", async () => {
+    // The whole point of declaring "enforced": a refused bound must not become
+    // a Python run that ships query rows out of an unbounded sandbox.
+    respondWithResult({ success: true });
+    updateNetworkImpl = async () => {
+      throw new Error("egress rules unsupported on this deployment");
+    };
+    const plugin = buildE2BSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "deny-all" } }),
+    );
+
+    const result = await backend.exec("print(1)");
+
+    expect(result.success).toBe(false);
+    expect(result.success === false && result.error).toContain(
+      "refusing to run Python with an unenforced network bound",
+    );
+    // No agent code ran, and the sandbox it would have run in is gone.
+    expect(runCalls.some((c) => c.command.startsWith("'python3'"))).toBe(false);
+    expect(killed).toBe(1);
+  });
+
+  test("fails closed on an e2b SDK too old to expose updateNetwork", async () => {
+    omitUpdateNetwork = true;
+    respondWithResult({ success: true });
+    const plugin = buildE2BSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "deny-all" } }),
+    );
+
+    const result = await backend.exec("print(1)");
+
+    expect(result.success).toBe(false);
+    expect(result.success === false && result.error).toContain("upgrade e2b");
+    expect(runCalls.some((c) => c.command.startsWith("'python3'"))).toBe(false);
   });
 
   test("close tears the sandbox down", async () => {

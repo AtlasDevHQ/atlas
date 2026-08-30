@@ -29,6 +29,7 @@ import {
   collectSemanticFiles,
   createFileTransportPythonBackend,
   directoryEntryNames,
+  enforcePythonEgress,
   installPythonPackages,
   isNotFoundSdkError,
   runHealthCheckWithTimeout,
@@ -36,6 +37,7 @@ import {
 } from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
+  EnforceablePythonEgress,
   PluginExploreBackend,
   PluginExecResult,
   PluginHealthResult,
@@ -146,6 +148,57 @@ function daytonaCreateParams(config: DaytonaSandboxConfig): Record<string, unkno
 
 /** The sandbox directory Python executions are staged under. */
 const DAYTONA_PYTHON_WORK_DIR = "/home/daytona/atlas-python";
+
+/**
+ * Daytona's documented cap on a per-sandbox domain allow list: at most 20
+ * comma-separated entries. Exceeding it is a hard failure rather than a
+ * truncation — silently dropping host 21 would hand the agent a sandbox that
+ * cannot reach a datasource the host said it could, and the diagnosis would be
+ * a connection timeout inside Python rather than a named error here.
+ */
+const DAYTONA_DOMAIN_ALLOWLIST_MAX = 20;
+
+/**
+ * Apply the host's per-request egress bound to a live Daytona sandbox.
+ *
+ * `updateNetworkSettings` maps onto the same runner-level iptables mechanism as
+ * the `networkBlockAll` / `domainAllowList` create-time parameters, but it is
+ * the *post-create* form that matters here: the sandbox has to reach PyPI for
+ * `installPythonPackages` first, and Daytona's pre-approved essential-services
+ * lists explicitly stop applying once a custom allow list is set.
+ *
+ * The three settings are mutually exclusive, so exactly one is sent. Hosts go
+ * to `domainAllowList` rather than `networkAllowList` because what the host
+ * hands down are datasource hostnames, not CIDRs.
+ *
+ * ⚠️ Daytona documents per-sandbox network overrides as a **Tier 3/4**
+ * organization capability; a Tier 1/2 org's API rejects this call, and that
+ * rejection deliberately fails the whole Python run (see
+ * `enforcePythonEgress`) rather than letting the run proceed unbounded.
+ */
+async function applyDaytonaEgress(
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  sandbox: any,
+  policy: EnforceablePythonEgress,
+): Promise<void> {
+  if (typeof sandbox.updateNetworkSettings !== "function") {
+    throw new Error(
+      "the installed @daytonaio/sdk has no sandbox.updateNetworkSettings() — " +
+        "upgrade @daytonaio/sdk to >=0.201.0",
+    );
+  }
+  if (policy.mode === "deny-all") {
+    await sandbox.updateNetworkSettings({ networkBlockAll: true });
+    return;
+  }
+  if (policy.hosts.length > DAYTONA_DOMAIN_ALLOWLIST_MAX) {
+    throw new Error(
+      `Daytona accepts at most ${DAYTONA_DOMAIN_ALLOWLIST_MAX} allowed domains per sandbox, ` +
+        `and this request carried ${policy.hosts.length}`,
+    );
+  }
+  await sandbox.updateNetworkSettings({ domainAllowList: policy.hosts.join(",") });
+}
 
 /**
  * Adapt a Daytona sandbox to the SDK's {@link PythonSandboxSession}
@@ -383,6 +436,13 @@ export function buildDaytonaSandboxPlugin(
               try {
                 await session.mkdir(DAYTONA_PYTHON_WORK_DIR);
                 await installPythonPackages(session, config.pythonPackages, "Daytona", log);
+                // Lock down AFTER the install and before any agent code runs —
+                // the same two-phase shape the in-tree Vercel backend uses, and
+                // the only ordering under which a deny-all bound and a working
+                // `pip install` can both be true.
+                await enforcePythonEgress(options.networkPolicy, "Daytona", (policy) =>
+                  applyDaytonaEgress(sandbox, policy),
+                );
               } catch (err) {
                 await session.destroy();
                 throw err;
@@ -395,12 +455,20 @@ export function buildDaytonaSandboxPlugin(
       },
 
       /**
-       * Daytona sandboxes have outbound network access with no per-sandbox host
-       * allowlist, so the host's per-request REST egress bound cannot be applied
-       * here — declared rather than implied by omission (#4665). What Daytona
-       * does control is placement: see `target`.
+       * The host's per-request REST egress bound IS applied here, via
+       * `sandbox.updateNetworkSettings` after the package install and before any
+       * agent code runs — see `applyDaytonaEgress`. Verified against
+       * `@daytonaio/sdk` 0.201.0, which is why the peer range requires it.
+       *
+       * This read `"unsupported"` until the re-verify on issue 4666: #5500
+       * declared it on the basis that Daytona exposed no per-sandbox host
+       * allowlist, and by then it did.
+       *
+       * "Enforced" is upheld by failing closed, not by assuming the call
+       * succeeds — a rejected policy (a Tier 1/2 organization, an outdated SDK)
+       * fails the Python run instead of downgrading it silently.
        */
-      pythonEgressControl: "unsupported",
+      pythonEgressControl: "enforced",
     },
 
     security: {

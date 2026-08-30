@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/daytona",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Atlas Daytona sandbox plugin",
   "type": "module",
   "main": "./src/index.ts",
@@ -37,8 +37,8 @@
   },
   "license": "MIT",
   "peerDependencies": {
-    "@daytonaio/sdk": ">=0.1.0",
-    "@useatlas/plugin-sdk": ">=0.0.18"
+    "@daytonaio/sdk": ">=0.201.0",
+    "@useatlas/plugin-sdk": ">=0.0.19"
   },
   "devDependencies": {
     "ai": "^6.0.235",

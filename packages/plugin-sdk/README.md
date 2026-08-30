@@ -118,7 +118,9 @@ carrying:
 - `timeoutMs`, `maxOutputBytes` — the host's budget and output cap.
 - `networkPolicy` — a provider-neutral `{ mode, hosts }` egress bound. Declare
   `pythonEgressControl: "unsupported"` if your provider cannot apply it; the
-  host logs the gap rather than assuming it was applied.
+  host logs the gap rather than assuming it was applied. Declare `"enforced"`
+  only if you actually apply it *and* fail the run when the provider refuses —
+  see `enforcePythonEgress` below.
 - `scrubErrorDetail` — apply to provider error text before logging it.
 
 Most providers do not need to implement this by hand.
@@ -134,6 +136,39 @@ createPython: (options) =>
     providerName: "MyProvider",
     createSession: async () => myProviderSession(await createSandbox()),
   }),
+```
+
+##### Applying the egress bound
+
+`enforcePythonEgress(options.networkPolicy, providerName, apply)` maps the
+host's policy onto your provider's primitive. It resolves `allow-all`, an absent
+policy and an empty allowlist away first, so your `apply` only ever sees
+`deny-all` or a non-empty `allowlist` — and it turns a refusal into a throw,
+which is what makes `pythonEgressControl: "enforced"` a promise rather than a
+hope.
+
+Call it inside `createSession`, **after** installing packages and **before**
+returning the session, so the sandbox can still reach PyPI while it is wide and
+is narrowed before any agent code runs:
+
+```typescript
+createSession: async () => {
+  const sandbox = await createSandbox();
+  const session = myProviderSession(sandbox);
+  try {
+    await session.mkdir(WORK_DIR);
+    await installPythonPackages(session, packages, "MyProvider", log);
+    await enforcePythonEgress(options.networkPolicy, "MyProvider", (policy) =>
+      policy.mode === "deny-all"
+        ? sandbox.blockAllEgress()
+        : sandbox.allowEgressTo(policy.hosts),
+    );
+  } catch (err) {
+    await session.destroy();
+    throw err;
+  }
+  return session;
+},
 ```
 
 ## Base Fields

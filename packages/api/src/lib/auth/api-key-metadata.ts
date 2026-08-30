@@ -193,7 +193,8 @@ export function boundClaimsToMinter(
 }
 
 /**
- * How many times {@link coerceMetadataBag} will JSON.parse its way inward.
+ * The most `JSON.parse` calls {@link coerceMetadataBag} will spend reaching an
+ * object — and exactly that many, not one more.
  *
  * ONE is the normal shape: Better Auth's `apikey.metadata` field is declared
  * `type: "string"` with a `transform.input` of `JSON.stringify`, so the column
@@ -219,7 +220,11 @@ const MAX_METADATA_UNWRAPS = 2;
  */
 function coerceMetadataBag(raw: unknown): Record<string, unknown> | null {
   let value = raw;
-  for (let depth = 0; depth <= MAX_METADATA_UNWRAPS; depth++) {
+  // The loop body spends one parse per iteration and the check after it reads
+  // the last one's result, so the parse budget is exactly
+  // MAX_METADATA_UNWRAPS. An `unwraps <= MAX` bound here would quietly spend a
+  // third and make the constant's name a lie.
+  for (let unwraps = 0; unwraps < MAX_METADATA_UNWRAPS; unwraps++) {
     if (isPlainObject(value)) return value;
     if (typeof value !== "string") return null;
     try {
@@ -231,7 +236,7 @@ function coerceMetadataBag(raw: unknown): Record<string, unknown> | null {
       return null;
     }
   }
-  return null;
+  return isPlainObject(value) ? value : null;
 }
 
 /**

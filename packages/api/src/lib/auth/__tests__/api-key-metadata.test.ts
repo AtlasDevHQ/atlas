@@ -32,6 +32,13 @@ describe("apiKeyMetadataNamesOrg()", () => {
     expect(apiKeyMetadataNamesOrg(JSON.stringify(stored), ORG)).toBe(true);
   });
 
+  it("stops at the declared unwrap budget (a triple-stringified bag is not read)", () => {
+    // Pins MAX_METADATA_UNWRAPS at its boundary, so widening or narrowing the
+    // budget is a visible change rather than a silent one. Nothing writes this
+    // shape; the assertion is that the bound is where the constant says.
+    expect(apiKeyMetadataNamesOrg(JSON.stringify(JSON.stringify(stored)), ORG)).toBe(false);
+  });
+
   it("answers false — never throws — for values that are not metadata at all", () => {
     // Totality is the requirement, not politeness: this runs inside the purge
     // transaction, where a throw on one malformed row aborts an entire

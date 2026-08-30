@@ -618,6 +618,10 @@ export const RETAINED_TABLES: ReadonlySet<string> = new Set(
 //   has been enabled: an absent class means "never enabled — nothing to
 //   purge", NOT an incomplete purge, which is why they do not ride
 //   `tableExists` (whose absence semantics are region drift).
+//   `apikey` is probed through `tableExists` for the OPPOSITE reason
+//   (#5525): its plugin is unconditional, so an absent relation IS drift
+//   and must be reported as a skipped table rather than abort the whole
+//   erasure — the `scim_group_mappings` incident, one plugin over.
 // - `user_scoped` — keyed on a user id. `orphanArm` names the mechanism:
 //   `"explicit-delete"` is a statement in the orphaned-user arm;
 //   `"user-fk-cascade"` is the FK better-auth's migrator creates — every
@@ -755,6 +759,22 @@ export const BETTER_AUTH_PURGE_DECISIONS = {
   scimSubject: { decision: "user_scoped", reason: "One row per SCIM-managed user ACROSS domains (userId → user.id), not per provisioning domain — deleting it by domain would break another workspace's provisioning for a shared user. Deleted explicitly for orphaned users (probed: the relation exists only where EE SCIM ran); the migrator-default cascade covers deployments that predate the statement.", orphanArm: "explicit-delete" },
 } as const satisfies Record<string, BetterAuthTableScope>;
 
+/**
+ * The registry widened to its interface, for the derivations below.
+ *
+ * `as const satisfies` gives every entry a LITERAL type carrying only the keys
+ * it actually writes, so `v.orphanArm` is a compile error against any entry
+ * that omits it — even inside a filter that can only reach entries which have
+ * it. The old derivation dodged that by testing `decision === "user_scoped"`
+ * first, which narrowed the union to entries where the field is declared; that
+ * is precisely the coupling #5525 had to break, since a `purged` entry can now
+ * carry the arm too. Widening once, here, keeps the declarations literal — the
+ * mapped types in `internal.ts` still read them — while letting these three
+ * sets ask about an optional field directly.
+ */
+const betterAuthScopeFor: Readonly<Record<string, BetterAuthTableScope>> =
+  BETTER_AUTH_PURGE_DECISIONS;
+
 /** Better Auth tables the purge deletes with an explicit workspace-scoped statement. */
 export const BETTER_AUTH_PURGED_TABLES: ReadonlySet<string> = new Set(
   Object.entries(BETTER_AUTH_PURGE_DECISIONS)
@@ -772,7 +792,7 @@ export const BETTER_AUTH_PURGED_TABLES: ReadonlySet<string> = new Set(
  * verifies — a declared arm nothing checked.
  */
 export const BETTER_AUTH_ORPHAN_DELETE_TABLES: ReadonlySet<string> = new Set(
-  Object.entries(BETTER_AUTH_PURGE_DECISIONS)
+  Object.entries(betterAuthScopeFor)
     .filter(([, v]) => v.orphanArm === "explicit-delete")
     .map(([k]) => k),
 );
@@ -785,9 +805,15 @@ export const BETTER_AUTH_ORPHAN_DELETE_TABLES: ReadonlySet<string> = new Set(
  * the two statements apart: `BETTER_AUTH_PURGED_TABLES` and
  * `BETTER_AUTH_ORPHAN_DELETE_TABLES` each contain such a table, and each is
  * satisfied by whichever single DELETE happens to exist.
+ *
+ * This is `BETTER_AUTH_ORPHAN_DELETE_TABLES` narrowed by
+ * `decision === "purged"` — deliberately a subset rather than a rename. That
+ * set answers "does an orphan-arm statement have to exist?", which is also
+ * true of the plain `user_scoped` entries; this one answers "does a SECOND
+ * statement have to exist alongside it?", which only these can be.
  */
 export const BETTER_AUTH_DUAL_ARM_TABLES: ReadonlySet<string> = new Set(
-  Object.entries(BETTER_AUTH_PURGE_DECISIONS)
+  Object.entries(betterAuthScopeFor)
     .filter(([, v]) => v.decision === "purged" && v.orphanArm === "explicit-delete")
     .map(([k]) => k),
 );

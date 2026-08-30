@@ -177,6 +177,7 @@ const BETTER_AUTH_BOOTSTRAP_SQL = `
     id TEXT PRIMARY KEY,
     name TEXT,
     start TEXT,
+    key TEXT,
     "referenceId" TEXT NOT NULL,
     metadata TEXT,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -678,6 +679,33 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       [NEIGHBOUR, USER_SHARED],
     );
 
+    // ── Better-Auth apikey rows, both arms (#5525) ──
+    // `apikey` is `purged`, so the non-zero-count assertion below demands a
+    // row the workspace arm actually removes — and the FIXTURE HAS NO FK, so
+    // neither arm can be covered by a cascade the way `session` and `account`
+    // are. One key per arm, plus the NEIGHBOUR control:
+    //   - `ak-org-shared`  bound to ORG, owner survives in NEIGHBOUR → the
+    //     workspace arm, and the only row it can be counted from here.
+    //   - `ak-stale-orphan` owned by the orphaned user but naming NEIGHBOUR →
+    //     the orphan arm, unreachable from the workspace predicate.
+    //   - `ak-nb-shared`   bound to NEIGHBOUR, owner survives → must stand.
+    // The exhaustive case analysis (legacy double-stringified metadata,
+    // non-JSON metadata, an unmarked bag, the residue sweep) is
+    // `apikey-purge-pg.test.ts`; these three are here so this suite's own
+    // count and blast-radius claims are not vacuous for the table.
+    for (const [id, referenceId, orgId] of [
+      ["ak-org-shared", USER_SHARED, ORG],
+      ["ak-stale-orphan", USER_ORPHAN, NEIGHBOUR],
+      ["ak-nb-shared", USER_SHARED, NEIGHBOUR],
+    ] as const) {
+      await pool.query(
+        `INSERT INTO "apikey" (id, name, start, key, "referenceId", metadata)
+         VALUES ($1, 'ci key', 'atk_' || $1, 'hash-' || $1, $2, $3)
+         ON CONFLICT (id) DO NOTHING`,
+        [id, referenceId, JSON.stringify({ atlasWorkspaceKey: true, orgId, role: "member" })],
+      );
+    }
+
     // ── Better-Auth session/account rows, and the user-keyed Atlas tables ──
     // None of these are in db/schema.ts or PURGED_TABLES, so the registry-driven
     // loop below cannot reach them — and until they were seeded here, deleting
@@ -1130,6 +1158,20 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       );
       expect(Number(r.rows[0].n), `${table} row for a still-active user was destroyed`).toBe(1);
     }
+    // …but NOT their `apikey` rows, which split by BINDING rather than by
+    // owner (#5525): the surviving user's key bound to the PURGED workspace
+    // goes, their NEIGHBOUR-bound key stands. `apikey` cannot join the loop
+    // above — it is the one user-keyed table here whose rows are not spared
+    // wholesale for a surviving user.
+    const apiKeys = await pool.query<{ id: string }>(
+      `SELECT id FROM "apikey" WHERE "referenceId" = $1`,
+      [USER_SHARED],
+    );
+    expect(
+      apiKeys.rows.map((r) => r.id),
+      "a surviving user's purged-workspace key must go and their other key must stand",
+    ).toEqual(["ak-nb-shared"]);
+
     // Their membership of the PURGED org is gone; their membership of the
     // neighbour survives.
     const members = await pool.query<{ n: string }>(

@@ -5111,6 +5111,19 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // reaches a key bound to this workspace whose owner survives elsewhere. The
     // registry entry carries the decision (delete, no retention arm) and why.
     //
+    // PROBED, unlike the other Better Auth relations this function names.
+    // `apiKey()` is unconditional in `buildPlugins()`, so the relation exists
+    // wherever the auth server has booted — but that is a claim about the CODE,
+    // and `scim_group_mappings` is the measured counter-example in this same
+    // function: an EU/APAC region DB was observed missing a relation the code
+    // said must be there, and the unprobed DELETE aborted the whole purge
+    // transaction. The asymmetry decides it. One `to_regclass` round trip buys
+    // "this table was skipped, the region is behind, `complete: false`" in place
+    // of "the customer's erasure failed outright". `tableExists`'s drift
+    // semantics are the right ones here precisely BECAUSE the plugin is
+    // unconditional: absent really does mean drift, not the "never enabled"
+    // state that keeps the scim* catalog on its own probe.
+    //
     // ⚠️ THE SCOPE PREDICATE IS EVALUATED IN TYPESCRIPT, NOT SQL, and that is
     // deliberate on two counts:
     //
@@ -5131,17 +5144,33 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // an org id is not guaranteed to appear verbatim in the stored text. Two
     // columns of a table holding per-workspace CI credentials, once per
     // workspace erasure.
-    const apiKeyRows = await client.query(
-      `SELECT id, metadata FROM apikey WHERE metadata IS NOT NULL`,
-      [],
-    );
-    const boundApiKeyIds = apiKeyRows.rows
-      .filter((row) => apiKeyMetadataNamesOrg(row.metadata, orgId))
-      .map((row) => row.id)
-      .filter((id): id is string => typeof id === "string");
+    //
+    // ⚠️ SELECT-then-DELETE leaves a window a single DELETE would not: a key
+    // minted for this org between the two statements is in neither id set. It
+    // is recorded rather than closed, because closing it costs more than it
+    // buys and the residue class is one this function already has. Under READ
+    // COMMITTED a plain `DELETE FROM x WHERE org_id = $1` has the SAME phantom
+    // — a row committed after that statement runs but before this transaction
+    // does survives it too — so the split widens an existing window rather than
+    // opening a new class, and `FOR UPDATE` would not help (this is a phantom,
+    // not a lost update; only SERIALIZABLE closes it, at the cost of aborting
+    // erasures under contention). The window is also nearly unreachable: the
+    // workspace is already `workspace_status = 'deleted'`, and minting a key
+    // requires resolving a live member of a live workspace.
     let apikey = 0;
-    if (boundApiKeyIds.length > 0) {
-      apikey = await delRaw(`DELETE FROM apikey WHERE id = ANY($1) RETURNING 1`, [boundApiKeyIds]);
+    const apiKeyPresent = await tableExists("apikey");
+    if (apiKeyPresent) {
+      const apiKeyRows = await client.query(
+        `SELECT id, metadata FROM apikey WHERE metadata IS NOT NULL`,
+        [],
+      );
+      const boundApiKeyIds = apiKeyRows.rows
+        .filter((row) => apiKeyMetadataNamesOrg(row.metadata, orgId))
+        .map((row) => row.id)
+        .filter((id): id is string => typeof id === "string");
+      if (boundApiKeyIds.length > 0) {
+        apikey = await delRaw(`DELETE FROM apikey WHERE id = ANY($1) RETURNING 1`, [boundApiKeyIds]);
+      }
     }
 
     // Clean up orphaned users — sessions, accounts, onboarding, email prefs, then user
@@ -5187,10 +5216,14 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       // org and is reached only here — a user-linked row surviving its own
       // account, which is the class the purge registry exists to make visible.
       // No FK and no cascade to fall back on: the 1.7 table declares neither.
-      const orphanApiKeys = await delRaw(
-        `DELETE FROM apikey WHERE "referenceId" = ANY($1) RETURNING 1`,
-        [orphanedUserIds],
-      );
+      // Rides Phase 4a's presence probe rather than probing again — one answer
+      // for one relation, and `tableExists` has already recorded the skip.
+      const orphanApiKeys = apiKeyPresent
+        ? await delRaw(
+            `DELETE FROM apikey WHERE "referenceId" = ANY($1) RETURNING 1`,
+            [orphanedUserIds],
+          )
+        : 0;
       // Summed into the ONE reported field rather than counted separately: both
       // statements destroy rows of the same table in the same transaction, and
       // `counts.apikey` is read off a DPA erasure receipt as "apikey rows this

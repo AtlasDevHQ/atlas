@@ -44,10 +44,12 @@
  *
  * `apikey` is stood up here rather than by a migration because it is
  * plugin-owned: better-auth's schema-diff creates it at boot, never the Atlas
- * runner. Unlike the `scim*` catalog it is NOT probed and needs no presence
- * arm — `apiKey()` is unconditional in `buildPlugins()`, so the relation exists
- * wherever the auth server has booted, the same standing `session` and
- * `account` have.
+ * runner. `hardDeleteWorkspace` probes it for that reason, but with `scim*`'s
+ * semantics INVERTED: `apiKey()` is unconditional in `buildPlugins()`, so an
+ * absent relation is region drift (skipped, `complete: false`) rather than the
+ * "never enabled" state a missing scim catalog means. This fixture stands the
+ * table up, so the probe's present arm is what runs here; the absent arm is
+ * `tableExists`'s own, shared with every other probed relation.
  *
  * Skipped cleanly when TEST_DATABASE_URL is unset. CI's api-tests workflow
  * provides the Postgres service.

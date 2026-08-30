@@ -256,9 +256,13 @@ describe("Better Auth purge/bundle-scope tripwire (#5515)", () => {
     // membership is pinned the way RETAINED_TABLES is. EMPTY since #5525 closed
     // `apikey`, the set's only member: no FK at all in the 1.7 schema, owner in
     // `referenceId`, workspace in `metadata.orgId`, and now two statements.
-    const unreached = Object.entries(BETTER_AUTH_PURGE_DECISIONS)
-      .filter(([, v]) => v.decision === "unreached")
-      .map(([k]) => k);
+    // Read through the string-indexed view: against the literal-typed const,
+    // tsc now rejects the comparison as no-overlap — which is TRUE today and is
+    // exactly the state this test exists to keep deliberate, so it must not be
+    // what stops the file compiling.
+    const unreached = Object.keys(BETTER_AUTH_PURGE_DECISIONS).filter(
+      (k) => purgeDecisionFor[k]?.decision === "unreached",
+    );
     expect(unreached.toSorted()).toEqual([]);
   });
 

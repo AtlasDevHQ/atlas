@@ -84,6 +84,11 @@ import type {
   BrainFactChangeAgent,
   BrainFactPriorVersion,
   BrainFactHistoryView,
+  BrainTriageBacklogBucket,
+  BrainTriageBacklogResponse,
+  BrainTriageRequeueRequest,
+  BrainTriageRequeueResponse,
+  BrainTriageRuleDescriptor,
   BrainVocabularyAgreementExample,
   BrainVocabularyAliasEvidence,
   BrainVocabularyAuthorResponse,
@@ -3013,3 +3018,83 @@ export const BrainFactRetirableListResponseSchema = z.object({
   observations: z.array(BrainFactRetirableObservationSchema),
   total: z.number().int().nonnegative(),
 }) satisfies z.ZodType<BrainFactRetirableListResponse, unknown>;
+
+// ---------------------------------------------------------------------------
+// Stage-0 triage: the backlog, and the verb that clears it (#5534)
+// ---------------------------------------------------------------------------
+
+/**
+ * Longest `rule` the re-queue will accept.
+ *
+ * `BRAIN_TENSION_FORECAST_SURFACE_MAX_CHARS`' reason, one surface over: this is
+ * a rule id from a closed vocabulary of short tokens, and an unbounded string
+ * reaching a `text` comparison on a pooled connection is a request-shaped way
+ * to spend CPU. The route ALSO checks membership against the vocabulary it
+ * evaluates — this bound is what stops a megabyte from reaching that check.
+ */
+export const BRAIN_TRIAGE_RULE_MAX_CHARS = 64;
+
+/**
+ * ⚠️ `rule` is `z.string()`, not an enum over the rule ids.
+ *
+ * The vocabulary lives in `packages/api/src/lib/brain/triage.ts`, and #5336
+ * requires it enumerable in ONE place. A tuple here would be a second copy that
+ * the compiler cannot tie back to the first — `@useatlas/schemas` does not
+ * import from `@atlas/api` — so it would drift silently and reject a rule the
+ * server had just added.
+ *
+ * It is also the WRONG shape for a read of what is at rest, independently of
+ * drift: `triage_reason` holds whatever a past deploy wrote, so a rule retired
+ * from the vocabulary still has marks on rows. An enum here would reject the
+ * response describing exactly the backlog an admin most needs to see. `known`
+ * is how a client tells a live rule from a retired one without holding a copy
+ * of the list.
+ */
+export const BrainTriageBacklogBucketSchema = z.strictObject({
+  rule: z.string(),
+  episodes: z.number().int().nonnegative(),
+  known: z.boolean(),
+}) satisfies z.ZodType<BrainTriageBacklogBucket, unknown>;
+
+export const BrainTriageRuleDescriptorSchema = z.strictObject({
+  id: z.string(),
+  rationale: z.string(),
+}) satisfies z.ZodType<BrainTriageRuleDescriptor, unknown>;
+
+/**
+ * `z.strictObject` for `BrainFactTensionSweepResponseSchema`'s reason, one
+ * domain over: the obvious next thing a producer would attach to a triage
+ * backlog is a SAMPLE of the held episodes, and an episode body is the rawest
+ * content in the system — ungated by any claim-level review, carrying whatever
+ * a chat channel said. Strict makes attaching one a parse failure at the
+ * boundary rather than a disclosure in a browser.
+ */
+export const BrainTriageBacklogResponseSchema = z.strictObject({
+  total: z.number().int().nonnegative(),
+  byRule: z.array(BrainTriageBacklogBucketSchema),
+  rules: z.array(BrainTriageRuleDescriptorSchema),
+  enabled: z.boolean(),
+}) satisfies z.ZodType<BrainTriageBacklogResponse, unknown>;
+
+/**
+ * `rule` absent, or explicitly `null`, means EVERY rule.
+ *
+ * Both spellings are admitted deliberately. A console that binds a select to
+ * this field sends `null` for "all"; a script that omits the key entirely means
+ * the same thing, and making one of them a 400 would be a distinction with no
+ * meaning behind it. The route folds both to the statement's NULL parameter.
+ */
+export const BrainTriageRequeueRequestSchema = z.strictObject({
+  rule: z.string().min(1).max(BRAIN_TRIAGE_RULE_MAX_CHARS).nullish(),
+}) satisfies z.ZodType<WithLooseOptionals<BrainTriageRequeueRequest>, unknown>;
+
+/**
+ * `z.strictObject`, and here it guards something specific: the ids of the
+ * episodes that moved. Attaching them would name which rows a rule had held —
+ * a workspace-wide episode projection on a surface whose whole justification is
+ * that it discloses counts and rule ids only.
+ */
+export const BrainTriageRequeueResponseSchema = z.strictObject({
+  requeued: z.number().int().nonnegative(),
+  rule: z.string().nullable(),
+}) satisfies z.ZodType<BrainTriageRequeueResponse, unknown>;

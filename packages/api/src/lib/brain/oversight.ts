@@ -35,6 +35,15 @@
  * reader cannot see, which this rule forbids. Its header records the gap rather
  * than working around it.
  *
+ * ⚠️ **The stage-0 TRIAGE backlog is deliberately not here** (#5534). #5336's
+ * per-rule counts — how many episodes the pre-extraction gate is holding — are
+ * a natural-looking addition to this aggregate and would be an unscoped
+ * `brain_episodes` read in the one module whose rule forbids exactly that, to
+ * save an import. They live in `lib/brain/triage-requeue.ts` beside the
+ * re-queue verb they arm, and the two aggregates compose at the router rather
+ * than in the store. That module's header carries the argument; this line
+ * exists so the next reader looking for triage numbers finds them.
+ *
  * From the UNSCOPED aggregates, TWO non-numeric values reach the wire, and an
  * auditor must check both: `label`, only when {@link classifyToken} rules the
  * token disclosable; and `key`, which is that same token on the disclosable

@@ -115,7 +115,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
     table: AclGatedTable,
     override?: { reason: string },
   ): Promise<string[]> {
-    const clause = aclVisibilityClause(reader, { table, alias: "t", paramIndex: 1, override });
+    const clause = aclVisibilityClause(reader, { table, alias: "t", paramIndex: 1, ...(override !== undefined ? { override } : {})});
     const label = table === "brain_facts" ? "subject" : "source_id";
     const { rows } = await pool.query<{ label: string }>(
       // `COLLATE "C"` so the DB's sort matches the JS `toSorted()` / hardcoded

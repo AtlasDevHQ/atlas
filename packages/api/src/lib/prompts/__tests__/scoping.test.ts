@@ -223,7 +223,7 @@ describe("resolvePromptScope", () => {
   });
 
   it("returns `org-custom-only` when industry setting is missing even if demo is active", async () => {
-    reset({ industry: undefined });
+    reset({ ...(undefined !== undefined ? { industry: undefined } : {})});
     mockInternalQuery.mockImplementation(async () => [{ active: true }]);
     const scope = await resolvePromptScope({ orgId: "org-1", mode: "published" });
     expect(scope.kind).toBe("org-custom-only");

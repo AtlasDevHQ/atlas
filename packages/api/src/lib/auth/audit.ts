@@ -131,7 +131,7 @@ export function logQueryAudit(entry: AuditEntry): void {
   if (orgId) {
     recordQueryEvent(orgId, {
       success: entry.success,
-      tablesAccessed: entry.tablesAccessed,
+      ...(entry.tablesAccessed !== undefined ? { tablesAccessed: entry.tablesAccessed } : {}),
     });
   }
 

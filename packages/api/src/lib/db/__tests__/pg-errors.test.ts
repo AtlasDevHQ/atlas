@@ -79,7 +79,7 @@ describe("asUniqueViolation", () => {
     // unguarded read on a driver that omits them would throw INSIDE the catch,
     // turning a reported collision into an aborted pass.
     const got = asUniqueViolation(violation());
-    expect(got).toEqual({ constraint: undefined, detail: undefined });
+    expect(got).toEqual({ ...(undefined !== undefined ? { constraint: undefined } : {}), detail: undefined });
   });
 
   it("⭐ returns undefined for a `.cause`-WRAPPED 23505 — the header's load-bearing claim", () => {
@@ -119,7 +119,7 @@ describe("asUniqueViolation", () => {
     // A driver returning a numeric oid would otherwise reach a consumer that
     // compares it against a constraint NAME and silently never match.
     const got = asUniqueViolation(violation({ constraint: 1234, detail: 5678 }));
-    expect(got).toEqual({ constraint: undefined, detail: undefined });
+    expect(got).toEqual({ ...(undefined !== undefined ? { constraint: undefined } : {}), detail: undefined });
   });
 });
 

@@ -299,7 +299,7 @@ export async function resolveSqlExecutionPlan(
   // the tool call still returns a useful result. ---
   const ctx = await deps.loadGroupRoutingContext(orgId, currentMember);
   const { plan, warnings } = resolveRoutingPlan({
-    agentScope: scope,
+    ...(scope !== undefined ? { agentScope: scope } : {}),
     currentMember: ctx.currentMember,
     members: ctx.members,
     primaryMember: ctx.primaryMember,

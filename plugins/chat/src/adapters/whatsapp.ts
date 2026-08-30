@@ -24,7 +24,7 @@ export function createWhatsAppAdapter(config: WhatsAppAdapterConfig) {
     appSecret: config.appSecret,
     phoneNumberId: config.phoneNumberId,
     verifyToken: config.verifyToken,
-    userName: config.userName,
-    apiVersion: config.apiVersion,
+    ...(config.userName !== undefined ? { userName: config.userName } : {}),
+    ...(config.apiVersion !== undefined ? { apiVersion: config.apiVersion } : {}),
   });
 }

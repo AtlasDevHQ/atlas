@@ -29,7 +29,7 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: async (sql: string, params?: unknown[]) => {
     if (mockQueryShouldThrow) throw new Error("relation \"subscription\" does not exist");
-    queryCalls.push({ sql, params });
+    queryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     const result = queryResults.shift();
     return result ?? [];
   },

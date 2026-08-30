@@ -251,7 +251,7 @@ query.openapi(
       // `executeAgentQuery` re-enters `withRequestContext` and propagates this
       // inherited actor, so executeSQL audit rows record actor_kind='human'.
       return withRequestContext(
-        { requestId, user: authResult.user, agentOrigin: "chat", actor: { kind: "human" } },
+        { requestId, ...(authResult.user !== undefined ? { user: authResult.user } : {}), agentOrigin: "chat", actor: { kind: "human" } },
         async () => {
 
         // #3419/#3420 — workspace status, abuse, and plan-limit
@@ -327,10 +327,10 @@ query.openapi(
               }
               if (!conversationId) {
                 const created = await createConversation({
-                  userId: authResult.user?.id,
+                  ...(authResult.user?.id !== undefined ? { userId: authResult.user?.id } : {}),
                   title: generateTitle(question),
                   surface: "api",
-                  orgId: authResult.user?.activeOrganizationId,
+                  ...(authResult.user?.activeOrganizationId !== undefined ? { orgId: authResult.user?.activeOrganizationId } : {}),
                 });
                 if (created) conversationId = created.id;
               }

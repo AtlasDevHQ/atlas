@@ -298,7 +298,7 @@ export async function loadTensionClusters(
     table: "brain_facts",
     alias: "f",
     paramIndex: 1,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (acl.decision === "deny-all") {
     throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, surface);

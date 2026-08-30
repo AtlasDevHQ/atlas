@@ -317,8 +317,8 @@ authed.openapi(listTasksRoute, async (c) => {
     const connectionGroupId = c.req.query("connectionGroupId") ?? undefined;
 
     const items = yield* Effect.promise(() => listScheduledTasks({
-      orgId,
-      enabled,
+      ...(orgId !== undefined ? { orgId } : {}),
+      ...(enabled !== undefined ? { enabled } : {}),
       ...(connectionGroupId !== undefined ? { connectionGroupId } : {}),
       limit,
       offset,
@@ -555,7 +555,7 @@ authed.openapi(listAllRunsRoute, async (c) => {
     const dateFrom = dateFromParam && ISO_DATE_RE.test(dateFromParam) ? dateFromParam : undefined;
     const dateTo = dateToParam && ISO_DATE_RE.test(dateToParam) ? dateToParam : undefined;
 
-    const runs = yield* Effect.promise(() => listAllRuns({ orgId, taskId, status, dateFrom, dateTo, limit, offset }));
+    const runs = yield* Effect.promise(() => listAllRuns({ ...(orgId !== undefined ? { orgId } : {}), ...(taskId !== undefined ? { taskId } : {}), ...(status !== undefined ? { status } : {}), ...(dateFrom !== undefined ? { dateFrom } : {}), dateTo, limit, offset }));
     return c.json(runs, 200);
   }), { label: "list all runs" });
 });
@@ -574,7 +574,7 @@ authed.openapi(getTaskRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const taskResult = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
+    const taskResult = yield* Effect.promise(() => getScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
     if (!taskResult.ok) {
       const fail = crudFailResponse(taskResult.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -646,14 +646,14 @@ authed.openapi(
         }
       }
 
-      const updateResult = yield* Effect.promise(() => updateScheduledTask(id, { orgId }, parsed));
+      const updateResult = yield* Effect.promise(() => updateScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}, parsed));
       if (!updateResult.ok) {
         const fail = crudFailResponse(updateResult.reason, requestId);
         return c.json(fail.body, fail.status);
       }
 
       // Fetch updated task to return
-      const updated = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
+      const updated = yield* Effect.promise(() => getScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
 
       // Determine if this was a toggle (enabled field changed)
       const isToggle = parsed.enabled !== undefined && Object.keys(parsed).length === 1;
@@ -721,7 +721,7 @@ authed.openapi(deleteTaskRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const delResult = yield* Effect.promise(() => deleteScheduledTask(id, { orgId }));
+    const delResult = yield* Effect.promise(() => deleteScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
     if (!delResult.ok) {
       const fail = crudFailResponse(delResult.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -753,7 +753,7 @@ authed.openapi(triggerTaskRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const task = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
+    const task = yield* Effect.promise(() => getScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
     if (!task.ok) {
       const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -791,7 +791,7 @@ authed.openapi(previewTaskRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const task = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
+    const task = yield* Effect.promise(() => getScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
     if (!task.ok) {
       const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -831,7 +831,7 @@ authed.openapi(listTaskRunsRoute, async (c) => {
     }
 
     // Verify task belongs to this org
-    const task = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
+    const task = yield* Effect.promise(() => getScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
     if (!task.ok) {
       const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);

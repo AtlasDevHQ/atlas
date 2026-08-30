@@ -52,7 +52,7 @@ function makeMockPool(orgs: OrgFixture[], opts: { throws?: boolean } = {}): Mock
   const now = Date.now();
   const pool = {
     query: async (sql: string, params?: unknown[]) => {
-      queries.push({ sql, params });
+      queries.push({ sql, ...(params !== undefined ? { params } : {})});
       if (opts.throws) throw new Error("UPDATE failed");
       const matched = orgs
         .filter((o) => o.plan_tier === "trial")

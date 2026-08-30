@@ -208,7 +208,7 @@ adminProactiveEvents.get("/", async (c) =>
 
       const meter = yield* AnswerMeter;
       const result = yield* Effect.tryPromise({
-        try: () => meter.listEvents(orgId, { sinceMs, eventType, limit, cursor }),
+        try: () => meter.listEvents(orgId, { sinceMs, ...(eventType !== undefined ? { eventType } : {}), ...(limit !== undefined ? { limit } : {}), cursor }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
       const reviewSummary = yield* Effect.tryPromise({

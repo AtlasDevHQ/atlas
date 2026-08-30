@@ -308,7 +308,7 @@ export function normalizeSearchInput(input: SearchBrainInput): {
     );
   }
   return {
-    query: input.query,
+    ...(input.query !== undefined ? { query: input.query } : {}),
     include: include && include.length > 0 ? include : undefined,
     type: input.type?.trim() || undefined,
     tags: tags && tags.length > 0 ? tags : undefined,

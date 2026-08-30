@@ -324,7 +324,7 @@ function load(
     cap: options.cap ?? 10,
     surface: options.surface ?? "review",
     log: fixture.log,
-    requestId: options.requestId,
+    ...(options.requestId !== undefined ? { requestId: options.requestId } : {}),
   });
 }
 

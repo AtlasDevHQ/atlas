@@ -88,7 +88,7 @@ function createMockPool() {
   let queryError: Error | null = null;
 
   const queryFn = async (sql: string, params?: unknown[]) => {
-    calls.queries.push({ sql, params });
+    calls.queries.push({ sql, ...(params !== undefined ? { params } : {})});
     if (queryError) throw queryError;
     return queryResult;
   };
@@ -1005,7 +1005,7 @@ describe("cascadeWorkspaceDelete()", () => {
         calls.connectCount++;
         return {
           async query(sql: string, params?: unknown[]) {
-            calls.queries.push({ sql, params });
+            calls.queries.push({ sql, ...(params !== undefined ? { params } : {})});
             queryNum++;
             // Let BEGIN pass (query 1), fail on first cascade query (query 2)
             if (queryNum === 2) throw new Error("relation does not exist");
@@ -2500,7 +2500,7 @@ describe("connection URL encryption", () => {
 
       const mockSql = {
         unsafe: <T extends object>(sql: string, params?: ReadonlyArray<unknown>) => {
-          calls.push({ sql, params });
+          calls.push({ sql, ...(params !== undefined ? { params } : {})});
           if (error) return Effect.fail(error);
           return Effect.succeed(result as ReadonlyArray<T>);
         },

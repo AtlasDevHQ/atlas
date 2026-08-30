@@ -20,7 +20,7 @@ import type { TelegramAdapterConfig } from "../config";
 export function createTelegramAdapter(config: TelegramAdapterConfig) {
   return createChatTelegramAdapter({
     botToken: config.botToken,
-    secretToken: config.secretToken,
+    ...(config.secretToken !== undefined ? { secretToken: config.secretToken } : {}),
     mode: "webhook",
   });
 }

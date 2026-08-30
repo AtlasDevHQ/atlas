@@ -147,7 +147,7 @@ export function getActionConfig(
     }
   }
 
-  return { approval, requiredRole, timeout, maxPerConversation };
+  return { approval, ...(requiredRole !== undefined ? { requiredRole } : {}), ...(timeout !== undefined ? { timeout } : {}), ...(maxPerConversation !== undefined ? { maxPerConversation } : {})};
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +339,7 @@ export async function handleAction(
     actionId: request.id,
     actionType: request.actionType,
     status: "pending",
-    userId,
+    ...(userId !== undefined ? { userId } : {}),
   });
 
   // Register executor for deferred approval (keyed by actionId so each request gets its own executor)
@@ -372,7 +372,7 @@ export async function handleAction(
         actionType: request.actionType,
         status: "auto_approved",
         latencyMs,
-        userId,
+        ...(userId !== undefined ? { userId } : {}),
       });
 
       return { status: "auto_approved", actionId: request.id, result };
@@ -391,7 +391,7 @@ export async function handleAction(
           status: "timed_out",
           latencyMs,
           timeoutMs: err.timeoutMs,
-          userId,
+          ...(userId !== undefined ? { userId } : {}),
         });
         return { status: "timed_out", actionId: request.id, error: err.message };
       }
@@ -408,7 +408,7 @@ export async function handleAction(
         actionType: request.actionType,
         status: "failed",
         latencyMs,
-        userId,
+        ...(userId !== undefined ? { userId } : {}),
         error: errorMsg,
       });
 

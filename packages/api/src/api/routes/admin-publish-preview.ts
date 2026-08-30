@@ -319,7 +319,7 @@ export async function loadBrainFactSegment(
     workspaceId: orgId,
     mode,
     user,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   }).then(
     (ctx) => ({ ok: true, ctx }) as const,
     (err: unknown) => ({ ok: false, err }) as const,
@@ -379,7 +379,7 @@ export async function loadBrainFactSegment(
     table: "brain_facts",
     alias: "f",
     paramIndex: 1,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (acl.decision === "deny-all") {
     log.warn(

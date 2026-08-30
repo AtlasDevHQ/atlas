@@ -935,7 +935,7 @@ export async function registerProactiveListener(
       const decision = decideInterjection({
         classification,
         workspace: workspaceConfig,
-        channel: channelConfig,
+        ...(channelConfig !== undefined ? { channel: channelConfig } : {}),
         channelAllowed,
         recentActivity: recent.get(cooldownKey),
       });

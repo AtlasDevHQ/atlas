@@ -483,10 +483,10 @@ function collectLocaleContents(
     out.push({
       locale,
       content: {
-        title: raw.title,
-        body: raw.body,
-        state: raw.state,
-        updated_at: raw.updated_at,
+        ...(raw.title !== undefined ? { title: raw.title } : {}),
+        ...(raw.body !== undefined ? { body: raw.body } : {}),
+        ...(raw.state !== undefined ? { state: raw.state } : {}),
+        ...(raw.updated_at !== undefined ? { updated_at: raw.updated_at } : {}),
         url: raw.url,
       },
     });

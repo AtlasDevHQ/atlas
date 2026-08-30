@@ -1711,7 +1711,7 @@ export function registerSemanticEditorRoutes(
         action: body.action,
         atlasMode,
         connection: body.connection,
-        connectionGroupId: scope,
+        ...(scope !== undefined ? { connectionGroupId: scope } : {}),
       });
 
       if (result.status === "not_found") {

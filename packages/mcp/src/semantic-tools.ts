@@ -316,7 +316,7 @@ export function registerSemanticTools(
           const entities = await listEntities({
             orgId: workspaceId,
             mode: "published",
-            filter,
+            ...(filter !== undefined ? { filter } : {}),
           });
           return toJsonContent({ count: entities.length, entities });
         },

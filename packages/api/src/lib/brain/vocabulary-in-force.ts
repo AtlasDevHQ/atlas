@@ -257,7 +257,7 @@ export async function loadInForceVocabulary(
       decision: result.decision,
       aclDecision: result.aclDecision,
       userId: ctx.userId,
-      requestId: opts.requestId,
+      ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
     });
   }
 
@@ -287,7 +287,7 @@ export async function loadInForceVocabulary(
     decision: cardinalities.decision,
     aclDecision: null,
     userId: ctx.userId,
-    requestId: opts.requestId,
+    ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
   });
 
   return {
@@ -342,7 +342,7 @@ async function loadPositionEdges(
   const visible = visibleNormsSql(position, ctx, {
     paramIndex: 1,
     alias: "vf",
-    requestId: opts.requestId,
+    ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
   });
 
   const empty: PositionEdges = {
@@ -535,7 +535,7 @@ async function loadCardinalities(
   const scope = positionalScopeClause("predicate", ctx, {
     paramIndex: 1,
     alias: "vf",
-    requestId: opts.requestId,
+    ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
   });
   // The workspace-wide count runs even on the DENIED path, and that is the
   // point: it is content-free, and it is what lets the empty state say "there

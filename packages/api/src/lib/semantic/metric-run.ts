@@ -129,7 +129,7 @@ export async function resolveMetricRun(
     return { kind: "filters_unsupported" };
   }
 
-  const metric = findMetricById(opts.id, { semanticRoot: opts.semanticRoot });
+  const metric = findMetricById(opts.id, { ...(opts.semanticRoot !== undefined ? { semanticRoot: opts.semanticRoot } : {})});
   if (!metric) {
     return { kind: "unknown_metric", id: opts.id };
   }

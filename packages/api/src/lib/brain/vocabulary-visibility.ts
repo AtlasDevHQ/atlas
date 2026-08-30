@@ -228,7 +228,7 @@ export function positionalScopeClause(
       table: "brain_facts",
       alias,
       paramIndex,
-      requestId,
+      ...(requestId !== undefined ? { requestId } : {}),
     });
     return {
       sql: `(${acl.sql} AND ${live})`,
@@ -384,7 +384,7 @@ export async function isPairVisible(
   const scope = positionalScopeClause(position, ctx, {
     paramIndex: 1,
     alias: "vf",
-    requestId: options.requestId,
+    ...(options.requestId !== undefined ? { requestId: options.requestId } : {}),
   });
   if (scope.decision === "deny-all") return false;
   // ⚠️ PREDICATE SHORT-CIRCUITS — see the ⚠️ in the docstring. Not an optimization.
@@ -393,7 +393,7 @@ export async function isPairVisible(
   const visible = visibleNormsSql(position, ctx, {
     paramIndex: 1,
     alias: "vf",
-    requestId: options.requestId,
+    ...(options.requestId !== undefined ? { requestId: options.requestId } : {}),
     // RETRACTED-INCLUSIVE. See {@link PositionalScopeOptions.includeRetracted}:
     // the live-set test fails for every reader at once, so using it here would
     // make an edge invisible-and-unremovable rather than merely invisible.

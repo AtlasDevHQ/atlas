@@ -87,7 +87,7 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => hasInternalDB,
   internalExecute: (sql: string, params?: unknown[]) => {
-    internalCalls.push({ sql, params });
+    internalCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     if (sql.includes("INSERT INTO agent_session_memory")) {
       if (failMemoryWrite) throw new Error("memory write boom");
       const p = params as unknown[];

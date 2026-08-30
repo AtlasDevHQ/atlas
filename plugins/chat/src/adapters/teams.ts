@@ -21,7 +21,7 @@ export function createTeamsAdapter(config: TeamsAdapterConfig) {
   return createChatTeamsAdapter({
     appId: config.appId,
     appPassword: config.appPassword,
-    appTenantId: config.tenantId,
+    ...(config.tenantId !== undefined ? { appTenantId: config.tenantId } : {}),
     appType: config.tenantId ? "SingleTenant" : "MultiTenant",
   });
 }

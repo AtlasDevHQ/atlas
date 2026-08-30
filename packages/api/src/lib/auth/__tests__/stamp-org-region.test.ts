@@ -38,7 +38,7 @@ function makeMockPool(opts: { updateThrows?: boolean; alreadyAssigned?: boolean 
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const pool = {
     query: async (sql: string, params?: unknown[]) => {
-      queries.push({ sql, params });
+      queries.push({ sql, ...(params !== undefined ? { params } : {})});
       if (/UPDATE\s+organization\s+SET\s+region/i.test(sql)) {
         if (opts.updateThrows) throw new Error("UPDATE failed");
         // One-way: the WHERE `region IS NULL` guard means an already-assigned

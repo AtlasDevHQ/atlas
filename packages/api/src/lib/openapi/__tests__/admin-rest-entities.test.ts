@@ -35,7 +35,7 @@ const entity: GeneratedEntity = {
 const ds = {
   id: "install-123",
   displayName: "Twenty",
-  groupId: undefined,
+  ...(undefined !== undefined ? { groupId: undefined } : {}),
   graph: {} as RestDatasource["graph"],
   baseUrl: "https://example.com",
   auth: { kind: "none" } as RestDatasource["auth"],

@@ -1000,7 +1000,7 @@ export async function exportDashboard(opts: ExportOpts): Promise<ExportResult> {
           orgId: opts.orgId,
           cookieHeader: opts.cookieHeader ?? null,
           baseUrl,
-          apiBaseUrl: opts.apiBaseUrl,
+          ...(opts.apiBaseUrl !== undefined ? { apiBaseUrl: opts.apiBaseUrl } : {}),
           format: opts.format,
           parameters: opts.parameters ?? null,
           title,

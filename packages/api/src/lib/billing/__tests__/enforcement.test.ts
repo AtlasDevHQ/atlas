@@ -220,7 +220,7 @@ function makeFakeTxnClient(opts: FakeTxnClientOpts = {}) {
   };
   const client = {
     query: (sql: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }> => {
-      calls.push({ sql, params });
+      calls.push({ sql, ...(params !== undefined ? { params } : {})});
       if (sql === "ROLLBACK") {
         if (opts.rollbackThrows) return Promise.reject(new Error("rollback failed"));
         return Promise.resolve({ rows: [] });
@@ -1586,7 +1586,7 @@ describe("checkChatIntegrationLimitAndInstall", () => {
     mockTxnClient = makeFakeTxnClient({
       countRows: [{ others, this_count: thisCount }],
       insertRows: opts.insertRows ?? [{ id: "persisted-1" }],
-      rollbackThrows: opts.rollbackThrows,
+      ...(opts.rollbackThrows !== undefined ? { rollbackThrows: opts.rollbackThrows } : {}),
     });
     return mockTxnClient;
   }

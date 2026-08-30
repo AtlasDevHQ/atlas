@@ -22,6 +22,6 @@ export function createDiscordAdapter(config: DiscordAdapterConfig) {
     botToken: config.botToken,
     applicationId: config.applicationId,
     publicKey: config.publicKey,
-    mentionRoleIds: config.mentionRoleIds,
+    ...(config.mentionRoleIds !== undefined ? { mentionRoleIds: config.mentionRoleIds } : {}),
   });
 }

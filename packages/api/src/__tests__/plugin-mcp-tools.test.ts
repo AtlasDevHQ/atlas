@@ -536,7 +536,7 @@ describe("registerPluginMcpTools (MCP server registration)", () => {
           const reqCtx = getRequestContext();
           observed = {
             actor: reqCtx?.actor,
-            requestId: reqCtx?.requestId,
+            ...(reqCtx?.requestId !== undefined ? { requestId: reqCtx?.requestId } : {}),
           };
           return {
             ctx: {

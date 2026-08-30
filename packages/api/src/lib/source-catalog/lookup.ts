@@ -184,7 +184,7 @@ async function loadEntityNamesByGroup(
   mode: "published" | "developer" | undefined,
 ): Promise<Map<string, string[]>> {
   const { listEntities } = await import("@atlas/api/lib/semantic/entities");
-  const entries = await listEntities({ orgId, mode });
+  const entries = await listEntities({ orgId, ...(mode !== undefined ? { mode } : {})});
   const byGroup = new Map<string, string[]>();
   for (const entry of entries) {
     const list = byGroup.get(entry.source) ?? [];

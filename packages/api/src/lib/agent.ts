@@ -1460,7 +1460,7 @@ export async function runAgent({
                 connectionGroupId: connectionGroupId ?? null,
                 mode: atlasMode,
                 question,
-                requestId: reqCtx?.requestId,
+                ...(reqCtx?.requestId !== undefined ? { requestId: reqCtx?.requestId } : {}),
                 // #4573 — attribute each injected pattern to this turn.
                 conversationId: conversationId ?? null,
               });
@@ -1852,10 +1852,10 @@ export async function runAgent({
   // (#3759).
   const systemParam = buildSystemParam(providerType, {
     registry: activeRegistry,
-    warnings,
-    persona,
-    briefing,
-    orgSemanticIndex,
+    ...(warnings !== undefined ? { warnings } : {}),
+    ...(persona !== undefined ? { persona } : {}),
+    ...(briefing !== undefined ? { briefing } : {}),
+    ...(orgSemanticIndex !== undefined ? { orgSemanticIndex } : {}),
     orgKnowledgeToc,
     learnedPatternsSection,
     routingContext: scopeRoutingContext,

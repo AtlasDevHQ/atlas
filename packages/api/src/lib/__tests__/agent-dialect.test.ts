@@ -67,7 +67,7 @@ void mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
 const { buildSystemParam } = await import("@atlas/api/lib/agent");
 
 function assemble(dialectSpecialists?: string): string {
-  const result = buildSystemParam("openai", { dialectSpecialists });
+  const result = buildSystemParam("openai", { ...(dialectSpecialists !== undefined ? { dialectSpecialists } : {})});
   return typeof result === "string" ? result : result.content;
 }
 

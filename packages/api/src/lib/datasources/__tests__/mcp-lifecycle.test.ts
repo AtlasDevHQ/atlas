@@ -55,7 +55,7 @@ let publishQueryHandler: (
 function makePublishMockClient() {
   return {
     query: async (sql: string, params?: unknown[]) => {
-      publishClientQueries.push({ sql, params });
+      publishClientQueries.push({ sql, ...(params !== undefined ? { params } : {})});
       return publishQueryHandler(sql, params);
     },
     release: (err?: unknown) => {

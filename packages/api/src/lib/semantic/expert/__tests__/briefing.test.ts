@@ -354,7 +354,7 @@ describe("assembleBriefing — anchors (#4519)", () => {
     // Byte-identity: an explicit `anchor: undefined` renders the same block as
     // omitting the field — the empty renderAnchor section is filtered out, so a
     // sweep block is exactly what it was before anchors existed.
-    expect(assembleBriefing(makeInputs({ anchor: undefined }))).toBe(sweep);
+    expect(assembleBriefing(makeInputs({ ...(undefined !== undefined ? { anchor: undefined } : {})}))).toBe(sweep);
     // And an anchor (even an empty group) DOES add a section, so anchored ≠ sweep.
     const anchored = assembleBriefing(makeInputs({ anchor: { kind: "group", group: "prod", entities: [] } }));
     expect(anchored).not.toBe(sweep);

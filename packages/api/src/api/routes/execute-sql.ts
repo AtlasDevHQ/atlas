@@ -484,7 +484,7 @@ executeSql.openapi(executeSqlRoute, async (c) => {
             requestId,
             user,
             atlasMode,
-            trustDeviceIdentifier,
+            ...(trustDeviceIdentifier !== undefined ? { trustDeviceIdentifier } : {}),
             actor: { kind: actorKind },
             ...(agentOrigin ? { agentOrigin } : {}),
           },

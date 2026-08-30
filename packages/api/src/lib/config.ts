@@ -1646,10 +1646,10 @@ export async function applyDatasources(
       log.info({ connectionId: id }, "Registering datasource from config");
       connRegistry.register(id, {
         url: ds.url,
-        schema: ds.schema,
-        description: ds.description,
-        maxConnections: ds.maxConnections,
-        idleTimeoutMs: ds.idleTimeoutMs,
+        ...(ds.schema !== undefined ? { schema: ds.schema } : {}),
+        ...(ds.description !== undefined ? { description: ds.description } : {}),
+        ...(ds.maxConnections !== undefined ? { maxConnections: ds.maxConnections } : {}),
+        ...(ds.idleTimeoutMs !== undefined ? { idleTimeoutMs: ds.idleTimeoutMs } : {}),
       });
 
       // Fire initial health check — logs on failure but does not block startup.

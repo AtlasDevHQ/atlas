@@ -90,7 +90,7 @@ describe("onVerificationCreated", () => {
   it("falls through gracefully when headers are missing", async () => {
     await onVerificationCreated(
       { identifier: "trust-device-no-headers", value: "user_99" },
-      { headers: undefined },
+      { ...(undefined !== undefined ? { headers: undefined } : {})},
     );
 
     expect(inserts).toHaveLength(1);

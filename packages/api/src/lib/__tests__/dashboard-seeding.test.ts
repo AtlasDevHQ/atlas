@@ -31,8 +31,8 @@ const runUserQueryPipelineMock = mock(
   (opts: { sql: string; connectionId?: string; parameters?: Record<string, unknown> }) => {
     pipelineCalls.push({
       sql: opts.sql,
-      connectionId: opts.connectionId,
-      parameters: opts.parameters,
+      ...(opts.connectionId !== undefined ? { connectionId: opts.connectionId } : {}),
+      ...(opts.parameters !== undefined ? { parameters: opts.parameters } : {}),
     });
     const behavior = pipelineBySql.get(opts.sql);
     if (!behavior) {

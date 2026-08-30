@@ -232,9 +232,9 @@ export class PluginMcpToolRegistry {
       qualifiedName,
       localName: tool.name,
       description: tool.description,
-      errorCodes: tool.errorCodes,
+      ...(tool.errorCodes !== undefined ? { errorCodes: tool.errorCodes } : {}),
       inputSchema: tool.inputSchema,
-      outputSchema: tool.outputSchema,
+      ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
       // #3520 — carry the read/write annotation through so the dispatch
       // wrapper can decide whether a hosted call needs `mcp:write`.
       ...(tool.annotations && { annotations: tool.annotations }),

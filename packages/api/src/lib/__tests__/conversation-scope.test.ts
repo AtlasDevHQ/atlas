@@ -133,7 +133,7 @@ describe("conversationScopePatchFrom()", () => {
     expect(
       conversationScopePatchFrom({
         groupReach: null,
-        restFocusDatasourceId: undefined,
+        ...(undefined !== undefined ? { restFocusDatasourceId: undefined } : {}),
         answerStyle: "executive",
       }),
     ).toEqual({ groupReach: null, answerStyle: "executive" });

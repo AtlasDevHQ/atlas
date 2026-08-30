@@ -664,7 +664,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
     return searchBrainCore(pool, {
       ctx,
       mode: options.mode ?? "published",
-      query: options.query,
+      ...(options.query !== undefined ? { query: options.query } : {}),
       include: ["attested", "on-record"],
       expand: false,
       limit: 25,

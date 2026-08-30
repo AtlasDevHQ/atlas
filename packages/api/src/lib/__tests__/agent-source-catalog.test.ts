@@ -26,7 +26,7 @@ describe("buildSystemParam — Source catalog (#3894)", () => {
 
   it("omits the catalog when empty (no behavior change vs. today)", () => {
     const withCatalog = promptText(buildSystemParam("openai", { sourceCatalog: "" }));
-    const without = promptText(buildSystemParam("openai", { sourceCatalog: undefined }));
+    const without = promptText(buildSystemParam("openai", { ...(undefined !== undefined ? { sourceCatalog: undefined } : {})}));
     expect(withCatalog).not.toContain("## Source catalog");
     expect(withCatalog).toBe(without);
   });

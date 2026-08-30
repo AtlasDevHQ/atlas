@@ -227,7 +227,7 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
     return withRequestContext(
       {
         requestId,
-        user: authResult.user,
+        ...(authResult.user !== undefined ? { user: authResult.user } : {}),
         atlasMode: c.get("atlasMode"),
         trustDeviceIdentifier: c.get("trustDeviceIdentifier"),
         agentOrigin: "chat",
@@ -920,8 +920,8 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
       decision,
       reviewedBy: "admin",
       requestId,
-      expectedBaselineHash: baselineHash,
-      group,
+      ...(baselineHash !== undefined ? { expectedBaselineHash: baselineHash } : {}),
+      ...(group !== undefined ? { group } : {}),
     });
 
     if (outcome.kind === "not_pending") {

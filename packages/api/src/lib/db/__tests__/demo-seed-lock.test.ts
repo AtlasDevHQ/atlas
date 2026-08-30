@@ -43,7 +43,7 @@ function makeRecordingPool(opts: { failLock?: boolean; failRollback?: boolean } 
   const connects = { count: 0 };
   const client: InternalPoolClient = {
     query: async (sql: string, params?: unknown[]) => {
-      queries.push({ sql, params });
+      queries.push({ sql, ...(params !== undefined ? { params } : {})});
       if (opts.failLock && sql.includes("pg_advisory_xact_lock")) {
         throw new Error("simulated lock acquisition failure");
       }

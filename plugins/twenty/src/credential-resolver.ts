@@ -422,7 +422,7 @@ export function resolveCredentialsForWorkspace(
   options: ResolveForWorkspaceOptions = {},
 ): Promise<ResolvedTwentyCredentials> {
   return resolveWorkspaceCredentials(workspaceId, {
-    lookup: options.lookup,
+    ...(options.lookup !== undefined ? { lookup: options.lookup } : {}),
     deployMode: "self-hosted",
   });
 }

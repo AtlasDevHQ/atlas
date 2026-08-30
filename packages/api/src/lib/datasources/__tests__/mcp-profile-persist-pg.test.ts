@@ -86,10 +86,10 @@ describeIfPg("MCP create → profile → query (live Postgres, #3546)", () => {
       profilePostgres({
         url: TEST_DB_URL as string,
         schema: o.schema ?? srcSchema,
-        selectedTables: o.selectedTables,
-        prefetchedObjects: o.prefetchedObjects,
-        progress: o.progress,
-        logger: o.logger,
+        ...(o.selectedTables !== undefined ? { selectedTables: o.selectedTables } : {}),
+        ...(o.prefetchedObjects !== undefined ? { prefetchedObjects: o.prefetchedObjects } : {}),
+        ...(o.progress !== undefined ? { progress: o.progress } : {}),
+        ...(o.logger !== undefined ? { logger: o.logger } : {}),
       }),
     close: async () => {},
   });

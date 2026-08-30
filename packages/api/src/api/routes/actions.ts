@@ -406,9 +406,9 @@ actions.openapi(listActionsRoute, async (c) => {
     const { limit } = parsePagination(c, { limit: 50, maxLimit: 100 });
 
     const items = yield* Effect.promise(() => listPendingActions({
-      status,
-      userId: user?.id,
-      orgId: user?.activeOrganizationId,
+      ...(status !== undefined ? { status } : {}),
+      ...(user?.id !== undefined ? { userId: user?.id } : {}),
+      ...(user?.activeOrganizationId !== undefined ? { orgId: user?.activeOrganizationId } : {}),
       limit,
     }));
     return c.json({ actions: items }, 200);
@@ -598,7 +598,7 @@ actions.openapi(
             catch: (err) => (err instanceof Error ? err : new Error(String(err))),
           })
         : yield* Effect.tryPromise({
-            try: () => bulkDenyActions({ ids, user, orgId, reason, requestId }),
+            try: () => bulkDenyActions({ ids, user, orgId, ...(reason !== undefined ? { reason } : {}), requestId }),
             catch: (err) => (err instanceof Error ? err : new Error(String(err))),
           });
 

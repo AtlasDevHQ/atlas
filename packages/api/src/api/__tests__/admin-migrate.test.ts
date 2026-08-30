@@ -2216,10 +2216,10 @@ describe("importBundle — v2 sections (#4460)", () => {
     // version === 2" refactor would silently strand data, the exact #4460 bug.
     const v2 = validV2Bundle();
     const bundle = validBundle({
-      dashboards: v2.dashboards,
-      knowledgeDocuments: v2.knowledgeDocuments,
-      scheduledTasks: v2.scheduledTasks,
-      agentSessionMemory: v2.agentSessionMemory,
+      ...(v2.dashboards !== undefined ? { dashboards: v2.dashboards } : {}),
+      ...(v2.knowledgeDocuments !== undefined ? { knowledgeDocuments: v2.knowledgeDocuments } : {}),
+      ...(v2.scheduledTasks !== undefined ? { scheduledTasks: v2.scheduledTasks } : {}),
+      ...(v2.agentSessionMemory !== undefined ? { agentSessionMemory: v2.agentSessionMemory } : {}),
     });
     expect(bundle.manifest.version).toBe(1);
 

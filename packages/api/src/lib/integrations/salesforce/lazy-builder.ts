@@ -311,7 +311,7 @@ export function createSalesforceLazyBuilder(
           workspaceId,
           clientId: config.clientId,
           clientSecret: config.clientSecret,
-          loginUrl: config.loginUrl,
+          ...(config.loginUrl !== undefined ? { loginUrl: config.loginUrl } : {}),
         });
         return new jsforce.Connection({
           // Fall back to the install-resolved instanceUrl if the refresh

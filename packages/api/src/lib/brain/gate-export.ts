@@ -839,7 +839,7 @@ export async function loadGateAnalytics(
     table: "brain_facts",
     alias: "f",
     paramIndex: 1,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (acl.decision === "deny-all") {
     // The same throw `loadFactCandidateSummary` raises: a reader Atlas could

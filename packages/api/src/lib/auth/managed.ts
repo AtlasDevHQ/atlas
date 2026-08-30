@@ -190,7 +190,7 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   return {
     authenticated: true,
     mode: "managed",
-    user: createAtlasUser(userId, "managed", email || userId, { role, activeOrganizationId, claims }),
+    user: createAtlasUser(userId, "managed", email || userId, { ...(role !== undefined ? { role } : {}), activeOrganizationId, claims }),
   };
 }
 

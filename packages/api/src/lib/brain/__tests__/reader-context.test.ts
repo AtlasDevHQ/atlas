@@ -85,7 +85,7 @@ describe("resolveBrainReaderContext", () => {
       resolveBrainReaderContext(audienceDb, {
         workspaceId: WS,
         mode: "managed",
-        user: user({ role: undefined }),
+        user: user({ ...(undefined !== undefined ? { role: undefined } : {})}),
       }),
     ).rejects.toBeInstanceOf(BrainRoleUnresolvedError);
   });

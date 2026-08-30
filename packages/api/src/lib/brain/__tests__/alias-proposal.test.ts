@@ -78,7 +78,7 @@ function fakeExecutor(rows: readonly unknown[]): AliasProposalExecutor & {
   return {
     calls,
     query: async (sql, params) => {
-      calls.push({ sql, params });
+      calls.push({ sql, ...(params !== undefined ? { params } : {})});
       return { rows };
     },
   };

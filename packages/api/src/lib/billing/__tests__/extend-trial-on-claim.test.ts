@@ -26,7 +26,7 @@ function makeMockPool(returnedIds: string[]): {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const pool = {
     query: async (sql: string, params?: unknown[]) => {
-      queries.push({ sql, params });
+      queries.push({ sql, ...(params !== undefined ? { params } : {})});
       return { rows: returnedIds.map((id) => ({ id })), rowCount: returnedIds.length };
     },
   } as unknown as InternalPool;

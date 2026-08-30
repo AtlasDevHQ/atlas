@@ -235,7 +235,7 @@ function defaultDeps(): ProvisionTrialDeps {
       const { dispatchMcpSignupCrmLead } = await import(
         "@atlas/api/lib/auth/server"
       );
-      await dispatchMcpSignupCrmLead({ email, name });
+      await dispatchMcpSignupCrmLead({ email, ...(name !== undefined ? { name } : {})});
     },
     graceMs: TRIAL_GRACE_HOURS * 60 * 60 * 1000,
   };

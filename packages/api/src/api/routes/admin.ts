@@ -1751,7 +1751,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
   // entities (invisible in published mode) still appear.
   const mode = includeDrafts === "true" || atlasMode === "developer" ? "developer" : "published";
   try {
-    const result = await listAdminEntities({ orgId, mode });
+    const result = await listAdminEntities({ ...(orgId !== undefined ? { orgId } : {}), mode });
 
     // REST/OpenAPI datasources converge onto this surface read-only (#3628):
     // derived live from the cached snapshot, never persisted to
@@ -1794,7 +1794,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
     }
 
     try {
-      const driftDiff = await runDriftDiff(connectionId, { orgId, atlasMode });
+      const driftDiff = await runDriftDiff(connectionId, { ...(orgId !== undefined ? { orgId } : {}), atlasMode });
       const noIntrospectedTables = driftDiff.introspectedTableCount === 0;
       const envelope = attachDrift(result.entities, driftDiff.diff, { noIntrospectedTables });
       const mergedWarnings = [...result.warnings, ...driftDiff.warnings, ...restWarnings];
@@ -1873,7 +1873,7 @@ admin.openapi(getEntityRoute, async (c) => {
     // admins see drafts overlaying published, published-mode (the default)
     // sees only the published row. Aligns admin detail with admin list and
     // with the public route's mode gate (#2481).
-    result = await getAdminEntity({ name, orgId, requestId, connectionGroupId, mode });
+    result = await getAdminEntity({ name, ...(orgId !== undefined ? { orgId } : {}), requestId, ...(connectionGroupId !== undefined ? { connectionGroupId } : {}), mode });
   } catch (err) {
     if (err instanceof AmbiguousEntityError) {
       return c.json(
@@ -2112,7 +2112,7 @@ admin.openapi(getSemanticDiffRoute, async (c) => {
   }
 
   try {
-    const result = await runDiff(connectionId, { orgId, atlasMode });
+    const result = await runDiff(connectionId, { ...(orgId !== undefined ? { orgId } : {}), atlasMode });
     return c.json(result, 200);
   } catch (err) {
     log.error(
@@ -2409,7 +2409,7 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
     result = await importFromDisk(orgId, { connectionId: "__demo__", sourceDir: semanticDir });
     resolvedSource = "demo-seed";
   } else {
-    result = await importFromDisk(orgId, { connectionId: body.connectionId });
+    result = await importFromDisk(orgId, { ...(body.connectionId !== undefined ? { connectionId: body.connectionId } : {})});
     resolvedSource = body.connectionId ? `disk:${body.connectionId}` : "disk:all";
 
     if (result.imported === 0 && result.total === 0 && !body.connectionId) {
@@ -3121,7 +3121,7 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
   // for this user; matches the global blast-radius of the mutation.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
-    orgId: undefined,
+    ...(undefined !== undefined ? { orgId: undefined } : {}),
     requestId,
   });
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
@@ -3359,7 +3359,7 @@ admin.openapi(deleteUserRoute, async (c) => {
   // the guard searches across ALL SCIM providers for this user.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
-    orgId: undefined,
+    ...(undefined !== undefined ? { orgId: undefined } : {}),
     requestId,
   });
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
@@ -3553,7 +3553,7 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
   // override revokes anyway and stamps the audit row.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
-    orgId: authResult.user?.activeOrganizationId,
+    ...(authResult.user?.activeOrganizationId !== undefined ? { orgId: authResult.user?.activeOrganizationId } : {}),
     requestId,
   });
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);

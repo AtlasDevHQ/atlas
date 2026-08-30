@@ -231,7 +231,7 @@ export async function announceActivation(
     { workspaceId, channelId, messageId: announceResult.messageId ?? null },
     "Proactive activation announcement posted",
   );
-  return { posted: true, messageId: announceResult.messageId };
+  return { posted: true, ...(announceResult.messageId !== undefined ? { messageId: announceResult.messageId } : {})};
 }
 
 /**

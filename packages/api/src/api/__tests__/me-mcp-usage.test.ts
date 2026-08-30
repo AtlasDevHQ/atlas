@@ -100,9 +100,9 @@ interface CapturableAuditEntry {
 function capture(entry: CapturableAuditEntry): void {
   auditCalls.push({
     actionType: entry.actionType,
-    targetType: entry.targetType,
-    targetId: entry.targetId,
-    metadata: entry.metadata,
+    ...(entry.targetType !== undefined ? { targetType: entry.targetType } : {}),
+    ...(entry.targetId !== undefined ? { targetId: entry.targetId } : {}),
+    ...(entry.metadata !== undefined ? { metadata: entry.metadata } : {}),
   });
 }
 

@@ -147,7 +147,7 @@ describe("correction confirm token — mint/verify", () => {
     expect(
       verifyCorrectionConfirmToken(
         token,
-        binding({ verb: "retract", payload: { reason: undefined, replacement: undefined } }),
+        binding({ verb: "retract", payload: { ...(undefined !== undefined ? { reason: undefined } : {}), replacement: undefined } }),
       ).ok,
     ).toBe(true);
   });

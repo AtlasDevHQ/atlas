@@ -40,7 +40,7 @@ function mintFetch(opts: {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    calls.push({ url, init });
+    calls.push({ url, ...(init !== undefined ? { init } : {})});
     const expiresAtIso = new Date((opts.nowMs ?? T0_MS) + opts.expiresInMs).toISOString();
     return new Response(
       JSON.stringify({ token: opts.token, expires_at: expiresAtIso }),
@@ -161,7 +161,7 @@ describe("getGitHubInstallationToken — failure modes", () => {
   it("throws when the App id or private key is unavailable", async () => {
     await expect(
       getGitHubInstallationToken(INSTALLATION_ID, {
-        appId: undefined,
+        ...(undefined !== undefined ? { appId: undefined } : {}),
         privateKey: undefined,
         now: () => T0_MS,
       }),

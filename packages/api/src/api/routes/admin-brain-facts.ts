@@ -922,7 +922,7 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
             // #5496 — see the retract route above: the admin UI click is the
             // explicit act, so this entry point establishes intent directly.
             intent: "admin-ui",
-            reason: body.reason,
+            ...(body.reason !== undefined ? { reason: body.reason } : {}),
             // Always a valid Date past the body schema's `.datetime()` gate;
             // the machinery keeps a warn-and-degrade backstop regardless.
             replacement: body.replacement

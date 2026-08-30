@@ -297,7 +297,7 @@ function canonicalDescriptor(
     description: cp.description,
     source: "canonical",
     args: [],
-    gate: () => shouldExposeCanonicalPrompts({ workspaceId }),
+    gate: () => shouldExposeCanonicalPrompts({ ...(workspaceId !== undefined ? { workspaceId } : {})}),
     resolve: () => promptResult(cp.question, cp.description),
   };
 }

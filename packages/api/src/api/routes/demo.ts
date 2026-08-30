@@ -658,7 +658,7 @@ demo.openapi(demoChatRoute, async (c) => {
         const agentResult = await runAgent({
           messages,
           tools: nonDashboardRegistry,
-          conversationId,
+          ...(conversationId !== undefined ? { conversationId } : {}),
           maxSteps: getDemoMaxSteps(),
           ...demoRunAgentModelParams(),
         });

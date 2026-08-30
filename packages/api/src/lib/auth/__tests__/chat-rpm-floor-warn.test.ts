@@ -59,7 +59,7 @@ function makeConfig(deployMode: ResolvedConfig["deployMode"]): ResolvedConfig {
     semanticLayer: "./semantic",
     maxTotalConnections: 100,
     source: "file",
-    deployMode,
+    ...(deployMode !== undefined ? { deployMode } : {}),
   };
 }
 

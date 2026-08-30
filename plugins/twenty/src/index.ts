@@ -159,7 +159,7 @@ export const twentyPlugin = createPlugin<
     const clientConfig: TwentyClientConfig = {
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
-      timeoutMs: config.timeoutMs,
+      ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
     };
 
     const upsertPersonTool = tool({

@@ -758,7 +758,7 @@ wizard.openapi(generateRoute, async (c) => {
         const generated = generateSemanticLayer(analyzedProfiles, {
           dbType,
           ...(querySchema !== undefined ? { schema: querySchema } : {}),
-          sourceId,
+          ...(sourceId !== undefined ? { sourceId } : {}),
         });
         const entityYamlByTable = new Map(generated.entities.map((e) => [e.table, e.yaml]));
         const entities = analyzedProfiles.map((profile) => {

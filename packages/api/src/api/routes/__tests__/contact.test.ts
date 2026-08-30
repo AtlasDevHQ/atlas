@@ -44,7 +44,7 @@ void mock.module("@atlas/api/lib/contact", () => ({
 
 void mock.module("@atlas/api/lib/turnstile", () => ({
   verifyTurnstile: async (opts: { token: string; remoteIp?: string | null }) => {
-    turnstileCallArgs = { token: opts.token, remoteIp: opts.remoteIp };
+    turnstileCallArgs = { token: opts.token, ...(opts.remoteIp !== undefined ? { remoteIp: opts.remoteIp } : {})};
     if (turnstileOk) return { ok: true };
     return {
       ok: false,

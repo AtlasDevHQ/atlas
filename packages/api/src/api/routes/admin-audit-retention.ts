@@ -436,7 +436,7 @@ adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
       orgId!,
       {
         retentionDays: body.retentionDays,
-        hardDeleteDelayDays: body.hardDeleteDelayDays,
+        ...(body.hardDeleteDelayDays !== undefined ? { hardDeleteDelayDays: body.hardDeleteDelayDays } : {}),
       },
       user?.id ?? null,
     ).pipe(
@@ -490,8 +490,8 @@ adminAuditRetention.openapi(exportRoute, async (c) => {
     return yield* retention.exportAuditLog({
       orgId: orgId!,
       format: body.format,
-      startDate: body.startDate,
-      endDate: body.endDate,
+      ...(body.startDate !== undefined ? { startDate: body.startDate } : {}),
+      ...(body.endDate !== undefined ? { endDate: body.endDate } : {}),
     }).pipe(
       Effect.tap((result) =>
         emitAudit({

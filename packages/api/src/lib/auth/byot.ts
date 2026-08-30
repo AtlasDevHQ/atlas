@@ -104,7 +104,7 @@ export async function validateBYOT(req: Request): Promise<AuthResult> {
   const audience = rawAudience || undefined;
 
   try {
-    const { payload } = await jwtVerify(token, jwks, { issuer, audience });
+    const { payload } = await jwtVerify(token, jwks, { issuer, ...(audience !== undefined ? { audience } : {})});
     const sub = payload.sub;
     if (!sub) {
       return {
@@ -124,7 +124,7 @@ export async function validateBYOT(req: Request): Promise<AuthResult> {
     return {
       authenticated: true,
       mode: "byot",
-      user: createAtlasUser(sub, "byot", email || sub, { role, claims: payload as Record<string, unknown> }),
+      user: createAtlasUser(sub, "byot", email || sub, { ...(role !== undefined ? { role } : {}), claims: payload as Record<string, unknown> }),
     };
   } catch (err) {
     // Infrastructure errors — JWKS endpoint issues are not client auth failures.

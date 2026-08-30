@@ -54,7 +54,7 @@ void mock.module("@atlas/api/lib/tools/sql", () => ({
   extractClassification: () => undefined,
   parserDatabase: () => "postgresql",
   validateSQL: async (sql: string, connectionId?: string, workspaceId?: string) => {
-    validateSqlCalls.push({ sql, connectionId, workspaceId });
+    validateSqlCalls.push({ sql, ...(connectionId !== undefined ? { connectionId } : {}), ...(workspaceId !== undefined ? { workspaceId } : {})});
     return nextResult;
   },
   buildSqlExecuteSpanAttrs: () => ({}),

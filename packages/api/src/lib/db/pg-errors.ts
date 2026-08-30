@@ -81,7 +81,7 @@ export function asUniqueViolation(
   if (!("code" in err) || err.code !== PG_UNIQUE_VIOLATION) return undefined;
   const constraint = "constraint" in err && typeof err.constraint === "string" ? err.constraint : undefined;
   const detail = "detail" in err && typeof err.detail === "string" ? err.detail : undefined;
-  return { constraint, detail };
+  return { ...(constraint !== undefined ? { constraint } : {}), ...(detail !== undefined ? { detail } : {})};
 }
 
 /**

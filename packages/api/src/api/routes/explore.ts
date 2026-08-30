@@ -186,9 +186,9 @@ explore.openapi(
     return withRequestContext(
       {
         requestId,
-        user,
+        ...(user !== undefined ? { user } : {}),
         atlasMode,
-        trustDeviceIdentifier,
+        ...(trustDeviceIdentifier !== undefined ? { trustDeviceIdentifier } : {}),
         actor: { kind: actorKind },
         ...(agentOrigin ? { agentOrigin } : {}),
       },

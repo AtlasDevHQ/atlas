@@ -30,7 +30,7 @@ let wsPluginKeys = new Set<string>();
 
 const mockRegister: Mock<(id: string, cfg: { url: string; schema?: string; description?: string }) => void> = mock(
   (id: string, cfg: { url: string; schema?: string; description?: string }) => {
-    registerCalls.push({ id, url: cfg.url, schema: cfg.schema, description: cfg.description });
+    registerCalls.push({ id, url: cfg.url, ...(cfg.schema !== undefined ? { schema: cfg.schema } : {}), ...(cfg.description !== undefined ? { description: cfg.description } : {})});
     registeredIds.add(id);
   },
 );
@@ -43,7 +43,7 @@ const mockUnregister: Mock<(id: string) => boolean> = mock((id: string) => {
 const mockHas: Mock<(id: string) => boolean> = mock((id: string) => registeredIds.has(id));
 const mockRegisterForWorkspace: Mock<(workspaceId: string, installId: string, cfg: { url: string; schema?: string; description?: string }) => void> = mock(
   (workspaceId: string, installId: string, cfg: { url: string; schema?: string; description?: string }) => {
-    wsRegisterCalls.push({ workspaceId, installId, url: cfg.url, schema: cfg.schema, description: cfg.description });
+    wsRegisterCalls.push({ workspaceId, installId, url: cfg.url, ...(cfg.schema !== undefined ? { schema: cfg.schema } : {}), ...(cfg.description !== undefined ? { description: cfg.description } : {})});
     wsRegisteredKeys.add(wsKey(workspaceId, installId));
   },
 );
@@ -80,7 +80,7 @@ const mockRegisterDirectForWorkspace = mock(
     _meta?: unknown,
     targetHost?: string,
   ) => {
-    wsPluginRegisterCalls.push({ workspaceId, installId, dbType, description, targetHost });
+    wsPluginRegisterCalls.push({ workspaceId, installId, dbType, ...(description !== undefined ? { description } : {}), ...(targetHost !== undefined ? { targetHost } : {})});
     wsPluginKeys.add(wsKey(workspaceId, installId));
   },
 );

@@ -128,7 +128,7 @@ function rows(r: Array<Record<string, unknown>>) {
 function makeRecordingPool(): InternalPool {
   return {
     query: async (sql: string, params?: unknown[]) => {
-      queries.push({ sql, params });
+      queries.push({ sql, ...(params !== undefined ? { params } : {})});
       // #3159 ban-guard lookup (DB-clock `ban_active`): only "banned_user" is
       // banned; everyone else (incl. the other describe blocks' user ids) reads
       // back not-banned.

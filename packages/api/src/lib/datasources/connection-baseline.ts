@@ -119,7 +119,7 @@ export async function runBaselineProfile(
       await recordBaselineError({
         orgId: target.orgId,
         installId: target.installId,
-        connectionGroupId: target.connectionGroupId,
+        ...(target.connectionGroupId !== undefined ? { connectionGroupId: target.connectionGroupId } : {}),
         dbType: target.dbType,
         error: `Baseline profile could not resolve a live connection: ${reason}.`,
       });
@@ -150,7 +150,7 @@ export async function runBaselineProfile(
       await recordBaselineError({
         orgId: target.orgId,
         installId: target.installId,
-        connectionGroupId: target.connectionGroupId,
+        ...(target.connectionGroupId !== undefined ? { connectionGroupId: target.connectionGroupId } : {}),
         dbType: target.dbType,
         error: errorMessage(err),
       });
@@ -174,7 +174,7 @@ export async function runBaselineProfile(
       await recordBaselineError({
         orgId: target.orgId,
         installId: target.installId,
-        connectionGroupId: target.connectionGroupId,
+        ...(target.connectionGroupId !== undefined ? { connectionGroupId: target.connectionGroupId } : {}),
         dbType: target.dbType,
         error: message,
       });
@@ -229,7 +229,7 @@ export async function ensureConnectionBaseline(
     const claimed = await claimSlot({
       orgId: target.orgId,
       installId: target.installId,
-      connectionGroupId: target.connectionGroupId,
+      ...(target.connectionGroupId !== undefined ? { connectionGroupId: target.connectionGroupId } : {}),
       dbType: target.dbType,
     });
     // Intentionally returns the pre-claim `existing` snapshot: if a peer replica

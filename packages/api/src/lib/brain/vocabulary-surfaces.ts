@@ -163,7 +163,7 @@ export async function loadObservedSurfaces(
   const scope = positionalScopeClause(position, ctx, {
     paramIndex: 1,
     alias: "vf",
-    requestId: request.requestId,
+    ...(request.requestId !== undefined ? { requestId: request.requestId } : {}),
   });
   if (scope.decision === "deny-all") {
     // Not a throw. A denied reader gets an EMPTY picker and the authoring
@@ -321,7 +321,7 @@ export async function loadPairPopulation(
   const scope = positionalScopeClause(request.position, ctx, {
     paramIndex: 1,
     alias: "vf",
-    requestId: request.requestId,
+    ...(request.requestId !== undefined ? { requestId: request.requestId } : {}),
   });
   if (scope.decision === "deny-all") {
     return {

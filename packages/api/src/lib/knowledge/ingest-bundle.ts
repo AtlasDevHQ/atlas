@@ -475,8 +475,8 @@ export async function ingestBundle(params: IngestBundleParams): Promise<IngestBu
     source,
     caps,
     files: extracted.files,
-    publish: params.publish,
-    archiveAbsent: params.archiveAbsent,
+    ...(params.publish !== undefined ? { publish: params.publish } : {}),
+    ...(params.archiveAbsent !== undefined ? { archiveAbsent: params.archiveAbsent } : {}),
     upstreamRejections: extracted.errors,
   });
   return outcome.kind === "ok" ? { ...outcome, format: extracted.format } : outcome;

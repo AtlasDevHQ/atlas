@@ -174,7 +174,7 @@ export async function computeAmendmentLiveDiff(params: {
     sourceEntity: params.sourceEntity,
     connectionGroupId: params.connectionGroupId,
     rawPayload: params.rawPayload,
-    label: params.label,
+    ...(params.label !== undefined ? { label: params.label } : {}),
   });
 
   // Glossary amendments diff the group's glossary DOCUMENT, not the host entity

@@ -346,7 +346,7 @@ const fakeStaticBotHandler: StaticBotInstallHandler = {
   // WhatsApp). The OAuth-shaped rejection suite registers a separate handler
   // WITH applicationId under the "discord" slug.
   confirmInstall: async (workspaceId, routingIdentifier, verificationProof, extras) => {
-    confirmArgs = { workspaceId: workspaceId as string, routingIdentifier, verificationProof, extras };
+    confirmArgs = { workspaceId: workspaceId as string, routingIdentifier, ...(verificationProof !== undefined ? { verificationProof } : {}), ...(extras !== undefined ? { extras } : {})};
     return confirmInstallImpl();
   },
 };
@@ -1907,7 +1907,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     authResultImpl = async () => ({
       authenticated: true,
       mode: "none",
-      user: undefined,
+      ...(undefined !== undefined ? { user: undefined } : {}),
     });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
@@ -2037,7 +2037,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     authResultImpl = async () => ({
       authenticated: true,
       mode: "none",
-      user: undefined,
+      ...(undefined !== undefined ? { user: undefined } : {}),
     });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });

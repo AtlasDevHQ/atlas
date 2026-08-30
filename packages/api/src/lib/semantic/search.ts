@@ -657,10 +657,10 @@ function loadMetricsFromDir(dir: string, displayGroup: string | undefined, out: 
       // metric, keyed by the canonical `id:` (current shape) or legacy `name:`.
       if (Array.isArray(raw.metrics)) {
         for (const m of raw.metrics as ParsedMetric[]) {
-          if (m && typeof m === "object") out.push({ ...m, group: displayGroup });
+          if (m && typeof m === "object") out.push({ ...m, ...(displayGroup !== undefined ? { group: displayGroup } : {})});
         }
       } else if (raw.name || raw.id) {
-        out.push({ ...(raw as ParsedMetric), group: displayGroup });
+        out.push({ ...(raw as ParsedMetric), ...(displayGroup !== undefined ? { group: displayGroup } : {})});
       }
     } catch (err) {
       log.warn({ file, dir, err: err instanceof Error ? err.message : String(err) }, "Skipping metric file in semantic index — failed to read or parse");
@@ -695,11 +695,11 @@ function loadGlossaryFile(filePath: string, displayGroup: string | undefined, ou
     // common case for grouped glossaries, so the index must handle it too.
     if (Array.isArray(raw.terms)) {
       for (const t of raw.terms as GlossaryTerm[]) {
-        if (t && typeof t === "object") out.push({ ...t, group: displayGroup });
+        if (t && typeof t === "object") out.push({ ...t, ...(displayGroup !== undefined ? { group: displayGroup } : {})});
       }
     } else if (raw.terms && typeof raw.terms === "object") {
       for (const [term, value] of Object.entries(raw.terms as Record<string, unknown>)) {
-        if (value && typeof value === "object") out.push({ term, ...(value as GlossaryTerm), group: displayGroup });
+        if (value && typeof value === "object") out.push({ term, ...(value as GlossaryTerm), ...(displayGroup !== undefined ? { group: displayGroup } : {})});
       }
     }
   } catch (err) {
@@ -742,5 +742,5 @@ function loadCatalog(semanticRoot: string): ParsedCatalog | null {
   }
 
   if (!found) return null;
-  return { version, entities: merged };
+  return { ...(version !== undefined ? { version } : {}), entities: merged };
 }

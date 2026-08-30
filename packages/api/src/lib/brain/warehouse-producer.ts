@@ -4635,7 +4635,7 @@ async function defaultProposeAliasEdges(
   requestId?: string,
 ): Promise<AliasProducerCounters> {
   const { proposeAliasEdges } = await import("@atlas/api/lib/brain/vocabulary-decide");
-  return proposeAliasEdges(workspaceId, proposals, ENTITY_EDGE_PRODUCER, { requestId });
+  return proposeAliasEdges(workspaceId, proposals, ENTITY_EDGE_PRODUCER, { ...(requestId !== undefined ? { requestId } : {})});
 }
 
 /**

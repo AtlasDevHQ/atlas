@@ -22,7 +22,7 @@ function makeEntry(overrides?: Partial<CacheEntry>): CacheEntry {
 const SCOPE: CacheScope = { connectionId: "default" };
 /** Build a scope with a specific org (and optional connection). */
 function scope(orgId?: string, connectionId = "default"): CacheScope {
-  return { orgId, connectionId };
+  return { ...(orgId !== undefined ? { orgId } : {}), connectionId };
 }
 
 describe("LRUCacheBackend", () => {

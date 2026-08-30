@@ -171,7 +171,7 @@ semantic.openapi(listEntitiesRoute, async (c) => {
   const mode = getAtlasMode(c);
 
   try {
-    const result = await listAdminEntities({ orgId, mode });
+    const result = await listAdminEntities({ ...(orgId !== undefined ? { orgId } : {}), mode });
     const entities = result.entities.map(({ table, description, columnCount, joinCount, type }) => ({
       table,
       description,
@@ -207,7 +207,7 @@ semantic.openapi(getEntityRoute, async (c) => {
   try {
     // Thread mode through so non-admin callers in `published` mode can't
     // see drafts when an admin is mid-edit on the same entity (#2481).
-    const result = await getAdminEntity({ name, orgId, requestId, mode: getAtlasMode(c) });
+    const result = await getAdminEntity({ name, ...(orgId !== undefined ? { orgId } : {}), requestId, mode: getAtlasMode(c) });
     if (!result) {
       return c.json({ error: "not_found", message: `Entity "${name}" not found.`, requestId }, 404);
     }

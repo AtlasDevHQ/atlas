@@ -462,5 +462,5 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
   );
 
   // --- typed semantic-layer tools ---
-  registerSemanticTools(server, { actor, transport, workspaceId, deployMode, clientId, scopes });
+  registerSemanticTools(server, { actor, transport, workspaceId, deployMode, ...(clientId !== undefined ? { clientId } : {}), ...(scopes !== undefined ? { scopes } : {})});
 }

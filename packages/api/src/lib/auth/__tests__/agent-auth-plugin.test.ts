@@ -568,7 +568,7 @@ describe("agent-auth CIBA backchannel approval gating (#4414)", () => {
       }),
     );
     const body = (await res.json().catch(() => ({}))) as { error?: string };
-    return { status: res.status, error: body.error };
+    return { status: res.status, ...(body.error !== undefined ? { error: body.error } : {})};
   }
 
   it("core /agent/ciba/authorize is hard-rejected (invalid_request) — enforcement, not just advertising", async () => {

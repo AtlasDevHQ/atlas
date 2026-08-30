@@ -377,7 +377,7 @@ adminActionRetention.openapi(updateRetentionRoute, async (c) => {
 
     return yield* setAdminActionRetentionPolicy(
       orgId!,
-      { retentionDays: body.retentionDays, hardDeleteDelayDays: body.hardDeleteDelayDays },
+      { retentionDays: body.retentionDays, ...(body.hardDeleteDelayDays !== undefined ? { hardDeleteDelayDays: body.hardDeleteDelayDays } : {})},
       user?.id ?? null,
     ).pipe(
       Effect.tap(() =>

@@ -195,7 +195,7 @@ export async function resolveAmendmentBaseline(
       ? true
       : (await getEntity(effectiveOrgId, "entity", entityName, targetGroupId, "published")) !== null;
 
-  return { row, targetGroupId, parsed, publishedExists };
+  return { row, targetGroupId, parsed, ...(publishedExists !== undefined ? { publishedExists } : {})};
 }
 
 // ── Glossary amendments (#4518) ──────────────────────────────────────────────
@@ -347,7 +347,7 @@ export async function applyAmendmentToEntity(
   // dual-apply carve-out (#4517) is a no-op for it.
   if (isGlossaryAmendmentType(result.amendmentType)) {
     await applyGlossaryAmendmentToStore(orgId, result, requestId, {
-      expectedBaselineHash: opts?.expectedBaselineHash,
+      ...(opts?.expectedBaselineHash !== undefined ? { expectedBaselineHash: opts?.expectedBaselineHash } : {}),
     });
     return { draftDualApply: { kind: "no-draft" } };
   }
@@ -826,12 +826,12 @@ export async function applyAmendmentFromPayload(params: {
     sourceEntity,
     connectionGroupId,
     rawPayload,
-    label: params.label,
+    ...(params.label !== undefined ? { label: params.label } : {}),
   });
 
   return await applyAmendmentToEntity(orgId, result, requestId, {
-    disambiguationGroup: params.disambiguationGroup,
-    expectedBaselineHash: params.expectedBaselineHash,
+    ...(params.disambiguationGroup !== undefined ? { disambiguationGroup: params.disambiguationGroup } : {}),
+    ...(params.expectedBaselineHash !== undefined ? { expectedBaselineHash: params.expectedBaselineHash } : {}),
   });
 }
 

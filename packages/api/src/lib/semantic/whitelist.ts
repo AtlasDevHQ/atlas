@@ -263,7 +263,7 @@ function loadEntitiesFromDir(
             toTable: j.target_table,
             on: j.on,
             relationship: j.relationship,
-            description: j.description,
+            ...(j.description !== undefined ? { description: j.description } : {}),
           });
         }
       }

@@ -665,7 +665,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     return searchBrainCore(pool, {
       ctx,
       mode: options.mode ?? "published",
-      query: options.query,
+      ...(options.query !== undefined ? { query: options.query } : {}),
       include: ["attested", "on-record"],
       expand: false,
       limit: 25,

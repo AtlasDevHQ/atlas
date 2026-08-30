@@ -141,7 +141,7 @@ tables.openapi(tablesRoute, async (c) => {
     // enforces. `undefined` means "whitelist disabled → return everything".
     const allowed = whitelistDisabled
       ? undefined
-      : await resolveAllowedTables(groupKey, { orgId, atlasMode });
+      : await resolveAllowedTables(groupKey, { ...(orgId !== undefined ? { orgId } : {}), ...(atlasMode !== undefined ? { atlasMode } : {})});
 
     // Column detail is read from the semantic root that backs this scope. The
     // `allowed` filter is the authority for membership; the root only supplies

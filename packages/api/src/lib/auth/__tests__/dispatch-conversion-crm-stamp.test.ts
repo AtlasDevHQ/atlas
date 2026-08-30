@@ -367,7 +367,7 @@ describe("planConversionStamp — onSubscriptionComplete trigger", () => {
     expect(
       planConversionStamp({
         trigger: "complete",
-        subscription: { status: "active", stripeCustomerId: undefined },
+        subscription: { status: "active", ...(undefined !== undefined ? { stripeCustomerId: undefined } : {})},
       }),
     ).toEqual({ kind: "log-and-skip", reason: "no-stripe-customer-id" });
   });
@@ -439,7 +439,7 @@ describe("planConversionStamp — onSubscriptionUpdate trigger", () => {
     expect(
       planConversionStamp({
         trigger: "update",
-        subscription: { stripeCustomerId: undefined },
+        subscription: { ...(undefined !== undefined ? { stripeCustomerId: undefined } : {})},
         event: updateEvent("active", "trialing"),
       }),
     ).toEqual({ kind: "skip", reason: "non-transition" });

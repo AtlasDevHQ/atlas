@@ -315,9 +315,9 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
     const report = yield* reports.generateDataAccessReport(orgId!, {
       startDate: query.startDate,
       endDate: query.endDate,
-      userId: query.userId,
-      role: query.role,
-      table: query.table,
+      ...(query.userId !== undefined ? { userId: query.userId } : {}),
+      ...(query.role !== undefined ? { role: query.role } : {}),
+      ...(query.table !== undefined ? { table: query.table } : {}),
     });
 
     if (query.format === "csv") {
@@ -351,9 +351,9 @@ adminCompliance.openapi(userActivityReportRoute, async (c) => {
     const report = yield* reports.generateUserActivityReport(orgId!, {
       startDate: query.startDate,
       endDate: query.endDate,
-      userId: query.userId,
-      role: query.role,
-      table: query.table,
+      ...(query.userId !== undefined ? { userId: query.userId } : {}),
+      ...(query.role !== undefined ? { role: query.role } : {}),
+      ...(query.table !== undefined ? { table: query.table } : {}),
     });
 
     if (query.format === "csv") {

@@ -64,7 +64,7 @@ function makeMockPool(opts: {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const pool = {
     query: async (sql: string, params?: unknown[]) => {
-      queries.push({ sql, params });
+      queries.push({ sql, ...(params !== undefined ? { params } : {})});
       // #3469 atomic claim — dispatch before the eligibility arm (both
       // mention user_trial_grants).
       if (/INSERT INTO user_trial_grants/i.test(sql)) {

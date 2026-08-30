@@ -331,7 +331,7 @@ describe("dispatchMcpSignupCrmLead — happy path", () => {
   it("enqueues without `name` when name is missing / blank", async () => {
     for (const name of [undefined, "", "   ", "\t"]) {
       upsertLeadCalls.length = 0;
-      await dispatchMcpSignupCrmLead({ email: "n@acme.com", name });
+      await dispatchMcpSignupCrmLead({ email: "n@acme.com", ...(name !== undefined ? { name } : {})});
       expect(upsertLeadCalls).toHaveLength(1);
       expect(upsertLeadCalls[0]).toEqual({
         source: "mcp-signup",

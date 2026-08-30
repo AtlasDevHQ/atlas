@@ -110,7 +110,7 @@ let clientQueryCount = 0;
 
 const mockPool: InternalPool = {
   async query(sql: string, params?: unknown[]) {
-    poolQueryCalls.push({ sql, params });
+    poolQueryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     return { rows: [] };
   },
   async connect(): Promise<InternalPoolClient> {
@@ -118,7 +118,7 @@ const mockPool: InternalPool = {
     return {
       async query(sql: string, params?: unknown[]) {
         clientQueryCount++;
-        clientQueryCalls.push({ sql, params });
+        clientQueryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
         const errToThrow = clientThrowOnCall.get(clientQueryCount);
         if (errToThrow) throw errToThrow;
         const result = clientQueryResults[clientQueryResultIndex] ?? { rows: [] };

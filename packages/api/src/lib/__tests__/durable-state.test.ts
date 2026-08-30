@@ -18,11 +18,11 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => hasInternalDB,
   internalExecute: (sql: string, params?: unknown[]) => {
-    execCalls.push({ sql, params });
+    execCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     if (throwOnExecute) throw new Error("exec boom");
   },
   internalQuery: (sql: string, params?: unknown[]) => {
-    queryCalls.push({ sql, params });
+    queryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     return queryImpl(sql, params);
   },
 }));

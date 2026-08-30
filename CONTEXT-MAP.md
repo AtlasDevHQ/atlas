@@ -4,11 +4,11 @@ Atlas uses the **multi-context** domain-doc layout (adopted 2026-08-17). This fi
 every bounded context and points at the `CONTEXT.md` that governs it. Consumer rules:
 [docs/agents/domain.md](docs/agents/domain.md).
 
-## Status: the split is underway — 12 of 18 extracted
+## Status: the split is underway — 13 of 18 extracted
 
 ⚠️ **Read the *Governed by* column before following any path below.** It says, per context,
-whether that context has its own file yet. Twelve do; the other six are still sections of
-the root [`CONTEXT.md`](CONTEXT.md), which shrank from ~85 KB to ~31 KB as they left.
+whether that context has its own file yet. Thirteen do; the other five are still sections of
+the root [`CONTEXT.md`](CONTEXT.md), which shrank from ~85 KB to ~27 KB as they left.
 
 This map lists no path that does not exist. A map naming files that were never written would
 be the same defect this repo spent 2026-08-17 removing from its agent docs — a pointer that
@@ -39,7 +39,7 @@ the Company Atlas context alone spans `packages/api/src/lib/brain/**`, `/admin/b
 | Knowledge Base mechanics | [`docs/contexts/knowledge-base-mechanics/CONTEXT.md`](docs/contexts/knowledge-base-mechanics/CONTEXT.md) | ADR-0028 |
 | Semantic layer scoping | [`docs/contexts/semantic-layer-scoping/CONTEXT.md`](docs/contexts/semantic-layer-scoping/CONTEXT.md) | |
 | Semantic improvement | [`docs/contexts/semantic-improvement/CONTEXT.md`](docs/contexts/semantic-improvement/CONTEXT.md) | |
-| Learned query patterns | `CONTEXT.md` § Learned query patterns | |
+| Learned query patterns | [`docs/contexts/learned-query-patterns/CONTEXT.md`](docs/contexts/learned-query-patterns/CONTEXT.md) | |
 | Query Cache | `CONTEXT.md` § Query Cache | |
 | Dashboard editing | `CONTEXT.md` § Dashboard editing | ADR-0029, draft-first |
 | MCP & agent governance | `CONTEXT.md` § MCP & agent governance | ADR-0016, ADR-0018 |

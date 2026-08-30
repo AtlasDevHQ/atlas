@@ -239,6 +239,9 @@ const {
   resetMigrationForRetry,
   cancelMigration,
   screenRefusalDetails,
+  screenProposalRefusalDetails,
+  screenCardinalityRefusalDetails,
+  recordMigrationRefusals,
 } = await import("../migrate");
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -684,7 +687,7 @@ describe("executeRegionMigration", () => {
 
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error).toContain("refused alias edge");
+      expect(result.error).toContain("refused vocabulary decision");
       expect(result.error).toContain("BEFORE cutover");
       // ⭐ `result.error` IS `region_migrations.error_message`, which
       // `admin-residency.ts` returns verbatim to a workspace admin. The whole string
@@ -793,6 +796,98 @@ describe("executeRegionMigration", () => {
     // is reserved for "this build never asked", which is what a pre-0204 row is.
     expect(write?.params[1]).toBe(0);
     expect(write?.params[2]).toBeNull();
+  });
+
+  it("⭐ #5533: writes all SIX columns in ONE statement, so no section's record can land alone", async () => {
+    // The columns are the whole feature, and until #5533 only two of them existed.
+    // Asserting the statement's SHAPE rather than only its effect is what catches
+    // the failure mode `migrate-roundtrip-pg.test.ts`'s writer case documents: a
+    // crossed `$n` placeholder round-trips clean whenever two sections' numbers
+    // happen to match, and it is the numbers that reconcile a cutover.
+    ackWithRefusals([refusalDetail("price")]);
+
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(true);
+
+    const write = refusalRecordWrite();
+    expect(write).toBeDefined();
+    // ONE statement, not three: a partial write would leave one section's evidence
+    // durable and another's lost, and the abort decision is made against the total.
+    for (const column of [
+      "vocabulary_edges_refused",
+      "vocabulary_refusals",
+      "vocabulary_proposals_refused",
+      "vocabulary_proposal_refusals",
+      "predicate_cardinalities_refused",
+      "predicate_cardinality_refusals",
+    ]) {
+      expect(write?.sql, `the writer's statement does not set ${column}`).toContain(column);
+    }
+    expect(
+      capturedQueries.filter((q) => q.sql.includes("vocabulary_proposals_refused")),
+      "the six columns were split across more than one statement",
+    ).toHaveLength(1);
+    // The fixture bundle carries no proposals or cardinality entries, so both
+    // sections record `0`/`null` — which is the honest value, and NOT NULL on the
+    // counts: NULL is reserved for "this build never asked".
+    expect(write?.params[3]).toBe(0);
+    expect(write?.params[4]).toBeNull();
+    expect(write?.params[5]).toBe(0);
+    expect(write?.params[6]).toBeNull();
+  });
+
+  it("⭐ #5533: ABORTS on a failed write when only a NON-EDGE section refused", async () => {
+    // The generalization that makes #5533 more than two extra columns. #5112's
+    // guard read `evidence.refused` — the EDGE count — and a migration that
+    // refused no edges and three predicate-cardinality decisions has exactly as
+    // much to lose. Left as it was, this input carries on past the failed write,
+    // cuts over, and schedules the destructive cleanup with no durable record —
+    // the precise hole #5533 exists to close, re-entered through the error path.
+    //
+    // Driven directly rather than through `executeRegionMigration`, because the
+    // fixture bundle carries no proposal rows: with `expected === 0` the
+    // reconciliation loop `continue`s before the capture, so the executor cannot
+    // reach a non-zero proposal refusal at all. The threshold is the unit under
+    // test here, not the plumbing that feeds it.
+    mockInternalQueryRejectPattern = {
+      pattern: "vocabulary_edges_refused",
+      error: new Error("column does not exist"),
+    };
+
+    await expect(
+      recordMigrationRefusals("mig-1", {
+        // ZERO edges refused — the counter #5112's guard read.
+        vocabularyEdges: { refused: 0, details: [], malformedDetails: 0 },
+        vocabularyProposals: { refused: 2, details: [], malformedDetails: 0 },
+        predicateCardinalities: { refused: 0, details: [], malformedDetails: 0 },
+      }),
+    ).rejects.toThrow(/BEFORE cutover/);
+
+    // And the same for the cardinality section alone, because two sections sharing
+    // one guard is exactly the shape where fixing one and forgetting the other
+    // passes every test written for the first.
+    await expect(
+      recordMigrationRefusals("mig-1", {
+        vocabularyEdges: { refused: 0, details: [], malformedDetails: 0 },
+        vocabularyProposals: { refused: 0, details: [], malformedDetails: 0 },
+        predicateCardinalities: { refused: 1, details: [], malformedDetails: 0 },
+      }),
+    ).rejects.toThrow(/BEFORE cutover/);
+
+    // ⚠️ THE OTHER SIDE OF THE THRESHOLD, in the same test: all zero must still
+    // warn-and-continue. Without it, "throw whenever the write fails" passes both
+    // assertions above while turning every failed bookkeeping write into a failed
+    // migration.
+    await recordMigrationRefusals("mig-1", {
+      vocabularyEdges: { refused: 0, details: [], malformedDetails: 0 },
+      vocabularyProposals: { refused: 0, details: [], malformedDetails: 0 },
+      predicateCardinalities: { refused: 0, details: [], malformedDetails: 0 },
+    });
+    expect(
+      capturedWarns.some((w) =>
+        w.message.includes("Could not record the vocabulary-refusal bookkeeping"),
+      ),
+    ).toBe(true);
   });
 
   it("⭐ routes the count through BOTH migration audit events", async () => {
@@ -1601,5 +1696,119 @@ describe("cancelMigration", () => {
       (q) => q.sql.includes("status = 'cancelled'") && q.sql.includes("Cancelled by admin"),
     );
     expect(cancelQuery).toBeDefined();
+  });
+});
+
+describe("the two #5113 sections' screens (#5533)", () => {
+  /**
+   * ⚠️ WHAT THESE CASES ARE FOR, since the edge screen's own describe above already
+   * exercises every arm of the shared implementation.
+   *
+   * `screenDetailsAgainst` is one function parameterized by schema, so re-testing
+   * the polarity, the per-entry parse and the `.slice()` here would be three copies
+   * of an assertion about code that cannot differ. What CAN differ — and is
+   * therefore what these cases pin — is the SCHEMA each screen is wired to. A
+   * copy-paste that pointed both new screens at `VocabularyRefusalDetailSchema`
+   * type-checks (both return `ScreenedDetails<T>` through a generic), passes every
+   * shared-behaviour test, and silently rejects every real payload as malformed —
+   * which reads to an operator as "the target region is buggy" at the exact moment
+   * the payloads stop being recoverable.
+   */
+  const goodProposal = {
+    slotPosition: "subject",
+    fromNorm: "acme corp",
+    toNorm: "acme corporation",
+    arrivingStatus: "rejected",
+    existingStatus: "approved",
+    reviewedBy: "source-reviewer",
+    reviewedAt: "2026-06-02T00:00:00Z",
+    refusal: "contradictory-decision",
+    reason: "the destination's own decision is kept",
+  };
+
+  const goodCardinality = {
+    predicateKey: "ships to",
+    arrivingCardinality: "single",
+    arrivingStatus: "approved",
+    existingCardinality: null,
+    existingStatus: null,
+    canonicalHere: "delivers to",
+    reviewedBy: "source-curator",
+    reviewedAt: "2026-06-03T00:00:00Z",
+    refusal: "predicate-re-canonicalized",
+    reason: "this region canonicalizes the predicate onto a different norm",
+  };
+
+  it("⭐ each screen accepts ITS OWN payload and rejects the other two", () => {
+    // The cross-product, because it is the only arrangement that can fail on a
+    // mis-wired schema. Each screen accepting its own is necessary and not
+    // sufficient: a screen wired to the wrong schema would still reject the
+    // others, so the diagonal is what carries the claim.
+    expect(screenProposalRefusalDetails([goodProposal])).toEqual({
+      details: [goodProposal],
+      malformed: 0,
+    });
+    expect(screenCardinalityRefusalDetails([goodCardinality])).toEqual({
+      details: [goodCardinality],
+      malformed: 0,
+    });
+    // A proposal payload is not a cardinality payload and vice versa — no shared
+    // key set, so each is malformed to the other's screen.
+    expect(screenProposalRefusalDetails([goodCardinality]).malformed).toBe(1);
+    expect(screenCardinalityRefusalDetails([goodProposal]).malformed).toBe(1);
+    // And neither is an EDGE payload, which is the copy-paste this guards against.
+    expect(screenRefusalDetails([goodProposal]).malformed).toBe(1);
+    expect(screenRefusalDetails([goodCardinality]).malformed).toBe(1);
+  });
+
+  it("⭐ STRIPS undeclared keys rather than storing another region's JSON", () => {
+    // The edge screen's thesis, restated per schema because the stripping is a
+    // property of the SCHEMA (Zod's default strip), not of the shared loop — a
+    // `.passthrough()` added to either new schema would defeat it here alone.
+    const noisy = { ...goodProposal, attacker: "<script>alert(1)</script>", deep: { a: [1] } };
+    const { details, malformed } = screenProposalRefusalDetails([noisy]);
+    expect(details).toEqual([goodProposal]);
+    expect(malformed).toBe(0);
+    expect(Object.keys(details[0])).not.toContain("attacker");
+  });
+
+  it("⭐ a MISSING nullable field is malformed; an explicit `null` passes", () => {
+    // The distinction every one of these shapes depends on, and the one a
+    // `.optional()` would quietly erase: `existingStatus: null` says the
+    // destination held no row, while an ABSENT key says nothing at all — and the
+    // two read identically once the payload is a `jsonb` column somebody greps.
+    const { existingStatus: _dropped, ...missingField } = goodProposal;
+    expect(screenProposalRefusalDetails([missingField]).malformed).toBe(1);
+    expect(screenProposalRefusalDetails([{ ...goodProposal, existingStatus: null }])).toEqual({
+      details: [{ ...goodProposal, existingStatus: null }],
+      malformed: 0,
+    });
+    // `canonicalHere` is the same field one shape over, and the one whose absence
+    // costs the most: it is the re-canonicalization arm's entire recovery payload.
+    const { canonicalHere: _alsoDropped, ...missingCanonical } = goodCardinality;
+    expect(screenCardinalityRefusalDetails([missingCanonical]).malformed).toBe(1);
+  });
+
+  it("caps each screen at VOCABULARY_REFUSAL_DETAIL_CAP, and does not count the surplus as malformed", () => {
+    // The bound is a property of what THIS region will store, not a promise about
+    // a well-behaved target — so it holds for a target that ignores the cap. Past
+    // the cap nothing is examined, so nothing there can be malformed.
+    const over = VOCABULARY_REFUSAL_DETAIL_CAP + 4;
+    const proposals = Array.from({ length: over }, (_, i) => ({
+      ...goodProposal,
+      fromNorm: `norm-${i}`,
+    }));
+    const screened = screenProposalRefusalDetails(proposals);
+    expect(screened.details).toHaveLength(VOCABULARY_REFUSAL_DETAIL_CAP);
+    expect(screened.malformed).toBe(0);
+    // Distinct numbers, so "returned the input" cannot satisfy this.
+    expect(over).not.toBe(VOCABULARY_REFUSAL_DETAIL_CAP);
+    const cardinalities = Array.from({ length: over }, (_, i) => ({
+      ...goodCardinality,
+      predicateKey: `key-${i}`,
+    }));
+    expect(screenCardinalityRefusalDetails(cardinalities).details).toHaveLength(
+      VOCABULARY_REFUSAL_DETAIL_CAP,
+    );
   });
 });

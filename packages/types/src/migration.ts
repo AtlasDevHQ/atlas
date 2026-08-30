@@ -1030,6 +1030,137 @@ export interface VocabularyRefusalDetail {
   reason: string;
 }
 
+/**
+ * One refused arriving alias PROPOSAL, carried back to the SOURCE region (#5533).
+ *
+ * {@link VocabularyRefusalDetail}'s argument, one table over, and it transfers
+ * verbatim: `cleanup.ts` deletes the source's own `brain_vocabulary_proposal`
+ * rows after the grace period, so a refused arriving decision that survives only
+ * as a counter plus a per-row `log.warn` in the TARGET region exists nowhere once
+ * that region's log retention closes. The party owning the irreversible act held
+ * a number; the record that would let anyone undo it lived somewhere else.
+ *
+ * ⚠️ WHAT "RE-AUTHOR IT" MEANS HERE, and it is not what it means for an edge. A
+ * refused edge is re-authored by re-approving the same pair. A refused proposal
+ * is a DECISION about a pair the destination has already decided differently — so
+ * the payload has to carry BOTH sides' statuses, or an operator reading it cannot
+ * tell what they would be overturning. That is why `existingStatus` is on the
+ * shape at all, and why it is `null`-able rather than absent (see the field).
+ *
+ * The same three cross-cutting properties as {@link VocabularyRefusalDetail}, for
+ * the same reasons — read that type's header for the full arguments:
+ *
+ *   - **FOREIGN INPUT on the source side.** A target predating #5533 omits the
+ *     field entirely; `migrate.ts` screens every entry before storing one.
+ *   - **BOUNDED**, and the bound is not exported from this package. Read
+ *     `refusalDetails.length < refused` as the truncation signal, never a number.
+ *   - **Every field required**, the two nullable ones included, because an
+ *     OPTIONAL member is pinned by nothing on either spelling.
+ */
+export interface VocabularyProposalRefusalDetail {
+  /** The slot position the proposal was filed at, verbatim from the source row. */
+  slotPosition: string;
+  /**
+   * The pair, as the SOURCE spelled it. The table's identity is the UNORDERED
+   * pair, so the destination's own row may hold these two reversed — carrying
+   * the source's spelling is what lets an operator find the source row again.
+   */
+  fromNorm: string;
+  toNorm: string;
+  /** The decision the source region reached — `approved` or `rejected`. */
+  arrivingStatus: string;
+  /**
+   * What the DESTINATION held for the pair when the refusal was decided, or
+   * `null` if it held no row for the pair at that moment.
+   *
+   * `null` rather than absent, on {@link VocabularyRefusalDetail.existingTarget}'s
+   * reasoning: a missing key and a key whose value says "there was nothing here"
+   * read identically in a log aggregator or a JSONB query, and only one of them is
+   * true. `null` is reachable only on the concurrent arm, where the row that
+   * defeated the UPDATE was itself deleted before it could be re-read.
+   */
+  existingStatus: string | null;
+  /**
+   * The SOURCE region's reviewer stamps, carried verbatim (never re-stamped).
+   *
+   * `null` is an unreviewed row, not an unknown one — and a `pending` proposal
+   * never reaches a refusal arm, so in practice both are set. Kept nullable
+   * because the exported wire shape is (`ExportedBrainVocabularyProposal`), and a
+   * payload that could not represent what the bundle carried would be the one
+   * shape this whole type exists to avoid.
+   */
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  /**
+   * Which arm refused it — `contradictory-decision` or `concurrent-decision`.
+   *
+   * A free string rather than a union, exactly as {@link
+   * VocabularyRefusalDetail.refusal} is: this value crosses a region boundary
+   * between two independently-deployed builds, so a target may name an arm this
+   * build has never heard of, and a union would make a NEW arm unreadable to an
+   * older source rather than merely unfamiliar.
+   */
+  refusal: string;
+  /** The refusal's human-readable reason, as the destination phrased it. */
+  reason: string;
+}
+
+/**
+ * One refused arriving predicate-cardinality entry, for the source region (#5533).
+ *
+ * {@link VocabularyProposalRefusalDetail}'s argument on the neighbouring table,
+ * plus one arm that has no counterpart anywhere else: an entry whose
+ * `predicateKey` the destination's POST-MERGE vocabulary closure aliases onto a
+ * DIFFERENT norm is refused before its own row is ever consulted, because the key
+ * names a slot this region files elsewhere. {@link canonicalHere} is that arm's
+ * whole recovery payload — without it the operator is told a decision was dropped
+ * and not which predicate to re-author it against.
+ */
+export interface PredicateCardinalityRefusalDetail {
+  /** The canonical predicate key, under the SOURCE region's vocabulary. */
+  predicateKey: string;
+  /** The cardinality the source decided — `single` or `multi`. */
+  arrivingCardinality: string;
+  /** The decision the source region reached — `approved` or `rejected`. */
+  arrivingStatus: string;
+  /**
+   * What the DESTINATION held for {@link predicateKey}, or `null` if it held no
+   * row for the key when the refusal was decided.
+   *
+   * ⚠️ `null` on the re-canonicalization arm does NOT mean the destination has no
+   * opinion about this predicate. That arm refuses BEFORE reading the key's own
+   * row, deliberately — the key is not this region's slot, so a row found under it
+   * would describe something else. Read `canonicalHere` to see where the
+   * destination files the predicate instead; that is the field that says what the
+   * destination holds on that arm.
+   */
+  existingCardinality: string | null;
+  existingStatus: string | null;
+  /**
+   * The norm the DESTINATION canonicalizes {@link predicateKey} onto, on the
+   * re-canonicalization arm; `null` on every other arm, where the key IS this
+   * region's slot and there is no second norm to name.
+   *
+   * The pair (`predicateKey`, `canonicalHere`) is the key stated both ways, which
+   * is what a human needs to re-author the decision against the predicate this
+   * region actually holds. Re-keying it automatically is the direction
+   * `bundle-scope.ts` calls unaffordable: it would license destructive
+   * supersession on a slot no human at either region curated, with no preview.
+   */
+  canonicalHere: string | null;
+  /** The SOURCE region's reviewer stamps, carried verbatim (never re-stamped). */
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  /**
+   * Which arm refused it — `predicate-re-canonicalized`, `contradictory-decision`,
+   * `concurrent-decision` or `concurrent-insert`. A free string for {@link
+   * VocabularyProposalRefusalDetail.refusal}'s cross-version reason.
+   */
+  refusal: string;
+  /** The refusal's human-readable reason, as the destination phrased it. */
+  reason: string;
+}
+
 /** Summary returned by the import endpoint. */
 export interface ImportResult {
   conversations: { imported: number; skipped: number };
@@ -1198,7 +1329,31 @@ export interface ImportResult {
    *     wins reasoning, and every refusal is logged with enough of the source
    *     row to re-author it by hand — surfaced, never silently overwritten.
    */
-  brainVocabularyProposals: { imported: number; skipped: number; refused: number };
+  brainVocabularyProposals: {
+    imported: number;
+    skipped: number;
+    refused: number;
+    /**
+     * The refused decisions themselves, capped by the producer (#5533).
+     *
+     * `brainVocabularyEdges.refusalDetails`' contract exactly — read that field
+     * for the full reasoning, and {@link VocabularyProposalRefusalDetail} for what
+     * this section's payload has to carry that an edge's does not. In brief: the
+     * cap is a comparison (`refusalDetails.length < refused` means truncated), not
+     * a number this package publishes; `[]` with `refused > 0` means the target
+     * answered without payloads — an older build — which is not the same as
+     * "nothing to recover"; and the field is REQUIRED because an optional nested
+     * member is pinned by neither `_SchemaMatchesWireType` nor the schema
+     * package's key-set pin.
+     *
+     * ADDITIVE ON THE WIRE. Required here describes what THIS region answers; a
+     * target predating #5533 omits it, and `migrate.ts` models a foreign region's
+     * response with its own cross-version type where every member is optional —
+     * the same split #5112 established for `refused` and then for the edge
+     * payloads.
+     */
+    refusalDetails: VocabularyProposalRefusalDetail[];
+  };
   /**
    * Canonical-predicate cardinality decisions (#5027, #5113).
    *
@@ -1211,7 +1366,21 @@ export interface ImportResult {
    * slot no human at either region curated, with no preview. Re-authoring at
    * the destination is the remedy, and the log line carries the key both ways.
    */
-  brainPredicateCardinalities: { imported: number; skipped: number; refused: number };
+  brainPredicateCardinalities: {
+    imported: number;
+    skipped: number;
+    refused: number;
+    /**
+     * The refused entries themselves, capped by the producer (#5533).
+     *
+     * `brainVocabularyProposals.refusalDetails`' contract, with the one addition
+     * that makes this section's payload not merely analogous: on the
+     * re-canonicalization arm the recovery instruction is meaningless without
+     * {@link PredicateCardinalityRefusalDetail.canonicalHere}, because "re-author
+     * it here" names a predicate the source region does not know this region uses.
+     */
+    refusalDetails: PredicateCardinalityRefusalDetail[];
+  };
 }
 
 // ---------------------------------------------------------------------------

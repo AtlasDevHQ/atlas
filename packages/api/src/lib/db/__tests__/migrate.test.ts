@@ -442,7 +442,15 @@ describe("runMigrations", () => {
     //   external webhook subscription or OAuth grant possibly live. A record
     //   and an alert, deliberately never a retry queue — no credential
     //   material is captured) = 212.
-    expect(count).toBe(212);
+    //   Plus 0212 (region_migrations_vocabulary_memory_refusals — #5533: two
+    //   count/payload column pairs, mirroring 0204's, for the two
+    //   vocabulary-memory tables #5113 put on the bundle. The cleanup sweep
+    //   deletes the SOURCE's `brain_vocabulary_proposal` and
+    //   `brain_predicate_cardinality` rows after the grace period, so a refused
+    //   arriving decision that lived only as a counter plus a log line in the
+    //   TARGET region outlived the data it describes by exactly that region's log
+    //   retention. Additive nullable columns; NULL means UNKNOWN, not zero) = 213.
+    expect(count).toBe(213);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -765,6 +773,7 @@ describe("runMigrations", () => {
         "0209_scim_provider_to_managed_connection.sql",
         "0210_brain_triage.sql",
         "0211_plugin_grant_revocation_failures.sql",
+        "0212_region_migrations_vocabulary_memory_refusals.sql",
       ],
     });
 

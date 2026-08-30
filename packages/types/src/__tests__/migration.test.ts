@@ -265,8 +265,11 @@ describe("migration types", () => {
       // satisfied by another's counters.
       brainEntities: { imported: 7, skipped: 3 },
       brainActorIdentities: { imported: 9, skipped: 4 },
-      brainVocabularyProposals: { imported: 2, skipped: 1, refused: 1 },
-      brainPredicateCardinalities: { imported: 3, skipped: 0, refused: 2 },
+      // #5533 — `refusalDetails` shorter than `refused` is the truncation
+      // signal, and it is a legal state a consumer must handle: an older target
+      // answers with a count and no payloads at all. This fixture is that state.
+      brainVocabularyProposals: { imported: 2, skipped: 1, refused: 1, refusalDetails: [] },
+      brainPredicateCardinalities: { imported: 3, skipped: 0, refused: 2, refusalDetails: [] },
     };
 
     expect(result.conversations.imported + result.conversations.skipped).toBe(7);

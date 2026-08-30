@@ -644,6 +644,12 @@ describe("migrateAuthTables", () => {
             // so it runs in every auth mode — must be in the already-applied
             // set so this "all applied" test sees zero new migrations.
             { name: "0211_plugin_grant_revocation_failures.sql" },
+            // 0212 (#5533) — four nullable columns on `region_migrations`, on
+            // 0204's exact grounds: an Atlas-owned table Better Auth has no
+            // stake in, so it runs in every auth mode and must be in the
+            // already-applied set for this "all applied" test to see zero new
+            // migrations.
+            { name: "0212_region_migrations_vocabulary_memory_refusals.sql" },
           ],
         };
       }

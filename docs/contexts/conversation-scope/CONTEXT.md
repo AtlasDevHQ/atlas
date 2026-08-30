@@ -7,7 +7,7 @@
 > Vocabulary rules for consumers: [docs/agents/domain.md](../../agents/domain.md).
 
 
-A conversation can read from two kinds of **Datasource** (see Pillars): SQL connections and REST datasources. **Conversation scope** is the umbrella for *which* of those a given conversation can query. It has two axes — **SQL routing** and **REST scope** — surfaced together in the chat header's **scope picker** (`ChatScopePicker`, historically `ChatEnvPicker` / "env picker"). Scope is **per-conversation and authoritative**: it persists on the `conversations` row, an opened conversation restores its own scope, and a workspace-scoped browser preference (the *sticky* last selection) seeds brand-new chats. See [ADR-0011](../../adr/0011-unified-conversation-scope.md).
+A conversation can read from two kinds of **Datasource** (see [Pillars](../pillars/CONTEXT.md)): SQL connections and REST datasources. **Conversation scope** is the umbrella for *which* of those a given conversation can query. It has two axes — **SQL routing** and **REST scope** — surfaced together in the chat header's **scope picker** (`ChatScopePicker`, historically `ChatEnvPicker` / "env picker"). Scope is **per-conversation and authoritative**: it persists on the `conversations` row, an opened conversation restores its own scope, and a workspace-scoped browser preference (the *sticky* last selection) seeds brand-new chats. See [ADR-0011](../../adr/0011-unified-conversation-scope.md).
 
 - **Conversation scope**:
   The full set of datasources a conversation can query — its SQL routing plus its REST scope. The scope picker's single source of truth.

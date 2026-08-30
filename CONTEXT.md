@@ -5,7 +5,7 @@ Canonical terminology for Atlas. This document is a glossary, not a spec — imp
 When you find yourself reaching for one of these words, use the canonical form. When you see a term used loosely in conversation or code, sharpen it back to one of these.
 
 > **This file is the UN-SPLIT REMAINDER, not the whole domain.** Atlas uses the
-> multi-context layout ([CONTEXT-MAP.md](CONTEXT-MAP.md)); ten of its eighteen contexts
+> multi-context layout ([CONTEXT-MAP.md](CONTEXT-MAP.md)); eleven of its eighteen contexts
 > have been extracted and are **not** in this file (#5302):
 >
 > | Context | Now lives in |
@@ -20,20 +20,10 @@ When you find yourself reaching for one of these words, use the canonical form. 
 > | Install models | [docs/contexts/install-models/CONTEXT.md](docs/contexts/install-models/CONTEXT.md) |
 > | Operator vs Customer | [docs/contexts/operator-vs-customer/CONTEXT.md](docs/contexts/operator-vs-customer/CONTEXT.md) |
 > | Conversation scope | [docs/contexts/conversation-scope/CONTEXT.md](docs/contexts/conversation-scope/CONTEXT.md) |
+> | Semantic layer scoping | [docs/contexts/semantic-layer-scoping/CONTEXT.md](docs/contexts/semantic-layer-scoping/CONTEXT.md) |
 >
-> They were moved, not copied: no section below duplicates them. The remaining eight
+> They were moved, not copied: no section below duplicates them. The remaining seven
 > sections are still governed here, and the map says so per row.
-
-## Semantic layer scoping
-
-The semantic layer (entity YAMLs, glossary, metrics) describes the schema of a **Connection group**, not of an individual **Member** or **Datasource**. Members within a group are interchangeable and share a schema, so they share one set of entities; a standalone Datasource is simply a group-of-one. An entity therefore binds to exactly one Connection group.
-
-- **Entity group scope** — the Connection group an entity describes; the unit behind "which entities belong to which database." Surfaced as the entity's **group** (YAML `group:`, the view's grouping, the CLI's target). A NULL/absent scope is the **default group** — the single-database case where the "which is for which" question doesn't arise, and the layout collapses to flat `semantic/entities/*.yml`.
-  _Avoid_: scoping entities to a Member or an individual Datasource — members share a schema, so the binding is to the group, never to one connection.
-
-### Flagged ambiguities
-
-- "source" / `connection:` / `--source` — historically the entity-group scope wore three different names: the YAML `connection:` field, the CLI `--source` flag, and the admin/API `source` (computed as the group id, defaulting to `"default"`). All three denote the **Connection group**. Canonical surface term: **group**; the aliases are deprecated and being unified.
 
 ## Semantic improvement
 

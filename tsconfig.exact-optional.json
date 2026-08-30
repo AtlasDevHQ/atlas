@@ -29,6 +29,26 @@
     // source into this program transitively. Listed so the manifest states
     // what the gate enforces; __tests__ sits outside src in this package.
     "packages/oauth-helper/src",
-    "packages/oauth-helper/__tests__"
+    "packages/oauth-helper/__tests__",
+    // Stage 3 (#5522). The last two packages whose *src* closure does not
+    // reach packages/api — every other unlisted package imports @atlas/api,
+    // which exports raw src/*.ts, so adding one pulls the whole api closure
+    // into this program (measured: cli 264 errors, mcp 220). Tests sit
+    // outside src in both.
+    "packages/okf-bundle/src",
+    "packages/okf-bundle/__tests__",
+    "packages/fumadocs-okf/src",
+    "packages/fumadocs-okf/__tests__",
+    // ⚠️ fumadocs-okf's TESTS do reach packages/api, deliberately: the
+    // round-trip test imports @atlas/api/lib/knowledge/{bundle-archive,
+    // parse-lenient} to prove the bundle parses with the real ingest code.
+    // So a handful of packages/api files are enforced here transitively, and
+    // this list under-states the gate by exactly those files. Only
+    // lib/semantic/okf can be named: `include` takes DIRECTORIES, and
+    // lib/knowledge as a directory holds far more than the two files the test
+    // reaches — listing it drags the api core in (measured: 159 errors). It
+    // is listed because it is the one api directory that can be, not because
+    // packages/api has begun to graduate; that is its own stage.
+    "packages/api/src/lib/semantic/okf"
   ]
 }

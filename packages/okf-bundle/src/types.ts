@@ -28,8 +28,31 @@ export interface DocSourcePage {
   readonly path: string;
   /** Rendered URL when the source has one. Optional — used only in messages. */
   readonly url?: string;
-  readonly title?: string;
-  readonly description?: string;
+  /**
+   * Page title, when the source's frontmatter carries one.
+   *
+   * `| undefined` is deliberate under `exactOptionalPropertyTypes`: this is an
+   * IMPLEMENTER-facing seam, and its documented implementation strategy is a
+   * lazy getter (see `createMarkdownTreeSource` and the Fumadocs adapter's
+   * `toDocPage` — the core only touches metadata after a page survives the
+   * filters, so an eager read would cost every skipped api-reference stub a
+   * file read). A getter always makes the key present, so an adapter cannot
+   * express "no title" by absence; it expresses it by value. Consumers read
+   * `string | undefined` either way. The exactness that matters is kept one
+   * layer down: {@link OkfFrontmatter} stays exact, so rendering a document
+   * still has to make absence real.
+   *
+   * This is the documented exception to `WithLooseOptionals`' rule in
+   * `packages/schemas/src/exact-optional.ts` ("Do NOT widen the interfaces
+   * themselves"). That rule guards DOMAIN VALUE types, where a consumer
+   * constructing `{ p: maybeUndefined }` is the bug the flag exists to
+   * reject. This is not one — it is an interface adapters IMPLEMENT, and the
+   * shape it must admit (a getter) is not expressible as exact-optional at
+   * all. The rule still binds every value type below it.
+   */
+  readonly title?: string | undefined;
+  /** Page description, when present. `| undefined` for the same lazy-getter reason as {@link DocSourcePage.title}. */
+  readonly description?: string | undefined;
   /** Frontmatter tags, when the source carries them. Non-string entries are ignored. */
   readonly tags?: unknown;
   /**
@@ -221,6 +244,31 @@ export interface PackOptions {
   readonly allowEmpty?: boolean;
 }
 
+/**
+ * Cap overrides: `Partial<IngestCaps>` that ALSO accepts an explicitly
+ * `undefined` field.
+ *
+ * The `| undefined` is the point, not a concession to the compiler. These
+ * values come from a site's build config (`caps: { maxDocs: cfg.maxDocs }`),
+ * where the field is routinely absent from the config and therefore
+ * `undefined` at the call site. `resolveIngestCaps` is written to treat that
+ * as absent — a naive spread would overwrite the default with `undefined` and
+ * silently disable generation-time validation, which is the regression its
+ * doc comment and the `an undefined cap override falls back to the default`
+ * test both exist to pin. Narrowing this to exact-optional would delete a
+ * supported (and JS-caller-reachable) shape from the contract while leaving
+ * the runtime guard untestable.
+ *
+ * Deliberately NOT `WithLooseOptionals` from `@useatlas/schemas`: that helper
+ * is for `satisfies z.ZodType` sites and is deep and function-aware, and this
+ * package's dependency list is `fflate` alone on purpose (see its
+ * package.json). Pulling in a workspace package for a three-field mapped type
+ * is the worse trade.
+ */
+export type IngestCapOverrides = {
+  readonly [K in keyof IngestCaps]?: IngestCaps[K] | undefined;
+};
+
 export interface BuildOptions<P extends DocSourcePage = DocSourcePage>
   extends CollectOptions<P>,
     PackOptions {
@@ -229,5 +277,5 @@ export interface BuildOptions<P extends DocSourcePage = DocSourcePage>
    * defaults ({@link DEFAULT_INGEST_CAPS}); pass the raised values when the
    * target workspace's operator has tuned `ATLAS_KNOWLEDGE_INGEST_MAX_*`.
    */
-  readonly caps?: Partial<IngestCaps>;
+  readonly caps?: IngestCapOverrides;
 }

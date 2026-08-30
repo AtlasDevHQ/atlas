@@ -304,7 +304,10 @@ export async function createDocusaurusSource(
   const extensions = options.extensions ?? DEFAULT_EXTENSIONS;
   const source = await createMarkdownTreeSource(treeOptions);
   const treePaths = source.getPages().map((page) => page.path);
-  const sidebar = resolveDocusaurusSidebar(sidebars, treePaths, { extensions, label });
+  const sidebar = resolveDocusaurusSidebar(sidebars, treePaths, {
+    extensions,
+    ...(label !== undefined ? { label } : {}),
+  });
   const reachable = sidebar.pages;
   return {
     source,

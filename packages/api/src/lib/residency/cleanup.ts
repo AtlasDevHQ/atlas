@@ -329,6 +329,7 @@ export const CLEANUP_TABLE_RULES = {
   },
   connection_group_descriptions: { kind: "column", column: "org_id" },
   workspace_plugins: { kind: "column", column: "workspace_id" },
+  plugin_grant_revocation_failures: { kind: "column", column: "workspace_id" },
   plugin_settings: { kind: "column", column: "org_id" },
   integration_credentials: { kind: "column", column: "workspace_id" },
   twenty_integrations: { kind: "column", column: "workspace_id" },

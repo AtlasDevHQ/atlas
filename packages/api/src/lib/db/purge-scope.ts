@@ -337,6 +337,7 @@ export const PURGE_TABLE_DECISIONS = {
   email_installations: { decision: "purged", reason: "Email-channel install rows for the workspace." },
   chat_cache: { decision: "purged", reason: "Holds the Slack installation store (AES-GCM bot tokens under `slack:installation:*`). No org_id column — purged by `key LIKE 'slack:installation:%' AND value->>'orgId' = $1`, matching the partial expression index. The `key LIKE` bound is deliberate and is the one narrowing predicate in the whole purge: the table's other entries (thread subscriptions, conversation ids, OAuth nonces — see migration 0086) carry no orgId to scope by and expire on their own TTL. If one ever gains an orgId, it needs its own DELETE here rather than a widened LIKE." },
   plugin_settings: { decision: "purged", reason: "Per-plugin settings for the workspace." },
+  plugin_grant_revocation_failures: { decision: "purged", reason: "Operator worklist of failed onUninstall revocations (#3777) — workspace-keyed rows whose error text can name vendor accounts/endpoints. The un-revoked external grant survives the purge either way (revoking it needs credentials the purge destroys), so keeping the pointer would be a workspace-named row outliving the workspace for a revocation nobody can perform from here." },
 
   // Auth / access control / compliance config
   settings: { decision: "purged", reason: "Org-scoped runtime settings." },

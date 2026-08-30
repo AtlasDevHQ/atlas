@@ -41,6 +41,14 @@ export interface DocSourcePage {
    * `string | undefined` either way. The exactness that matters is kept one
    * layer down: {@link OkfFrontmatter} stays exact, so rendering a document
    * still has to make absence real.
+   *
+   * This is the documented exception to `WithLooseOptionals`' rule in
+   * `packages/schemas/src/exact-optional.ts` ("Do NOT widen the interfaces
+   * themselves"). That rule guards DOMAIN VALUE types, where a consumer
+   * constructing `{ p: maybeUndefined }` is the bug the flag exists to
+   * reject. This is not one — it is an interface adapters IMPLEMENT, and the
+   * shape it must admit (a getter) is not expressible as exact-optional at
+   * all. The rule still binds every value type below it.
    */
   readonly title?: string | undefined;
   /** Page description, when present. `| undefined` for the same lazy-getter reason as {@link DocSourcePage.title}. */
@@ -250,6 +258,12 @@ export interface PackOptions {
  * test both exist to pin. Narrowing this to exact-optional would delete a
  * supported (and JS-caller-reachable) shape from the contract while leaving
  * the runtime guard untestable.
+ *
+ * Deliberately NOT `WithLooseOptionals` from `@useatlas/schemas`: that helper
+ * is for `satisfies z.ZodType` sites and is deep and function-aware, and this
+ * package's dependency list is `fflate` alone on purpose (see its
+ * package.json). Pulling in a workspace package for a three-field mapped type
+ * is the worse trade.
  */
 export type IngestCapOverrides = {
   readonly [K in keyof IngestCaps]?: IngestCaps[K] | undefined;

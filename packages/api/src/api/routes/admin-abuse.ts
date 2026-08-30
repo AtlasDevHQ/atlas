@@ -296,7 +296,7 @@ adminAbuse.openapi(listFlaggedRoute, async (c) => {
     return c.json({
       workspaces: enriched,
       total: enriched.length,
-      ...(warnings.length > 0 ? { warnings } : {}),
+      warnings,
     }, 200);
   }), { label: "list flagged workspaces" });
 });
@@ -370,7 +370,7 @@ adminAbuse.openapi(reinstateRoute, async (c) => {
       message: auditPersisted
         ? "Workspace reinstated successfully."
         : "Workspace reinstated, but audit trail could not be written — see warnings.",
-      ...(warnings.length > 0 ? { warnings } : {}),
+      warnings,
     }, 200);
   }), { label: "reinstate workspace" });
 });
@@ -422,7 +422,7 @@ adminAbuse.openapi(getDetailRoute, async (c) => {
     const enriched = {
       ...detail,
       workspaceName: nameMap.get(workspaceId) ?? null,
-      ...(warnings.length > 0 ? { warnings } : {}),
+      warnings,
     };
 
     return c.json(enriched, 200);

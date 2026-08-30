@@ -1654,7 +1654,7 @@ admin.openapi(overviewRoute, async (c) => {
   let entityWarnings: string[];
   try {
     const entityList = await listAdminEntities({
-      orgId: orgId ?? undefined,
+      ...(orgId != null ? { orgId } : {}),
       mode,
     });
     // Include REST-derived entities (#3628) so Overview and the Semantic page
@@ -1734,7 +1734,13 @@ admin.openapi(overviewRoute, async (c) => {
     plugins: pluginList.length,
     queriesLast24h,
     workspace: workspaceBlock,
-    ...(entityWarnings.length > 0 ? { warnings: entityWarnings } : {}),
+    // Always emitted, empty when there is nothing to report. Hono's `c.json()`
+    // rejects a payload carrying any OPTIONAL property under
+    // `exactOptionalPropertyTypes` — `JSONRespondReturn` widens the slot back to
+    // `T | undefined`, which is not a `JSONValue`. Every consumer already reads
+    // this through `?.` / `?? []`, so `[]` and "absent" are the same signal to
+    // them (#5522).
+    warnings: entityWarnings,
   }, 200);
 });
 
@@ -1770,7 +1776,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
       const warnings = [...result.warnings, ...restWarnings];
       return c.json({
         entities: [...result.entities, ...restList.entities],
-        ...(warnings.length > 0 ? { warnings } : {}),
+        warnings,
       }, 200);
     }
 
@@ -1789,7 +1795,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
         ],
         noIntrospectedTables: true,
         requestId,
-        ...(warnings.length > 0 ? { warnings } : {}),
+        warnings,
       }, 200);
     }
 
@@ -1805,7 +1811,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
         ],
         noIntrospectedTables: envelope.noIntrospectedTables,
         requestId,
-        ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
+        warnings: mergedWarnings,
       }, 200);
     } catch (err) {
       // Connection-side failure: don't fail the entire list — drift is a
@@ -2062,7 +2068,7 @@ admin.openapi(getSemanticStatsRoute, async (c) => {
       noColumns,
       noJoins,
     },
-    ...(warnings.length > 0 ? { warnings } : {}),
+    warnings,
   }, 200);
 });
 
@@ -2113,7 +2119,12 @@ admin.openapi(getSemanticDiffRoute, async (c) => {
 
   try {
     const result = await runDiff(connectionId, { ...(orgId !== undefined ? { orgId } : {}), atlasMode });
-    return c.json(result, 200);
+    // `warnings` is optional on `SemanticDiffResponse`, and Hono's `c.json()`
+    // rejects an optional-bearing payload under `exactOptionalPropertyTypes`
+    // (`JSONRespondReturn` widens the slot back to `T | undefined`). Restate it
+    // as always-present-possibly-empty; every consumer already reads it through
+    // `?.` / `?? []`, so `[]` and "absent" are the same signal (#5522).
+    return c.json({ ...result, warnings: result.warnings ?? [] }, 200);
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err : new Error(String(err)), connectionId, orgId, atlasMode, requestId },

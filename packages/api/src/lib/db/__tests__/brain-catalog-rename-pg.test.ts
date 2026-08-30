@@ -152,7 +152,7 @@ describeIfPg("migration 0201 — rename the Company Atlas ingest catalog rows (#
   async function runMigrationCapturingNotices(): Promise<readonly CapturedNotice[]> {
     const client = await pool.connect();
     const notices: CapturedNotice[] = [];
-    const onNotice = (n: { readonly message?: string; readonly severity?: string }): void => {
+    const onNotice = (n: { readonly message?: string | undefined; readonly severity?: string | undefined }): void => {
       notices.push({ severity: n.severity ?? "(none)", message: n.message ?? "" });
     };
     client.on("notice", onNotice);

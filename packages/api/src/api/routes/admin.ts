@@ -1734,7 +1734,7 @@ admin.openapi(overviewRoute, async (c) => {
     plugins: pluginList.length,
     queriesLast24h,
     workspace: workspaceBlock,
-    ...(entityWarnings.length > 0 && { warnings: entityWarnings }),
+    ...(entityWarnings.length > 0 ? { warnings: entityWarnings } : {}),
   }, 200);
 });
 
@@ -1770,7 +1770,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
       const warnings = [...result.warnings, ...restWarnings];
       return c.json({
         entities: [...result.entities, ...restList.entities],
-        ...(warnings.length > 0 && { warnings }),
+        ...(warnings.length > 0 ? { warnings } : {}),
       }, 200);
     }
 
@@ -1789,7 +1789,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
         ],
         noIntrospectedTables: true,
         requestId,
-        ...(warnings.length > 0 && { warnings }),
+        ...(warnings.length > 0 ? { warnings } : {}),
       }, 200);
     }
 
@@ -1805,7 +1805,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
         ],
         noIntrospectedTables: envelope.noIntrospectedTables,
         requestId,
-        ...(mergedWarnings.length > 0 && { warnings: mergedWarnings }),
+        ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
       }, 200);
     } catch (err) {
       // Connection-side failure: don't fail the entire list — drift is a
@@ -2062,7 +2062,7 @@ admin.openapi(getSemanticStatsRoute, async (c) => {
       noColumns,
       noJoins,
     },
-    ...(warnings.length > 0 && { warnings }),
+    ...(warnings.length > 0 ? { warnings } : {}),
   }, 200);
 });
 
@@ -3077,7 +3077,7 @@ admin.openapi(changeUserRoleRoute, async (c) => {
     targetType: "user",
     targetId: userId,
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-    metadata: { previousRole: outcome.previousRole, newRole, orgId, ...(scimOverride && { scim_override: true }) },
+    metadata: { previousRole: outcome.previousRole, newRole, orgId, ...(scimOverride ? { scim_override: true } : {}) },
   });
 
   return c.json({ success: true }, 200);
@@ -3159,7 +3159,7 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
     actionType: ADMIN_ACTIONS.user.ban,
     targetType: "user",
     targetId: userId,
-    metadata: { reason, expiresIn, ...(scimOverride && { scim_override: true }) },
+    metadata: { reason, expiresIn, ...(scimOverride ? { scim_override: true } : {}) },
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
   });
 
@@ -3305,7 +3305,7 @@ admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user fro
     actionType: ADMIN_ACTIONS.user.removeFromWorkspace,
     targetType: "user",
     targetId: userId,
-    metadata: { orgId, previousRole: outcome.previousRole, ...(scimOverride && { scim_override: true }) },
+    metadata: { orgId, previousRole: outcome.previousRole, ...(scimOverride ? { scim_override: true } : {}) },
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
   });
 
@@ -3508,7 +3508,7 @@ admin.openapi(deleteUserRoute, async (c) => {
     targetType: "user",
     targetId: userId,
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-    ...(scimOverride && { metadata: { scim_override: true } }),
+    ...(scimOverride ? { metadata: { scim_override: true } } : {}),
   });
 
   return c.json({ success: true }, 200);
@@ -3625,9 +3625,9 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
       ipAddress,
       metadata: {
         targetUserId: userId,
-        ...(count !== null && { count }),
-        ...(countLookupFailed && { countLookupFailed: true }),
-        ...(scimOverride && { scim_override: true }),
+        ...(count !== null ? { count } : {}),
+        ...(countLookupFailed ? { countLookupFailed: true } : {}),
+        ...(scimOverride ? { scim_override: true } : {}),
       },
     });
     return c.json({ success: true }, 200);
@@ -3642,8 +3642,8 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
       metadata: {
         targetUserId: userId,
         error: errorMessage(err),
-        ...(countLookupFailed && { countLookupFailed: true }),
-        ...(scimOverride && { scim_override: true }),
+        ...(countLookupFailed ? { countLookupFailed: true } : {}),
+        ...(scimOverride ? { scim_override: true } : {}),
       },
     });
     return c.json({ error: "internal_error", message: "Failed to revoke sessions.", requestId }, 500);

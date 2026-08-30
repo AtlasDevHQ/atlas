@@ -908,8 +908,8 @@ wizard.openapi(enrichRoute, async (c) => {
         message: gateCheck.errorMessage,
         retryable: gateCheck.retryable,
         requestId,
-        ...(gateCheck.retryAfterSeconds !== undefined && { retryAfterSeconds: gateCheck.retryAfterSeconds }),
-        ...(gateCheck.usage && { usage: gateCheck.usage }),
+        ...(gateCheck.retryAfterSeconds !== undefined ? { retryAfterSeconds: gateCheck.retryAfterSeconds } : {}),
+        ...(gateCheck.usage ? { usage: gateCheck.usage } : {}),
       };
       if (gateCheck.retryAfterSeconds !== undefined) {
         return c.json(blockBody, {

@@ -191,7 +191,7 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
   async function runMigrationCapturingNotices(): Promise<readonly CapturedNotice[]> {
     const client = await pool.connect();
     const notices: CapturedNotice[] = [];
-    const onNotice = (n: { readonly message?: string; readonly severity?: string }): void => {
+    const onNotice = (n: { readonly message?: string | undefined; readonly severity?: string | undefined }): void => {
       notices.push({ severity: n.severity ?? "(none)", message: n.message ?? "" });
     };
     client.on("notice", onNotice);

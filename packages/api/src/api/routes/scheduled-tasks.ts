@@ -130,10 +130,10 @@ function crudFailResponse(reason: CrudFailReason, requestId?: string) {
     case "not_found":
       return { body: { error: "not_found", message: "Scheduled task not found." }, status: 404 as const };
     case "error":
-      return { body: { error: "internal_error", message: "A database error occurred. Please try again.", ...(requestId && { requestId }) }, status: 500 as const };
+      return { body: { error: "internal_error", message: "A database error occurred. Please try again.", ...(requestId ? { requestId } : {}) }, status: 500 as const };
     default: {
       const _exhaustive: never = reason;
-      return { body: { error: "internal_error", message: `Unexpected failure: ${String(_exhaustive)}`, ...(requestId && { requestId }) }, status: 500 as const };
+      return { body: { error: "internal_error", message: `Unexpected failure: ${String(_exhaustive)}`, ...(requestId ? { requestId } : {}) }, status: 500 as const };
     }
   }
 }

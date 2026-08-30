@@ -16,6 +16,7 @@
  */
 export const FEATURE_NAMES = [
   "Abuse Prevention",
+  "Action Credentials",
   "Action Log",
   "Actions",
   "Activate workspace",

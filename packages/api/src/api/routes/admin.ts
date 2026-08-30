@@ -3121,7 +3121,6 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
   // for this user; matches the global blast-radius of the mutation.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
-    ...(undefined !== undefined ? { orgId: undefined } : {}),
     requestId,
   });
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
@@ -3359,7 +3358,6 @@ admin.openapi(deleteUserRoute, async (c) => {
   // the guard searches across ALL SCIM providers for this user.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
-    ...(undefined !== undefined ? { orgId: undefined } : {}),
     requestId,
   });
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);

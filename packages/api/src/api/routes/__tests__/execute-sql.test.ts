@@ -624,7 +624,7 @@ describe("POST /api/v1/execute-sql — audit origin (ADR-0027 §6)", () => {
   });
 
   it("does NOT mislabel a non-cli session as cli (origin derived from claims, not hardcoded)", async () => {
-    fakeAuth = userAuth({ ...(undefined !== undefined ? { origin: undefined } : {})}); // e.g. a web session
+    fakeAuth = userAuth({}); // e.g. a web session
     await post({ sql: "SELECT 1" });
     const sqlCtx = capturedContexts.find((c) => c.actor !== undefined);
     expect(sqlCtx?.agentOrigin).toBeUndefined();

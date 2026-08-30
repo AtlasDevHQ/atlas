@@ -84,7 +84,7 @@ function harness(overrides: Partial<AudienceSyncDeps["api"]> = {}, channels = [P
     resolvePollScope: () =>
       Promise.resolve({ mode: "membership" as const, channels, excludedInMembership: 0 }),
     query: (<T extends Record<string, unknown>>() =>
-      Promise.resolve([] as unknown as T[])) as AudienceSyncDeps["query"],
+      Promise.resolve([] as unknown as T[])) as NonNullable<AudienceSyncDeps["query"]>,
     resolveToken: () => Promise.resolve("xoxb-test"),
     resolve: (_ws, principals) =>
       Promise.resolve({
@@ -309,7 +309,7 @@ describe("runAudienceSyncCycle", () => {
         query: (<T extends Record<string, unknown>>(_sql: string, params?: unknown[]) => {
           sweptWith.push(params ?? []);
           return Promise.resolve([] as unknown as T[]);
-        }) as AudienceSyncDeps["query"],
+        }) as NonNullable<AudienceSyncDeps["query"]>,
       };
       return { deps: failing, sweptWith };
     }
@@ -749,7 +749,7 @@ describe("runAudienceSyncCycle", () => {
         // reads through `query`. Left to default it would reach the real
         // internal DB and hang the test rather than fail it.
         query: (<T extends Record<string, unknown>>() =>
-          Promise.resolve([] as unknown as T[])) as AudienceSyncDeps["query"],
+          Promise.resolve([] as unknown as T[])) as NonNullable<AudienceSyncDeps["query"]>,
       }),
     );
     expect(result.status).toBe("failure");

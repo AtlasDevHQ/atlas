@@ -1907,7 +1907,6 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     authResultImpl = async () => ({
       authenticated: true,
       mode: "none",
-      ...(undefined !== undefined ? { user: undefined } : {}),
     });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
@@ -2037,7 +2036,6 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     authResultImpl = async () => ({
       authenticated: true,
       mode: "none",
-      ...(undefined !== undefined ? { user: undefined } : {}),
     });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });

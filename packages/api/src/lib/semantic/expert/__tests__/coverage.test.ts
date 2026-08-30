@@ -154,7 +154,7 @@ describe("computeCoverage — column quality", () => {
 
 describe("computeCoverage — grouping + ordering", () => {
   it("carries the modeling entity's group through for the column anchor", () => {
-    const grouped = entity({ connection: "grp_prod", ...(undefined !== undefined ? { group: undefined } : {})});
+    const grouped = entity({ connection: "grp_prod"});
     const matrix = computeCoverage([profile()], [grouped]);
     expect(matrix.tables[0].group).toBe("grp_prod");
   });

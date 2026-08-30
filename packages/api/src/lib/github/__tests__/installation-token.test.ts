@@ -160,9 +160,9 @@ describe("getGitHubInstallationToken — caching", () => {
 describe("getGitHubInstallationToken — failure modes", () => {
   it("throws when the App id or private key is unavailable", async () => {
     await expect(
+      // Options carrying NEITHER `appId` nor `privateKey` — omission is what the
+      // failure mode is about, and both slots are exact optionals (#5522).
       getGitHubInstallationToken(INSTALLATION_ID, {
-        ...(undefined !== undefined ? { appId: undefined } : {}),
-        privateKey: undefined,
         now: () => T0_MS,
       }),
     ).rejects.toBeInstanceOf(GitHubInstallationTokenError);

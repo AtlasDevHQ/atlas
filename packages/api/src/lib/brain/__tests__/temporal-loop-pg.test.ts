@@ -731,7 +731,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
         throw new Error(
           `fixture: unstubbed AudienceSyncDeps.query — a new consumer appeared: ${sql.slice(0, 120)}`,
         );
-      }) as AudienceSyncDeps["query"],
+      }) as NonNullable<AudienceSyncDeps["query"]>,
       resolveToken: () => Promise.resolve("xoxb-test"),
       resolve: (workspaceId, principals) =>
         resolvePrincipals(workspaceId, principals, { query: poolQuery }),

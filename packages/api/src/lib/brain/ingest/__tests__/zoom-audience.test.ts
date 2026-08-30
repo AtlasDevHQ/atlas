@@ -400,7 +400,7 @@ describe("reverifyZoomMeetingAudiences", () => {
     // A re-verifier that quietly no-ops lets every meeting audience age past
     // the staleness bound while the cycle reports success — the exact failure
     // this module exists to prevent.
-    const out = await reverifyZoomMeetingAudiences({ ...deps(), ...(undefined !== undefined ? { resolveToken: undefined } : {})});
+    const out = await reverifyZoomMeetingAudiences({ ...deps()});
     expect(out.failed).toBe(1);
   });
 });

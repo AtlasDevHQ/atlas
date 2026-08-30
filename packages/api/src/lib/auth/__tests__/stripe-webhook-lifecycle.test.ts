@@ -476,7 +476,7 @@ describe("getCheckoutSessionParams — org-scope guard", () => {
     // trial_period_days: undefined overrides the plugin's freeTrial spread;
     // the Stripe SDK drops undefined keys from the request.
     expect(result).toEqual({
-      params: { subscription_data: { ...(undefined !== undefined ? { trial_period_days: undefined } : {})} },
+      params: { subscription_data: {} },
     });
   });
 
@@ -516,7 +516,7 @@ describe("getCheckoutSessionParams — org-scope guard", () => {
       {} as any,
     );
     expect(result).toEqual({
-      params: { subscription_data: { ...(undefined !== undefined ? { trial_period_days: undefined } : {})} },
+      params: { subscription_data: {} },
     });
   });
 });

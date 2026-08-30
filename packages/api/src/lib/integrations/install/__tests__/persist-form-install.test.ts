@@ -201,7 +201,7 @@ describe("assertSaasEncryptionKeyset / spine keyset gate", () => {
     const { log, calls } = makeLog();
     await expect(
       persistFormInstall(
-        baseParams({ log, config: {}, ...(undefined !== undefined ? { secretFieldsSchema: undefined } : {}), plaintextSecretLabel: "api_key" }),
+        baseParams({ log, config: {}, plaintextSecretLabel: "api_key" }),
       ),
     ).rejects.toThrow(/Encryption keyset unavailable/);
     expect(calls.some((c) => c.msg.includes("plaintext api_key"))).toBe(true);
@@ -256,7 +256,7 @@ describe("persistFormInstall — selective-field encryption", () => {
 
   it("persists config as-is when no secret schema is given (Twenty's {} stub)", async () => {
     await persistFormInstall(
-      baseParams({ config: {}, ...(undefined !== undefined ? { secretFieldsSchema: undefined } : {}), plaintextSecretLabel: "api_key" }),
+      baseParams({ config: {}, plaintextSecretLabel: "api_key" }),
     );
     const [, params] = mockInternalQuery.mock.calls[0];
     expect(JSON.parse((params as unknown[])[3] as string)).toEqual({});

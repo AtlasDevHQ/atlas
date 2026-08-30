@@ -55,7 +55,7 @@ describe("buildAvailableRegions (#3948)", () => {
     // its same-origin base (no repoint possible) rather than getting a bad URL.
     const regions: Regions = { us: { label: "United States" } };
     const us = buildAvailableRegions(regions, "us").find((r) => r.id === "us");
-    expect(us).toEqual({ id: "us", label: "United States", isDefault: true, ...(undefined !== undefined ? { apiUrl: undefined } : {})});
+    expect(us).toEqual({ id: "us", label: "United States", isDefault: true});
   });
 
   it("never marks a non-selectable region as default even if it is the configured default", () => {
@@ -107,7 +107,7 @@ describe("buildAvailableRegions — home-region override (#4131)", () => {
   });
 
   it("is unchanged (full selectable set) when no api region is given — back-compat", () => {
-    const idsUndefined = buildAvailableRegions(REGIONS, "us", { ...(undefined !== undefined ? { apiRegion: undefined } : {})}).map((r) => r.id);
+    const idsUndefined = buildAvailableRegions(REGIONS, "us", {}).map((r) => r.id);
     const idsNull = buildAvailableRegions(REGIONS, "us", { apiRegion: null }).map((r) => r.id);
     const idsNoOpts = buildAvailableRegions(REGIONS, "us").map((r) => r.id);
     expect(idsUndefined.toSorted()).toEqual(["apac", "eu", "us"]);

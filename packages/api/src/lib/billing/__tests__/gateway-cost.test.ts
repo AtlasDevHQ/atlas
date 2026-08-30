@@ -69,7 +69,7 @@ describe("sumStepGatewayCostUsd", () => {
     expect(
       sumStepGatewayCostUsd([
         { providerMetadata: null },
-        { ...(undefined !== undefined ? { providerMetadata: undefined } : {})},
+        {},
         {},
         { providerMetadata: { gateway: undefined } },
         { providerMetadata: { gateway: { cost: "0.04" } } },

@@ -259,7 +259,7 @@ describe("POST /api/v1/explore — audit origin (ADR-0027 sub-decision 6)", () =
   });
 
   it("does NOT mislabel a non-cli session as cli (origin derived from claims, not hardcoded)", async () => {
-    fakeAuth = userAuth({ ...(undefined !== undefined ? { origin: undefined } : {})}); // e.g. a web session
+    fakeAuth = userAuth({}); // e.g. a web session
     exploreImpl = async () => "ok";
     await post({ command: "ls" });
     const exploreCtx = capturedContexts.find((c) => c.actor !== undefined);

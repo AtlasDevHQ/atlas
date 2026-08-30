@@ -29,7 +29,7 @@ describe("buildSystemParam — Knowledge Base ToC (#4208)", () => {
 
   it("omits the ToC when empty (no behavior change vs. today)", () => {
     const withToc = promptText(buildSystemParam("openai", { orgKnowledgeToc: "" }));
-    const without = promptText(buildSystemParam("openai", { ...(undefined !== undefined ? { orgKnowledgeToc: undefined } : {})}));
+    const without = promptText(buildSystemParam("openai", {}));
     expect(withToc).not.toContain("## Knowledge Base collections");
     expect(withToc).toBe(without);
   });

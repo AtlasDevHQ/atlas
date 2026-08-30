@@ -206,7 +206,7 @@ describe("executeSQL org-scoped routing", () => {
     mockRequestContext = { user: { id: "u1", activeOrganizationId: "org-1" } };
 
     const result = await executeTool(
-      { sql: "SELECT id FROM companies", explanation: "test", ...(undefined !== undefined ? { connectionId: undefined } : {})},
+      { sql: "SELECT id FROM companies", explanation: "test"},
       { toolCallId: "tc-1", messages: [], abortSignal: undefined as unknown as AbortSignal },
     );
     expect(result.success).toBe(true);
@@ -266,7 +266,7 @@ describe("executeSQL org-scoped routing", () => {
     mockRequestContext = { user: { id: "u1", activeOrganizationId: "org-42" } };
 
     const result = await executeTool(
-      { sql: "SELECT id FROM companies", explanation: "test", ...(undefined !== undefined ? { connectionId: undefined } : {})},
+      { sql: "SELECT id FROM companies", explanation: "test"},
       { toolCallId: "tc-2", messages: [], abortSignal: undefined as unknown as AbortSignal },
     );
     expect(result.success).toBe(true);
@@ -281,7 +281,7 @@ describe("executeSQL org-scoped routing", () => {
     mockRequestContext = { user: { id: "u1", activeOrganizationId: "org-7" } };
 
     await executeTool(
-      { sql: "SELECT id FROM companies", explanation: "test", ...(undefined !== undefined ? { connectionId: undefined } : {})},
+      { sql: "SELECT id FROM companies", explanation: "test"},
       { toolCallId: "tc-3", messages: [], abortSignal: undefined as unknown as AbortSignal },
     );
     // recordQuery called with orgId
@@ -302,7 +302,7 @@ describe("executeSQL org-scoped routing", () => {
     );
 
     const result = await executeTool(
-      { sql: "SELECT id FROM companies", explanation: "test", ...(undefined !== undefined ? { connectionId: undefined } : {})},
+      { sql: "SELECT id FROM companies", explanation: "test"},
       { toolCallId: "tc-4", messages: [], abortSignal: undefined as unknown as AbortSignal },
     );
     expect(result.success).toBe(false);
@@ -319,7 +319,7 @@ describe("executeSQL org-scoped routing", () => {
     mockRequestContext = { user: { id: "u1" } };
 
     const result = await executeTool(
-      { sql: "SELECT id FROM companies", explanation: "test", ...(undefined !== undefined ? { connectionId: undefined } : {})},
+      { sql: "SELECT id FROM companies", explanation: "test"},
       { toolCallId: "tc-5", messages: [], abortSignal: undefined as unknown as AbortSignal },
     );
     expect(result.success).toBe(true);
@@ -351,7 +351,7 @@ describe("executeSQL org-scoped routing", () => {
     });
 
     const result = await executeTool(
-      { sql: "SELECT id FROM companies", explanation: "test", ...(undefined !== undefined ? { connectionId: undefined } : {})},
+      { sql: "SELECT id FROM companies", explanation: "test"},
       { toolCallId: "tc-cap", messages: [], abortSignal: undefined as unknown as AbortSignal },
     );
     expect(result.success).toBe(false);

@@ -101,9 +101,9 @@ export type ProposeFactToolReason =
  * Atlas already believe something here?") rather than describing the verbs.
  */
 export const PROPOSE_FACT_DESCRIPTION = `### Propose a Company-Brain Fact
-Use the proposeFact tool when a user states something true about the company that the brain does NOT already hold — search first with searchBrain, and propose only if nothing came back. The tool does NOT record the claim — it STAGES it and the user confirms it on a card:
+Use the proposeFact tool when a user states something true about the company that the brain does NOT already hold — search first with searchAtlas, and propose only if nothing came back. The tool does NOT record the claim — it STAGES it and the user confirms it on a card:
 - Pass the claim as three parts: \`subject\` (what it is about), \`predicate\` (the relationship, e.g. "is the DRI for"), \`object\` (the value). Keep each one short and literal; they are stored as-is and read back to humans
-- ⚠️ Do NOT use this to fix something that is already WRONG. If searchBrain returned a \`tier: "fact"\` result that is outdated or false, that is correct_fact's job (\`supersede\` to replace a value, \`retract\` to withdraw it). Proposing over an existing claim ADDS a rival belief instead of replacing it, and nothing is retired
+- ⚠️ Do NOT use this to fix something that is already WRONG. If searchAtlas returned a \`tier: "attested"\` result that is outdated or false, that is correct_fact's job (\`supersede\` to replace a value, \`retract\` to withdraw it). Proposing over an existing claim ADDS a rival belief instead of replacing it, and nothing is retired
 - A proposal lands as a DRAFT for human review — it does not become an answer until a reviewer publishes it. Say that plainly rather than implying the brain now knows it
 - If the claim turns out to match something the brain already believes, the proposal is recorded as additional evidence for it instead. Either way the user's confirmation is what records it
 - Any workspace member can propose; this is deliberately not admin-only
@@ -139,7 +139,7 @@ export const proposeFactTool = tool({
     "Stage a NET-NEW company-brain claim for the user to confirm — a fact the brain does not already hold. " +
     "This tool does NOT record the claim: it returns `needs_confirmation`, the user confirms it on a card, and the write happens then. " +
     "The claim lands as a DRAFT for human review, or (if it matches something already believed) as additional evidence for that fact. " +
-    "Use it only when searchBrain found nothing: a fact that EXISTS and is wrong belongs to correct_fact (`supersede` replaces a value, `retract` withdraws one), " +
+    "Use it only when searchAtlas found nothing: a fact that EXISTS and is wrong belongs to correct_fact (`supersede` replaces a value, `retract` withdraws one), " +
     "and proposing over it would add a rival belief rather than replace it. " +
     "Any workspace member can propose. " +
     'Example: { "subject": "Ana", "predicate": "is the DRI for", "object": "billing", "reason": "Ana said so in standup" }.',

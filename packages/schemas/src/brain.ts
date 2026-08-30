@@ -144,14 +144,14 @@ export const BRAIN_ENTITY_ROLES = [
  * header: a value export there forces a publish-first merge dance. This tuple
  * is what an `include` filter validates against, so it has to exist at runtime.
  *
- * Ordered by ADR-0036's trust ordering (fact 2 → episode 3 → the
- * outside-the-ordering document class), which is ALSO the deterministic
+ * Ordered by ADR-0036's trust ordering (attested 2 → on-record 3 → the
+ * outside-the-ordering document class; ADR-0038 Layer 2 wire spellings, #5469), which is ALSO the deterministic
  * tiebreak `fuseRankedLists` applies to equally-relevant rows. One list, so the
  * two cannot drift into disagreeing about which of two tied rows comes first.
  */
 export const BRAIN_RESULT_TIERS = [
-  "fact",
-  "raw-episode",
+  "attested",
+  "on-record",
   "document",
 ] as const satisfies readonly BrainResultTier[];
 
@@ -174,8 +174,8 @@ void _brainResultTiersCovered;
  * reviewed fact. Reordering is a real decision; make it here, deliberately.
  */
 type _BrainResultTierOrder = typeof BRAIN_RESULT_TIERS extends readonly [
-  "fact",
-  "raw-episode",
+  "attested",
+  "on-record",
   "document",
 ]
   ? true

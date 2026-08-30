@@ -88,7 +88,7 @@ export const TIER_CHIP_CLASS: Record<
   string
 > = {
   warehouse: "bg-emerald-100 text-emerald-700 dark:bg-emerald-600/20 dark:text-emerald-400",
-  fact: "bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-400",
-  "raw-episode": "bg-amber-100 text-amber-800 dark:bg-amber-600/20 dark:text-amber-400",
+  attested: "bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-400",
+  "on-record": "bg-amber-100 text-amber-800 dark:bg-amber-600/20 dark:text-amber-400",
   document: "bg-violet-100 text-violet-700 dark:bg-violet-600/20 dark:text-violet-400",
 };

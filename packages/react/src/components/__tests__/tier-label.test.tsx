@@ -46,13 +46,13 @@ describe("widget tier label", () => {
     expect(chips(container)[0]?.getAttribute("data-tier-known")).toBe("false");
   });
 
-  test("searchBrain dispatches to the card and labels every row", () => {
+  test("searchAtlas dispatches to the card and labels every row", () => {
     const { container } = render(
       <ToolPart
-        part={part("searchBrain", { query: "who owns billing" }, {
+        part={part("searchAtlas", { query: "who owns billing" }, {
           results: [
-            { tier: "fact", subject: "Billing", predicate: "is owned by", object: "Payments", corroborationCount: 1, decay: { level: "fresh" } },
-            { tier: "raw-episode", source: "slack", body: "we moved billing", extraction: "complete" },
+            { tier: "attested", subject: "Billing", predicate: "is owned by", object: "Payments", corroborationCount: 1, decay: { level: "fresh" } },
+            { tier: "on-record", source: "slack", body: "we moved billing", extraction: "complete" },
             { tier: "document", path: "runbooks/billing.md", collection: "runbooks", title: "Billing runbook" },
           ],
           neighbors: [],
@@ -60,12 +60,36 @@ describe("widget tier label", () => {
         })}
       />,
     );
-    expect(container.textContent).not.toContain("Tool: searchBrain");
+    expect(container.textContent).not.toContain("Tool: searchAtlas");
     expect(container.querySelectorAll('[data-testid="brain-result"]')).toHaveLength(3);
     expect(chips(container).map((c) => c.getAttribute("data-tier"))).toEqual([
-      "fact",
-      "raw-episode",
+      "attested",
+      "on-record",
       "document",
+    ]);
+  });
+
+  // #5469 — the published widget can face an OLDER self-hosted API that still
+  // emits the pre-rename tool name and tier spellings live, and pre-rename
+  // history replays them verbatim. Both must land on the card, normalized —
+  // not on the gray fallback.
+  test("a pre-#5469 searchBrain part still dispatches, with tiers normalized", () => {
+    const { container } = render(
+      <ToolPart
+        part={part("searchBrain", { query: "who owns billing" }, {
+          results: [
+            { tier: "fact", subject: "Billing", predicate: "is owned by", object: "Payments", corroborationCount: 1, decay: { level: "fresh" } },
+            { tier: "raw-episode", source: "slack", body: "we moved billing", extraction: "complete" },
+          ],
+          neighbors: [],
+          tensionsTruncated: false,
+        })}
+      />,
+    );
+    expect(container.textContent).not.toContain("Tool: searchBrain");
+    expect(chips(container).map((c) => c.getAttribute("data-tier"))).toEqual([
+      "attested",
+      "on-record",
     ]);
   });
 

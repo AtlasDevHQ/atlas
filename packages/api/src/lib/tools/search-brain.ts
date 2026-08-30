@@ -152,7 +152,7 @@ function emptyResponse(unavailable: BrainSearchUnavailable | null = null): Brain
   return {
     results: [],
     neighbors: [],
-    stores: { fact: store, "raw-episode": store, document: store },
+    stores: { attested: store, "on-record": store, document: store },
     tensionsTruncated: false,
     unavailable,
   };
@@ -165,8 +165,9 @@ function emptyResponse(unavailable: BrainSearchUnavailable | null = null): Brain
  *
  * Until 2026-08-26 this prompt was the ONLY thing carrying ADR-0036's
  * "every UI surface must carry the tier label" invariant to a person —
- * `searchBrain` fell through the chat surface's `default:` arm to a gray
- * "Tool: searchBrain" box, and `raw-episode` appeared zero times in
+ * `searchBrain` (as `searchAtlas` was then named) fell through the chat
+ * surface's `default:` arm to a gray "Tool: searchBrain" box, and the
+ * episode tier appeared zero times in
  * `packages/web/src`. That is the failure shape `lib/brain/segmentation.ts`
  * names: a property that must be TRUE carried by a model instruction holds
  * statistically, and nothing reports the turn where the model omits it.
@@ -179,17 +180,17 @@ function emptyResponse(unavailable: BrainSearchUnavailable | null = null): Brain
  * two are not two sources of one claim: the badge STATES the tier, this tells
  * the model to CITE provenance and forbids presenting one tier as another.
  *
- * ⚠️ The vocabularies do differ today — the badges carry the wire words
- * (`fact` / `raw episode` / `document` / `warehouse`), this prompt teaches
- * ADR-0038's *ATTESTED / ON THE RECORD / SURVEYED*. That is #5375's to settle,
- * and is deliberate rather than an oversight: #5375 says "do not rename first
- * and test after". If it adopts the proposed names, the labels in
+ * ⚠️ The badge LABELS still carry the pre-rename display words (`fact` /
+ * `raw episode` / `document` / `warehouse`) even though the wire values moved
+ * to `attested` / `on-record` with ADR-0038 Layer 2 (#5469). That is #5375's
+ * to settle, and is deliberate rather than an oversight: #5375 says "do not
+ * rename first and test after". If it adopts the proposed names, the labels in
  * `@useatlas/schemas/trust-tier` (and its widget mirror) are the entire edit.
  */
 export const SEARCH_BRAIN_DESCRIPTION = `### Search the Company Atlas
-Use the searchBrain tool for decisions, rationale, ownership, policy, and history:
+Use the searchAtlas tool for decisions, rationale, ownership, policy, and history:
 - Pass a natural-language \`query\`; narrow the document store with \`type\`, \`tags\`, \`collection\`, or \`since\`, and narrow the stores themselves with \`include\`
-- Every result is labelled: \`tier: "fact"\` is an ATTESTED claim (a named person reviewed and stood behind it), \`"raw-episode"\` is ON THE RECORD (the source material — what someone SAID, not what is true), \`"document"\` is hosted knowledge. Cite the tier and the provenance when you use one. The third tier, SURVEYED — warehouse rows that are authoritative by construction because the query re-reads them live — is not in this tool at all; it is \`executeSQL\`. Never present an attested claim as if it were surveyed
+- Every result is labelled: \`tier: "attested"\` is an ATTESTED claim (a named person reviewed and stood behind it), \`"on-record"\` is ON THE RECORD (the source material — what someone SAID, not what is true), \`"document"\` is hosted knowledge. Cite the tier and the provenance when you use one. The third tier, SURVEYED — warehouse rows that are authoritative by construction because the query re-reads them live — is not in this tool at all; it is \`executeSQL\`. Never present an attested claim as if it were surveyed
 - An episode tagged \`extraction: "pending"\` has not been distilled into facts yet; quote it as raw evidence
 - WHO said it is \`provenance.attribution.actorIdentity\`, not \`attribution.actor\`. \`actor\` is the SOURCE VENDOR'S OWN HANDLE (\`slack:U0AQW6KF2EM\`) and naming a person by it is not an answer \u2014 quote it only as a reference, never as who someone is. The identity beside it is labelled: \`state: "atlas"\` carries a \`name\` read LIVE from that person's Atlas account, so state it plainly as current; \`"directory"\` carries a \`displayName\`/\`realName\` SNAPSHOT taken from the source's directory on \`snapshotAt\` \u2014 give the name AND its date ("Dana Okafor, as of April"), because that person has no Atlas account and the name may have changed since; \`"opaque"\` means Atlas cannot name them, so say so \u2014 do NOT substitute the handle, and do NOT infer a name from the claim's text; \`"machine"\` means NO PERSON produced this \u2014 a scheduled fiber read it out of the customer's own systems \u2014 so say a machine did it and name nobody, and never report it as an unnamed or restricted person. \`actorIdentity: null\` means the evidence had no author at all (a warehouse reading), which is different from an author who cannot be named and different again from \`"machine"\`, which is a positive statement that no person was involved
 - A fact whose \`provenance.attribution\` is \`{ "visible": false }\` is one you may read but whose author, source id, and original timestamp are withheld from this reader. Use the claim; say attribution is restricted if asked who said it. Do NOT report it as anonymous, undated, or unsourced — and never infer the author from anything else in the response

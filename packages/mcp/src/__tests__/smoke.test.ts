@@ -169,7 +169,7 @@ describe("MCP smoke — tool listing", () => {
       "query",
       "restore_datasource",
       "runMetric",
-      "searchBrain",
+      "searchAtlas",
       "searchGlossary",
       "test_datasource",
     ]);

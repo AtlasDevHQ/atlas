@@ -38,11 +38,26 @@ describe("TierBadge", () => {
   });
 
   test("the three brain tiers are visually distinct — document is not collapsed into either", () => {
-    const classes = (["fact", "raw-episode", "document"] as const).map((tier) => {
+    const classes = (["attested", "on-record", "document"] as const).map((tier) => {
       const { container } = render(<TierBadge tier={tier} />);
       return container.querySelector('[data-testid="tier-badge"]')?.className ?? "";
     });
     expect(new Set(classes).size).toBe(3);
+  });
+
+  // #5469 — pre-rename persisted rows replay the old wire spellings; they
+  // resolve through the legacy alias map to the successor presentation
+  // rather than the loud unknown chip (they were correctly labelled when
+  // written). Genuinely foreign values still get the loud chip below.
+  test("pre-#5469 wire spellings resolve to their successors' chips", () => {
+    const { container: factChip } = render(<TierBadge tier="fact" />);
+    const factBadge = factChip.querySelector('[data-testid="tier-badge"]');
+    expect(factBadge?.getAttribute("data-tier-known")).toBe("true");
+    expect(factBadge?.getAttribute("data-tier")).toBe("attested");
+    const { container: epChip } = render(<TierBadge tier="raw-episode" />);
+    const epBadge = epChip.querySelector('[data-testid="tier-badge"]');
+    expect(epBadge?.getAttribute("data-tier-known")).toBe("true");
+    expect(epBadge?.getAttribute("data-tier")).toBe("on-record");
   });
 
   test("an unrecognized tier renders a loud chip, never nothing", () => {

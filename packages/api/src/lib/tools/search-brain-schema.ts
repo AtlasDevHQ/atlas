@@ -159,7 +159,7 @@ export const SEARCH_BRAIN_INPUT_SHAPE = Object.freeze({
     .string()
     .optional()
     .describe(
-      "Facts only: historical point read — returns the reviewed facts valid at that moment (later-superseded versions included; a retracted fact never as a RESULT, only as a `tensions` counterpart labelled by `invalidatedAt`). An ISO-8601 date (2026-07-27) or a timestamp with an EXPLICIT zone (2026-07-27T09:00:00Z); zone-less times, non-ISO forms, and future instants are rejected. Requires the fact store in `include`. Omit for current beliefs.",
+      "Facts only: historical point read — returns the reviewed facts valid at that moment (later-superseded versions included; a retracted fact never as a RESULT, only as a `tensions` counterpart labelled by `invalidatedAt`). An ISO-8601 date (2026-07-27) or a timestamp with an EXPLICIT zone (2026-07-27T09:00:00Z); zone-less times, non-ISO forms, and future instants are rejected. Requires the fact store — `attested` — in `include`. Omit for current beliefs.",
     ),
   limit: z
     .number()

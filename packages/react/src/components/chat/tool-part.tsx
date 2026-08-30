@@ -84,8 +84,12 @@ export const ToolPart = memo(function ToolPart({ part, toolRenderers }: ToolPart
       return <ExploreCard part={part} />;
     case "executeSQL":
       return <SQLResultCard part={part} />;
-    // #5451 — `searchBrain` used to fall through to the gray "Tool: searchBrain"
-    // box, leaving ADR-0036's tier label rendered by no surface at all.
+    // #5451 — this tool used to fall through to the gray "Tool: searchBrain"
+    // box, leaving ADR-0036's tier label rendered by no surface at all. The
+    // old spelling is the pre-#5469 wire name: the published widget can face
+    // an older self-hosted API that still emits it live, so it stays a case
+    // here, not just in replay normalization.
+    case "searchAtlas":
     case "searchBrain":
       return <SearchBrainCard part={part} />;
     case "executePython":

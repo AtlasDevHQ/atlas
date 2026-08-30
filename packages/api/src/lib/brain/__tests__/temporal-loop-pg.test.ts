@@ -665,7 +665,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       ctx,
       mode: options.mode ?? "published",
       query: options.query,
-      include: ["fact", "raw-episode"],
+      include: ["attested", "on-record"],
       expand: false,
       limit: 25,
       ...(options.asOf !== undefined ? { asOf: options.asOf } : {}),
@@ -849,8 +849,8 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
   // compiler checking the literal against the discriminant, so a tier rename
   // in `@useatlas/types` is a TS2367 rather than a filter that silently
   // returns `[]` and satisfies every empty-list assertion in the file.
-  const isFact = (r: BrainSearchResult): r is BrainFactResult => r.tier === "fact";
-  const isEpisode = (r: BrainSearchResult): r is BrainEpisodeResult => r.tier === "raw-episode";
+  const isFact = (r: BrainSearchResult): r is BrainFactResult => r.tier === "attested";
+  const isEpisode = (r: BrainSearchResult): r is BrainEpisodeResult => r.tier === "on-record";
 
   const byText = (a: string, b: string) => a.localeCompare(b);
   const subjectsOf = (results: readonly BrainSearchResult[]) =>

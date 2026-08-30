@@ -12,7 +12,7 @@ _openapi:
           Enumerates PUBLISHED, warehouse-derived facts — the population
           ADR-0042 stranded — with the fact `id` that `POST /{id}/retract`
           consumes. It exists because no other surface could produce that id
-          (#5403): `searchBrain` excludes observations from both content-mode
+          (#5403): `searchAtlas` excludes observations from both content-mode
           arms (#5341), `/admin/brain-coverage` emits predicates without ids,
           `executeSQL` is whitelist-scoped and `brain_facts` is not a
           whitelisted entity, and the review queue excludes them at every

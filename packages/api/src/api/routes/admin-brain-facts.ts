@@ -208,7 +208,7 @@ function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown):
  * Resolve the reviewer's principal context for one request.
  *
  * The resolution itself lives in `lib/brain/reader-context.ts` (#4773), shared
- * with `searchBrain`: it re-resolves the role against the workspace being read
+ * with `searchAtlas`: it re-resolves the role against the workspace being read
  * (`member.role` is per-org, #2890), and it THROWS rather than degrading when a
  * session that carries a role cannot have it re-resolved — the silent partial
  * ACL narrowing that would otherwise render as a smaller, entirely plausible
@@ -306,7 +306,7 @@ const retirableRoute = createRoute({
   tags: ["Admin — Brain Facts"],
   summary: "List published warehouse-derived facts awaiting retirement",
   description:
-    "Enumerates PUBLISHED, warehouse-derived facts — the population ADR-0042 stranded — with the fact `id` that `POST /{id}/retract` consumes. It exists because no other surface could produce that id (#5403): `searchBrain` excludes observations from both content-mode arms (#5341), `/admin/brain-coverage` emits predicates without ids, `executeSQL` is whitelist-scoped and `brain_facts` is not a whitelisted entity, and the review queue excludes them at every `?status=` including `all`. " +
+    "Enumerates PUBLISHED, warehouse-derived facts — the population ADR-0042 stranded — with the fact `id` that `POST /{id}/retract` consumes. It exists because no other surface could produce that id (#5403): `searchAtlas` excludes observations from both content-mode arms (#5341), `/admin/brain-coverage` emits predicates without ids, `executeSQL` is whitelist-scoped and `brain_facts` is not a whitelisted entity, and the review queue excludes them at every `?status=` including `all`. " +
     "⚠️ This is NOT the review queue with a filter, and it does not weaken one. An observation is not a candidate for REVIEW — a reviewer has no trust call to make on it — and `lib/brain/candidates.ts` still excludes these rows at every status. What this surface serves is a different question with a different verb: RETIREMENT, for a closed legacy population that can only shrink (the publish gate has refused warehouse-derived promotions since #5342). " +
     "Retracting a warehouse-derived fact is admitted and says only that the row should not have been blessed — it asserts no belief about the warehouse, which is why `supersede`, `re-authority` and `pin` remain refused on these rows. " +
     "Reader-scoped like every read on this router: `total` is what THIS reviewer can see, not what exists, and the audit override is deliberately not wired up. Retracted rows are excluded, so an empty page after a clearing is the confirmation that it worked. " +
@@ -585,7 +585,7 @@ const eraseActorIdentityRoute = createRoute({
   summary: "Clear one author's directory snapshot",
   description:
     "Clears the DATED DIRECTORY SNAPSHOT Atlas holds for one source principal (#5440, ADR-0036 §T5). " +
-    "Every claim that principal authored returns to the `opaque` identity state — the review surface and `searchBrain` render an explicit \"cannot name this person\" instead of the name — and **no claim is deleted, retracted or otherwise changed**. That is the `retract` shape applied to a person: the record keeps the statement and loses the person. " +
+    "Every claim that principal authored returns to the `opaque` identity state — the review surface and `searchAtlas` render an explicit \"cannot name this person\" instead of the name — and **no claim is deleted, retracted or otherwise changed**. That is the `retract` shape applied to a person: the record keeps the statement and loses the person. " +
     "The erasure is DURABLE. The audience sync's capture pass skips an erased handle forever, so the name does not come back on the next cycle. There is no un-erase verb; re-capturing a cleared name is a deliberate database operation, not an API call. " +
     "⚠️ Only a `directory` snapshot can be erased, and the narrowness is the point. An `atlas` identity stores no snapshot — its name is a live join to a Better Auth account whose own erasure path is account deletion — so clearing one would remove nothing and would leave a current colleague unnameable on every claim they made. " +
     "Needs the owner or admin entitlement, re-resolved against this workspace rather than read off the session, on the same bar `/tension-sweep` applies: this writes workspace-wide state that no per-claim grant scopes.",

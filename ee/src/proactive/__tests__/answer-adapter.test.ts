@@ -253,7 +253,7 @@ describe("createProactiveAnswerAdapter — linked path", () => {
     // `searchBrain` also separates this from the unlinked branch's
     // two-tool public-dataset registry, so the two assertions can't both be
     // satisfied by the same registry.
-    expect(linkedTools).toContain("searchBrain");
+    expect(linkedTools).toContain("searchAtlas");
     // #4299 — no presentationMode on the context: the adapter resolves the
     // analyst fallback (successor of the retired addendum-free "developer"
     // posture for hosts predating #2705).

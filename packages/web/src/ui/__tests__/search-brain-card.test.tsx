@@ -13,11 +13,11 @@ import { render } from "@testing-library/react";
 import { SearchBrainCard } from "../components/chat/search-brain-card";
 
 function part(output: unknown, state = "output-available") {
-  return { toolName: "searchBrain", input: { query: "who owns billing" }, output, state };
+  return { toolName: "searchAtlas", input: { query: "who owns billing" }, output, state };
 }
 
 const FACT = {
-  tier: "fact",
+  tier: "attested",
   trustTier: 2,
   id: "f1",
   subject: "Billing",
@@ -35,7 +35,7 @@ const FACT = {
 };
 
 const EPISODE = {
-  tier: "raw-episode",
+  tier: "on-record",
   trustTier: 3,
   id: "e1",
   source: "slack",
@@ -66,8 +66,8 @@ function response(overrides: Record<string, unknown> = {}) {
     results: [],
     neighbors: [],
     stores: {
-      fact: { queried: true, matched: 0, truncated: false },
-      "raw-episode": { queried: true, matched: 0, truncated: false },
+      attested: { queried: true, matched: 0, truncated: false },
+      "on-record": { queried: true, matched: 0, truncated: false },
       document: { queried: true, matched: 0, truncated: false },
     },
     tensionsTruncated: false,
@@ -101,7 +101,7 @@ describe("SearchBrainCard", () => {
       <SearchBrainCard part={part(response({ results: [FACT, EPISODE, DOCUMENT] }))} />,
     );
     const labels = chips(container).map((c) => c.getAttribute("data-tier"));
-    expect(labels).toEqual(["fact", "raw-episode", "document"]);
+    expect(labels).toEqual(["attested", "on-record", "document"]);
     expect(new Set(chips(container).map((c) => c.textContent?.trim())).size).toBe(3);
   });
 

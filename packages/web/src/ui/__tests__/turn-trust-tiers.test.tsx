@@ -31,10 +31,10 @@ function activity(...parts: unknown[]) {
 
 const SQL_OK = toolPart("executeSQL", { success: true, columns: ["a"], rows: [{ a: 1 }] });
 const SQL_FAILED = toolPart("executeSQL", { success: false, error: "boom" });
-const BRAIN = toolPart("searchBrain", {
+const BRAIN = toolPart("searchAtlas", {
   results: [
-    { tier: "raw-episode", source: "slack", body: "we moved billing" },
-    { tier: "fact", subject: "Billing", predicate: "is owned by", object: "Payments" },
+    { tier: "on-record", source: "slack", body: "we moved billing" },
+    { tier: "attested", subject: "Billing", predicate: "is owned by", object: "Payments" },
   ],
   neighbors: [{ tier: "document", path: "runbooks/billing.md", title: "Billing runbook" }],
 });
@@ -75,8 +75,8 @@ describe("composed with partitionTurn — the shape a finished turn actually has
     ] as never);
     expect(answerTrustTiers(act, answerBearingArtifact)).toEqual([
       "warehouse",
-      "fact",
-      "raw-episode",
+      "attested",
+      "on-record",
       "document",
     ]);
   });
@@ -89,7 +89,7 @@ describe("composed with partitionTurn — the shape a finished turn actually has
 });
 
 describe("answerTrustTiers", () => {
-  test("a SQL turn contributes warehouse — SURVEYED, which searchBrain never carries", () => {
+  test("a SQL turn contributes warehouse — SURVEYED, which searchAtlas never carries", () => {
     expect(answerTrustTiers(activity(SQL_OK))).toEqual(["warehouse"]);
   });
 
@@ -97,15 +97,30 @@ describe("answerTrustTiers", () => {
     expect(answerTrustTiers(activity(SQL_FAILED))).toEqual([]);
   });
 
-  test("searchBrain contributes each distinct row tier, neighbors included", () => {
-    expect(answerTrustTiers(activity(BRAIN))).toEqual(["fact", "raw-episode", "document"]);
+  test("searchAtlas contributes each distinct row tier, neighbors included", () => {
+    expect(answerTrustTiers(activity(BRAIN))).toEqual(["attested", "on-record", "document"]);
+  });
+
+  // #5469 — a pre-rename persisted turn replays `toolName: "searchBrain"` with
+  // `fact` / `raw-episode` rows. The dispatch fall-through plus `toRows`'
+  // normalization must keep contributing labelled tiers, in the CURRENT
+  // vocabulary — regressing this re-opens #5451 for all history.
+  test("a pre-#5469 persisted searchBrain part still contributes, normalized", () => {
+    const legacy = toolPart("searchBrain", {
+      results: [
+        { tier: "raw-episode", source: "slack", body: "we moved billing" },
+        { tier: "fact", subject: "Billing", predicate: "is owned by", object: "Payments" },
+      ],
+      neighbors: [],
+    });
+    expect(answerTrustTiers(activity(legacy))).toEqual(["attested", "on-record"]);
   });
 
   test("a mixed turn reports every tier once, in trust order", () => {
     expect(answerTrustTiers(activity(SQL_OK, BRAIN, SQL_OK))).toEqual([
       "warehouse",
-      "fact",
-      "raw-episode",
+      "attested",
+      "on-record",
       "document",
     ]);
   });
@@ -114,15 +129,15 @@ describe("answerTrustTiers", () => {
     // Filtering here is how a tier would reach a reader unlabelled — the
     // whole regression. It must survive to the badge, which draws it loudly.
     const tiers = answerTrustTiers(
-      activity(toolPart("searchBrain", { results: [{ tier: "episode" }, {}] })),
+      activity(toolPart("searchAtlas", { results: [{ tier: "episode" }, {}] })),
     );
     expect(tiers).toContain("episode");
     expect(tiers).toContain("");
   });
 
-  test("an in-flight searchBrain contributes nothing yet", () => {
+  test("an in-flight searchAtlas contributes nothing yet", () => {
     expect(
-      answerTrustTiers(activity(toolPart("searchBrain", null, "input-available"))),
+      answerTrustTiers(activity(toolPart("searchAtlas", null, "input-available"))),
     ).toEqual([]);
   });
 });
@@ -136,8 +151,8 @@ describe("TurnReceipt", () => {
     const chips = Array.from(container.querySelectorAll('[data-testid="tier-badge"]'));
     expect(chips.map((c) => c.getAttribute("data-tier"))).toEqual([
       "warehouse",
-      "fact",
-      "raw-episode",
+      "attested",
+      "on-record",
       "document",
     ]);
   });
@@ -146,7 +161,7 @@ describe("TurnReceipt", () => {
     const { container } = render(<TurnReceipt activity={activity(BRAIN)} />);
     const row = container.querySelector('[data-testid="turn-trust-tiers"]');
     expect(row?.getAttribute("aria-label")).toBe(
-      "Grounded in: fact, raw-episode, document",
+      "Grounded in: attested, on-record, document",
     );
   });
 

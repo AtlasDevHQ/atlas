@@ -177,8 +177,8 @@ describe("searchBrain tool.execute", () => {
     // Every store is still reported — an omitted `stores` block would read as
     // "the shape changed" rather than "nothing was searched".
     expect(res.stores).toEqual({
-      fact: { queried: false },
-      "raw-episode": { queried: false },
+      attested: { queried: false },
+      "on-record": { queried: false },
       document: { queried: false },
     });
     expect(queryCalls).toHaveLength(0);
@@ -192,7 +192,7 @@ describe("searchBrain tool.execute", () => {
   });
 
   it("honours `include` and skips the stores the caller excluded", async () => {
-    await run({ query: "x", include: ["fact"], expand: false });
+    await run({ query: "x", include: ["attested"], expand: false });
     expect(sqlFor("brain_facts").length).toBeGreaterThan(0);
     expect(sqlFor("brain_episodes")).toHaveLength(0);
     expect(sqlFor("knowledge_documents")).toHaveLength(0);
@@ -262,7 +262,7 @@ describe("searchBrain tool.execute", () => {
   });
 
   it("threads a valid asOf into the fact read and echoes it — the historical page says so (#4916)", async () => {
-    const res = await run({ query: "x", include: ["fact"], asOf: "2026-07-01T00:00:00Z", expand: false });
+    const res = await run({ query: "x", include: ["attested"], asOf: "2026-07-01T00:00:00Z", expand: false });
     const factCall = queryCalls.find((c) => c.sql.includes("brain_facts"))!;
     expect(factCall.sql).toContain("f.valid_from IS NULL OR f.valid_from <=");
     expect(factCall.params).toContain("2026-07-01T00:00:00.000Z");
@@ -346,18 +346,18 @@ describe("searchBrain tool.execute", () => {
       }
       return [];
     };
-    const res = await run({ query: "billing pipeline", include: ["fact", "raw-episode"], expand: false });
+    const res = await run({ query: "billing pipeline", include: ["attested", "on-record"], expand: false });
     const results = res.results as Array<Record<string, unknown>>;
     expect(results).toHaveLength(2);
     // Shape-enforced labeling: every row carries a tier and its trust tier.
     // Sorted to make the assertion order-independent — the FUSED order is
     // pinned separately in `lib/brain/__tests__/search.test.ts`.
     const tiers = [...results.map((r) => r.tier)].sort((a, b) => String(a).localeCompare(String(b)));
-    expect(tiers).toEqual(["fact", "raw-episode"]);
-    const fact = results.find((r) => r.tier === "fact")!;
+    expect(tiers).toEqual(["attested", "on-record"]);
+    const fact = results.find((r) => r.tier === "attested")!;
     expect(fact.trustTier).toBe(2);
     expect(fact.corroborationCount).toBe(2);
-    const episode = results.find((r) => r.tier === "raw-episode")!;
+    const episode = results.find((r) => r.tier === "on-record")!;
     expect(episode.trustTier).toBe(3);
     // The committed edge behavior — unextracted evidence is returned, labeled.
     expect(episode.extraction).toBe("pending");

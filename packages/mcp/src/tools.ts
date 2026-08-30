@@ -343,15 +343,22 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
       ),
   );
 
-  // --- searchBrain ---
+  // --- searchAtlas ---
   //
   // #4773 — ADDITIVE on this surface. Its predecessor `searchKnowledge` was
   // only ever an agent-registry tool and was never exposed over MCP, so nothing
   // is removed here and the frozen-tool-name rule in
   // `shared/reference/stability.mdx` is untouched: this is a new tool, which
   // that contract explicitly permits within `v0.x`.
+  //
+  // #5469 — ADR-0038 Layer 2: registered as `searchAtlas` (was `searchBrain`
+  // from #4773 until 2026-08-30). A REAL BREAK for MCP clients bound to the
+  // old name, accepted by the ADR within `v0.x` and taken before the v1.0.0
+  // contract freeze made it permanent. Deliberately NOT dual-registered —
+  // `registry.ts` states the standing policy: two names for one capability is
+  // a worse tool surface than one.
   server.registerTool(
-    "searchBrain",
+    "searchAtlas",
     {
       title: "Search the Company Atlas",
       description: withErrorContract(searchBrain.description ?? "", SEARCH_BRAIN_ERROR_CODES),
@@ -379,7 +386,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
     },
     async (input): Promise<CallToolResult> =>
       dispatch(
-        "searchBrain",
+        "searchAtlas",
         // Internal-DB read: no datasource, so no gate-0 billing. Member-callable
         // and read-only, so no `mcp:write`. Per-fact ACL is enforced INSIDE the
         // tool against the bound actor's principal set — the dispatch gate's
@@ -396,7 +403,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         { requiresWrite: false, requiresBoundOrg: false, minRole: "member" },
         async (requestId) => {
           const result = await searchBrain.execute!(input, {
-            toolCallId: "mcp-searchBrain",
+            toolCallId: "mcp-searchAtlas",
             messages: [],
           });
 

@@ -53,14 +53,14 @@ A superseded fact is still `published` and still not retracted; its validity win
 
 ## Reading the brain as of a past instant
 
-`searchBrain` takes an optional `asOf` instant. Without it, you get current belief. With it, the fact store switches to a point read: a fact answers when `validFrom <= asOf < validTo`, so a claim a later promotion superseded answers again inside its own window.
+`searchAtlas` takes an optional `asOf` instant. Without it, you get current belief. With it, the fact store switches to a point read: a fact answers when `validFrom <= asOf < validTo`, so a claim a later promotion superseded answers again inside its own window.
 
 Ask the agent directly — "what did we believe about the Q3 revenue definition on 2026-06-01?" — or pass `asOf` on the tool call:
 
 ```json
 {
   "query": "Q3 revenue definition",
-  "include": ["fact"],
+  "include": ["attested"],
   "asOf": "2026-06-01T00:00:00Z"
 }
 ```
@@ -128,4 +128,4 @@ Fact **extraction** is off by default and enabled with `ATLAS_BRAIN_EXTRACTION_E
 
 - [Company Atlas — Corrections](/guides/atlas-corrections) — the four verbs a human uses to fix a fact
 - [Company Atlas — Conflicts](/guides/atlas-conflicts) — what Atlas does when two claims disagree
-- <AudienceLink saas="/guides/knowledge-base">Knowledge Base</AudienceLink> — the document store `searchBrain` reads alongside the brain
+- <AudienceLink saas="/guides/knowledge-base">Knowledge Base</AudienceLink> — the document store `searchAtlas` reads alongside the brain

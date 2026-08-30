@@ -87,6 +87,21 @@ describe("transformMessages", () => {
     ]);
   });
 
+  // #5469 — `messages.content` is unversioned jsonb: pre-rename conversations
+  // store `toolName: "searchBrain"` verbatim, and replaying it un-normalized
+  // lands on the render layer's `default:` arm — the #5451 gray box, for all
+  // history. The replay seam maps old → new; live parts are untouched.
+  test("normalizes a replayed pre-#5469 searchBrain toolName to searchAtlas", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: [
+        { type: "tool-invocation", toolCallId: "tc1", toolName: "searchBrain", args: { query: "who owns billing" }, result: { results: [], neighbors: [] } },
+      ] }),
+    ];
+
+    const result = transformMessages(messages);
+    expect((result[0].parts[0] as { toolName: string }).toolName).toBe("searchAtlas");
+  });
+
   test("handles mixed text and tool-invocation parts", () => {
     const messages: Message[] = [
       msg({ id: "1", role: "assistant", content: [

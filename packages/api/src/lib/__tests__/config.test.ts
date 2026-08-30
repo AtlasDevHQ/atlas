@@ -856,7 +856,24 @@ describe("validateToolConfig", () => {
       source: "env" as const,
     };
     await expect(validateToolConfig(config, defaultRegistry)).resolves.toBeUndefined();
-    expect(config.tools).toEqual(["explore", "searchBrain"]);
+    expect(config.tools).toEqual(["explore", "searchAtlas"]);
+  });
+
+  // #5469 — the ADR-0038 Layer 2 rename rides the same seam: a self-hoster
+  // whose config still lists `searchBrain` boots and is normalized, exactly
+  // like `searchKnowledge` before it.
+  it("normalizes the pre-#5469 searchBrain spelling to searchAtlas", async () => {
+    const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
+    const config = {
+      datasources: {},
+      tools: ["searchBrain"],
+      auth: "auto" as const,
+      semanticLayer: "./semantic",
+      maxTotalConnections: 100,
+      source: "env" as const,
+    };
+    await expect(validateToolConfig(config, defaultRegistry)).resolves.toBeUndefined();
+    expect(config.tools).toEqual(["searchAtlas"]);
   });
 
   it("still rejects a renamed spelling whose TARGET does not resolve", async () => {

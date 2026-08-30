@@ -298,7 +298,7 @@ function registerCoreTools(
   // {@link RENAMED_TOOLS}. Registering both spellings would hand the agent two
   // names for one capability.
   registry.register({
-    name: "searchBrain",
+    name: "searchAtlas",
     description: SEARCH_BRAIN_DESCRIPTION,
     tool: searchBrain,
   });
@@ -306,7 +306,7 @@ function registerCoreTools(
   // #4915 — the four correction verbs (ADR-0036 T4), core, under the ADR's
   // own spelling (`correct_fact`). Workspace, identity, and the owner/admin
   // authority gate all run at execute time inside the verb machinery — but
-  // unlike `searchBrain` it is NOT registered globally, because it WRITES:
+  // unlike `searchAtlas` it is NOT registered globally, because it WRITES:
   // `nonDashboardRegistry` is the policy `POST /api/v1/query` reaches (via
   // `buildHeadlessRegistry()`; this singleton is that path's fallback), and
   // that operation is admitted to READ-SAFE Agent-Auth keys on a read-only-
@@ -515,7 +515,12 @@ export const INTENTIONAL_TOOL_SHADOWS: ReadonlySet<string> = new Set(["sendEmail
 export const RENAMED_TOOLS: Readonly<Partial<Record<string, string>>> = {
   // #4773 — `searchKnowledge` became `searchBrain` when hosted documents
   // stopped being the whole tool and became one of three fused stores.
-  searchKnowledge: "searchBrain",
+  // Re-pointed at `searchAtlas` below so the two-hop chain collapses to one.
+  searchKnowledge: "searchAtlas",
+  // #5469 — ADR-0038 Layer 2: `searchBrain` became `searchAtlas` (the wire
+  // stops carrying the storage noun; the module identifiers keep it, per the
+  // "if only we read it, it still says brain" rule).
+  searchBrain: "searchAtlas",
 };
 
 /**

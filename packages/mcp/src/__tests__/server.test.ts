@@ -85,7 +85,7 @@ describe("MCP server integration", () => {
       "query",
       "restore_datasource",
       "runMetric",
-      "searchBrain",
+      "searchAtlas",
       "searchGlossary",
       "test_datasource",
     ]);

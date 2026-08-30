@@ -5,7 +5,7 @@ description: Contribute MCP tools from a plugin via AtlasPlugin.mcpTools().
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Plugins can contribute first-class MCP tools that show up in the agent's `tools/list` alongside Atlas's own (`executeSQL`, `explore`, `listEntities`, `describeEntity`, `searchGlossary`, `runMetric`, `searchBrain`). This is the same surface the agent loop uses — tools added here participate in the same audit log, OTel coverage, and per-OAuth-client rate limiting as native tools.
+Plugins can contribute first-class MCP tools that show up in the agent's `tools/list` alongside Atlas's own (`executeSQL`, `explore`, `listEntities`, `describeEntity`, `searchGlossary`, `runMetric`, `searchAtlas`). This is the same surface the agent loop uses — tools added here participate in the same audit log, OTel coverage, and per-OAuth-client rate limiting as native tools.
 
 The extension point exists so a plugin can do agent-native work (search a runbook KB, fetch a page from Confluence, look up a customer record in Salesforce) without stuffing a string into `contextProvider.load()`. If your plugin can answer "what is the agent doing right now?" with a structured query, you almost certainly want `mcpTools()` over a context fragment.
 

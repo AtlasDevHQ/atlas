@@ -60,7 +60,8 @@ the glossary explicitly avoids.
 
 ⚠️ Atlas carries **two deliberate vocabularies** and they are not drift. The product noun is
 *Atlas*; the storage/internal noun is still *brain* (`brain_facts`, `lib/brain/**`,
-`/admin/brain`, `ATLAS_BRAIN_*`, the `searchBrain` tool). Rule of thumb: **if a customer
+`/admin/brain`, `ATLAS_BRAIN_*` — the agent-facing tool is `searchAtlas` since the
+ADR-0038 Layer 2 rename, #5469). Rule of thumb: **if a customer
 reads it, it says Atlas; if only we read it, it still says brain.** See ADR-0038 before
 "fixing" either one.
 

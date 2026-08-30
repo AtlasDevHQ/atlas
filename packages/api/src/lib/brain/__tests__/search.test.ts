@@ -453,7 +453,7 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       asOf: "2026-07-01T02:00:00+02:00",
       limit: 10,
       expand: false,
@@ -468,7 +468,7 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -498,7 +498,7 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
       searchBrainCore(db, {
         ctx: ctx(),
         mode: "published",
-        include: ["document", "raw-episode"],
+        include: ["document", "on-record"],
         asOf: AS_OF,
         limit: 10,
         expand: false,
@@ -512,7 +512,7 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
     await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact", "raw-episode"],
+      include: ["attested", "on-record"],
       asOf: AS_OF,
       limit: 10,
       expand: false,
@@ -574,7 +574,7 @@ describe("fail-closed", () => {
   // store carries no per-row grant, so an `include` that reaches only it once
   // slipped past the guard entirely and served an unresolvable reader a normal
   // page — a permission decision made by a query parameter.
-  for (const include of [["raw-episode"], ["document"], []] as const) {
+  for (const include of [["on-record"], ["document"], []] as const) {
     it(`refuses when the caller narrowed include to ${JSON.stringify(include)}`, async () => {
       const db = reader();
       await expect(
@@ -606,7 +606,7 @@ describe("fail-closed", () => {
     await searchBrainCore(db, {
       ctx: narrow,
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -631,7 +631,7 @@ describe("fail-closed", () => {
     await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact", "raw-episode"],
+      include: ["attested", "on-record"],
       limit: 10,
       expand: false,
     });
@@ -658,7 +658,7 @@ describe("trust labeling", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact", "raw-episode"],
+      include: ["attested", "on-record"],
       limit: 10,
       expand: false,
     });
@@ -668,8 +668,8 @@ describe("trust labeling", () => {
       expect(row).toHaveProperty("trustTier");
     }
     const byTier = new Map<string, BrainSearchResult>(res.results.map((r) => [r.tier, r]));
-    expect(byTier.get("fact")?.trustTier).toBe(2);
-    expect(byTier.get("raw-episode")?.trustTier).toBe(3);
+    expect(byTier.get("attested")?.trustTier).toBe(2);
+    expect(byTier.get("on-record")?.trustTier).toBe(3);
   });
 
   it("orders a fused cohort by trust tier — the fact leads, the episode follows", async () => {
@@ -684,11 +684,11 @@ describe("trust labeling", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact", "raw-episode"],
+      include: ["attested", "on-record"],
       limit: 10,
       expand: false,
     });
-    expect(res.results.map((r) => r.tier)).toEqual(["fact", "raw-episode"]);
+    expect(res.results.map((r) => r.tier)).toEqual(["attested", "on-record"]);
   });
 
   it("clamps an over-large limit in the core, not only in the tool wrapper", async () => {
@@ -696,7 +696,7 @@ describe("trust labeling", () => {
     await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 9_999,
       expand: false,
     });
@@ -711,13 +711,13 @@ describe("trust labeling", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["raw-episode"],
+      include: ["on-record"],
       limit: 10,
       expand: false,
     });
     const row = res.results[0];
-    expect(row.tier).toBe("raw-episode");
-    if (row.tier !== "raw-episode") throw new Error("unreachable");
+    expect(row.tier).toBe("on-record");
+    if (row.tier !== "on-record") throw new Error("unreachable");
     expect(row.extraction).toBe("pending");
     expect(row.extractedAt).toBeNull();
     expect(row.sourceId).toBe("m-1");
@@ -733,12 +733,12 @@ describe("trust labeling", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["raw-episode"],
+      include: ["on-record"],
       limit: 10,
       expand: false,
     });
     const row = res.results[0];
-    if (row.tier !== "raw-episode") throw new Error("expected an episode");
+    if (row.tier !== "on-record") throw new Error("expected an episode");
     expect(row.extraction).toBe("complete");
   });
 
@@ -749,12 +749,12 @@ describe("trust labeling", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["raw-episode"],
+      include: ["on-record"],
       limit: 10,
       expand: false,
     });
     const row = res.results[0];
-    if (row.tier !== "raw-episode") throw new Error("expected an episode");
+    if (row.tier !== "on-record") throw new Error("expected an episode");
     expect(row.bodyTruncated).toBe(true);
     expect(row.body).toHaveLength(4_000);
   });
@@ -766,7 +766,7 @@ describe("trust labeling", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["raw-episode"],
+      include: ["on-record"],
       limit: 10,
       expand: false,
     });
@@ -819,12 +819,12 @@ describe("trust labeling", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
-    expect(res.stores.fact).toEqual({ queried: true, matched: 1, truncated: false });
-    expect(res.stores["raw-episode"].queried).toBe(false);
+    expect(res.stores.attested).toEqual({ queried: true, matched: 1, truncated: false });
+    expect(res.stores["on-record"].queried).toBe(false);
     expect(res.stores.document.queried).toBe(false);
   });
 
@@ -833,11 +833,11 @@ describe("trust labeling", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 2,
       expand: false,
     });
-    const facts = res.stores.fact;
+    const facts = res.stores.attested;
     expect(facts.queried).toBe(true);
     if (!facts.queried) throw new Error("unreachable");
     expect(facts.truncated).toBe(true);
@@ -850,7 +850,7 @@ describe("trust labeling", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "developer",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -915,7 +915,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -937,7 +937,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -980,7 +980,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1011,7 +1011,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1039,7 +1039,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1083,7 +1083,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1121,7 +1121,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1170,7 +1170,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1204,7 +1204,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1236,7 +1236,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1262,7 +1262,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1292,7 +1292,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
       asOf: "2026-06-01T00:00:00.000Z",
@@ -1325,7 +1325,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1361,7 +1361,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1389,7 +1389,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1416,7 +1416,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     const res = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1431,7 +1431,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1487,7 +1487,7 @@ describe("provenance attribution — the widened-fact disclosure (#4836)", () =>
     const res = await searchBrainCore(db, {
       ctx: context,
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1584,7 +1584,7 @@ describe("provenance attribution — the widened-fact disclosure (#4836)", () =>
     await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1607,7 +1607,7 @@ describe("searchBrainCore — read-time decay (#4914)", () => {
     const response = await searchBrainCore(db, {
       ctx: ctx(),
       mode: "published",
-      include: ["fact"],
+      include: ["attested"],
       limit: 10,
       expand: false,
     });
@@ -1631,7 +1631,7 @@ describe("searchBrainCore — read-time decay (#4914)", () => {
     // The acceptance criterion as a negative: `stale` never demotes. The row
     // keeps tier-2, its stored status, and its place in the result set.
     const { fact } = await factFor(factRow({ last_observed_at: OLD }));
-    expect(fact.tier).toBe("fact");
+    expect(fact.tier).toBe("attested");
     expect(fact.trustTier).toBe(2);
     expect(fact.status).toBe("published");
   });

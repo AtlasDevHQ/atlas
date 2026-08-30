@@ -742,7 +742,7 @@ function toFactResult(
     identities,
   );
   return {
-    tier: "fact",
+    tier: "attested",
     trustTier: 2,
     id: row.id,
     subject: row.subject,
@@ -784,7 +784,7 @@ function toEpisodeResult(row: Record<string, unknown>, id: string): BrainEpisode
       ? { extraction: "pending", extractedAt: null }
       : { extraction: "complete", extractedAt };
   return {
-    tier: "raw-episode",
+    tier: "on-record",
     trustTier: 3,
     id,
     // `source` / `source_id` are `text NOT NULL`, so the fallbacks are
@@ -912,9 +912,9 @@ async function loadTensions(
  */
 function resultKey(result: BrainSearchResult): string {
   switch (result.tier) {
-    case "fact":
+    case "attested":
       return `fact:${result.id}`;
-    case "raw-episode":
+    case "on-record":
       return `episode:${result.id}`;
     case "document":
       return `document:${result.collection}/${result.path}`;
@@ -981,8 +981,8 @@ export async function searchBrainCore(
   const limit = Math.min(Math.max(1, Math.trunc(options.limit)), MAX_SEARCH_LIMIT);
   const include = new Set(options.include ?? BRAIN_RESULT_TIERS);
 
-  const wantFacts = include.has("fact");
-  const wantEpisodes = include.has("raw-episode");
+  const wantFacts = include.has("attested");
+  const wantEpisodes = include.has("on-record");
   const wantDocuments = include.has("document");
 
   // Validated FIRST, before any store runs: an unusable point-read instant is
@@ -997,7 +997,7 @@ export async function searchBrainCore(
     // the fall-through this module refuses. Same fail-closed verb as every
     // other unusable asOf.
     throw new BrainAsOfInvalidError(
-      'asOf was passed but `include` excludes "fact" — only reviewed facts have a validity window to read against. Add "fact" to include, or omit asOf.',
+      'asOf was passed but `include` excludes "attested" — only reviewed facts have a validity window to read against. Add "attested" to include, or omit asOf.',
     );
   }
 
@@ -1201,8 +1201,8 @@ export async function searchBrainCore(
     results: fused,
     neighbors,
     stores: {
-      fact: wantFacts ? queriedStore(factResults.length, limit) : UNQUERIED_STORE,
-      "raw-episode": wantEpisodes
+      attested: wantFacts ? queriedStore(factResults.length, limit) : UNQUERIED_STORE,
+      "on-record": wantEpisodes
         ? queriedStore(episodeResults.length, limit)
         : UNQUERIED_STORE,
       // The document store reports its OWN truncation — it applies the seed

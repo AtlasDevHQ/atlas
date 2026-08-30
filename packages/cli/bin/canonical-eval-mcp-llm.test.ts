@@ -2809,7 +2809,7 @@ describe("bindMcpToolsForLlm", () => {
       "describeEntity",
       "searchGlossary",
       "listEntities",
-      "searchBrain",
+      "searchAtlas",
     ]) {
       expect(classifyToolContract(name)).toBe("json");
     }

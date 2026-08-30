@@ -180,7 +180,12 @@ export const twentyPlugin = createPlugin<
         const customFields: { atlasIp?: string } = {};
         if (atlasIp) customFields.atlasIp = atlasIp;
         const name =
-          firstName || lastName ? { firstName, lastName } : undefined;
+          firstName || lastName
+            ? {
+                ...(firstName !== undefined ? { firstName } : {}),
+                ...(lastName !== undefined ? { lastName } : {}),
+              }
+            : undefined;
         const result = await upsertPerson(clientConfig, {
           email,
           eventSource,

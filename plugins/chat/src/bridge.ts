@@ -2322,15 +2322,18 @@ export function createChatBridge(
           // public_refused emissions added in #2297.
           ...(proactiveConfig.onMeterEvent !== undefined ? { onMeterEvent: proactiveConfig.onMeterEvent } : {}),
           // Monthly quota cap (#2301).
-          getQuotaStatus: proactiveConfig.getQuotaStatus,
+          ...(proactiveConfig.getQuotaStatus !== undefined
+            ? { getQuotaStatus: proactiveConfig.getQuotaStatus }
+            : {}),
           // WorkspaceInstallGate (#2655) — outermost workspace-scoped
           // check, runs before classify / meter / quota / kill-switch.
           // Discriminated union; the `enabled: false` branch keeps the
           // listener at pre-#2655 behaviour.
           installGate: proactiveConfig.installGate,
           refusalCopy: proactiveConfig.refusalCopy,
-          allowAnswerWhenEntitiesUnknown:
-            proactiveConfig.allowAnswerWhenEntitiesUnknown,
+          ...(proactiveConfig.allowAnswerWhenEntitiesUnknown !== undefined
+            ? { allowAnswerWhenEntitiesUnknown: proactiveConfig.allowAnswerWhenEntitiesUnknown }
+            : {}),
         });
         proactiveRecentAnswers = handle.recentAnswers;
       })

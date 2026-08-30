@@ -29,6 +29,20 @@ import type {
   ChatAdapterName,
 } from "@useatlas/types";
 import type { Adapter } from "chat";
+
+/**
+ * `Adapter`, with the one field the vendor's own adapter classes contradict.
+ *
+ * `chat`'s `Adapter` declares `botUserId?: string` (an exact optional), while
+ * every `@chat-adapter/*` class exposes it as `get botUserId(): string |
+ * undefined`. Under `exactOptionalPropertyTypes` those stop being compatible,
+ * so a concrete adapter no longer satisfies the interface it implements — a
+ * contradiction inside the dependency, not in this repo. Loosening the one
+ * field here keeps the builders typed against the real classes instead of
+ * dropping to `unknown`; drop this alias when `chat` ships types that agree
+ * with themselves (#5522).
+ */
+export type VendorAdapter = Omit<Adapter, "botUserId"> & { readonly botUserId?: string | undefined };
 import { createSlackAdapter } from "./adapters/slack";
 import { createTelegramAdapter } from "./adapters/telegram";
 import { createDiscordAdapter } from "./adapters/discord";
@@ -206,7 +220,7 @@ const SLACK_BUILDER: ChatAdapterBuilder<SlackAdapter> = {
  * is operator-shared and stateless across Workspaces, so the builder
  * doesn't need to read it.
  */
-const TELEGRAM_BUILDER: ChatAdapterBuilder<Adapter> = {
+const TELEGRAM_BUILDER: ChatAdapterBuilder<VendorAdapter> = {
   slug: "telegram",
   platform: "telegram",
   requiredEnv: ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET"],
@@ -290,7 +304,7 @@ const DISCORD_BUILDER: ChatAdapterBuilder<Adapter> = {
  * fail-closed posture as Discord's `guild_id` / Telegram's `chat_id`
  * resolvers.
  */
-const WHATSAPP_BUILDER: ChatAdapterBuilder<Adapter> = {
+const WHATSAPP_BUILDER: ChatAdapterBuilder<VendorAdapter> = {
   slug: "whatsapp",
   platform: "whatsapp",
   requiredEnv: [

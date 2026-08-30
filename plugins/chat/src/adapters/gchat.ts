@@ -29,12 +29,15 @@ export function createGoogleChatAdapter(config: GoogleChatAdapterConfig) {
   // emits a warn line per inbound webhook); we surface the env-gate
   // through `register.ts` so operators see the gap at boot rather than
   // hidden in webhook-handler logs.
+  // Each key is spread on presence: `UpstreamConfig` declares them as exact
+  // optionals, so an absent operator setting has to be an absent key rather
+  // than a key holding `undefined` (#5522).
   const base = {
-    endpointUrl: config.endpointUrl,
-    pubsubTopic: config.pubsubTopic,
-    impersonateUser: config.impersonateUser,
-    googleChatProjectNumber: config.googleChatProjectNumber,
-    pubsubAudience: config.pubsubAudience,
+    ...(config.endpointUrl !== undefined ? { endpointUrl: config.endpointUrl } : {}),
+    ...(config.pubsubTopic !== undefined ? { pubsubTopic: config.pubsubTopic } : {}),
+    ...(config.impersonateUser !== undefined ? { impersonateUser: config.impersonateUser } : {}),
+    ...(config.googleChatProjectNumber !== undefined ? { googleChatProjectNumber: config.googleChatProjectNumber } : {}),
+    ...(config.pubsubAudience !== undefined ? { pubsubAudience: config.pubsubAudience } : {}),
   };
 
   let upstreamConfig: UpstreamConfig;

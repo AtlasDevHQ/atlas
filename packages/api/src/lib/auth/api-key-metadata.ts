@@ -193,6 +193,78 @@ export function boundClaimsToMinter(
 }
 
 /**
+ * The most `JSON.parse` calls {@link coerceMetadataBag} will spend reaching an
+ * object — and exactly that many, not one more.
+ *
+ * ONE is the normal shape: Better Auth's `apikey.metadata` field is declared
+ * `type: "string"` with a `transform.input` of `JSON.stringify`, so the column
+ * is `text` holding an object's JSON. TWO covers the plugin's own documented
+ * legacy shape — @better-auth/api-key ships
+ * `parseDoubleStringifiedMetadata`/`migrateLegacyMetadataInBackground` precisely
+ * because older versions stringified an already-stringified bag, and a purge
+ * that could not see through that would leave the oldest keys behind. Bounded
+ * rather than looped to a fixed point so a pathological value cannot spin.
+ */
+const MAX_METADATA_UNWRAPS = 2;
+
+/**
+ * Resolve an untrusted `apikey.metadata` value to its object form, or `null`.
+ *
+ * Accepts the three shapes the column can hand back: an object already (a
+ * driver that decoded it), one JSON string (the plugin's normal write), or a
+ * doubly-stringified one (its legacy write, see {@link MAX_METADATA_UNWRAPS}).
+ * Anything else — NULL, a number, text that is not JSON at all — is not a
+ * metadata bag and answers `null` rather than throwing. That total-ness is the
+ * point: this runs inside the GDPR purge transaction, where a throw on one
+ * malformed row would abort an entire workspace erasure.
+ */
+function coerceMetadataBag(raw: unknown): Record<string, unknown> | null {
+  let value = raw;
+  // The loop body spends one parse per iteration and the check after it reads
+  // the last one's result, so the parse budget is exactly
+  // MAX_METADATA_UNWRAPS. An `unwraps <= MAX` bound here would quietly spend a
+  // third and make the constant's name a lie.
+  for (let unwraps = 0; unwraps < MAX_METADATA_UNWRAPS; unwraps++) {
+    if (isPlainObject(value)) return value;
+    if (typeof value !== "string") return null;
+    try {
+      value = JSON.parse(value);
+    } catch {
+      // intentionally ignored: text that is not JSON is not a metadata bag, and
+      // that IS the answer this function returns. There is no logger in this
+      // pure module and nothing downstream would act on the parse error.
+      return null;
+    }
+  }
+  return isPlainObject(value) ? value : null;
+}
+
+/**
+ * True when an untrusted `apikey.metadata` bag names `orgId` as the key's bound
+ * workspace — the predicate `hardDeleteWorkspace` scopes its workspace-arm
+ * `apikey` delete by (#5525).
+ *
+ * Deliberately looser than {@link parseApiKeyMetadata}, and only on this one
+ * axis: it does NOT require the `atlasWorkspaceKey` marker. The marker answers
+ * *"is this a workspace key this codebase knows how to authorize?"*, which is a
+ * fail-closed question at USE time. An erasure asks the opposite question —
+ * *"does this row name the workspace being erased?"* — where the fail-closed
+ * direction is to take the row. A bag naming this org id without the marker is
+ * either a key minted by a future surface or one written before the marker
+ * existed; leaving it would be exactly the silent residue #5525 is about, and
+ * within a single table an over-inclusive erasure predicate destroys nothing
+ * that is not already about the workspace being destroyed.
+ *
+ * Kept HERE, beside the writer and the use-time reader, so "bound to workspace
+ * X" has one definition and the purge cannot drift from what mint wrote — the
+ * reason this module exists at all.
+ */
+export function apiKeyMetadataNamesOrg(raw: unknown, orgId: string): boolean {
+  const bag = coerceMetadataBag(raw);
+  return bag !== null && bag.orgId === orgId;
+}
+
+/**
  * Narrow an untrusted Better Auth metadata bag into a typed {@link ApiKeyMetadata}.
  *
  * Returns `null` (fail-closed) when the bag is not a workspace-scoped key:

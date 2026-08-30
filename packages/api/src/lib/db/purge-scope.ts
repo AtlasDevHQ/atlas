@@ -618,6 +618,10 @@ export const RETAINED_TABLES: ReadonlySet<string> = new Set(
 //   has been enabled: an absent class means "never enabled — nothing to
 //   purge", NOT an incomplete purge, which is why they do not ride
 //   `tableExists` (whose absence semantics are region drift).
+//   `apikey` is probed through `tableExists` for the OPPOSITE reason
+//   (#5525): its plugin is unconditional, so an absent relation IS drift
+//   and must be reported as a skipped table rather than abort the whole
+//   erasure — the `scim_group_mappings` incident, one plugin over.
 // - `user_scoped` — keyed on a user id. `orphanArm` names the mechanism:
 //   `"explicit-delete"` is a statement in the orphaned-user arm;
 //   `"user-fk-cascade"` is the FK better-auth's migrator creates — every
@@ -625,6 +629,10 @@ export const RETAINED_TABLES: ReadonlySet<string> = new Set(
 //   (get-migration.mjs: `onDelete(field.references.onDelete || "cascade")`),
 //   so deleting the orphaned `"user"` row removes these. The tripwire
 //   verifies the claimed reference actually exists in the plugin schema.
+//   A `purged` entry may ALSO carry `orphanArm: "explicit-delete"` when its
+//   workspace scope and its user scope are different columns and neither
+//   subsumes the other — `apikey` is the case (#5525), and
+//   `BetterAuthPurgedScope.orphanArm` carries the argument.
 // - `platform` — no workspace and no user erasure dimension: the global
 //   auth spine, config-seeded rows, or transient TTL state.
 // - `unreached` — a RECORDED gap: the table has a user or workspace
@@ -633,6 +641,10 @@ export const RETAINED_TABLES: ReadonlySet<string> = new Set(
 //   deliberately. This arm exists so closing the enumeration blind spot
 //   cannot be blocked on fixing every gap it reveals — an invisible gap
 //   became a named one, which is the registry's whole job.
+//   ⚠️ The set is EMPTY as of #5525, and the arm is kept rather than
+//   deleted with its last member: the next plugin bump that lands a table
+//   nobody can reach yet needs somewhere honest to say so, and the pin at
+//   `[]` is what makes re-entering it a deliberate edit to a test.
 //
 // `subscription` (@better-auth/stripe) is deliberately ABSENT: it is the
 // one Better Auth table mirrored into `db/schema.ts` (so the drift gates
@@ -645,7 +657,26 @@ export type BetterAuthOrphanArm = "explicit-delete" | "user-fk-cascade";
 interface BetterAuthPurgedScope {
   readonly decision: "purged";
   readonly reason: string;
-  readonly orphanArm?: undefined;
+  /**
+   * Present ONLY on a `purged` table that also needs the orphaned-user arm,
+   * because its workspace scope and its user scope are different columns and
+   * neither subsumes the other (#5525).
+   *
+   * `apikey` is the case and, so far, the only one: the workspace binding lives
+   * in `metadata.orgId` and the owner in `referenceId`, with no FK on either. A
+   * key whose owner is erased but whose binding names a DIFFERENT org — minted
+   * while they were a member elsewhere, then that membership removed — is
+   * reached by the user arm and not the workspace one; a key bound to the
+   * purged org whose owner survives in another workspace is reached by the
+   * workspace arm and not the user one. Declaring one decision would leave the
+   * other arm unpinned by the tripwire, which is how the missing statement got
+   * here in the first place.
+   *
+   * Narrowed to `"explicit-delete"`: `"user-fk-cascade"` would be a claim about
+   * an FK, and a table needing this field is by definition one whose user
+   * dimension has no cascade to inherit.
+   */
+  readonly orphanArm?: "explicit-delete";
 }
 
 interface BetterAuthUserScope {
@@ -704,7 +735,7 @@ export const BETTER_AUTH_PURGE_DECISIONS = {
 
   // ── Misc core ──────────────────────────────────────────────────────
   verification: { decision: "platform", reason: "TTL token store for in-flight verifications (email OTP, reset). `identifier` can hold an email for the minutes a flow is live; rows self-expire and better-auth prunes them. No workspace dimension and no durable user key." },
-  apikey: { decision: "unreached", reason: "A RECORDED GAP, found by this registry's own tripwire on its first run. Workspace API keys (ADR-0027 §6) carry the owning user in `referenceId` and the workspace binding in `metadata.orgId` — and the 1.7 table declares NO foreign key at all, so neither the orphaned-user arm nor any cascade reaches them: an erased user's key rows (name, prefix, hashed secret, per-key metadata) survive the purge. Mitigation today: the key is useless after the purge — validateManaged re-resolves the LIVE member, which is gone. The fix is #5525; when it lands this becomes `user_scoped`/`purged` and the tripwire's pinned unreached set shrinks to empty." },
+  apikey: { decision: "purged", orphanArm: "explicit-delete", reason: "Workspace API keys (ADR-0027 §6), and the ONE table needing both arms — see `BetterAuthPurgedScope.orphanArm`. The 1.7 table declares no foreign key at all: the owner sits in `referenceId` (a plain string) and the workspace binding in `metadata.orgId` (JSON text), so nothing cascades from either the org or the user row and #5515's tripwire recorded it `unreached` on its first run. #5525 is that gap closed, with TWO statements in `hardDeleteWorkspace`: the workspace arm removes every key whose metadata names this org, the orphan arm removes every key belonging to a user this purge erases. THE #5525 DECISION, the acceptance criterion that asked for delete-or-record: a key bound to the purged workspace whose OWNER SURVIVES in another workspace is DELETED, no retention arm — `scimUser`'s call one table over, for three reasons that each hold alone. (1) Content: `metadata.claims` is the minting member's RLS claim VALUES, which describe the customer's own tenancy exactly as `brain_enrollment` holds their entity names, and `name` is operator-authored prose naming the CI system it was cut for. (2) The row is a CREDENTIAL — a hashed secret plus its `start` prefix — and `knowledge_sync_credentials` settled that a secret at rest does not outlive the workspace it opens. (3) `metadata.orgId` is not an FK, so nothing stops a re-created org from reusing the id; `validateManaged` re-resolves the LIVE member at use time, which is what makes the key harmlessly dead TODAY, and is exactly what would make it live again the moment that id is re-created with its owner re-added. A dead credential that a re-created workspace can resurrect is the `mcp_action_policy` inheritance hazard with teeth. What the workspace arm does NOT reach, recorded rather than discovered later: a key whose metadata names no org at all — the legacy `ATLAS_API_KEY` god-key path (`simple-key.ts`) mints no row here, so this is a shape nothing writes today — survives unless its owner is orphaned." },
 
   // ── @better-auth/scim 1.7 catalog (#5505 → #5515) ──────────────────
   // The repo owner's recorded decision on #5515: when a workspace is
@@ -728,6 +759,22 @@ export const BETTER_AUTH_PURGE_DECISIONS = {
   scimSubject: { decision: "user_scoped", reason: "One row per SCIM-managed user ACROSS domains (userId → user.id), not per provisioning domain — deleting it by domain would break another workspace's provisioning for a shared user. Deleted explicitly for orphaned users (probed: the relation exists only where EE SCIM ran); the migrator-default cascade covers deployments that predate the statement.", orphanArm: "explicit-delete" },
 } as const satisfies Record<string, BetterAuthTableScope>;
 
+/**
+ * The registry widened to its interface, for the derivations below.
+ *
+ * `as const satisfies` gives every entry a LITERAL type carrying only the keys
+ * it actually writes, so `v.orphanArm` is a compile error against any entry
+ * that omits it — even inside a filter that can only reach entries which have
+ * it. The old derivation dodged that by testing `decision === "user_scoped"`
+ * first, which narrowed the union to entries where the field is declared; that
+ * is precisely the coupling #5525 had to break, since a `purged` entry can now
+ * carry the arm too. Widening once, here, keeps the declarations literal — the
+ * mapped types in `internal.ts` still read them — while letting these three
+ * sets ask about an optional field directly.
+ */
+const betterAuthScopeFor: Readonly<Record<string, BetterAuthTableScope>> =
+  BETTER_AUTH_PURGE_DECISIONS;
+
 /** Better Auth tables the purge deletes with an explicit workspace-scoped statement. */
 export const BETTER_AUTH_PURGED_TABLES: ReadonlySet<string> = new Set(
   Object.entries(BETTER_AUTH_PURGE_DECISIONS)
@@ -735,10 +782,39 @@ export const BETTER_AUTH_PURGED_TABLES: ReadonlySet<string> = new Set(
     .map(([k]) => k),
 );
 
-/** Better Auth tables the orphaned-user arm deletes with an explicit statement. */
+/**
+ * Better Auth tables the orphaned-user arm deletes with an explicit statement.
+ *
+ * Keyed on `orphanArm` alone, NOT on `decision === "user_scoped"` (#5525): a
+ * `purged` table can carry the same arm when its workspace scope and its user
+ * scope are different columns, and filtering on the decision would have
+ * silently dropped `apikey`'s orphan statement out of the set the tripwire
+ * verifies — a declared arm nothing checked.
+ */
 export const BETTER_AUTH_ORPHAN_DELETE_TABLES: ReadonlySet<string> = new Set(
-  Object.entries(BETTER_AUTH_PURGE_DECISIONS)
-    .filter(([, v]) => v.decision === "user_scoped" && v.orphanArm === "explicit-delete")
+  Object.entries(betterAuthScopeFor)
+    .filter(([, v]) => v.orphanArm === "explicit-delete")
+    .map(([k]) => k),
+);
+
+/**
+ * Better Auth tables needing BOTH a workspace-scoped delete and an orphaned-user
+ * delete — the `purged` entries that also declare an `orphanArm` (#5525).
+ *
+ * Exported for `better-auth-purge-scope.test.ts`, which cannot otherwise tell
+ * the two statements apart: `BETTER_AUTH_PURGED_TABLES` and
+ * `BETTER_AUTH_ORPHAN_DELETE_TABLES` each contain such a table, and each is
+ * satisfied by whichever single DELETE happens to exist.
+ *
+ * This is `BETTER_AUTH_ORPHAN_DELETE_TABLES` narrowed by
+ * `decision === "purged"` — deliberately a subset rather than a rename. That
+ * set answers "does an orphan-arm statement have to exist?", which is also
+ * true of the plain `user_scoped` entries; this one answers "does a SECOND
+ * statement have to exist alongside it?", which only these can be.
+ */
+export const BETTER_AUTH_DUAL_ARM_TABLES: ReadonlySet<string> = new Set(
+  Object.entries(betterAuthScopeFor)
+    .filter(([, v]) => v.decision === "purged" && v.orphanArm === "explicit-delete")
     .map(([k]) => k),
 );
 

@@ -23,7 +23,9 @@
  *  - `purged`  ⇒ a real workspace-scoped `DELETE FROM "<table>"` exists in
  *    `hardDeleteWorkspace`, in an order that respects the child-via-parent
  *    subqueries;
- *  - `user_scoped`/`explicit-delete` ⇒ a real orphan-arm DELETE exists;
+ *  - `explicit-delete` ⇒ a real orphan-arm DELETE exists;
+ *  - a `purged` entry that ALSO declares `orphanArm` ⇒ TWO statements, not
+ *    one satisfying both of the checks above (#5525);
  *  - `user_scoped`/`user-fk-cascade` ⇒ the plugin schema actually declares
  *    the user reference the entry's mechanism claims (better-auth's migrator
  *    defaults `onDelete` to CASCADE — get-migration.mjs:
@@ -46,6 +48,7 @@ import {
   BETTER_AUTH_PURGE_DECISIONS,
   BETTER_AUTH_PURGED_TABLES,
   BETTER_AUTH_ORPHAN_DELETE_TABLES,
+  BETTER_AUTH_DUAL_ARM_TABLES,
   PURGE_TABLE_DECISIONS,
   SCIM_PLUGIN_TABLES,
   type BetterAuthTableScope,
@@ -250,13 +253,51 @@ describe("Better Auth purge/bundle-scope tripwire (#5515)", () => {
   it("pins the 'unreached' set exactly (a recorded gap can only grow deliberately)", () => {
     // `unreached` exists so closing the enumeration blind spot is not blocked
     // on fixing every gap it reveals — but it is also the cheapest arm, so its
-    // membership is pinned the way RETAINED_TABLES is. apikey: no FK at all in
-    // the 1.7 schema, owner in `referenceId`, workspace in `metadata` — the
-    // fix is #5525.
-    const unreached = Object.entries(BETTER_AUTH_PURGE_DECISIONS)
-      .filter(([, v]) => v.decision === "unreached")
-      .map(([k]) => k);
-    expect(unreached.toSorted()).toEqual(["apikey"]);
+    // membership is pinned the way RETAINED_TABLES is. EMPTY since #5525 closed
+    // `apikey`, the set's only member: no FK at all in the 1.7 schema, owner in
+    // `referenceId`, workspace in `metadata.orgId`, and now two statements.
+    // Read through the string-indexed view: against the literal-typed const,
+    // tsc now rejects the comparison as no-overlap — which is TRUE today and is
+    // exactly the state this test exists to keep deliberate, so it must not be
+    // what stops the file compiling.
+    const unreached = Object.keys(BETTER_AUTH_PURGE_DECISIONS).filter(
+      (k) => purgeDecisionFor[k]?.decision === "unreached",
+    );
+    expect(unreached.toSorted()).toEqual([]);
+  });
+
+  it("gives every dual-arm table BOTH a workspace statement and an orphan statement", () => {
+    // #5525. `BETTER_AUTH_PURGED_TABLES` and `BETTER_AUTH_ORPHAN_DELETE_TABLES`
+    // both contain `apikey`, and the two tests above ask each only for "a
+    // DELETE FROM apikey exists" — which ONE statement satisfies twice over.
+    // Deleting either arm therefore passes both. This is the assertion that
+    // fails: the orphan arm is identifiable by its `referenceId` predicate, so
+    // a second, differently-keyed statement must exist alongside it.
+    //
+    // What this cannot see is whether the OTHER statement is correctly scoped
+    // to the workspace — `apikey`'s workspace predicate is evaluated in
+    // TypeScript (see hardDeleteWorkspace's Phase 4a), so the SQL reads
+    // `id = ANY($1)` and carries no readable scope. That half is proven
+    // behaviorally, against a real Postgres, in apikey-purge-pg.test.ts.
+    for (const table of BETTER_AUTH_DUAL_ARM_TABLES) {
+      const statements = purgeFnBody.match(new RegExp(`DELETE FROM "?${table}"?\\b[^\`]*`, "g")) ?? [];
+      const orphanArm = statements.filter((s) => s.includes(`"referenceId" = ANY(`));
+      expect(
+        statements.length,
+        `${table} declares both a workspace decision and an orphanArm, so hardDeleteWorkspace ` +
+          `must carry TWO DELETE statements for it — found ${statements.length}.`,
+      ).toBeGreaterThanOrEqual(2);
+      expect(
+        orphanArm.length,
+        `${table} declares orphanArm: "explicit-delete" but no DELETE keyed on "referenceId" = ANY(...) ` +
+          `exists — an orphaned user's keys would outlive their own account.`,
+      ).toBe(1);
+      expect(
+        statements.length - orphanArm.length,
+        `${table} has no DELETE other than its orphan arm — the workspace-scoped statement is gone, ` +
+          `so a key bound to the purged workspace whose owner survives elsewhere would remain.`,
+      ).toBeGreaterThanOrEqual(1);
+    }
   });
 
   it("probes exactly the scim tables the plugin declares (the probe list cannot drift)", () => {

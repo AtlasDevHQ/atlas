@@ -3039,13 +3039,29 @@ describeIfPg("a refused alias edge's record outlives the source cleanup (#5112)"
       // test would prove nothing — which is what the `edgesAfter` assertion catches.
       await pool.query(`INSERT INTO organization (id, region) VALUES ($1, 'eu-test')`, [ORG]);
       // Past the grace period, so the sweep is actually due.
+      //
+      // ⚠️ ALL THREE SECTIONS SEEDED SINCE #5557, and that is not padding: the
+      // delete-time audit's SELECT is now BUILT from the section table rather than
+      // written out, so this is the only place its six column names are confronted
+      // with the migrated table. A typo'd or dropped one raises here and the sweep
+      // fails — which the `sweep.cleaned` assertion below catches — while every
+      // mock-level assertion about the audit stays green, because the mock answers
+      // whatever the query asks for.
       await pool.query(
         `INSERT INTO region_migrations
            (id, workspace_id, source_region, target_region, status, completed_at,
-            region_updated, vocabulary_edges_refused, vocabulary_refusals)
+            region_updated, vocabulary_edges_refused, vocabulary_refusals,
+            vocabulary_proposals_refused, vocabulary_proposal_refusals,
+            predicate_cardinalities_refused, predicate_cardinality_refusals)
          VALUES ($1, $2, 'us-test', 'eu-test', 'completed', now() - interval '8 days',
-                 TRUE, 1, $3::jsonb)`,
-        [MIGRATION_ID, ORG, JSON.stringify([REFUSAL])],
+                 TRUE, 1, $3::jsonb, 2, $4::jsonb, 3, $5::jsonb)`,
+        [
+          MIGRATION_ID,
+          ORG,
+          JSON.stringify([REFUSAL]),
+          JSON.stringify([PROPOSAL_REFUSAL]),
+          JSON.stringify([CARDINALITY_REFUSAL]),
+        ],
       );
 
       // ⚠️ THE BEFORE HALF, and it is not ceremony. Without it a sweep that
@@ -3082,8 +3098,14 @@ describeIfPg("a refused alias edge's record outlives the source cleanup (#5112)"
         source_cleaned_at: Date | null;
         vocabulary_edges_refused: number | null;
         vocabulary_refusals: unknown;
+        vocabulary_proposals_refused: number | null;
+        vocabulary_proposal_refusals: unknown;
+        predicate_cardinalities_refused: number | null;
+        predicate_cardinality_refusals: unknown;
       }>(
-        `SELECT source_cleaned_at, vocabulary_edges_refused, vocabulary_refusals
+        `SELECT source_cleaned_at, vocabulary_edges_refused, vocabulary_refusals,
+                vocabulary_proposals_refused, vocabulary_proposal_refusals,
+                predicate_cardinalities_refused, predicate_cardinality_refusals
            FROM region_migrations WHERE id = $1`,
         [MIGRATION_ID],
       );
@@ -3098,6 +3120,24 @@ describeIfPg("a refused alias edge's record outlives the source cleanup (#5112)"
       // RE-AUTHORABLE rather than merely descriptive — the operator needs to know
       // what this region holds at `price` instead.
       expect((row.rows[0].vocabulary_refusals as Array<{ existingTarget: string }>)[0].existingTarget).toBe("cost");
+      // #5557 — the two #5533 payloads survive the same sweep, which is what makes
+      // the delete-time audit's recovery instruction for them true. The counts are
+      // 1/2/3 and every array holds one entry, so a sweep that blanked one column
+      // and left another cannot pass on the edge assertions alone.
+      expect(row.rows[0].vocabulary_proposals_refused).toBe(2);
+      expect(row.rows[0].vocabulary_proposal_refusals).toEqual([PROPOSAL_REFUSAL]);
+      expect(row.rows[0].predicate_cardinalities_refused).toBe(3);
+      expect(row.rows[0].predicate_cardinality_refusals).toEqual([CARDINALITY_REFUSAL]);
+      // The re-authorable field on each, for the same reason `existingTarget` is
+      // named above: a payload the operator cannot act on is not a recovery record.
+      expect(
+        (row.rows[0].vocabulary_proposal_refusals as Array<{ existingStatus: string }>)[0]
+          .existingStatus,
+      ).toBe("approved");
+      expect(
+        (row.rows[0].predicate_cardinality_refusals as Array<{ canonicalHere: string }>)[0]
+          .canonicalHere,
+      ).toBe("delivers to");
 
       // Belt and braces on the classification itself, since that is WHY the row
       // survives. A future `platform` → `exported` reclassification of

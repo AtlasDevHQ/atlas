@@ -5,7 +5,7 @@ Canonical terminology for Atlas. This document is a glossary, not a spec — imp
 When you find yourself reaching for one of these words, use the canonical form. When you see a term used loosely in conversation or code, sharpen it back to one of these.
 
 > **This file is the UN-SPLIT REMAINDER, not the whole domain.** Atlas uses the
-> multi-context layout ([CONTEXT-MAP.md](CONTEXT-MAP.md)); sixteen of its eighteen contexts
+> multi-context layout ([CONTEXT-MAP.md](CONTEXT-MAP.md)); seventeen of its eighteen contexts
 > have been extracted and are **not** in this file (#5302):
 >
 > | Context | Now lives in |
@@ -26,26 +26,10 @@ When you find yourself reaching for one of these words, use the canonical form. 
 > | Chat turn presentation | [docs/contexts/chat-turn-presentation/CONTEXT.md](docs/contexts/chat-turn-presentation/CONTEXT.md) |
 > | Dashboard editing | [docs/contexts/dashboard-editing/CONTEXT.md](docs/contexts/dashboard-editing/CONTEXT.md) |
 > | MCP & agent governance | [docs/contexts/mcp-agent-governance/CONTEXT.md](docs/contexts/mcp-agent-governance/CONTEXT.md) |
+> | Query Cache | [docs/contexts/query-cache/CONTEXT.md](docs/contexts/query-cache/CONTEXT.md) |
 >
-> They were moved, not copied: no section below duplicates them. The remaining two
+> They were moved, not copied: no section below duplicates them. The remaining one
 > sections are still governed here, and the map says so per row.
-
-## Query Cache
-
-- **Query Cache** — the per-region, in-process store of `executeSQL` result rows (`lib/cache/`), keyed by (SQL, Datasource connection, Workspace, user claims, **resolved RLS config**) so entries are tenant-isolated by construction. One per API process, shared by every Workspace in the region. Distinct from the chat-SDK state store (`chat_cache:*` keys — Workspace Connection credentials, not query results) and from a dashboard card's **cached data** (persisted per-card snapshots, refreshed by publish/cron — see "Dashboard editing").
-  _Avoid_: bare "cache" in cross-subsystem prose (say Query Cache); "chat cache" for this concept (`chat_cache` is credential storage).
-
-- **CacheBackend contract** — the async interface (`get`/`set`/`delete`/`flush`/`flushByOrg`/`stats`, all `Promise`-returning) a Query Cache backend satisfies (`lib/cache/types.ts`). The default in-process LRU implements it; a plugin can supply an external one (Redis, Memcached), validated on registration (`validateCacheBackend`) — a shape-invalid backend **fails that plugin's init** (red + sticky in plugin health) while the cache degrades to the LRU so queries keep working. Async-by-contract is what kills the phantom-hit failure mode: an unawaited Promise is truthy, so a sync-shaped `get()` would read as a hit for every query.
-  _Avoid_: a synchronous backend method (the contract is Promise-returning end to end); silently falling back to the LRU on a bad backend without failing the plugin.
-
-- **Scope tags / scoped invalidation** — every `set()` carries a `CacheScope` (`{ orgId?, connectionId }`); the LRU keeps an `orgId → keys` side index (consistent across set / delete / capacity-eviction / TTL-expiry / flush) so `flushByOrg(orgId)` purges exactly one Workspace's entries. Org deletion and residency migration purge **per-org**, never fleet-wide — a co-tenant's warm entries survive one Workspace's teardown. The connection tag is retained so a future per-connection invalidation can filter an org's entries by it (no reader does yet). Fleet-wide `flush()` stays for config reload + the admin flush button.
-  _Avoid_: nuclear `flush()` for a single-Workspace event (use `flushByOrg`); an `orgId` in the scope tag that differs from the `orgId` in the cache key (they must be the same Workspace or `flushByOrg` misses).
-
-- **Org-bucketed cache stats** — the per-Workspace hit/miss accounting the admin cache page reports (#4549): each Workspace's bucket carries a since-labeled **lifetime rate** plus a sliding **last-hour rate** (two-generation window — current + previous hour's counters, the previous decaying linearly as the hour progresses; no ring buffer). Lives in a module-level registry (`lib/cache/stats-registry.ts`) ABOVE the backend, recorded at the single agent read site in `lib/tools/sql.ts` — `CacheBackend.get(key)` structurally cannot attribute a **miss** to a Workspace (the key isn't in the backend), so the backend's own `stats()` counters remain its global self-report and the registry is the additional app-maintained per-org layer. Counters therefore survive backend resize/plugin swap. Responses are per-caller: workspace admins see only their bucket; fleet totals are platform-admin-only. There is no admin-facing reset verb (the only reset export, `resetCacheStatsRegistry`, is test-isolation-only) — a flush "moves the window" emergently (post-flush misses drag the last-hour rate down).
-  _Avoid_: recording hits/misses inside a backend (miss attribution is impossible there); treating the backend's `stats()` hits/misses and the registry as the same numbers (they are two deliberate layers); a bypassed read as a miss (it consulted no cache).
-
-- **Query Cache governance principle** — ADR-0033: *the cache key captures every input that determined an entry's rows; anything that can veto a query runs before the cache check; and the hit path re-applies every layer that transforms rows on the way out.* Concretely: the **resolved RLS config** hashes into the key alongside claims (`lib/cache/keys.ts`) so tightening RLS orphans pre-change entries by construction — no flush choreography (closes audit H3); plugin **`beforeQuery`** dispatch sits *above* the cache check (`lib/tools/sql.ts`) so a rejection blocks warm hits and a rewrite lands in the key (closes M11's governance half; the metrics half is the documented live-only carve-out below); and masking + the current row limit re-apply on every hit. The **live-path-only** carve-out: `afterQuery` + connection SLA/`recordQuery` metrics observe *executions*, so a hit — which doesn't execute — never fires them. The **L9 invariant**: when both Workspace (org) and claims are absent, an entry rests solely on the Datasource connection; that is correct only for single-tenant-per-connection deployments, so any per-tenant discriminator MUST surface through org or claims, never left implicit.
-  _Avoid_: "flush the cache on RLS change" (the rejected event-based alternative — key-hashing is invariant-based); treating a cache hit as an execution (it has no datasource round-trip to observe).
 
 ## Lead source (CRM acquisition)
 

@@ -250,7 +250,7 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
             persona: EXPERT_PERSONA_PROMPT,
             // #4514 — front-load the Briefing (null when it couldn't be built ⇒
             // buildSystemParam appends nothing, chat still starts).
-            briefing: briefing ?? undefined,
+            ...(briefing != null ? { briefing } : {}),
           });
 
           // Audit the draft surface: an expert-agent chat turn that can propose

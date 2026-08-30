@@ -146,7 +146,7 @@ function userAuth(role: string | undefined): AuthResult & { authenticated: true 
       id: `user-${role ?? "none"}`,
       mode: "managed",
       label: `${role ?? "member"}@test.dev`,
-      role: role as "admin" | "owner" | "platform_admin" | "member" | undefined,
+      ...(role !== undefined ? { role } : {}),
       activeOrganizationId: "org-1",
     },
   };

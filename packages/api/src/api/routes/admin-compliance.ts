@@ -148,7 +148,7 @@ adminCompliance.openapi(updateRoute, async (c) => {
     const masking = yield* MaskingPolicy;
 
     const updated = yield* masking.updatePIIClassification(orgId!, id, {
-      category: body.category as PIICategory | undefined,
+      ...(body.category !== undefined ? { category: body.category } : {}),
       maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
       dismissed: body.dismissed,
       reviewed: body.reviewed,

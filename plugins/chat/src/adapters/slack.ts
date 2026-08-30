@@ -32,6 +32,6 @@ export function createSlackAdapter(config: SlackAdapterConfig) {
     // Per-tenant AES-GCM envelope for installation bot tokens (#2634).
     // Pass-through when configured; the chat-adapter falls back to its
     // own `SLACK_ENCRYPTION_KEY` env lookup when undefined.
-    encryptionKey: config.encryptionKey,
+    ...(config.encryptionKey !== undefined ? { encryptionKey: config.encryptionKey } : {}),
   });
 }

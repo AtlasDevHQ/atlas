@@ -238,7 +238,7 @@ export async function createAtlasMcpServer(
     // `actor.activeOrganizationId` may be undefined for trusted-transport
     // (system:mcp) — gating falls back to the platform-level demo signal
     // (`ATLAS_DEMO_INDUSTRY`) in that case.
-    workspaceId: actor.activeOrganizationId,
+    ...(actor.activeOrganizationId !== undefined ? { workspaceId: actor.activeOrganizationId } : {}),
     clientId,
     transport,
     deployMode: getConfig()?.deployMode ?? "self-hosted",

@@ -607,7 +607,7 @@ function loadEntities(semanticRoot: string): ParsedEntity[] {
       // never unscoped. The default group stays unlabeled.
       const group = resolveEntityGroup(sourceName, origin, readGroupField(raw)).group;
       return {
-        name: raw.name as string | undefined,
+        ...(raw.name !== undefined ? { name: raw.name as string } : {}),
         table: raw.table as string,
         type: raw.type as string | undefined,
         connection: group !== "default" ? group : undefined,

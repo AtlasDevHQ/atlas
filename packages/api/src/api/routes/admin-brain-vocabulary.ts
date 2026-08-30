@@ -1078,7 +1078,7 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
                   // order here would be exactly the "implicit first norm wins"
                   // that refusal exists to prevent — spelled in the route body,
                   // where no test of the seam would ever see it.
-                  direction: body.direction,
+                  ...(body.direction !== undefined ? { direction: body.direction } : {}),
                 }
               : {
                   id: body.proposalId,

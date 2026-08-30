@@ -334,7 +334,7 @@ export function createBrainCorrectionsRoute() {
           ctx,
           factId: input.factId,
           verb: input.verb,
-          reason: input.reason,
+          ...(input.reason !== undefined ? { reason: input.reason } : {}),
           replacement: input.replacement
             ? {
                 object: input.replacement.object,

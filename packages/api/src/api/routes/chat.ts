@@ -1399,7 +1399,7 @@ chat.openapi(chatRoute, async (c) => {
                 routingMode: effectiveRoutingMode ?? null,
                 // #3066 — persist the exclude-set the user picked at
                 // creation. Undefined ⇒ column default '{}' (all in scope).
-                restExcludedDatasourceIds: effectiveRestExcluded,
+                ...(effectiveRestExcluded !== undefined ? { restExcludedDatasourceIds: effectiveRestExcluded } : {}),
                 // #3067 — persist REST-only focus the user picked at creation.
                 // Undefined / null ⇒ NULL (not focused). The transport sends
                 // null when the picker is in default mode, so `?? null` keeps a

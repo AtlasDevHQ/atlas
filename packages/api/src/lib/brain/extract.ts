@@ -482,11 +482,16 @@ export const MARK_TRIAGED_SQL = `UPDATE brain_episodes
  * triage marks and the drain picks the episodes up again at their original
  * `ingested_at` position — no backfill, no sweep, no copy of the rows.
  *
- * `$2` narrows to one rule id, or passes NULL for every mark — an operator
- * who loosens a rule re-queues only that rule's verdicts rather than every
- * triaged episode. Exported for the operator/admin surface that wires it (a
- * later slice; nothing in the fiber calls it, deliberately — re-queueing is a
- * human's decision or a smarter stage's, never this cycle's own).
+ * `$2` narrows to one rule id, or passes NULL for every mark — an admin who
+ * loosens a rule re-queues only that rule's verdicts rather than every triaged
+ * episode.
+ *
+ * Its caller is `lib/brain/triage-requeue.ts`, behind
+ * `POST /api/v1/admin/brain-triage/requeue` (#5534). ⚠️ Still nothing in the
+ * FIBER calls it, and that half was never a scope cut: re-queueing is a
+ * human's decision or a smarter stage's, never this cycle's own. The store
+ * module composes this string into a counting CTE rather than copying it, so
+ * `extract-triage.test.ts`'s shape pins stay load-bearing for the surface too.
  */
 export const REQUEUE_TRIAGED_SQL = `UPDATE brain_episodes
           SET triaged_out_at = NULL,

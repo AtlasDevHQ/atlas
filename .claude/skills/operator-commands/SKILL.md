@@ -57,3 +57,14 @@ ATLAS_GATE_EXPORT_OK=1 bun run atlas-operator -- ops gate-export \
   - A DRY RUN runs the identical query and prints exact counts and analytics; it just writes no file. The preview an operator decides on is the thing that would be exported.
 
 One-shot migration backfills live next to their migration in `db/migrations/scripts/`.
+
+## Not here: re-queueing triaged-out brain episodes (#5534)
+
+There is **no `atlas-operator` subcommand for clearing stage-0 extraction triage marks**, and that is a recorded decision rather than a gap. The verb is `POST /api/v1/admin/brain-triage/requeue`, beside the per-rule backlog counts at `GET /api/v1/admin/brain-triage`.
+
+Two reasons, if you come here looking for it:
+
+- **The audit obligation is only satisfiable on the admin route.** Re-queueing sets both triage columns back to NULL, so afterwards nothing in `brain_episodes` records that those rows were ever triaged — the `brain.triage_requeue` admin-action row is the *only* durable account. Operator subcommands audit as `systemActor: "system:atlas-operator"`, which records that *some* operator ran something; for an act whose sole record is that row, that is not an answer to "who".
+- **It is not an operator-shaped act.** Everything in this binary is destructive, cross-tenant, or outside the gate chain. A re-queue is single-workspace, additive (it restores a queue position and deletes nothing), and the judgement behind it — "our acknowledgement list was wrong", "that rule is eating our messages" — belongs to the workspace's own admin.
+
+`packages/api/src/api/routes/admin-brain-triage.ts` carries the full argument, including why the answer is not "both".

@@ -356,7 +356,7 @@
     },
     "packages/plugin-sdk": {
       "name": "@useatlas/plugin-sdk",
-      "version": "0.0.18",
+      "version": "0.0.19",
       "devDependencies": {
         "@types/node": "^25.9.5",
         "@typescript/native-preview": "7.0.0-dev.20260623.1",
@@ -603,7 +603,7 @@
     },
     "plugins/daytona": {
       "name": "@useatlas/daytona",
-      "version": "0.0.6",
+      "version": "0.0.7",
       "devDependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.235",
@@ -611,8 +611,8 @@
         "zod": "^4.4.3",
       },
       "peerDependencies": {
-        "@daytonaio/sdk": ">=0.1.0",
-        "@useatlas/plugin-sdk": ">=0.0.18",
+        "@daytonaio/sdk": ">=0.201.0",
+        "@useatlas/plugin-sdk": ">=0.0.19",
       },
       "optionalPeers": [
         "@daytonaio/sdk",
@@ -637,7 +637,7 @@
     },
     "plugins/e2b": {
       "name": "@useatlas/e2b",
-      "version": "0.0.6",
+      "version": "0.0.7",
       "devDependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.235",
@@ -645,8 +645,8 @@
         "zod": "^4.4.3",
       },
       "peerDependencies": {
-        "@useatlas/plugin-sdk": ">=0.0.18",
-        "e2b": ">=1.0.0",
+        "@useatlas/plugin-sdk": ">=0.0.19",
+        "e2b": ">=2.45.0",
       },
       "optionalPeers": [
         "e2b",

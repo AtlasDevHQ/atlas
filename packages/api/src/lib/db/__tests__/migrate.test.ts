@@ -450,7 +450,14 @@ describe("runMigrations", () => {
     //   arriving decision that lived only as a counter plus a log line in the
     //   TARGET region outlived the data it describes by exactly that region's log
     //   retention. Additive nullable columns; NULL means UNKNOWN, not zero) = 213.
-    expect(count).toBe(213);
+    //   Plus 0213 (workspace_action_credentials — #3766: WORKSPACE-tier
+    //   action-target credentials, a tenant's own Jira/Linear/GitHub/Salesforce
+    //   set from workspace Admin without operator involvement or a redeploy.
+    //   One row per (workspace_id, target), encrypted at rest. Deliberately NOT
+    //   an operator tier — the ladder is workspace row → process.env on
+    //   self-hosted only → throw, per ADR-0046. Renumbered from 0212 on the
+    //   merge with main, which took that number first) = 214.
+    expect(count).toBe(214);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -774,6 +781,7 @@ describe("runMigrations", () => {
         "0210_brain_triage.sql",
         "0211_plugin_grant_revocation_failures.sql",
         "0212_region_migrations_vocabulary_memory_refusals.sql",
+        "0213_workspace_action_credentials.sql",
       ],
     });
 

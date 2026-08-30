@@ -331,6 +331,7 @@ export const PURGE_TABLE_DECISIONS = {
   workspace_plugins: { decision: "purged", reason: "Plugin/datasource installs for the workspace (the post-0096 home of datasource installs)." },
   integration_credentials: { decision: "purged", reason: "Lazy-OAuth credential bundles (ADR-0005) — encrypted secrets at rest." },
   twenty_integrations: { decision: "purged", reason: "Twenty CRM API key — an encrypted secret at rest." },
+  workspace_action_credentials: { decision: "purged", reason: "The workspace's own action-target credentials (#3766, ADR-0046) — encrypted secrets at rest, same class as integration_credentials one seam over." },
   discord_installations: { decision: "purged", reason: "BYOT Discord install (the only per-platform installations table left after 0119)." },
   github_installations: { decision: "purged", reason: "GitHub install rows for the workspace." },
   linear_installations: { decision: "purged", reason: "Linear install rows for the workspace." },

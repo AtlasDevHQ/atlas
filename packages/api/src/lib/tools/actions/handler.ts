@@ -55,7 +55,29 @@ const memoryStore = new Map<string, ActionLogEntry>();
 // Executor registry (for deferred approval)
 // ---------------------------------------------------------------------------
 
-type ActionExecutor = (payload: Record<string, unknown>) => Promise<unknown>;
+/**
+ * Execution-time context handed to every action executor (#3766).
+ *
+ * `workspaceId` is the workspace the ACTION belongs to — `action_log.org_id`,
+ * stamped from the requester's active organization when the action was
+ * created. It is deliberately NOT re-read from the ambient request context at
+ * execution time: a manual-approval action executes inside the APPROVER's
+ * request, so reading the context there would let the approver's active
+ * workspace decide whose credentials the action fires with. Threading the
+ * requester's workspace through the registry keeps credential resolution
+ * pinned to the tenant that asked.
+ *
+ * `null` when the action carries no workspace (self-host with auth off, or a
+ * legacy pre-org-scoping row).
+ */
+export interface ActionExecutionContext {
+  readonly workspaceId: string | null;
+}
+
+type ActionExecutor = (
+  payload: Record<string, unknown>,
+  ctx: ActionExecutionContext,
+) => Promise<unknown>;
 const executorRegistry = new Map<string, ActionExecutor>();
 
 export function registerActionExecutor(actionId: string, fn: ActionExecutor): void {
@@ -279,7 +301,7 @@ export interface HandleActionOptions {
  */
 export async function handleAction(
   request: ActionRequest,
-  executeFn: (payload: Record<string, unknown>) => Promise<unknown>,
+  executeFn: ActionExecutor,
   opts?: HandleActionOptions,
 ): Promise<ActionToolResult> {
   const ctx = getRequestContext();
@@ -331,7 +353,7 @@ export async function handleAction(
     const startMs = Date.now();
     try {
       const result = await executeWithTimeout(
-        () => executeFn(request.payload),
+        () => executeFn(request.payload, { workspaceId: orgId }),
         actionConfig.timeout,
       );
       const latencyMs = Date.now() - startMs;
@@ -416,7 +438,9 @@ async function executeApprovedAction(
   const startMs = Date.now();
   try {
     const result = await executeWithTimeout(
-      () => executeFn(entry.payload),
+      // The action's OWN workspace (stamped at request time), not the
+      // approver's — see `ActionExecutionContext` (#3766).
+      () => executeFn(entry.payload, { workspaceId: entry.org_id ?? null }),
       timeout,
     );
     const latencyMs = Date.now() - startMs;

@@ -734,8 +734,13 @@ async function checkActionFramework(errors: DiagnosticError[], authMode: string)
   // request that downgraded to self-hosted because enterprise wasn't enabled
   // resolves to `self-hosted` here and is still validated. Core/platform
   // globals (AI gateway, sandbox) are unaffected — they aren't action
-  // credentials. Self-host behavior is unchanged. Out of scope: per-workspace
-  // resolution and dropping global-env registration on SaaS (#3766).
+  // credentials. Self-host behavior is unchanged.
+  //
+  // #3766 landed the per-workspace seam, and with it the action targets
+  // migrated to it declare `requiredCredentials: []` — their configuration is
+  // per-workspace and is reported by `getActionTargetStatus`, not by this
+  // process-wide env check. So this block is now a diagnostic for whatever
+  // env-only actions remain, and it stays deploy-mode-gated for them.
   try {
     const { getConfig } = await import("@atlas/api/lib/config");
     if (getConfig()?.deployMode !== "saas") {

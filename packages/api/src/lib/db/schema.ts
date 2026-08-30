@@ -2179,6 +2179,32 @@ export const operatorIntegrationCredentials = pgTable(
   ],
 );
 
+// workspace_action_credentials (0213, #3766) — WORKSPACE-tier action-target
+// credentials: a TENANT's own Jira/Linear/GitHub/Salesforce, set by a workspace
+// admin from Admin → Integrations without operator involvement or a redeploy,
+// encrypted at rest. One row per (workspace_id, target).
+//
+// Sibling of `operator_integration_credentials` above, one tier down, and NOT
+// symmetric with it: action targets have NO operator rung at all, because a
+// "platform default Jira" serving several tenants is meaningless. The ladder is
+// workspace row → process.env (self-hosted only) → throw. See ADR-0046 and
+// lib/tools/actions/credentials/ for the resolver + isolation seam.
+export const workspaceActionCredentials = pgTable(
+  "workspace_action_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    target: text("target").notNull(),
+    credentialsEncrypted: text("credentials_encrypted").notNull(),
+    credentialsKeyVersion: integer("credentials_key_version"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("idx_workspace_action_credentials_unique").on(t.workspaceId, t.target),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // Dashboards
 // ---------------------------------------------------------------------------

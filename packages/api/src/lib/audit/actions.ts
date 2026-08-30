@@ -969,6 +969,23 @@ export const ADMIN_ACTIONS = {
     delete: "operator_integration.delete",
   },
   /**
+   * WORKSPACE-tier action-target credentials (#3766) — a tenant's own Jira /
+   * Linear / GitHub / Salesforce, set by a workspace admin from Admin →
+   * Integrations. Sibling of `operator_integration` above, one tier down: that
+   * one records Atlas's OWN app registrations, this one records a customer's.
+   *
+   * Workspace scope; target id is `<orgId>:<target>`. Metadata carries the
+   * env-var NAMES written (`fieldsSet`) and `hasSecret`, never a value — same
+   * convention as `operator_integration.update` and `email_provider.*`. The
+   * threat this trail exists for is an admin silently repointing a workspace's
+   * action target at a system they control, so the row must make the WHO and
+   * WHICH-FIELDS legible without ever carrying the credential itself.
+   */
+  workspaceActionCredential: {
+    update: "workspace_action_credential.update",
+    delete: "workspace_action_credential.delete",
+  },
+  /**
    * MCP action policy — the per-workspace customer-admin kill-switch (#3509,
    * ADR-0016 gate 1). `update` is emitted when a workspace admin toggles a
    * category between `allowed` / `blocked`. Workspace scope, target id is the

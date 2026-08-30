@@ -333,6 +333,7 @@ export const CLEANUP_TABLE_RULES = {
   plugin_settings: { kind: "column", column: "org_id" },
   integration_credentials: { kind: "column", column: "workspace_id" },
   twenty_integrations: { kind: "column", column: "workspace_id" },
+  workspace_action_credentials: { kind: "column", column: "workspace_id" },
   discord_installations: { kind: "column", column: "org_id" },
   github_installations: { kind: "column", column: "org_id" },
   linear_installations: { kind: "column", column: "org_id" },

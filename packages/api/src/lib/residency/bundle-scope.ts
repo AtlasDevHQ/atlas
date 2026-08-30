@@ -108,6 +108,7 @@ export const BUNDLE_TABLE_DECISIONS = {
   plugin_grant_revocation_failures: { decision: "stays", reason: "Operator worklist of failed onUninstall revocations (#3777). The un-revoked grants were provisioned by THIS region's installs (which stay), and the origin operator is the one who can still act on them — a row exported to the target region points at nothing it can revoke." },
   integration_credentials: { decision: "stays", reason: "Per-region ciphertext (INTEGRATION_TABLES) — customer re-connects the integration." },
   twenty_integrations: { decision: "stays", reason: "Per-region ciphertext (INTEGRATION_TABLES) — customer re-connects." },
+  workspace_action_credentials: { decision: "stays", reason: "Per-region ciphertext (INTEGRATION_TABLES) — the workspace's own action-target credentials (#3766, ADR-0046); the admin re-enters them in the target, same as every other credentialed integration. Workspace-keyed, so NOT the `operator_integration_credentials` platform case one tier up." },
   discord_installations: { decision: "stays", reason: "OAuth install bound to region-specific callback hosts — re-install." },
   github_installations: { decision: "stays", reason: "OAuth install bound to region-specific callback hosts — re-install." },
   linear_installations: { decision: "stays", reason: "OAuth install bound to region-specific callback hosts — re-install." },

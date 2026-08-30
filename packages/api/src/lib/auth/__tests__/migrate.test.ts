@@ -650,6 +650,12 @@ describe("migrateAuthTables", () => {
             // already-applied set for this "all applied" test to see zero new
             // migrations.
             { name: "0212_region_migrations_vocabulary_memory_refusals.sql" },
+            // 0213 (#3766) — workspace_action_credentials, the workspace-tier
+            // action-target credential store. Additive CREATE TABLE on an
+            // Atlas-internal table, no Better Auth involvement, so it runs in
+            // every auth mode — must be in the already-applied set so this
+            // "all applied" test sees zero new migrations.
+            { name: "0213_workspace_action_credentials.sql" },
           ],
         };
       }

@@ -4597,9 +4597,16 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // column (same value as orgId — see the Phase-3 header above). Without
     // these, a "full" purge leaves secrets at rest: integration_credentials =
     // lazy-OAuth bundles (Salesforce/Jira/etc., ADR-0005); twenty_integrations
-    // = Twenty CRM API key.
+    // = Twenty CRM API key; workspace_action_credentials = the workspace's own
+    // action-target credentials (#3766, ADR-0046 — their Jira base URL, account
+    // email and API token). The last one is keyed by (workspace_id, target), so
+    // one workspace can hold several rows; the workspace_id filter takes them
+    // all.
     const integrationCredentials = await del(`DELETE FROM integration_credentials WHERE workspace_id = $1`);
     const twentyIntegrations = await del(`DELETE FROM twenty_integrations WHERE workspace_id = $1`);
+    const workspaceActionCredentials = await del(
+      `DELETE FROM workspace_action_credentials WHERE workspace_id = $1`,
+    );
 
     // ── Phase 3c: Company Atlas / brain pillar (ADR-0036/0037) — #5160 ──
     //
@@ -5372,6 +5379,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         pluginGrantRevocationFailures,
         integrationCredentials,
         twentyIntegrations,
+        workspaceActionCredentials,
         subscriptions,
         stripeWebhookEvents,
         brainFacts,

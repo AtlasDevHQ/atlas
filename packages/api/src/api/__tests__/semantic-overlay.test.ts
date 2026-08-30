@@ -324,6 +324,7 @@ void mock.module("@atlas/api/lib/agent", () => ({
 void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: { name: "createJiraTicket", description: "Mock", tool: { type: "function" } },
   sendEmailReport: { name: "sendEmailReport", description: "Mock", tool: { type: "function" } },
+  createSalesforceRecord: { name: "createSalesforceRecord", description: "Mock", tool: { type: "function" } },
 }));
 
 void mock.module("@atlas/api/lib/conversations", () => ({

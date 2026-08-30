@@ -63450,12 +63450,69 @@
                         },
                         "refused": {
                           "type": "number"
+                        },
+                        "refusalDetails": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "slotPosition": {
+                                "type": "string"
+                              },
+                              "fromNorm": {
+                                "type": "string"
+                              },
+                              "toNorm": {
+                                "type": "string"
+                              },
+                              "arrivingStatus": {
+                                "type": "string"
+                              },
+                              "existingStatus": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "reviewedBy": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "reviewedAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "refusal": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "slotPosition",
+                              "fromNorm",
+                              "toNorm",
+                              "arrivingStatus",
+                              "existingStatus",
+                              "reviewedBy",
+                              "reviewedAt",
+                              "refusal",
+                              "reason"
+                            ]
+                          },
+                          "maxItems": 50
                         }
                       },
                       "required": [
                         "imported",
                         "skipped",
-                        "refused"
+                        "refused",
+                        "refusalDetails"
                       ]
                     },
                     "brainPredicateCardinalities": {
@@ -63469,12 +63526,79 @@
                         },
                         "refused": {
                           "type": "number"
+                        },
+                        "refusalDetails": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "predicateKey": {
+                                "type": "string"
+                              },
+                              "arrivingCardinality": {
+                                "type": "string"
+                              },
+                              "arrivingStatus": {
+                                "type": "string"
+                              },
+                              "existingCardinality": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "existingStatus": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "canonicalHere": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "reviewedBy": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "reviewedAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "refusal": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "predicateKey",
+                              "arrivingCardinality",
+                              "arrivingStatus",
+                              "existingCardinality",
+                              "existingStatus",
+                              "canonicalHere",
+                              "reviewedBy",
+                              "reviewedAt",
+                              "refusal",
+                              "reason"
+                            ]
+                          },
+                          "maxItems": 50
                         }
                       },
                       "required": [
                         "imported",
                         "skipped",
-                        "refused"
+                        "refused",
+                        "refusalDetails"
                       ]
                     }
                   },

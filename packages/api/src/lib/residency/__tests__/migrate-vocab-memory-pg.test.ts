@@ -191,7 +191,15 @@ describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113
     async () => {
       const bundle = await exportWorkspaceBundle(SOURCE_ORG, "vocab-memory-test");
       const result = await importInto(bundle, TARGET_EMPTY);
-      expect(result.brainVocabularyProposals).toEqual({ imported: 2, skipped: 0, refused: 0 });
+      expect(result.brainVocabularyProposals).toEqual({
+        imported: 2,
+        skipped: 0,
+        refused: 0,
+        // #5533 — the payload array is part of the pinned shape, not an extra.
+        // Nothing refused means nothing to carry, and `[]` here is a positive
+        // statement of that rather than an absent field.
+        refusalDetails: [],
+      });
 
       const landed = await pool.query(
         `SELECT status, reviewed_by, reviewed_at, source_class FROM brain_vocabulary_proposal
@@ -235,7 +243,12 @@ describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113
 
       // Idempotent re-import: both rows are already-held decisions/entries.
       const second = await importInto(bundle, TARGET_EMPTY);
-      expect(second.brainVocabularyProposals).toEqual({ imported: 0, skipped: 2, refused: 0 });
+      expect(second.brainVocabularyProposals).toEqual({
+        imported: 0,
+        skipped: 2,
+        refused: 0,
+        refusalDetails: [],
+      });
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -263,7 +276,12 @@ describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113
       // rejected-over-pending applies (imported); arriving pending over the
       // destination's approved predicate pair is skipped (queue entries
       // re-derive; the decision stands).
-      expect(result.brainVocabularyProposals).toEqual({ imported: 1, skipped: 1, refused: 0 });
+      expect(result.brainVocabularyProposals).toEqual({
+        imported: 1,
+        skipped: 1,
+        refused: 0,
+        refusalDetails: [],
+      });
 
       const subject = await pool.query(
         `SELECT status, reviewed_by, proposed_by FROM brain_vocabulary_proposal
@@ -303,7 +321,32 @@ describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113
       contradicting.manifest.counts.brainPredicateCardinalities = 0;
 
       const refusedRun = await importInto(contradicting, TARGET_HELD);
-      expect(refusedRun.brainVocabularyProposals).toEqual({ imported: 0, skipped: 0, refused: 1 });
+      // #5533 — the refusal carries a PAYLOAD, not just a count. This is the
+      // whole point of the slice: after cutover plus grace period the source's
+      // own `brain_vocabulary_proposal` row is deleted, so if the counter were
+      // the only durable artifact the dropped decision would exist nowhere.
+      // Both sides' statuses are on it, because re-authoring here means
+      // OVERTURNING the destination's decision and an operator cannot weigh
+      // that from the arriving half alone.
+      expect(refusedRun.brainVocabularyProposals).toEqual({
+        imported: 0,
+        skipped: 0,
+        refused: 1,
+        refusalDetails: [
+          {
+            slotPosition: "predicate",
+            fromNorm: "ships to",
+            toNorm: "delivers to",
+            arrivingStatus: "rejected",
+            existingStatus: "approved",
+            // Verbatim from the source row — never re-stamped by this region.
+            reviewedBy: "user-remote",
+            reviewedAt: "2026-07-05T00:00:00Z",
+            refusal: "contradictory-decision",
+            reason: expect.stringContaining("contradicts the arriving one and is kept"),
+          },
+        ],
+      });
       const still = await pool.query(
         `SELECT status FROM brain_vocabulary_proposal WHERE id = 'prop-5113-held-approved'`,
       );
@@ -344,10 +387,41 @@ describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113
       isolated.brainVocabularyProposals = [];
       isolated.manifest.counts.brainVocabularyProposals = 0;
 
+      const arriving = (isolated.brainPredicateCardinalities ?? []).find(
+        (e) => e.predicateKey === "ships to",
+      );
       const result = await importInto(isolated, TARGET_ALIASED);
       // `ships to` is re-canonicalized here → refused. `billed monthly` is not
       // aliased → its rejected memory lands.
-      expect(result.brainPredicateCardinalities).toEqual({ imported: 1, skipped: 0, refused: 1 });
+      //
+      // #5533 — and `canonicalHere` is what makes this arm's payload usable at
+      // all. The recovery instruction is "re-author the decision against the
+      // predicate this region holds", and the SOURCE region has no other way to
+      // learn what that predicate is: the key it sent is the only one it knows.
+      expect(result.brainPredicateCardinalities).toEqual({
+        imported: 1,
+        skipped: 0,
+        refused: 1,
+        refusalDetails: [
+          {
+            predicateKey: "ships to",
+            arrivingCardinality: "single",
+            arrivingStatus: "approved",
+            // NULL by design: this arm refuses BEFORE consulting the key's own
+            // row, because the key is not this region's slot and a row found
+            // under it would describe a different predicate.
+            existingCardinality: null,
+            existingStatus: null,
+            canonicalHere: "delivers to",
+            reviewedBy: "user-curator",
+            reviewedAt: arriving?.reviewedAt ?? null,
+            refusal: "predicate-re-canonicalized",
+            reason: expect.stringContaining(
+              "canonicalizes the arriving predicate onto a different norm",
+            ),
+          },
+        ],
+      });
 
       // Refused means NOT landed on the arriving key, and NOT re-keyed onto
       // the destination's canonical form either — both would be the silent
@@ -396,7 +470,23 @@ describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113
       // here NOW, so its entry is refused; `billed monthly` is untouched and
       // its rejected memory lands.
       expect(result.brainVocabularyEdges).toMatchObject({ imported: 1, skipped: 0, refused: 0 });
-      expect(result.brainPredicateCardinalities).toEqual({ imported: 1, skipped: 0, refused: 1 });
+      expect(result.brainPredicateCardinalities).toMatchObject({
+        imported: 1,
+        skipped: 0,
+        refused: 1,
+      });
+      // #5533 — the payload names the norm the merge JUST created, not the one
+      // the destination held when the import began. A screen reading a pre-merge
+      // closure would still refuse (the counter is unchanged) but would have no
+      // second norm to report, so this is the assertion that separates "refused"
+      // from "refused for the right reason".
+      expect(result.brainPredicateCardinalities.refusalDetails).toMatchObject([
+        {
+          predicateKey: "ships to",
+          canonicalHere: "delivers to",
+          refusal: "predicate-re-canonicalized",
+        },
+      ]);
 
       // The refused entry landed on NEITHER key — not the arriving `ships to`,
       // not the destination's new canonical `delivers to`.
@@ -441,7 +531,12 @@ describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113
       // (imported, the VALUE moves with the decision); arriving rejected
       // `single` for `billed monthly` meets a rejected `multi` — the same
       // decision in effect, whatever value each declined — so it skips.
-      expect(result.brainPredicateCardinalities).toEqual({ imported: 1, skipped: 1, refused: 0 });
+      expect(result.brainPredicateCardinalities).toEqual({
+        imported: 1,
+        skipped: 1,
+        refused: 0,
+        refusalDetails: [],
+      });
 
       const decided = await pool.query(
         `SELECT cardinality, status, reviewed_by, proposed_by FROM brain_predicate_cardinality
@@ -465,11 +560,29 @@ describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113
         [CONTRA_ORG],
       );
       const contraResult = await importInto(isolated, CONTRA_ORG);
-      expect(contraResult.brainPredicateCardinalities).toEqual({
+      expect(contraResult.brainPredicateCardinalities).toMatchObject({
         imported: 1, // billed monthly's rejection lands
         skipped: 0,
         refused: 1, // ships to: the destination's decision is kept
       });
+      // #5533 — both sides' VALUES as well as both statuses, because on this
+      // table a contradiction can be about the value alone (approved `single`
+      // against approved `multi`) and a payload carrying only statuses would
+      // report two agreeing decisions.
+      expect(contraResult.brainPredicateCardinalities.refusalDetails).toMatchObject([
+        {
+          predicateKey: "ships to",
+          arrivingCardinality: "single",
+          arrivingStatus: "approved",
+          existingCardinality: "multi",
+          existingStatus: "approved",
+          // Not the re-canonicalization arm: the key IS this region's slot here,
+          // so there is no second norm to name.
+          canonicalHere: null,
+          reviewedBy: "user-curator",
+          refusal: "contradictory-decision",
+        },
+      ]);
       const kept = await pool.query(
         `SELECT cardinality, status FROM brain_predicate_cardinality
           WHERE workspace_id = $1 AND predicate_key = 'ships to'`,

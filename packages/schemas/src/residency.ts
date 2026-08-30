@@ -31,7 +31,9 @@ import {
   type RegionPickerItem,
   type RegionRoutingMap,
   type RegionRoutingMapEntry,
+  type PredicateCardinalityRefusalDetail,
   type RegionStatus,
+  type VocabularyProposalRefusalDetail,
   type VocabularyRefusalDetail,
   type WorkspaceRegion,
 } from "@useatlas/types";
@@ -136,7 +138,7 @@ export const RegionMigrationSchema = z.discriminatedUnion("status", [
 export { MigrationStatusEnum };
 
 // ---------------------------------------------------------------------------
-// Vocabulary refusal payloads (#5112, #5303)
+// Vocabulary refusal payloads (#5112, #5303, #5533)
 // ---------------------------------------------------------------------------
 
 /**
@@ -248,6 +250,131 @@ type _RefusalDetailKeysMatch = [
   : never;
 const _refusalDetailKeysMatch: _RefusalDetailKeysMatch = true;
 void _refusalDetailKeysMatch;
+
+/**
+ * One refused arriving alias PROPOSAL, as the destination region reports it (#5533).
+ *
+ * ⚠️ THE ONE SPELLING OF THESE NINE FIELDS, and it is here for the reasons the
+ * eight-field schema above spent #5303 establishing — this file is the only legal
+ * shared home (`lib/**` may not import from `api/routes/**`, and `@useatlas/types`
+ * cannot hold a RUNTIME value that `packages/api/src` consumes), and the treatment
+ * is two pins, not one:
+ *
+ *   - `satisfies z.ZodType<T>` sees a field's TYPE change and a dropped
+ *     `.nullable()`, which key equality cannot;
+ *   - the key-set pin below sees an OPTIONAL field added to either spelling
+ *     alone, which the `satisfies` cannot — measured on the edge schema, where an
+ *     optional ninth field compiled everywhere and was then silently STRIPPED by
+ *     the screen, deleting a field from the last surviving copy of a human review
+ *     decision.
+ *
+ * The measurements are recorded once, beside {@link VocabularyRefusalDetailSchema},
+ * rather than restated here: this schema is the same construction against the same
+ * two pins, so a second copy of the numbers would be a second thing to keep true.
+ *
+ * The array-level cap is deliberately NOT here, for the edge schema's reason: it is
+ * a property of a particular transfer, applied by the producer's bounded push and
+ * the screen's `.slice()`, not a bound on a single decision.
+ */
+export const VocabularyProposalRefusalDetailSchema = z.object({
+  slotPosition: z.string(),
+  /** The pair as the SOURCE spelled it — the table's identity is unordered. */
+  fromNorm: z.string(),
+  toNorm: z.string(),
+  arrivingStatus: z.string(),
+  /**
+   * `null` is "the destination held no row for the pair when this was decided",
+   * not "unknown" — so `.nullable()` and NOT `.optional()`. A missing key and a
+   * key saying "there was nothing here" read identically in a log aggregator, and
+   * only one of them is true. The screen depends on the distinction: `null`
+   * passes, absent is malformed.
+   */
+  existingStatus: z.string().nullable(),
+  /** The SOURCE region's reviewer stamps, carried verbatim (never re-stamped). */
+  reviewedBy: z.string().nullable(),
+  reviewedAt: z.string().nullable(),
+  /** Which arm refused it — `contradictory-decision`, `concurrent-decision`. */
+  refusal: z.string(),
+  /** The refusal's human-readable reason, as the destination phrased it. */
+  reason: z.string(),
+}) satisfies z.ZodType<VocabularyProposalRefusalDetail>;
+
+/**
+ * Compile-time pin: the schema and the wire type declare the SAME KEYS.
+ *
+ * `_RefusalDetailKeysMatch`'s idiom exactly, including the nesting — the two
+ * directions must stay SEPARATE nested conditions rather than a union, or a union
+ * of two `never`s trips `no-duplicate-type-constituents` +
+ * `no-redundant-type-constituents` in `lint:type-aware`, a CI-blocking gate.
+ */
+type _ProposalRefusalDetailKeysMatch = [
+  Exclude<
+    keyof z.infer<typeof VocabularyProposalRefusalDetailSchema>,
+    keyof VocabularyProposalRefusalDetail
+  >,
+] extends [never]
+  ? [
+      Exclude<
+        keyof VocabularyProposalRefusalDetail,
+        keyof z.infer<typeof VocabularyProposalRefusalDetailSchema>
+      >,
+    ] extends [never]
+    ? true
+    : never
+  : never;
+const _proposalRefusalDetailKeysMatch: _ProposalRefusalDetailKeysMatch = true;
+void _proposalRefusalDetailKeysMatch;
+
+/**
+ * One refused arriving predicate-cardinality entry, as the destination reports it
+ * (#5533). {@link VocabularyProposalRefusalDetailSchema}'s treatment, ten fields.
+ */
+export const PredicateCardinalityRefusalDetailSchema = z.object({
+  /** The canonical predicate key, under the SOURCE region's vocabulary. */
+  predicateKey: z.string(),
+  arrivingCardinality: z.string(),
+  arrivingStatus: z.string(),
+  /**
+   * `null` is "no destination row for this key was consulted or found". On the
+   * re-canonicalization arm that is a statement about the KEY, not about the
+   * predicate — `canonicalHere` carries what the destination holds there.
+   * `.nullable()` for `existingStatus`' reason one schema up.
+   */
+  existingCardinality: z.string().nullable(),
+  existingStatus: z.string().nullable(),
+  /**
+   * The norm this region canonicalizes `predicateKey` onto — the
+   * re-canonicalization arm's entire recovery payload — and `null` on every arm
+   * where the key IS this region's slot and there is no second norm to name.
+   */
+  canonicalHere: z.string().nullable(),
+  /** The SOURCE region's reviewer stamps, carried verbatim (never re-stamped). */
+  reviewedBy: z.string().nullable(),
+  reviewedAt: z.string().nullable(),
+  /** Which of the four arms refused it — `predicate-re-canonicalized`, … */
+  refusal: z.string(),
+  /** The refusal's human-readable reason, as the destination phrased it. */
+  reason: z.string(),
+}) satisfies z.ZodType<PredicateCardinalityRefusalDetail>;
+
+/** Compile-time pin: same keys both sides. See `_ProposalRefusalDetailKeysMatch`. */
+type _CardinalityRefusalDetailKeysMatch = [
+  Exclude<
+    keyof z.infer<typeof PredicateCardinalityRefusalDetailSchema>,
+    keyof PredicateCardinalityRefusalDetail
+  >,
+] extends [never]
+  ? [
+      Exclude<
+        keyof PredicateCardinalityRefusalDetail,
+        keyof z.infer<typeof PredicateCardinalityRefusalDetailSchema>
+      >,
+    ] extends [never]
+    ? true
+    : never
+  : never;
+const _cardinalityRefusalDetailKeysMatch: _CardinalityRefusalDetailKeysMatch = true;
+void _cardinalityRefusalDetailKeysMatch;
 
 // ---------------------------------------------------------------------------
 // Composite response shapes

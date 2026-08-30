@@ -91,6 +91,10 @@ export const navGroups: NavGroup[] = [
       { href: "/admin/prompts", label: "Prompt Library" },
       { href: "/admin/starter-prompts", label: "Starter Prompts" },
       { href: "/admin/actions", label: "Actions" },
+      // Sibling of "Actions", not of the Security group's policy pages: this
+      // configures what an action target connects TO, while
+      // `/admin/mcp-action-policy` governs who may fire one.
+      { href: "/admin/action-credentials", label: "Action Credentials" },
       { href: "/admin/proactive-chat", label: "Proactive Chat" },
       { href: "/admin/session-memory", label: "Session Memory" },
     ],

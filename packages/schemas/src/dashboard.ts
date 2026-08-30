@@ -18,7 +18,14 @@
  * NEVER interpolated into SQL text.
  */
 import { z } from "zod";
-import { CHART_TYPES, SHARE_MODES } from "@useatlas/types";
+import {
+  CHART_TYPES,
+  SHARE_MODES,
+  type DashboardCardAnnotation,
+  type DashboardChartConfig,
+  type DashboardKpiConfig,
+  type DashboardThreshold,
+} from "@useatlas/types";
 
 /** Supported parameter value kinds. Mirrors `DashboardParameterType`. */
 export const dashboardParameterTypeSchema = z.enum(["date", "text", "number"]);
@@ -713,3 +720,82 @@ export const sharedDashboardViewSchema = z
   })
   .strict();
 export type SharedDashboardViewWire = z.infer<typeof sharedDashboardViewSchema>;
+
+
+// ---------------------------------------------------------------------------
+// Wire → domain normalizers (#5522, exactOptionalPropertyTypes)
+//
+// Zod's `.optional()` infers `p?: T | undefined` — the key MAY be present
+// carrying `undefined`. The domain interfaces in `@useatlas/types` declare the
+// exact `p?: T`, where present-with-`undefined` is a type error. Both are
+// honest: over a JSON body absence really is absence, but `dashboardChartConfigSchema`
+// is also fed by in-process callers (the `createDashboard` tool, the bound
+// editor) that CAN hand Zod an explicit `undefined`.
+//
+// So the gap is closed the way stage 3 closed it — by making absence real at
+// the boundary, not by widening the domain interface. These take the inferred
+// wire type and return the exact domain type, dropping every optional whose
+// value is `undefined`. Each reads its subject into a local first: a
+// `...(w.kpi !== undefined ? { kpi: w.kpi } : {})` spread evaluates `w.kpi`
+// twice, which over a getter-backed seam doubles the underlying work (the
+// finding carried forward from #5548).
+// ---------------------------------------------------------------------------
+
+/** Make absence real on a KPI config parsed by `dashboardKpiConfigSchema`. */
+export function toDashboardKpiConfig(wire: DashboardKpiConfigWire): DashboardKpiConfig {
+  const { valueFormat, comparisonSql, autoComparison, comparisonDateParams, comparisonLabel, inverse } = wire;
+  return {
+    ...(valueFormat !== undefined ? { valueFormat } : {}),
+    ...(comparisonSql !== undefined ? { comparisonSql } : {}),
+    ...(autoComparison !== undefined ? { autoComparison } : {}),
+    ...(comparisonDateParams !== undefined ? { comparisonDateParams } : {}),
+    ...(comparisonLabel !== undefined ? { comparisonLabel } : {}),
+    ...(inverse !== undefined ? { inverse } : {}),
+  };
+}
+
+/** Make absence real on a threshold parsed by `dashboardThresholdSchema`. */
+export function toDashboardThreshold(wire: DashboardThresholdWire): DashboardThreshold {
+  const { value, color, label } = wire;
+  return {
+    value,
+    ...(color !== undefined ? { color } : {}),
+    ...(label !== undefined ? { label } : {}),
+  };
+}
+
+/** Make absence real on an annotation parsed by `dashboardCardAnnotationSchema`. */
+export function toDashboardCardAnnotation(wire: DashboardCardAnnotationWire): DashboardCardAnnotation {
+  const { x, label, color } = wire;
+  return { x, label, ...(color !== undefined ? { color } : {}) };
+}
+
+/** Make absence real on the annotations array (the common call shape). */
+export function toDashboardCardAnnotations(
+  wire: readonly DashboardCardAnnotationWire[],
+): DashboardCardAnnotation[] {
+  return wire.map(toDashboardCardAnnotation);
+}
+
+/**
+ * Make absence real on a chart config parsed by `dashboardChartConfigSchema`.
+ * Recurses into `kpi` and `thresholds`, whose own optionals carry the same gap.
+ */
+export function toDashboardChartConfig(wire: DashboardChartConfigWire): DashboardChartConfig {
+  const { type, categoryColumn, valueColumns, kpi, drilldown, thresholds } = wire;
+  return {
+    type,
+    categoryColumn,
+    valueColumns,
+    ...(kpi !== undefined ? { kpi: toDashboardKpiConfig(kpi) } : {}),
+    ...(drilldown !== undefined ? { drilldown } : {}),
+    ...(thresholds !== undefined ? { thresholds: thresholds.map(toDashboardThreshold) } : {}),
+  };
+}
+
+/** `toDashboardChartConfig` over a nullable slot — the shape most callers hold. */
+export function toDashboardChartConfigOrNull(
+  wire: DashboardChartConfigWire | null | undefined,
+): DashboardChartConfig | null {
+  return wire == null ? null : toDashboardChartConfig(wire);
+}

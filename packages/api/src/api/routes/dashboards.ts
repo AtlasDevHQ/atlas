@@ -79,7 +79,7 @@ import {
   EMPTY_DRAFT_CARD_CACHE,
 } from "@atlas/api/lib/dashboard-draft-cache";
 import { SHARE_MODES } from "@useatlas/types/share";
-import { dashboardParametersSchema, renderCardRequestSchema, renderCardQuerySchema, refreshCardQuerySchema, dashboardChartConfigSchema, dashboardCardAnnotationsSchema, dashboardCardKindSchema, dashboardTextCardContentSchema } from "@useatlas/schemas";
+import { dashboardParametersSchema, renderCardRequestSchema, renderCardQuerySchema, refreshCardQuerySchema, dashboardChartConfigSchema, dashboardCardAnnotationsSchema, dashboardCardKindSchema, dashboardTextCardContentSchema, toDashboardChartConfigOrNull, toDashboardCardAnnotations, toDashboardKpiConfig } from "@useatlas/schemas";
 import {
   resolveDashboardParameterValues,
   extractPlaceholderNames,
@@ -1359,7 +1359,7 @@ authed.openapi(listDashboardsRoute, async (c) => {
     const { orgId, user } = yield* AuthContext;
     const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
     const result = yield* Effect.promise(() =>
-      listDashboards({ orgId, viewerId: user?.id ?? "anonymous", limit, offset }),
+      listDashboards({ orgId: orgId ?? null, viewerId: user?.id ?? "anonymous", limit, offset }),
     );
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
@@ -1383,7 +1383,7 @@ authed.openapi(
 
       const result = yield* Effect.promise(() => createDashboard({
         ownerId: user?.id ?? "anonymous",
-        orgId,
+        orgId: orgId ?? null,
         title: parsed.title,
         description: parsed.description ?? null,
         parameters: parsed.parameters ?? null,
@@ -1416,7 +1416,7 @@ authed.openapi(getDashboardRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
 
-    const result = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const result = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1455,7 +1455,7 @@ authed.openapi(getDraftRoute, async (c) => {
     if (!user?.id) {
       return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
     }
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1506,7 +1506,7 @@ authed.openapi(getDraftStatusRoute, async (c) => {
     // whether a draft row exists (the FK + the route gate already make
     // cross-org reads impossible at the DB layer, but the read-path
     // shape stays consistent with `GET /:id`).
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1547,7 +1547,7 @@ authed.openapi(publishDraftRoute, async (c) => {
         dashboardId: id,
         orgId,
         loadDashboardForOrg: async (dId, oId) => {
-          const r = await getDashboard(dId, { orgId: oId ?? undefined, viewerId: user?.id ?? "anonymous" });
+          const r = await getDashboard(dId, { orgId: oId ?? null, viewerId: user?.id ?? "anonymous" });
           return r.ok ? r.data : null;
         },
       }),
@@ -1671,7 +1671,7 @@ authed.openapi(rebaseDraftRoute, async (c) => {
         dashboardId: id,
         orgId,
         loadDashboardForOrg: async (dId, oId) => {
-          const r = await getDashboard(dId, { orgId: oId ?? undefined, viewerId: user?.id ?? "anonymous" });
+          const r = await getDashboard(dId, { orgId: oId ?? null, viewerId: user?.id ?? "anonymous" });
           return r.ok ? r.data : null;
         },
       }),
@@ -1732,7 +1732,7 @@ authed.openapi(undoDraftRoute, async (c) => {
       return c.json({ error: "auth_required", message: "Undo requires an authenticated user." }, 401);
     }
 
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: uid }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: uid }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1754,8 +1754,9 @@ authed.openapi(undoDraftRoute, async (c) => {
             kind: "addCard",
             card: {
               ...body.card,
+              chartConfig: toDashboardChartConfigOrNull(body.card.chartConfig),
               content: body.card.content ?? null,
-              annotations: body.card.annotations ?? [],
+              annotations: toDashboardCardAnnotations(body.card.annotations ?? []),
             },
           }
         : { kind: "updateCard", cardId: body.cardId, updates: { sql: body.sql } };
@@ -1792,7 +1793,7 @@ authed.openapi(
       // undeclared-parameter error. Validate against the published cards —
       // the set that render/refresh actually execute.
       if (parsed.parameters !== undefined) {
-        const existing = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+        const existing = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
         if (!existing.ok) {
           // A failed pre-read means this guard CANNOT run — fail the PATCH
           // rather than writing parameters blind, which could drop a
@@ -1831,7 +1832,7 @@ authed.openapi(
           if (!cronCheck.valid) {
             return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
           }
-          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId, viewerId: user?.id ?? "anonymous" }, schedule, computeNextRun));
+          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }, schedule, computeNextRun));
           if (!schedResult.ok) {
             const fail = crudFailResponse(schedResult.reason, requestId);
             return c.json(fail.body, fail.status);
@@ -1839,7 +1840,7 @@ authed.openapi(
         } else {
           // Disabling auto-refresh (null)
           const { computeNextRun } = yield* Effect.promise(() => import("@atlas/api/lib/scheduled-tasks"));
-          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId, viewerId: user?.id ?? "anonymous" }, null, computeNextRun));
+          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }, null, computeNextRun));
           if (!schedResult.ok) {
             const fail = crudFailResponse(schedResult.reason, requestId);
             return c.json(fail.body, fail.status);
@@ -1854,9 +1855,13 @@ authed.openapi(
       // private content edit). Reaching here with parameters set means the
       // orphan-guard pre-read above succeeded — a failed pre-read already
       // failed the whole PATCH (#4539).
-      if (parsed.parameters !== undefined) {
+      // Read into a local: the narrowing from the `!== undefined` guard does not
+      // survive into the closure below, so `parsed.parameters` would widen back
+      // to `| undefined` at the call (#5522).
+      const nextParameters = parsed.parameters;
+      if (nextParameters !== undefined) {
         const result = yield* Effect.promise(() =>
-          updateDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }, { parameters: parsed.parameters }),
+          updateDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }, { parameters: nextParameters }),
         );
         if (!result.ok) {
           const fail = crudFailResponse(result.reason, requestId);
@@ -1875,7 +1880,7 @@ authed.openapi(
       if (Object.keys(metaUpdates).length > 0) {
         const uid = user?.id;
         if (shouldRouteToDraft(uid)) {
-          const published = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+          const published = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
           if (!published.ok) {
             const fail = crudFailResponse(published.reason, requestId);
             return c.json(fail.body, fail.status);
@@ -1889,7 +1894,7 @@ authed.openapi(
           }
           return c.json(edit.view, 200);
         }
-        const result = yield* Effect.promise(() => updateDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }, metaUpdates));
+        const result = yield* Effect.promise(() => updateDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }, metaUpdates));
         if (!result.ok) {
           const fail = crudFailResponse(result.reason, requestId);
           return c.json(fail.body, fail.status);
@@ -1898,7 +1903,7 @@ authed.openapi(
 
       // Return updated dashboard (published view — reflects the
       // parameters/schedule writes above; a draft meta edit returned earlier).
-      const updated = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+      const updated = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
       if (!updated.ok) return c.body(null, 204);
       return c.json(updated.data, 200);
     }), { label: "update dashboard" });
@@ -1925,7 +1930,7 @@ authed.openapi(deleteDashboardRoute, async (c) => {
 
     // #4537 — the viewer gates the delete: a never-published board 404s for
     // anyone but its creator, exactly like the read paths.
-    const result = yield* Effect.promise(() => deleteDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const result = yield* Effect.promise(() => deleteDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1950,7 +1955,7 @@ authed.openapi(
       }
 
       // Verify dashboard exists and belongs to org
-      const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+      const dash = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
       if (!dash.ok) {
         const fail = crudFailResponse(dash.reason, requestId);
         return c.json(fail.body, fail.status);
@@ -1960,7 +1965,7 @@ authed.openapi(
       // #3207 — a KPI card requesting an automatic prior-period comparison must
       // filter by both window params, declared as `date`. Reject up front so a
       // misconfigured card can't persist a delta the render path can't produce.
-      const addAutoErr = validateAutoComparison(parsed.sql ?? "", parsed.chartConfig?.kpi, dash.data.parameters);
+      const addAutoErr = validateAutoComparison(parsed.sql ?? "", parsed.chartConfig?.kpi ? toDashboardKpiConfig(parsed.chartConfig.kpi) : null, dash.data.parameters);
       if (addAutoErr) {
         return c.json({ error: "invalid_request", message: addAutoErr, requestId }, 400);
       }
@@ -2003,9 +2008,9 @@ authed.openapi(
           title: parsed.title,
           // A text card stores sql = '' and content = markdown (#3138).
           sql: parsed.sql ?? "",
-          chartConfig: parsed.chartConfig ?? null,
+          chartConfig: toDashboardChartConfigOrNull(parsed.chartConfig),
           content: kind === "text" ? parsed.content ?? null : null,
-          annotations: parsed.annotations ?? [],
+          annotations: toDashboardCardAnnotations(parsed.annotations ?? []),
           connectionGroupId: parsed.connectionGroupId ?? null,
           layout: parsed.layout ?? null,
         };
@@ -2024,9 +2029,9 @@ authed.openapi(
         dashboardId: id,
         title: parsed.title,
         sql: parsed.sql ?? "",
-        chartConfig: parsed.chartConfig ?? null,
+        chartConfig: toDashboardChartConfigOrNull(parsed.chartConfig),
         content: kind === "text" ? parsed.content ?? null : null,
-        annotations: parsed.annotations ?? [],
+        annotations: toDashboardCardAnnotations(parsed.annotations ?? []),
         cachedColumns: parsed.cachedColumns ?? null,
         cachedRows: parsed.cachedRows ?? null,
         connectionGroupId: parsed.connectionGroupId ?? null,
@@ -2063,7 +2068,7 @@ authed.openapi(
       }
 
       // Verify dashboard ownership
-      const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+      const dash = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
       if (!dash.ok) {
         const fail = crudFailResponse(dash.reason, requestId);
         return c.json(fail.body, fail.status);
@@ -2094,7 +2099,7 @@ authed.openapi(
         if (effectiveSql !== undefined) {
           const updateAutoErr = validateAutoComparison(
             effectiveSql,
-            parsed.chartConfig.kpi,
+            parsed.chartConfig.kpi ? toDashboardKpiConfig(parsed.chartConfig.kpi) : null,
             dash.data.parameters,
           );
           if (updateAutoErr) {
@@ -2103,11 +2108,26 @@ authed.openapi(
         }
       }
 
+      // A PATCH body omits the fields it does not touch, and both update
+      // targets read presence to mean "replace this". Zod types every optional
+      // as `T | undefined`, so rebuild the payload with absence made real —
+      // otherwise an omitted field would arrive present-and-undefined and the
+      // exact-optional targets would reject it (#5522).
+      const { title, sql, chartConfig, annotations, position, layout } = parsed;
+      const cardUpdates = {
+        ...(title !== undefined ? { title } : {}),
+        ...(sql !== undefined ? { sql } : {}),
+        ...(chartConfig !== undefined ? { chartConfig: toDashboardChartConfigOrNull(chartConfig) } : {}),
+        ...(annotations !== undefined ? { annotations: toDashboardCardAnnotations(annotations) } : {}),
+        ...(position !== undefined ? { position } : {}),
+        ...(layout !== undefined ? { layout } : {}),
+      };
+
       // #4315 — the edit lands in the caller's private draft; nothing but
       // publish writes the published card.
       if (routeDraft) {
         const edit = yield* Effect.promise(() =>
-          applyEditToDraft(uid, dash.data, { kind: "updateCard", cardId, updates: parsed }),
+          applyEditToDraft(uid, dash.data, { kind: "updateCard", cardId, updates: cardUpdates }),
         );
         if (!edit.ok) {
           const fail = draftEditFailResponse(edit, requestId);
@@ -2117,7 +2137,7 @@ authed.openapi(
         return c.json(updated ?? edit.view, 200);
       }
 
-      const result = yield* Effect.promise(() => updateCard(cardId, id, parsed));
+      const result = yield* Effect.promise(() => updateCard(cardId, id, cardUpdates));
       if (!result.ok) {
         const fail = crudFailResponse(result.reason, requestId);
         return c.json(fail.body, fail.status);
@@ -2148,7 +2168,7 @@ authed.openapi(removeCardRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
     }
 
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2243,7 +2263,7 @@ authed.openapi(refreshCardRoute, async (c) => {
     }
     const { view } = c.req.valid("query");
 
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2440,7 +2460,7 @@ authed.openapi(renderCardRoute, async (c) => {
     // `export` route's `?? {}`.
     const { parameters: suppliedParameters } = c.req.valid("json") ?? {};
 
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2659,7 +2679,7 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
     }
     const { view } = c.req.valid("query");
 
-    const dashResult = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const dashResult = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!dashResult.ok) {
       const fail = crudFailResponse(dashResult.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2942,7 +2962,7 @@ authed.openapi(
         }
       }
 
-      const result = yield* Effect.promise(() => shareDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }, {
+      const result = yield* Effect.promise(() => shareDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }, {
         expiresIn: parsed.expiresIn ?? null,
         shareMode,
         rotate: parsed.rotate ?? false,
@@ -2976,7 +2996,7 @@ authed.openapi(unshareDashboardRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
 
-    const result = yield* Effect.promise(() => unshareDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const result = yield* Effect.promise(() => unshareDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2998,7 +3018,7 @@ authed.openapi(getShareStatusRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
 
-    const result = yield* Effect.promise(() => getShareStatus(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const result = yield* Effect.promise(() => getShareStatus(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -3020,7 +3040,7 @@ authed.openapi(suggestCardsRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
 
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -3195,7 +3215,7 @@ authed.openapi(listDashboardSessionsRoute, async (c) => {
     // can read the dashboard sees the same sessions list (matches current
     // dashboard ACL per PRD #2362, user stories 21/22). Failing the
     // dashboard lookup here doubles as the cross-org safety net.
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -3226,7 +3246,7 @@ authed.openapi(getDashboardSessionRoute, async (c) => {
     // a 404 from getSessionTranscript would still leak the org-id mapping
     // of a guessed dashboardId (a cross-org session lookup returns
     // "not_found" too).
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId: orgId ?? null, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -3386,7 +3406,7 @@ authed.openapi(exportDashboardRoute, async (c) => {
         format,
         parameters: body.parameters ?? null,
         cookieHeader: c.req.raw.headers.get("cookie"),
-        apiBaseUrl,
+        ...(apiBaseUrl !== undefined ? { apiBaseUrl } : {}),
       }),
     );
 
@@ -3543,7 +3563,21 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
 
   // Both public and org modes serialize the SAME projection — the minimal,
   // data-only snapshot with no sql / internal ids / parameter definitions.
-  return c.json(result.view, 200);
+  //
+  // `parameterSummary` and `dataAsOf` are optional on SharedDashboardView for
+  // WIRE forward-compat only — the server projection always emits both, as the
+  // interface documents. Restating them here makes that guarantee part of the
+  // response's own type, which is what Hono's JSON serializer needs: an
+  // optional slot is `T | undefined` to its index-signature check, and
+  // `undefined` is not a JSONValue (#5522).
+  return c.json(
+    {
+      ...result.view,
+      parameterSummary: result.view.parameterSummary ?? [],
+      dataAsOf: result.view.dataAsOf ?? null,
+    },
+    200,
+  );
 });
 
 export { dashboards, publicDashboards };

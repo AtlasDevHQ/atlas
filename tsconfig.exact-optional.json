@@ -49,6 +49,18 @@
     // reaches — listing it drags the api core in (measured: 159 errors). It
     // is listed because it is the one api directory that can be, not because
     // packages/api has begun to graduate; that is its own stage.
-    "packages/api/src/lib/semantic/okf"
+    "packages/api/src/lib/semantic/okf",
+    // Stage 4 (#5522). `packages/api/src` — the bulk, and indivisible: api's
+    // module graph is one mutually-recursive core, so every `lib/*` subtree
+    // except `lib/semantic/okf` reaches it (measured: lib/brain 190,
+    // lib/semantic 185, lib/db+lib/effect 207 — all the same core). Naming any
+    // one api directory drags the rest, so api graduates whole or not at all.
+    //
+    // ⚠️ This line also graduates api's TESTS. Unlike every package above,
+    // api's tests live INSIDE src (`packages/api/src/__tests__`, plus
+    // `src/**/__tests__`), not beside it — so the staging map's "api src" and
+    // "api's own __tests__" are not two stages under a directory-gated
+    // manifest. They are one: 790 errors, 416 in src and 374 in tests.
+    "packages/api/src"
   ]
 }

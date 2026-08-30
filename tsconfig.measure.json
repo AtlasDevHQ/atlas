@@ -1,0 +1,26 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "types": [
+      "bun",
+      "node"
+    ],
+    "tsBuildInfoFile": "./tsconfig.measure.tsbuildinfo"
+  },
+  "include": [
+    "packages/types/src",
+    "packages/schemas/src",
+    "packages/sdk/src",
+    "packages/plugin-sdk/src",
+    "packages/webhook-publisher/src",
+    "packages/oauth-helper/src",
+    "packages/oauth-helper/__tests__",
+    "packages/okf-bundle/src",
+    "packages/okf-bundle/__tests__",
+    "packages/fumadocs-okf/src",
+    "packages/fumadocs-okf/__tests__",
+    "packages/api/src/lib/semantic/okf",
+    "packages/api/src"
+  ]
+}

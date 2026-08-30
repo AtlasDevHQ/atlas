@@ -1075,7 +1075,12 @@ function runQueryValidationEffect(
       if (!validation.valid) {
         return { ok: false as const, error: validation.error, auditError: `Validation rejected: ${validation.error}` };
       }
-      return { ok: true as const, classification: validation.classification, parsed: validation.parsed };
+      const { classification, parsed } = validation;
+      return {
+        ok: true as const,
+        ...(classification !== undefined ? { classification } : {}),
+        ...(parsed !== undefined ? { parsed } : {}),
+      };
     });
   }
 
@@ -1097,7 +1102,9 @@ function runQueryValidationEffect(
       const reason = result.reason ?? "Query rejected by custom validator";
       return { ok: false as const, error: reason, auditError: `Validation rejected: ${reason}` };
     }
-    return { ok: true as const, classification: undefined as SQLClassification | undefined };
+    // A custom validator produces no classification — absence, not a slot
+    // holding `undefined` (#5522).
+    return { ok: true as const };
   });
 }
 
@@ -1470,9 +1477,9 @@ function executeAndAuditEffect(opts: {
   const spanAttrs = buildSqlExecuteSpanAttrs({
     dbType,
     connectionId: connId,
-    routingMode,
-    connectionGroupId,
-    routingReason,
+    ...(routingMode !== undefined ? { routingMode } : {}),
+    ...(connectionGroupId !== undefined ? { connectionGroupId } : {}),
+    ...(routingReason !== undefined ? { routingReason } : {}),
   });
 
   return Effect.tryPromise({
@@ -1519,10 +1526,15 @@ function executeAndAuditEffect(opts: {
         return new QueryExecutionError({ message: "Database query failed — check server logs for details." });
       }
       const dbErr = err as { hint?: string; position?: string };
+      const { hint, position } = dbErr;
       let detail = message;
-      if (dbErr.hint) detail += ` — Hint: ${dbErr.hint}`;
-      if (dbErr.position) detail += ` (at character ${dbErr.position})`;
-      return new QueryExecutionError({ message: detail, hint: dbErr.hint, position: dbErr.position });
+      if (hint) detail += ` — Hint: ${hint}`;
+      if (position) detail += ` (at character ${position})`;
+      return new QueryExecutionError({
+        message: detail,
+        ...(hint !== undefined ? { hint } : {}),
+        ...(position !== undefined ? { position } : {}),
+      });
     },
   }).pipe(
     // Success path: metrics, cache, audit, hooks, masking
@@ -2169,7 +2181,7 @@ export function runSqlPipelineEffect(
         const cacheKey = buildCacheKey(normalizedMutated, connId, cacheOrgId, claims, rlsFingerprint);
         cacheWrite = {
           key: cacheKey,
-          scope: { orgId: cacheOrgId, connectionId: connId },
+          scope: { ...(cacheOrgId !== undefined ? { orgId: cacheOrgId } : {}), connectionId: connId },
           // #4550 — the SAME post-beforeQuery SQL that built the key, capped:
           // a preview for the admin entry table, never full-SQL retention
           // beyond what the entry already holds.
@@ -2340,7 +2352,11 @@ export function runSqlPipelineEffect(
           // Workspace-tier TTL (#4545): stamp the writer's own ATLAS_CACHE_TTL
           // override onto its entries; authOrgId matches the cache-key org.
           cacheTtl: getDefaultTtl(authOrgId),
-          hookMetadata, dispatchHook, bindParams, parentAuditId, routingMode, routingReason,
+          hookMetadata, dispatchHook,
+          ...(bindParams !== undefined ? { bindParams } : {}),
+          ...(parentAuditId !== undefined ? { parentAuditId } : {}),
+          ...(routingMode !== undefined ? { routingMode } : {}),
+          ...(routingReason !== undefined ? { routingReason } : {}),
         });
         return { kind: "executed" as const, result };
       }),
@@ -2548,11 +2564,11 @@ async function executeSqlForConnection({
     sql,
     explanation,
     connId,
-    preStep: { kind: "check-cache", bypassCache },
-    parentAuditId,
-    routingMode,
-    routingReason,
-    executionTarget,
+    preStep: { kind: "check-cache", ...(bypassCache !== undefined ? { bypassCache } : {}) },
+    ...(parentAuditId !== undefined ? { parentAuditId } : {}),
+    ...(routingMode !== undefined ? { routingMode } : {}),
+    ...(routingReason !== undefined ? { routingReason } : {}),
+    ...(executionTarget !== undefined ? { executionTarget } : {}),
   }).pipe(
     Effect.map((outcome): Record<string, unknown> => {
       switch (outcome.kind) {
@@ -2703,7 +2719,7 @@ async function executeSqlFanout(args: {
         routingMode: "all",
         routingReason: fanoutReason,
         executionTarget: leg,
-        bypassCache,
+        ...(bypassCache !== undefined ? { bypassCache } : {}),
       });
     }),
   );
@@ -2849,7 +2865,11 @@ export const executeSQL = tool({
     // shipped (#3961 fanout bucket-leak, #3867(b) no-substitution) now live,
     // tested, inside `resolveSqlExecutionPlan`.
     const reqCtx = getRequestContext();
-    const { plan, logs } = await resolveSqlExecutionPlan(reqCtx, { group, connectionId, scope });
+    const { plan, logs } = await resolveSqlExecutionPlan(reqCtx, {
+      ...(group !== undefined ? { group } : {}),
+      ...(connectionId !== undefined ? { connectionId } : {}),
+      ...(scope !== undefined ? { scope } : {}),
+    });
     // The planner is pure — it returns operational signals (reach warnings, the
     // out-of-reach rejection, routing fallbacks) rather than logging itself, so
     // the one log seam stays here (per CLAUDE.md "never silently swallow").
@@ -2875,9 +2895,9 @@ export const executeSQL = tool({
           explanation,
           connId,
           routingMode: plan.routingMode,
-          routingReason: plan.routingReason,
+          ...(plan.routingReason !== undefined ? { routingReason: plan.routingReason } : {}),
           executionTarget: plan.executionTarget,
-          bypassCache,
+          ...(bypassCache !== undefined ? { bypassCache } : {}),
         });
         return attachSingleEnvContribution(result, connId);
       }
@@ -2887,7 +2907,7 @@ export const executeSQL = tool({
           explanation,
           legs: plan.legs,
           fanoutReason: plan.fanoutReason,
-          bypassCache,
+          ...(bypassCache !== undefined ? { bypassCache } : {}),
         });
       default: {
         const _exhaustive: never = plan;

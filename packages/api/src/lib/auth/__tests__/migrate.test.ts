@@ -638,6 +638,12 @@ describe("migrateAuthTables", () => {
             // migrations. (0209 is absent deliberately: it is a
             // MANAGED_AUTH_MIGRATION and never runs in this mode.)
             { name: "0210_brain_triage.sql" },
+            // 0211 (#3777) — plugin_grant_revocation_failures, the operator
+            // worklist for failed onUninstall revocations. Additive CREATE
+            // TABLE on an Atlas-internal table, no Better Auth involvement,
+            // so it runs in every auth mode — must be in the already-applied
+            // set so this "all applied" test sees zero new migrations.
+            { name: "0211_plugin_grant_revocation_failures.sql" },
           ],
         };
       }

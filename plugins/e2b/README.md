@@ -34,11 +34,30 @@ This plugin implements the SDK's optional Python surface, so a workspace that
 selects E2B runs **both** `explore` and `executePython` on its own E2B account.
 A failure there is an error, not a fallback to the Atlas platform sandbox.
 
-**Egress:** E2B exposes no per-sandbox host allowlist, so the host's
-per-request REST datasource egress bound is **not** applied — the plugin
-declares `pythonEgressControl: "unsupported"` and Atlas logs the gap. E2B BYOC
-runs inside your own VPC, where egress is yours to bound at the network layer.
-Use the Vercel Sandbox provider if a `deny-all` egress pin is a requirement.
+**Egress:** the host's per-request REST datasource egress bound **is** applied,
+so the plugin declares `pythonEgressControl: "enforced"`. Atlas's default for a
+Python run is deny-all; when a REST datasource is active the bound narrows to
+that datasource's hosts instead.
+
+The plugin sets it with `sandbox.updateNetwork` (`allowInternetAccess: false`
+for deny-all; `allowOut` paired with `denyOut: ["0.0.0.0/0"]` for an allowlist)
+**after** `pythonPackages` are installed and **before** any agent code runs —
+narrowing first would cut the sandbox off from PyPI.
+
+⚠️ Requires the `e2b` SDK **>= 2.45.0**, the version this was verified against
+and the peer range now requires. On a deployment whose SDK or backend refuses
+the egress rules, `executePython` fails with a named error rather than running
+unbounded; explore is unaffected. This bound is per sandbox and is in addition
+to whatever your own VPC enforces on a BYOC deployment.
+
+⚠️ **A datasource on a non-standard port is worth confirming.** Atlas derives the
+allowlist from datasource *hostnames* (`hostFromUrl` strips the port), so E2B
+receives a bare domain. E2B's own vendor docs describe domain rules as covering
+ports 80/443; the 2.45.0 SDK schema states no port restriction on `allowOut`
+either way, so this is not settled from the type definitions alone. If your REST
+datasource listens on something else, verify egress reaches it before relying on
+this — the failure mode is fail-closed (a connection timeout inside Python), not
+an open sandbox.
 
 ## Reference
 

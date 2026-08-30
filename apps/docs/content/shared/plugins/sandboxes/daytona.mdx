@@ -44,7 +44,9 @@ export default defineConfig({
 
 Beyond the `explore` tool, this plugin provides the **Python execution** backend: Python runs (`executePython`) execute on your own Daytona account instead of the host's default backend. A sandbox is created lazily per request, the `pythonPackages` list is installed on first run, and the sandbox is deleted afterwards. The `target` option applies to Python sandboxes too.
 
-Note that Daytona sandboxes have no per-run egress allowlist -- the plugin declares `pythonEgressControl: "unsupported"`, so the host's per-request REST egress bound does not apply inside the sandbox. Bound egress at the network layer if your Python runs must not reach the open internet.
+The host's per-request REST egress bound **is** applied -- the plugin declares `pythonEgressControl: "enforced"`. Atlas's default for a Python run is deny-all; when a REST datasource is active the bound narrows to that datasource's hosts. The plugin sets it with `sandbox.updateNetworkSettings` (`networkBlockAll` for deny-all, `domainAllowList` for an allowlist, capped by Daytona at 20 domains) after `pythonPackages` are installed and before any agent code runs. That ordering matters: Daytona's pre-approved essential-services lists (PyPI, npm, GitHub) stop applying once a sandbox carries a custom allow list, so narrowing first would break the package install.
+
+Two Daytona-side requirements, both of which fail the Python run rather than silently downgrading it: per-sandbox network overrides are a **Tier 3/Tier 4 organization** capability, and the plugin needs `@daytonaio/sdk` **>= 0.201.0**, which its peer range now enforces. `explore` is unaffected by either. Earlier releases of this plugin declared `"unsupported"`, which was accurate when Daytona had no per-sandbox egress control.
 
 ## Security
 

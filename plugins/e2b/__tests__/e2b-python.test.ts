@@ -311,12 +311,21 @@ describe("e2b sandbox plugin — Python surface", () => {
     // allowOut paired with a deny of everything is E2B's own documented
     // deny-everything-except idiom; allowOut alone would leave the default
     // (all outbound allowed) in play if E2B ever reads an empty deny as open.
-    expect(networkCalls).toEqual([
-      {
-        allowOut: ["crm.example.com", "api.example.com"],
-        denyOut: ["0.0.0.0/0"],
-      },
-    ]);
+    expect(networkCalls).toHaveLength(1);
+    const sent = networkCalls[0]!;
+    expect(sent.allowOut).toEqual(["crm.example.com", "api.example.com"]);
+
+    // The deny half asks the SDK for its own all-traffic token rather than
+    // naming a CIDR, so a provider that later grows a second address family
+    // widens this automatically instead of leaving it silently IPv4-only.
+    // Resolved here the way e2b's own `resolveNetworkSelector` does.
+    expect(typeof sent.denyOut).toBe("function");
+    const denyOut = sent.denyOut as (ctx: {
+      allTraffic: string;
+      rules: Map<string, unknown>;
+    }) => string[];
+    expect(denyOut({ allTraffic: "0.0.0.0/0", rules: new Map() })).toEqual(["0.0.0.0/0"]);
+    expect(denyOut({ allTraffic: "sentinel", rules: new Map() })).toEqual(["sentinel"]);
   });
 
   test("locks down AFTER pip install and BEFORE any agent code runs", async () => {

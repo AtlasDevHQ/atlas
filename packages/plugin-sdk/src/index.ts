@@ -128,6 +128,7 @@ export {
   enforcePythonEgress,
   installPythonPackages,
   isNotFoundSdkError,
+  requireSandboxMethod,
   shellQuote,
 } from "./python-backend";
 

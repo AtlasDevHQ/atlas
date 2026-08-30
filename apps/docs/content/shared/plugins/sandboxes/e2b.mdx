@@ -48,6 +48,8 @@ The host's per-request REST egress bound **is** applied -- the plugin declares `
 
 This requires the `e2b` SDK **>= 2.45.0**, which the plugin's peer range now enforces. On an SDK or deployment that refuses the egress rules, `executePython` fails with a named error rather than running unbounded; `explore` is unaffected. Earlier releases of this plugin declared `"unsupported"`, which was accurate when E2B had no per-sandbox egress control.
 
+⚠️ **A datasource on a non-standard port is worth confirming.** Atlas derives the allowlist from datasource *hostnames* (the port is stripped), so E2B receives a bare domain. E2B's vendor docs describe domain rules as covering ports 80/443; the 2.45.0 SDK schema states no port restriction on `allowOut` either way, so it is not settled from the type definitions alone. If your REST datasource listens elsewhere, verify egress reaches it before relying on this. The failure mode is fail-closed — a connection timeout inside Python, not an open sandbox.
+
 ## Security
 
 | Property | Value |

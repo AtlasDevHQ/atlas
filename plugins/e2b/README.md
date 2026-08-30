@@ -50,6 +50,15 @@ the egress rules, `executePython` fails with a named error rather than running
 unbounded; explore is unaffected. This bound is per sandbox and is in addition
 to whatever your own VPC enforces on a BYOC deployment.
 
+⚠️ **A datasource on a non-standard port is worth confirming.** Atlas derives the
+allowlist from datasource *hostnames* (`hostFromUrl` strips the port), so E2B
+receives a bare domain. E2B's own vendor docs describe domain rules as covering
+ports 80/443; the 2.45.0 SDK schema states no port restriction on `allowOut`
+either way, so this is not settled from the type definitions alone. If your REST
+datasource listens on something else, verify egress reaches it before relying on
+this — the failure mode is fail-closed (a connection timeout inside Python), not
+an open sandbox.
+
 ## Reference
 
 - [Plugin SDK docs](https://docs.useatlas.dev/plugins/sdk)

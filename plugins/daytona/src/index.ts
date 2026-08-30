@@ -32,6 +32,7 @@ import {
   enforcePythonEgress,
   installPythonPackages,
   isNotFoundSdkError,
+  requireSandboxMethod,
   runHealthCheckWithTimeout,
   shellQuote,
 } from "@useatlas/plugin-sdk";
@@ -177,16 +178,19 @@ const DAYTONA_DOMAIN_ALLOWLIST_MAX = 20;
  * `enforcePythonEgress`) rather than letting the run proceed unbounded.
  */
 async function applyDaytonaEgress(
+  // The provider SDK is an optional peer dependency loaded through `require`,
+  // so it carries no compile-time types here — the same reason every other
+  // sandbox handle in this file is `any`.
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   sandbox: any,
   policy: EnforceablePythonEgress,
 ): Promise<void> {
-  if (typeof sandbox.updateNetworkSettings !== "function") {
-    throw new Error(
-      "the installed @daytonaio/sdk has no sandbox.updateNetworkSettings() — " +
-        "upgrade @daytonaio/sdk to >=0.201.0",
-    );
-  }
+  requireSandboxMethod(
+    sandbox,
+    "updateNetworkSettings",
+    "@daytonaio/sdk",
+    ">=0.201.0",
+  );
   if (policy.mode === "deny-all") {
     await sandbox.updateNetworkSettings({ networkBlockAll: true });
     return;
@@ -436,10 +440,8 @@ export function buildDaytonaSandboxPlugin(
               try {
                 await session.mkdir(DAYTONA_PYTHON_WORK_DIR);
                 await installPythonPackages(session, config.pythonPackages, "Daytona", log);
-                // Lock down AFTER the install and before any agent code runs —
-                // the same two-phase shape the in-tree Vercel backend uses, and
-                // the only ordering under which a deny-all bound and a working
-                // `pip install` can both be true.
+                // After the install, before any agent code — see
+                // `enforcePythonEgress` for why that ordering is the contract.
                 await enforcePythonEgress(options.networkPolicy, "Daytona", (policy) =>
                   applyDaytonaEgress(sandbox, policy),
                 );

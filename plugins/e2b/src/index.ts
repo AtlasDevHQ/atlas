@@ -32,6 +32,7 @@ import {
   enforcePythonEgress,
   installPythonPackages,
   isNotFoundSdkError,
+  requireSandboxMethod,
   runHealthCheckWithTimeout,
   shellQuote,
 } from "@useatlas/plugin-sdk";
@@ -134,17 +135,6 @@ async function createE2BSandbox(config: E2BSandboxConfig): Promise<any> {
 const E2B_PYTHON_WORK_DIR = "/home/user/atlas-python";
 
 /**
- * Every destination, in the form E2B's `denyOut` takes.
- *
- * A CIDR deliberately: E2B's schema states that "domain names are not supported
- * for deny rules", so the deny half of the allowlist has to be expressed as
- * addresses. Pairing it with `allowOut` is unambiguous rather than a guess about
- * rule ordering — the same schema states that "allowed entries always take
- * precedence over denied entries".
- */
-const E2B_ALL_TRAFFIC = "0.0.0.0/0";
-
-/**
  * Apply the host's per-request egress bound to a live E2B sandbox.
  *
  * `updateNetwork` is the *post-create* form deliberately: the sandbox has to
@@ -157,25 +147,35 @@ const E2B_ALL_TRAFFIC = "0.0.0.0/0";
  * equivalent to denying `0.0.0.0/0`. An allowlist sends the datasource hosts as
  * `allowOut` — which accepts bare domain names — over a deny of everything.
  *
+ * ⚠️ The deny half asks the SDK for its own `allTraffic` token via the callback
+ * form rather than naming a CIDR. Today that token is exactly `"0.0.0.0/0"`, and
+ * the 2.45.0 surface has no IPv6 notion at all — but a hardcoded IPv4 CIDR is
+ * the kind of literal that stays IPv4 after the provider grows a second address
+ * family, leaving an allowlisted sandbox unbounded over the new one. Deferring
+ * to the SDK's constant means that widening arrives with the dependency bump.
+ * The deny half must be addresses either way: E2B's schema states that "domain
+ * names are not supported for deny rules". Pairing it with `allowOut` is
+ * unambiguous rather than a guess about rule ordering — the same schema states
+ * that "allowed entries always take precedence over denied entries".
+ *
  * Verified against `e2b` 2.45.0; the peer range requires it.
  */
 async function applyE2BEgress(
+  // The provider SDK is an optional peer dependency loaded through `require`,
+  // so it carries no compile-time types here — the same reason every other
+  // sandbox handle in this file is `any`.
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   sandbox: any,
   policy: EnforceablePythonEgress,
 ): Promise<void> {
-  if (typeof sandbox.updateNetwork !== "function") {
-    throw new Error(
-      "the installed e2b SDK has no sandbox.updateNetwork() — upgrade e2b to >=2.45.0",
-    );
-  }
+  requireSandboxMethod(sandbox, "updateNetwork", "e2b", ">=2.45.0");
   if (policy.mode === "deny-all") {
     await sandbox.updateNetwork({ allowInternetAccess: false });
     return;
   }
   await sandbox.updateNetwork({
     allowOut: [...policy.hosts],
-    denyOut: [E2B_ALL_TRAFFIC],
+    denyOut: ({ allTraffic }: { allTraffic: string }) => [allTraffic],
   });
 }
 
@@ -365,10 +365,8 @@ export function buildE2BSandboxPlugin(
               try {
                 await session.mkdir(E2B_PYTHON_WORK_DIR);
                 await installPythonPackages(session, config.pythonPackages, "E2B", log);
-                // Lock down AFTER the install and before any agent code runs —
-                // the same two-phase shape the in-tree Vercel backend uses, and
-                // the only ordering under which a deny-all bound and a working
-                // `pip install` can both be true.
+                // After the install, before any agent code — see
+                // `enforcePythonEgress` for why that ordering is the contract.
                 await enforcePythonEgress(options.networkPolicy, "E2B", (policy) =>
                   applyE2BEgress(sandbox, policy),
                 );

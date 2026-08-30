@@ -382,12 +382,21 @@ describe("enforcePythonEgress", () => {
     expect(rec.seen).toEqual([{ mode: "deny-all" }]);
   });
 
-  it("calls the provider for neither an absent policy nor allow-all", async () => {
-    // A fresh per-request sandbox already starts unrestricted, so there is
-    // nothing to relax — and calling anyway would invent a failure mode for a
-    // policy that bounds nothing.
+  it("resolves an absent policy to deny-all, not to 'no bound'", async () => {
+    // The plugins declare pythonEgressControl: "enforced" unconditionally, so a
+    // host that omits the optional field must not silently get less than the
+    // declaration promises. The in-tree host's toPluginNetworkPolicy maps null
+    // the same way.
     const rec = recorder();
     await enforcePythonEgress(undefined, "Test", rec.apply);
+    expect(rec.seen).toEqual([{ mode: "deny-all" }]);
+  });
+
+  it("calls the provider for an explicit allow-all not at all", async () => {
+    // The one policy that asks for no bound. A fresh per-request sandbox already
+    // starts unrestricted, so there is nothing to relax — and calling anyway
+    // would invent a failure mode for a request that bounds nothing.
+    const rec = recorder();
     await enforcePythonEgress({ mode: "allow-all" }, "Test", rec.apply);
     expect(rec.seen).toEqual([]);
   });

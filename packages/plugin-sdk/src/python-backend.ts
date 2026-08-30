@@ -161,6 +161,33 @@ export async function installPythonPackages(
 }
 
 /**
+ * Assert that a provider sandbox object actually carries the method an egress
+ * bound is applied through, and throw an actionable upgrade hint when it does
+ * not.
+ *
+ * Shared rather than hand-rolled per plugin because the security property is in
+ * the *shape*, not the wording: this must throw. A provider guard that returned
+ * `false`, warned, or fell through would skip enforcement on exactly the
+ * deployment least likely to notice — an installed SDK older than the one the
+ * plugin was verified against. Single-sourcing it keeps that from drifting the
+ * way #5500's two hand-rolled not-found predicates already had.
+ */
+export function requireSandboxMethod(
+  sandbox: unknown,
+  method: string,
+  packageName: string,
+  minVersion: string,
+): void {
+  const holder = sandbox as Record<string, unknown> | null | undefined;
+  if (typeof holder?.[method] !== "function") {
+    throw new Error(
+      `the installed ${packageName} has no sandbox.${method}() — ` +
+        `upgrade ${packageName} to ${minVersion}`,
+    );
+  }
+}
+
+/**
  * The subset of {@link PluginSandboxNetworkPolicy} a provider actually has to
  * map. {@link enforcePythonEgress} resolves the other shapes away first, so a
  * provider's mapping is total with no unreachable branch — and, in particular,
@@ -188,25 +215,31 @@ export type EnforceablePythonEgress =
  * proceeding would be a silent downgrade, which is exactly what declaring
  * `pythonEgressControl: "enforced"` promises does not happen.
  *
- * Two policies resolve to no call at all:
- * - **absent** — the host asked for nothing beyond the provider's own default.
- * - **`allow-all`** — the session is a fresh per-request sandbox that already
- *   starts unrestricted, so there is nothing to relax. Calling the provider
- *   anyway would invent a failure mode (Daytona's per-sandbox overrides need a
- *   Tier 3/4 organization) for a policy that bounds nothing.
+ * **Only an explicit `allow-all` resolves to no call at all**, because it is the
+ * one policy that asks for no bound: the session is a fresh per-request sandbox
+ * that already starts unrestricted, so there is nothing to relax, and calling
+ * the provider anyway would invent a failure mode (Daytona's per-sandbox
+ * overrides need a Tier 3/4 organization) for a request that bounds nothing.
  *
- * An `allowlist` with no hosts is deny-all, never allow-all — the same
- * fail-closed normalisation the host applies on its side.
+ * Everything else fails closed, matching the host's own normalisation in
+ * `toPluginNetworkPolicy` — *"fail-closed on anything unrecognised … never
+ * allow-all"*:
+ * - an **absent** policy is `deny-all`, not "no bound". The in-tree host always
+ *   passes one, so this is latent — but a plugin declaring
+ *   `pythonEgressControl: "enforced"` declares it unconditionally, and a
+ *   third-party host that omits the field must not silently receive less than
+ *   the declaration promises. `toPluginNetworkPolicy` maps `null` the same way.
+ * - an **`allowlist` with no hosts** is `deny-all`, never allow-all.
  */
 export async function enforcePythonEgress(
   policy: PluginSandboxNetworkPolicy | undefined,
   providerName: string,
   apply: (policy: EnforceablePythonEgress) => Promise<void>,
 ): Promise<void> {
-  if (!policy || policy.mode === "allow-all") return;
+  if (policy?.mode === "allow-all") return;
 
   const resolved: EnforceablePythonEgress =
-    policy.mode === "allowlist" && policy.hosts.length > 0
+    policy?.mode === "allowlist" && policy.hosts.length > 0
       ? { mode: "allowlist", hosts: policy.hosts }
       : { mode: "deny-all" };
 

@@ -5,7 +5,7 @@ Canonical terminology for Atlas. This document is a glossary, not a spec — imp
 When you find yourself reaching for one of these words, use the canonical form. When you see a term used loosely in conversation or code, sharpen it back to one of these.
 
 > **This file is the UN-SPLIT REMAINDER, not the whole domain.** Atlas uses the
-> multi-context layout ([CONTEXT-MAP.md](CONTEXT-MAP.md)); eight of its eighteen contexts
+> multi-context layout ([CONTEXT-MAP.md](CONTEXT-MAP.md)); nine of its eighteen contexts
 > have been extracted and are **not** in this file (#5302):
 >
 > | Context | Now lives in |
@@ -18,17 +18,10 @@ When you find yourself reaching for one of these words, use the canonical form. 
 > | Knowledge Base mechanics | [docs/contexts/knowledge-base-mechanics/CONTEXT.md](docs/contexts/knowledge-base-mechanics/CONTEXT.md) |
 > | Plugin lifecycle | [docs/contexts/plugin-lifecycle/CONTEXT.md](docs/contexts/plugin-lifecycle/CONTEXT.md) |
 > | Install models | [docs/contexts/install-models/CONTEXT.md](docs/contexts/install-models/CONTEXT.md) |
+> | Operator vs Customer | [docs/contexts/operator-vs-customer/CONTEXT.md](docs/contexts/operator-vs-customer/CONTEXT.md) |
 >
-> They were moved, not copied: no section below duplicates them. The remaining ten
+> They were moved, not copied: no section below duplicates them. The remaining nine
 > sections are still governed here, and the map says so per row.
-
-## Operator vs Customer
-
-Atlas runs in two deploy modes: **SaaS** (one operator, many customers) and **self-host** (operator and customer are the same party). The terms below refer to the role, not the person — on self-host one person plays both.
-
-- **Operator** — the party who runs the Atlas instance. Owns the deploy, the App Registrations, the catalog seed (`atlas.config.ts`), the infrastructure choices (sandbox priority, scheduler backend, residency regions). Controls what's *possible*.
-- **Customer admin** — the party who configures a specific Workspace. Owns Workspace Connections, integration installs, per-Workspace config (channel allowlists, model selection, BYOT credentials, etc.). Controls what's *active* for their Workspace.
-- **The seam** — where Operator capability meets Customer activation. Lives at `plugin_catalog` (operator declares) → `workspace_plugins` (customer activates). Any surface that puts Customer concerns into operator-only space (e.g. requiring an `atlas.config.ts` edit to add a Platform per customer) is a **leak** of self-host shape into SaaS shape. See ADRs 0001–0003 for closing the chat-Platform leak.
 
 ## Conversation scope
 

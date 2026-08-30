@@ -24,9 +24,19 @@ const execCalls: {
   timeoutSec?: number;
 }[] = [];
 const createParams: unknown[] = [];
+const networkCalls: Record<string, unknown>[] = [];
+/**
+ * Ordering matters more than either call on its own: the bound has to land
+ * after `pip install` (Daytona drops its essential-services lists once a custom
+ * allow list is set) and before any agent code runs. One timeline is the only
+ * way to assert both halves of that at once.
+ */
+const timeline: string[] = [];
 let deleted = 0;
 let execImpl: (command: string) => Promise<{ result?: string; exitCode?: number }> =
   async () => ({ result: "", exitCode: 0 });
+let updateNetworkImpl: (settings: Record<string, unknown>) => Promise<void> = async () => {};
+let omitUpdateNetworkSettings = false;
 
 const sandboxStub = {
   process: {
@@ -37,8 +47,14 @@ const sandboxStub = {
       timeoutSec?: number,
     ) => {
       execCalls.push({ command, cwd, env, timeoutSec });
+      timeline.push(command.startsWith("'pip'") ? "pip" : `exec:${command.slice(0, 9)}`);
       return execImpl(command);
     },
+  },
+  updateNetworkSettings: async (settings: Record<string, unknown>) => {
+    networkCalls.push(settings);
+    timeline.push("network");
+    await updateNetworkImpl(settings);
   },
   fs: {
     createFolder: async (_path: string, _mode: string) => {},
@@ -63,6 +79,10 @@ const FakeDaytona = mock(function () {
   return {
     create: async (params?: unknown) => {
       createParams.push(params);
+      if (omitUpdateNetworkSettings) {
+        const { updateNetworkSettings: _omitted, ...rest } = sandboxStub;
+        return rest;
+      }
       return sandboxStub;
     },
     delete: async () => {
@@ -121,15 +141,21 @@ beforeEach(() => {
   files.clear();
   execCalls.length = 0;
   createParams.length = 0;
+  networkCalls.length = 0;
+  timeline.length = 0;
   deleted = 0;
   execImpl = async () => ({ result: "", exitCode: 0 });
+  updateNetworkImpl = async () => {};
+  omitUpdateNetworkSettings = false;
 });
 
 describe("daytona sandbox plugin — Python surface", () => {
   test("declares createPython and an honest egress posture", () => {
+    // "enforced" since the issue-4666 re-verify: @daytonaio/sdk 0.201.0 does
+    // expose per-sandbox egress control, which #5500 predated.
     const plugin = buildDaytonaSandboxPlugin(CONFIG);
     expect(typeof plugin.sandbox.createPython).toBe("function");
-    expect(plugin.sandbox.pythonEgressControl).toBe("unsupported");
+    expect(plugin.sandbox.pythonEgressControl).toBe("enforced");
   });
 
   test("round-trips code and data through the org's own Daytona sandbox", async () => {
@@ -201,6 +227,130 @@ describe("daytona sandbox plugin — Python surface", () => {
     expect(result.success && result.charts).toEqual([
       { base64: Buffer.from([3, 4]).toString("base64"), mimeType: "image/png" },
     ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Egress enforcement (issue 4666 re-verify of #5500's "unsupported")
+  // -------------------------------------------------------------------------
+
+  test("blocks all egress when the host asks for deny-all", async () => {
+    respondWithResult({ success: true });
+    const plugin = buildDaytonaSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "deny-all" } }),
+    );
+    await backend.exec("print(1)");
+
+    // The three settings are mutually exclusive — exactly one is sent.
+    expect(networkCalls).toEqual([{ networkBlockAll: true }]);
+  });
+
+  test("narrows to the host's datasource hosts on an allowlist", async () => {
+    respondWithResult({ success: true });
+    const plugin = buildDaytonaSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "allowlist", hosts: ["crm.example.com", "api.example.com"] } }),
+    );
+    await backend.exec("print(1)");
+
+    expect(networkCalls).toEqual([{ domainAllowList: "crm.example.com,api.example.com" }]);
+  });
+
+  test("locks down AFTER pip install and BEFORE any agent code runs", async () => {
+    // Narrowing first would cut the sandbox off from PyPI: Daytona's
+    // pre-approved essential-services lists stop applying the moment a custom
+    // allow list is set. Narrowing last would run the agent's code unbounded.
+    respondWithResult({ success: true });
+    const plugin = buildDaytonaSandboxPlugin({ ...CONFIG, pythonPackages: ["pandas"] });
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "deny-all" } }),
+    );
+    await backend.exec("print(1)");
+
+    expect(timeline.indexOf("pip")).toBeLessThan(timeline.indexOf("network"));
+    expect(timeline.indexOf("network")).toBeLessThan(timeline.indexOf("exec:'python3'"));
+  });
+
+  test("leaves a fresh sandbox alone when the host asks for allow-all", async () => {
+    // A per-request sandbox already starts unrestricted, so there is nothing to
+    // relax — and calling anyway would invent a Tier 3/4 failure mode for a
+    // policy that bounds nothing.
+    respondWithResult({ success: true });
+    const plugin = buildDaytonaSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "allow-all" } }),
+    );
+    await backend.exec("print(1)");
+
+    expect(networkCalls).toEqual([]);
+  });
+
+  test("an empty allowlist is deny-all, never allow-all", async () => {
+    respondWithResult({ success: true });
+    const plugin = buildDaytonaSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "allowlist", hosts: [] } }),
+    );
+    await backend.exec("print(1)");
+
+    expect(networkCalls).toEqual([{ networkBlockAll: true }]);
+  });
+
+  test("fails the run closed when Daytona rejects the policy (Tier 1/2 org)", async () => {
+    // The whole point of declaring "enforced": a refused bound must not become
+    // a Python run that ships query rows out of an unbounded sandbox.
+    respondWithResult({ success: true });
+    updateNetworkImpl = async () => {
+      throw new Error("403 Forbidden: network policy overrides require Tier 3");
+    };
+    const plugin = buildDaytonaSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "deny-all" } }),
+    );
+
+    const result = await backend.exec("print(1)");
+
+    expect(result.success).toBe(false);
+    expect(result.success === false && result.error).toContain("Tier 3");
+    expect(result.success === false && result.error).toContain(
+      "refusing to run Python with an unenforced network bound",
+    );
+    // No agent code ran, and the sandbox it would have run in is gone.
+    expect(execCalls.some((c) => c.command.startsWith("'python3'"))).toBe(false);
+    expect(deleted).toBe(1);
+  });
+
+  test("fails closed on an @daytonaio/sdk too old to expose updateNetworkSettings", async () => {
+    omitUpdateNetworkSettings = true;
+    respondWithResult({ success: true });
+    const plugin = buildDaytonaSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "deny-all" } }),
+    );
+
+    const result = await backend.exec("print(1)");
+
+    expect(result.success).toBe(false);
+    expect(result.success === false && result.error).toContain("upgrade @daytonaio/sdk");
+    expect(execCalls.some((c) => c.command.startsWith("'python3'"))).toBe(false);
+  });
+
+  test("rejects an allowlist past Daytona's 20-domain cap rather than truncating it", async () => {
+    // Silently dropping host 21 would hand the agent a sandbox that cannot
+    // reach a datasource the host said it could, diagnosable only as a timeout
+    // inside Python.
+    respondWithResult({ success: true });
+    const hosts = Array.from({ length: 21 }, (_, i) => `host${i}.example.com`);
+    const plugin = buildDaytonaSandboxPlugin(CONFIG);
+    const backend = await plugin.sandbox.createPython!(
+      options({ networkPolicy: { mode: "allowlist", hosts } }),
+    );
+
+    const result = await backend.exec("print(1)");
+
+    expect(result.success).toBe(false);
+    expect(result.success === false && result.error).toContain("at most 20 allowed domains");
+    expect(networkCalls).toEqual([]);
   });
 
   test("close deletes the sandbox", async () => {

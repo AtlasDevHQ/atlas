@@ -163,10 +163,11 @@ They are one of **two** required axes; the other is kind+area. See
 ### Domain docs
 
 **Multi-context**: [`CONTEXT-MAP.md`](CONTEXT-MAP.md) names 18 bounded contexts and
-`docs/adr/` holds 44 system-wide decisions. ⚠️ The split is underway: three contexts
-(Company Atlas, Deployment posture, Notebooks) live under `docs/contexts/`, the root
-`CONTEXT.md` still governs the other fifteen, and the map says which is which per row — it
-never points at a file that does not exist (#5302). See
+`docs/adr/` holds 45 system-wide decisions. **The split is done (#5302)**: every context
+lives at `docs/contexts/<name>/CONTEXT.md`, and the root [`CONTEXT.md`](CONTEXT.md) keeps
+only the vocabulary rule and a pointer to the map — no context prose. Start at the map, and
+read its *Notes* column: the *Deployment posture* clean-break window was re-verified and is
+CLOSED as of 2026-08-18, and *Notebooks* is history only. A new context is a new directory plus a new map row, in one commit. See
 [`docs/agents/domain.md`](docs/agents/domain.md).
 
 ### The record

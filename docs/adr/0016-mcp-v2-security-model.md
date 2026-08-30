@@ -25,7 +25,7 @@ Credentials are supplied via **masked form-mode elicitation** — elicitation re
 
 ## SaaS-first principle
 
-Gate capability through runtime, per-identity / per-action mechanisms (scope, RBAC, DB-backed workspace policy) — never operator-only env vars or `atlas.config.ts`. The `ATLAS_DEPLOY_MODE` flag (SaaS-vs-self-host *infrastructure*) is fine; gating a *capability decision* behind env is the self-host-shape-into-SaaS leak that CONTEXT.md's "The seam" warns against. Design SaaS-first and self-host inherits it (it drops the third-party scope term, keeps RBAC + approval). The destructive-action decision belongs to the **customer admin**, not the operator.
+Gate capability through runtime, per-identity / per-action mechanisms (scope, RBAC, DB-backed workspace policy) — never operator-only env vars or `atlas.config.ts`. The `ATLAS_DEPLOY_MODE` flag (SaaS-vs-self-host *infrastructure*) is fine; gating a *capability decision* behind env is the self-host-shape-into-SaaS leak that [Operator vs Customer](../contexts/operator-vs-customer/CONTEXT.md)'s "The seam" warns against. Design SaaS-first and self-host inherits it (it drops the third-party scope term, keeps RBAC + approval). The destructive-action decision belongs to the **customer admin**, not the operator.
 
 ## Foundation
 

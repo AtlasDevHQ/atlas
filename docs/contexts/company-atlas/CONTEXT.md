@@ -3,7 +3,10 @@
 > **One of Atlas's bounded contexts.** The map is [CONTEXT-MAP.md](../../../CONTEXT-MAP.md);
 > system-wide decisions stay in [docs/adr/](../../adr/). Extracted from the root
 > [CONTEXT.md](../../../CONTEXT.md) on 2026-08-17 ([#5302](https://github.com/AtlasDevHQ/atlas/issues/5302)):
-> the prose below is that file's `## Company Atlas` section verbatim — only the relative links are repathed for the new depth — and it is no longer there.
+> the prose below is that file's `## Company Atlas` section, moved with two mechanical edits:
+> relative links repathed for the new depth, and same-file "see below" pointers whose
+> targets left rewritten as links to the context that now holds them. It is no longer
+> in the root file.
 > Vocabulary rules for consumers: [docs/agents/domain.md](../../agents/domain.md).
 
 
@@ -13,7 +16,7 @@
 
   **Fact content never enters model weights, and customer data is never a training corpus** ([ADR-0044](../../adr/0044-fact-content-never-enters-model-weights.md)). Written as a prohibition rather than a preference, in `alias-proposal.ts`'s posture, because both are the obvious thing to build once there is a fact graph and an OSS model. Weights have no ACL, cannot be unlearned within a sync cycle, carry no `provenance`, and have no time axis — so a checkpoint is outside `purge-scope.ts` and `residue-sweep.ts` by construction, and an ADR-0024 residency problem besides (the process is the region, but a checkpoint is a file). **Per-workspace local adapters are refused too**: they narrow the blast radius from cross-tenant to intra-tenant and leave all three structural objections standing, because `visible_to` varies per fact *within* a workspace. What IS supported is fine-tuning **task behaviour** — triage and episode→SPO extraction — on public and first-party data with teacher labels, plus any lawfully-obtained corpus as a **local development fixture** (Enron: fixture yes, training data no, committed to this public repo never). The test: **does the model produce a claim, or a candidate the record still has to accept?** Entity resolution is excluded from the supported list — `led_by`/`leads` are inverse relations and the top pair any similarity detector returns.
 
-  **Not a pillar, and not a fifth one.** The four pillars are the ways Atlas *reaches the outside world*; each is keyed on catalog rows, an install lifecycle, and credential storage. The Atlas owns no catalog row **of its own** — it is **derived**, its facts extracted from **episodes** rather than reached for directly. It is therefore *orthogonal* to the pillar axis, not another point on it, and the "one user-facing surface per pillar" rule (root [CONTEXT.md](../../../CONTEXT.md) § Pillars, which did not move) does not reach it.
+  **Not a pillar, and not a fifth one.** The four pillars are the ways Atlas *reaches the outside world*; each is keyed on catalog rows, an install lifecycle, and credential storage. The Atlas owns no catalog row **of its own** — it is **derived**, its facts extracted from **episodes** rather than reached for directly. It is therefore *orthogonal* to the pillar axis, not another point on it, and the "one user-facing surface per pillar" rule ([Pillars](../pillars/CONTEXT.md)) does not reach it.
 
   **Episode** — the raw evidence a fact is extracted from. The stored `source` vocabulary is `EPISODE_SOURCE_SPECS` (`lib/brain/sources.ts`), each member naming a CLASS and a vendor: `slack` (chat), `zoom` (transcript), `outlook` (email), `warehouse`, and `human`. A second chat vendor is a new member, not a reuse of `slack`. `human` is a person's own words recorded as evidence, and it is the one source whose extraction behaviour is **per writer rather than per class** ([ADR-0043](../../adr/0043-the-company-keystone-is-asked-for-never-researched.md)): `correct_fact` pre-stamps its episode off the extraction queue, because the person has already authored a structured claim and extraction would re-derive it; a **Company Keystone** answer is prose and is extracted normally, because there is no claim yet. `DRAIN_EPISODES_SQL` filters no source — the pre-stamp is the choice, not the drain.
 

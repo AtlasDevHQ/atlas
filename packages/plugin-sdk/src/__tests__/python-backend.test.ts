@@ -11,8 +11,12 @@
 import { describe, it, expect } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createFileTransportPythonBackend } from "../python-backend";
+import {
+  createFileTransportPythonBackend,
+  enforcePythonEgress,
+} from "../python-backend";
 import type {
+  EnforceablePythonEgress,
   PythonSandboxRunResult,
   PythonSandboxSession,
 } from "../python-backend";
@@ -20,6 +24,7 @@ import {
   PLUGIN_PYTHON_CHART_DIR_ENV,
   PLUGIN_PYTHON_RESULT_FILE_ENV,
   type PluginPythonOptions,
+  type PluginSandboxNetworkPolicy,
 } from "../types";
 
 const WRAPPER = "# fake wrapper\n";
@@ -289,6 +294,26 @@ describe("createFileTransportPythonBackend", () => {
     expect(result.success === false && result.error).toContain("provider is down");
   });
 
+  it("does not report a failed creation as a failed teardown", async () => {
+    // A session that never came up has nothing to tear down. Logging the
+    // creation error again under "Failed to destroy" puts the wrong sentence
+    // in front of an operator — and a fail-closed egress refusal makes
+    // creation failure a routine path, not an exotic one.
+    const warnings: string[] = [];
+    const fake = fakeSession({ createError: new Error("403 egress policy refused") });
+    const backend = createFileTransportPythonBackend(baseOptions(), fake.adapter, {
+      warn: (msg) => warnings.push(msg),
+    });
+
+    const result = await backend.exec("print(1)");
+    // The invalidate() cleanup is fire-and-forget; let its microtasks drain.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(result.success === false && result.error).toContain("403 egress policy refused");
+    expect(warnings.filter((w) => w.includes("Failed to destroy"))).toEqual([]);
+  });
+
   it("discards the session after an infrastructure failure so the next call starts clean", async () => {
     let attempt = 0;
     const fake = fakeSession({
@@ -316,6 +341,99 @@ describe("createFileTransportPythonBackend", () => {
     const result = await backend.exec("print(x)");
 
     expect(result).toEqual({ success: false, error: "NameError: x" });
+  });
+});
+
+describe("enforcePythonEgress", () => {
+  function recorder(): {
+    seen: EnforceablePythonEgress[];
+    apply: (policy: EnforceablePythonEgress) => Promise<void>;
+  } {
+    const seen: EnforceablePythonEgress[] = [];
+    return {
+      seen,
+      apply: async (policy) => {
+        seen.push(policy);
+      },
+    };
+  }
+
+  it("passes deny-all straight through", async () => {
+    const rec = recorder();
+    await enforcePythonEgress({ mode: "deny-all" }, "Test", rec.apply);
+    expect(rec.seen).toEqual([{ mode: "deny-all" }]);
+  });
+
+  it("passes a non-empty allowlist through with its hosts", async () => {
+    const rec = recorder();
+    await enforcePythonEgress(
+      { mode: "allowlist", hosts: ["crm.example.com"] },
+      "Test",
+      rec.apply,
+    );
+    expect(rec.seen).toEqual([{ mode: "allowlist", hosts: ["crm.example.com"] }]);
+  });
+
+  it("resolves an empty allowlist to deny-all, never to allow-all", async () => {
+    // The same fail-closed normalisation the host applies on its side. A
+    // provider must never be handed a shape it could read as "allow".
+    const rec = recorder();
+    await enforcePythonEgress({ mode: "allowlist", hosts: [] }, "Test", rec.apply);
+    expect(rec.seen).toEqual([{ mode: "deny-all" }]);
+  });
+
+  it("resolves an absent policy to deny-all, not to 'no bound'", async () => {
+    // The plugins declare pythonEgressControl: "enforced" unconditionally, so a
+    // host that omits the optional field must not silently get less than the
+    // declaration promises. The in-tree host's toPluginNetworkPolicy maps null
+    // the same way.
+    const rec = recorder();
+    await enforcePythonEgress(undefined, "Test", rec.apply);
+    expect(rec.seen).toEqual([{ mode: "deny-all" }]);
+  });
+
+  it("calls the provider for an explicit allow-all not at all", async () => {
+    // The one policy that asks for no bound. A fresh per-request sandbox already
+    // starts unrestricted, so there is nothing to relax — and calling anyway
+    // would invent a failure mode for a request that bounds nothing.
+    const rec = recorder();
+    await enforcePythonEgress({ mode: "allow-all" }, "Test", rec.apply);
+    expect(rec.seen).toEqual([]);
+  });
+
+  it("throws — naming the provider, the mode and the cause — when apply fails", async () => {
+    // The throw is what makes `pythonEgressControl: "enforced"` a promise:
+    // the caller aborts the session rather than running the agent's Python in
+    // a sandbox whose egress bound was refused.
+    const cause = new Error("403 Forbidden: requires Tier 3");
+    let thrown: unknown;
+    try {
+      await enforcePythonEgress({ mode: "deny-all" }, "Daytona", async () => {
+        throw cause;
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("Daytona");
+    expect(message).toContain("deny-all");
+    expect(message).toContain("refusing to run Python with an unenforced network bound");
+    expect(message).toContain("403 Forbidden: requires Tier 3");
+    expect(thrown instanceof Error ? thrown.cause : undefined).toBe(cause);
+  });
+
+  it("accepts every PluginSandboxNetworkPolicy shape the host can produce", async () => {
+    // toPluginNetworkPolicy emits exactly these three; none may throw here.
+    const policies: PluginSandboxNetworkPolicy[] = [
+      { mode: "deny-all" },
+      { mode: "allow-all" },
+      { mode: "allowlist", hosts: ["a.example.com"] },
+    ];
+    for (const policy of policies) {
+      await enforcePythonEgress(policy, "Test", async () => {});
+    }
   });
 });
 

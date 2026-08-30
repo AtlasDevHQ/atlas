@@ -29,13 +29,16 @@ import {
   collectSemanticFiles,
   createFileTransportPythonBackend,
   directoryEntryNames,
+  enforcePythonEgress,
   installPythonPackages,
   isNotFoundSdkError,
+  requireSandboxMethod,
   runHealthCheckWithTimeout,
   shellQuote,
 } from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
+  EnforceablePythonEgress,
   PluginExploreBackend,
   PluginExecResult,
   PluginHealthResult,
@@ -130,6 +133,51 @@ async function createE2BSandbox(config: E2BSandboxConfig): Promise<any> {
 
 /** The sandbox directory Python executions are staged under. */
 const E2B_PYTHON_WORK_DIR = "/home/user/atlas-python";
+
+/**
+ * Apply the host's per-request egress bound to a live E2B sandbox.
+ *
+ * `updateNetwork` is the *post-create* form deliberately: the sandbox has to
+ * reach PyPI for `installPythonPackages` before it is narrowed. The update
+ * replaces the egress configuration atomically — every field omitted here is
+ * cleared server-side, which is what makes this a bound rather than an addition
+ * to whatever the sandbox already carried.
+ *
+ * `deny-all` goes through `allowInternetAccess: false`, which E2B documents as
+ * equivalent to denying `0.0.0.0/0`. An allowlist sends the datasource hosts as
+ * `allowOut` — which accepts bare domain names — over a deny of everything.
+ *
+ * ⚠️ The deny half asks the SDK for its own `allTraffic` token via the callback
+ * form rather than naming a CIDR. Today that token is exactly `"0.0.0.0/0"`, and
+ * the 2.45.0 surface has no IPv6 notion at all — but a hardcoded IPv4 CIDR is
+ * the kind of literal that stays IPv4 after the provider grows a second address
+ * family, leaving an allowlisted sandbox unbounded over the new one. Deferring
+ * to the SDK's constant means that widening arrives with the dependency bump.
+ * The deny half must be addresses either way: E2B's schema states that "domain
+ * names are not supported for deny rules". Pairing it with `allowOut` is
+ * unambiguous rather than a guess about rule ordering — the same schema states
+ * that "allowed entries always take precedence over denied entries".
+ *
+ * Verified against `e2b` 2.45.0; the peer range requires it.
+ */
+async function applyE2BEgress(
+  // The provider SDK is an optional peer dependency loaded through `require`,
+  // so it carries no compile-time types here — the same reason every other
+  // sandbox handle in this file is `any`.
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  sandbox: any,
+  policy: EnforceablePythonEgress,
+): Promise<void> {
+  requireSandboxMethod(sandbox, "updateNetwork", "e2b", ">=2.45.0");
+  if (policy.mode === "deny-all") {
+    await sandbox.updateNetwork({ allowInternetAccess: false });
+    return;
+  }
+  await sandbox.updateNetwork({
+    allowOut: [...policy.hosts],
+    denyOut: ({ allTraffic }: { allTraffic: string }) => [allTraffic],
+  });
+}
 
 /**
  * Adapt an E2B sandbox to the SDK's {@link PythonSandboxSession} primitives.
@@ -317,6 +365,11 @@ export function buildE2BSandboxPlugin(
               try {
                 await session.mkdir(E2B_PYTHON_WORK_DIR);
                 await installPythonPackages(session, config.pythonPackages, "E2B", log);
+                // After the install, before any agent code — see
+                // `enforcePythonEgress` for why that ordering is the contract.
+                await enforcePythonEgress(options.networkPolicy, "E2B", (policy) =>
+                  applyE2BEgress(sandbox, policy),
+                );
               } catch (err) {
                 await session.destroy();
                 throw err;
@@ -329,13 +382,21 @@ export function buildE2BSandboxPlugin(
       },
 
       /**
-       * E2B exposes no per-sandbox host allowlist, so the host's per-request
-       * REST egress bound cannot be applied here — declared rather than
-       * implied by omission (#4665). E2B BYOC deployments run inside the
-       * customer's own VPC, where egress is the customer's to bound at the
-       * network layer.
+       * The host's per-request REST egress bound IS applied here, via
+       * `sandbox.updateNetwork` after the package install and before any agent
+       * code runs — see `applyE2BEgress`. Verified against the `e2b` SDK
+       * 2.45.0, which is why the peer range requires it.
+       *
+       * This read `"unsupported"` until the re-verify on issue 4666: #5500
+       * declared it on the basis that E2B exposed no per-sandbox host
+       * allowlist, and by then it did.
+       *
+       * "Enforced" is upheld by failing closed, not by assuming the call
+       * succeeds — a rejected policy (an outdated SDK, a deployment that does
+       * not support egress rules) fails the Python run rather than downgrading
+       * it silently.
        */
-      pythonEgressControl: "unsupported",
+      pythonEgressControl: "enforced",
     },
 
     security: {

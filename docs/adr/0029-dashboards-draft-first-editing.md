@@ -10,7 +10,7 @@ agent/chat edits alike — lands in the caller's private per-user **draft**; the
 transition (three-way merge, 409 on conflict) that makes changes visible to the
 org. A never-published dashboard is private to its creator until its **first
 publish**. Decided in the 2026-07-04 dashboard elevation grill; the canonical
-vocabulary is in `CONTEXT.md` § *Dashboard editing* and the audit that motivated
+vocabulary is in [*Dashboard editing*](../contexts/dashboard-editing/CONTEXT.md) and the audit that motivated
 it is `.claude/research/dashboard-audit-2026-07-04.md`.
 
 ## Context

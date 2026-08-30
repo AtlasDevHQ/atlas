@@ -6,7 +6,7 @@
 **Posture:** pre-customer (two internal Workspaces only); clean breaks allowed. Precedent: #2620 / #2626 / #2634 / #2641.
 
 Read alongside:
-- `/CONTEXT.md` — canonical glossary (Platform, Adapter, App Registration, Workspace Connection, Plugin Catalog, Workspace Install, Eager/Lazy plugins, Operator vs Customer)
+- `/CONTEXT-MAP.md` — the index of bounded contexts; the canonical glossary is the per-context file each row points at. The terms this PRD leans on: Platform, Adapter, App Registration and Workspace Connection in [Chat Platform mechanics](../contexts/chat-platform-mechanics/CONTEXT.md); Plugin Catalog, Workspace Install and Eager/Lazy plugins in [Plugin lifecycle](../contexts/plugin-lifecycle/CONTEXT.md); Operator vs Customer in [its own context](../contexts/operator-vs-customer/CONTEXT.md)
 - `/docs/adr/0001-saas-uses-one-app-registration-per-platform.md`
 - `/docs/adr/0002-catalog-seeded-from-config-at-boot.md`
 - `/docs/adr/0003-two-store-chat-install-metadata-credentials.md`
@@ -30,7 +30,7 @@ Establish a clean operator-vs-customer seam, applied to chat Platforms and integ
 
 - **Operator surface (`atlas.config.ts`)** declares **capability** — the set of Platforms and integrations that an Atlas deployment knows how to do, plus per-Platform credentials (App Registration for OAuth Platforms, operator-shared bot credentials for static-bot Platforms) sourced from env vars.
 - **Plugin Catalog** is the runtime registry. Seeded from `atlas.config.ts` on every boot in an idempotent pass. Holds plan-tier gating (`min_plan`), runtime enable/disable (`enabled`), config schema, and `install_model` per entry.
-- **Customer surface (`/admin/integrations` page)** is where Workspace admins install / disconnect Platforms and integrations. The install flow varies by `install_model` (see CONTEXT.md "Install models" section): OAuth, form-based, or static-bot. Each install creates a `workspace_plugins` row referencing the catalog entry; per-Platform credentials persist to the adapter's native store (e.g. `chat_cache` for chat Platforms; per-plugin store for lazy integrations; routing identifiers in `workspace_plugins.config` for static-bot).
+- **Customer surface (`/admin/integrations` page)** is where Workspace admins install / disconnect Platforms and integrations. The install flow varies by `install_model` (see [Install models](../contexts/install-models/CONTEXT.md)): OAuth, form-based, or static-bot. Each install creates a `workspace_plugins` row referencing the catalog entry; per-Platform credentials persist to the adapter's native store (e.g. `chat_cache` for chat Platforms; per-plugin store for lazy integrations; routing identifiers in `workspace_plugins.config` for static-bot).
 - **Per-event listener gate** checks `workspace_plugins` presence before classifying / answering for a given Workspace × Platform. Existing per-Workspace config tables (`workspace_proactive_config`, `channel_proactive_config`) remain as layered configuration on top of the catalog install.
 
 After this milestone, adding a new instance of a *supported* Platform type for a customer becomes a self-serve admin action. Adding a new Platform *type* to the deployment is a one-time operator task (App Registration / static-bot credential setup + env vars + catalog entry in `atlas.config.ts`), done once per Platform per deployment forever.
@@ -189,7 +189,7 @@ Migrations (if any land — none expected, but if `plugin_catalog` needs columns
 
 ## Out of Scope
 
-- **Non-Slack chat Platform install flows.** Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp adapters exist as code in `plugins/chat/src/adapters/`. Their install models are NOT uniformly OAuth (see CONTEXT.md "Install models"): Linear has an OAuth mode (close to Slack), but Teams uses Azure AD + manifest upload, Discord uses an operator-shared bot with per-guild routing, Telegram and WhatsApp use static operator-owned bot tokens, gchat uses a Google service account + Workspace Marketplace. These each need bespoke install-handler implementations. Catalog entries for these Platforms ship with `enabled: false` (or an explicit `coming-soon` placeholder) in this milestone; their install flows ship in a follow-up milestone (1.5.3 — Multi-Platform Install Models, scope TBD).
+- **Non-Slack chat Platform install flows.** Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp adapters exist as code in `plugins/chat/src/adapters/`. Their install models are NOT uniformly OAuth (see [Install models](../contexts/install-models/CONTEXT.md)): Linear has an OAuth mode (close to Slack), but Teams uses Azure AD + manifest upload, Discord uses an operator-shared bot with per-guild routing, Telegram and WhatsApp use static operator-owned bot tokens, gchat uses a Google service account + Workspace Marketplace. These each need bespoke install-handler implementations. Catalog entries for these Platforms ship with `enabled: false` (or an explicit `coming-soon` placeholder) in this milestone; their install flows ship in a follow-up milestone (1.5.3 — Multi-Platform Install Models, scope TBD).
 - **Per-Platform billing / metering changes.** The existing meter machinery (`proactive_meter_events` and friends) is already per-Workspace and works against any adapter. No billing-layer changes in this milestone.
 - **Custom plugin marketplace UX beyond connect/disconnect.** The `/admin/integrations` page will support install / view / disconnect. Anything richer (in-product plugin authoring, third-party plugin submissions, ratings) is 1.6.x+ territory.
 - **Per-Workspace tool gating (`tools: ["explore", "executeSQL"]`).** Filed as a separate Architecture Backlog tracking issue.
@@ -223,11 +223,11 @@ Admin UI groups by `type` for display; backend dispatches by `install_model` for
 
 ### Multi-mode Platforms
 
-Per CONTEXT.md "Multi-mode Platforms," Linear and GitHub each support multiple install models. They land as **separate catalog rows per mode** (not one row with a toggle). All Linear and GitHub flavors are deferred to 1.5.3; this milestone's catalog placeholder strategy seeds them with `enabled: false` placeholders following the per-mode naming convention (`linear`, `linear-apikey`, `github`, `github-pat`, etc.).
+Per [Install models § Multi-mode integrations](../contexts/install-models/CONTEXT.md), Linear and GitHub each support multiple install models. They land as **separate catalog rows per mode** (not one row with a toggle). All Linear and GitHub flavors are deferred to 1.5.3; this milestone's catalog placeholder strategy seeds them with `enabled: false` placeholders following the per-mode naming convention (`linear`, `linear-apikey`, `github`, `github-pat`, etc.).
 
 ### SaaS-vs-self-host catalog eligibility
 
-GitHub PAT mode is unsafe on SaaS (single-user-token failure mode) — it should never appear in the SaaS catalog. The catalog row carries a `saas_eligible` flag (or `deploy_modes: ["self-host"]` equivalent) that gates visibility per CONTEXT.md "SaaS-vs-self-host eligibility." Slice 2's seed pass honors this flag. The same flag also lets self-host operators expose dev-friendly modes (Linear API key, GitHub PAT) without exposing them to SaaS customers.
+GitHub PAT mode is unsafe on SaaS (single-user-token failure mode) — it should never appear in the SaaS catalog. The catalog row carries a `saas_eligible` flag (or `deploy_modes: ["self-host"]` equivalent) that gates visibility per [Install models § SaaS-vs-self-host eligibility](../contexts/install-models/CONTEXT.md). Slice 2's seed pass honors this flag. The same flag also lets self-host operators expose dev-friendly modes (Linear API key, GitHub PAT) without exposing them to SaaS customers.
 
 ### Credential rotation per install_model
 

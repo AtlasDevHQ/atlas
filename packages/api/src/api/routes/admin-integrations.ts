@@ -712,7 +712,7 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
         try: () =>
           saveInstallation(authResult.teamId ?? `byot-${orgId}`, botToken, {
             orgId,
-            workspaceName: authResult.workspaceName ?? undefined,
+            ...(authResult.workspaceName != null ? { workspaceName: authResult.workspaceName } : {}),
             ...(authResult.botUserId ? { botUserId: authResult.botUserId } : {}),
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -1043,7 +1043,7 @@ adminIntegrations.openapi(connectGitHubRoute, async (c) => {
         try: () =>
           saveGitHubInstallation(userResult.userId, {
             orgId,
-            username: userResult.username ?? undefined,
+            ...(userResult.username != null ? { username: userResult.username } : {}),
             accessToken,
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -1291,8 +1291,8 @@ adminIntegrations.openapi(connectLinearRoute, async (c) => {
         try: () =>
           saveLinearInstallation(viewerResult.userId, {
             orgId,
-            userName: viewerResult.userName ?? undefined,
-            userEmail: viewerResult.userEmail ?? undefined,
+            ...(viewerResult.userName != null ? { userName: viewerResult.userName } : {}),
+            ...(viewerResult.userEmail != null ? { userEmail: viewerResult.userEmail } : {}),
             apiKey,
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),

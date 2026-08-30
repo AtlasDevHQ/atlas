@@ -1408,7 +1408,7 @@ export async function registerProactiveListener(
           answerMessageId,
           asker,
           outcome: "wrong-data",
-          context: text || undefined,
+          ...(text ? { context: text } : {}),
           source: "modal",
         },
         config,

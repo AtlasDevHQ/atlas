@@ -1812,7 +1812,7 @@ export async function runAgent({
   // reaches `execute` and so emits no tool span at all. See
   // docs/development/telemetry.md § Boundaries of the seam span.
   const registryTools = activeRegistry.getAll();
-  const hookedTools = wrapToolsWithHooks(registryTools, { userId: userId ?? undefined, conversationId });
+  const hookedTools = wrapToolsWithHooks(registryTools, { ...(userId != null ? { userId: userId } : {}), ...(conversationId !== undefined ? { conversationId } : {})});
   const tools = wrapToolsWithDurableState(hookedTools, memoryStore);
 
   // #3755 — render the deterministic working-memory block from the slots loaded

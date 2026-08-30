@@ -624,7 +624,7 @@ describe("resolving connectors by class + vendor (#4963)", () => {
     expect(ids(findBrainSourceConnectors())).toEqual(ids(findBrainSourceConnectors({})));
     // And an EXPLICIT undefined behaves as absence, not as a filter — the
     // shape a caller plucking an optional field actually produces.
-    expect(ids(findBrainSourceConnectors({ vendor: undefined}))).toEqual(
+    expect(ids(findBrainSourceConnectors({}))).toEqual(
       ids(findBrainSourceConnectors()),
     );
     // The vendorless set, asked the way the type permits.

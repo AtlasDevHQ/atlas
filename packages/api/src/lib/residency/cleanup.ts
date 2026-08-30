@@ -153,7 +153,10 @@ const _everyPayloadSectionAudited: [UncoveredRefusalSection] extends [never] ? t
 void _everyPayloadSectionAudited;
 
 /**
- * The refusal columns of the eligibility re-check, derived from the table above.
+ * The refusal COLUMN LIST of the eligibility re-check, derived from the table above.
+ *
+ * Not a SELECT — a comma-joined list of column expressions spliced into one, which is
+ * why it is not named for a statement it cannot be used as on its own.
  *
  * Derived rather than written out, because a section listed in the table but missing
  * from the SELECT reads back `undefined` — which this module's `typeof === "number"`
@@ -168,7 +171,7 @@ void _everyPayloadSectionAudited;
  * together on purpose — see `jsonbPayload` in `migrate.ts`. Both mean "no payload is
  * recoverable from this row", which is one operator sentence, not two.
  */
-const REFUSAL_AUDIT_SELECT = DELETE_TIME_REFUSAL_SECTIONS.flatMap((s) => [
+const REFUSAL_AUDIT_COLUMNS = DELETE_TIME_REFUSAL_SECTIONS.flatMap((s) => [
   s.countColumn,
   `COALESCE(jsonb_array_length(${REFUSAL_DISCLOSURE[s.section].column}), 0) AS ${s.recordedColumn}`,
 ]).join(",\n              ");
@@ -693,7 +696,7 @@ export async function cleanupMigrationSourceData(migration: {
     const rows = await client.query(
       `SELECT status,
               source_cleaned_at,
-              ${REFUSAL_AUDIT_SELECT}
+              ${REFUSAL_AUDIT_COLUMNS}
          FROM region_migrations WHERE id = $1 FOR UPDATE`,
       [migrationId],
     );

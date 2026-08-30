@@ -207,11 +207,19 @@ const PROPOSAL_WARN = "DELETED the brain_vocabulary_proposal rows";
 const CARDINALITY_WARN = "DELETED the brain_predicate_cardinality rows";
 
 /**
- * ⚠️ `brain_vocabulary_edge` is a PREFIX of nothing here, but `brain_vocabulary_proposal`
- * is not a prefix of `brain_vocabulary_edge` either — the three markers are mutually
- * exclusive substrings, which is what lets `warnsFor` be an honest per-section filter.
- * Checked deliberately: a marker that matched two sections would make every
- * "exactly one warn" assertion below vacuous.
+ * Per-section filter over the warn sink.
+ *
+ * ⚠️ Its honesty rests on the three markers being mutually exclusive — a marker
+ * matching two sections would make every "exactly one warn" assertion below vacuous.
+ * That premise is enforced by the all-three-sections case at the bottom of this file,
+ * which asserts `toHaveLength(1)` per marker on a sweep where all three warn: an
+ * overlapping marker returns 2 there and the case goes red.
+ *
+ * ⚠️ It is deliberately NOT a standalone assertion over the three constants. That was
+ * written first, and it is the shape this repo calls a test of the test — three
+ * literals declared ten lines above, compared to each other, unable to fail on any
+ * source change. The length assertions below make the same claim against the REAL
+ * messages, which is the only version of it worth having.
  */
 function warnsFor(marker: string): Array<{ payload: Record<string, unknown>; message: string }> {
   return warns.filter((w) => w.message.includes(marker));
@@ -377,20 +385,6 @@ describe("source cleanup — refused alias edges (#5112)", () => {
 });
 
 describe("source cleanup — the two #5533 sections get the same audit (#5557)", () => {
-  it("⭐ the three section markers are mutually exclusive", () => {
-    // The premise every "exactly one warn" assertion below rests on. If one marker
-    // were a substring of another's message, `warnsFor` would return two entries for
-    // one section and the isolation cases would pass without isolating anything.
-    for (const [a, b] of [
-      [REFUSAL_WARN, PROPOSAL_WARN],
-      [PROPOSAL_WARN, CARDINALITY_WARN],
-      [REFUSAL_WARN, CARDINALITY_WARN],
-    ]) {
-      expect(a.includes(b)).toBe(false);
-      expect(b.includes(a)).toBe(false);
-    }
-  });
-
   it("⭐ warns about refused alias-PROPOSAL decisions, naming that section's own table and column", async () => {
     eligible({ proposals: { refused: 4 } });
     const result = await run();

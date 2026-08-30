@@ -33,8 +33,14 @@
  *
  * The managed target set lives in `lib/tools/actions/credentials/targets.ts`
  * (`ACTION_TARGETS`) — the reusable one-entry seam. This router has no
- * per-target branches; it iterates the registry. Adding Linear / GitHub App /
- * Salesforce is a registry entry, not a route change.
+ * per-target branches; it iterates the registry. Adding Linear / Salesforce is
+ * a registry entry, not a route change.
+ *
+ * GitHub (#5555) is the one entry so far that also moved this file, and the
+ * distinction is the one the seam turns on: it added a FIELD ATTRIBUTE to the
+ * shared spec (`multiline`, so a PEM key renders as a textarea), which this
+ * router passes through for every target alike. That is the spec growing, not
+ * a branch — there is still no `if (target === …)` anywhere below.
  *
  * @see ADR-0046 — per-workspace action credentials
  */
@@ -72,6 +78,10 @@ const FieldStatusSchema = z.object({
   hint: z.string(),
   secret: z.boolean().openapi({ description: "True ⇒ masked in the UI + never echoed back on read." }),
   required: z.boolean().openapi({ description: "True ⇒ the target does not resolve without it." }),
+  multiline: z.boolean().openapi({
+    description:
+      "True ⇒ the value spans several lines (e.g. a PEM private key), so the form should render a textarea rather than a single-line input.",
+  }),
   present: z.boolean().openapi({ description: "True ⇒ resolved to a non-empty value from the winning rung." }),
   source: z.enum(["workspace", "env", "unset"]).openapi({
     description:
@@ -134,6 +144,7 @@ function toStatusResponse(status: ActionTargetStatus) {
       hint: f.hint,
       secret: f.secret,
       required: f.required,
+      multiline: f.multiline,
       present: f.present,
       source: f.source,
     })),

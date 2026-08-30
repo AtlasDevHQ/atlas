@@ -12,7 +12,7 @@
  * Explicitly NOT included:
  *   - executePython — out of scope for dashboard editing; the bound agent
  *     should not run arbitrary Python in the middle of an edit session.
- *   - action plugins (createJiraTicket, sendEmailReport) — irrelevant to
+ *   - action plugins (createJiraTicket, createGitHubIssue, sendEmailReport) — irrelevant to
  *     dashboard composition; including them just confuses the model.
  *   - createDashboard — superseded by the bound editor tools. The root-
  *     chat flow uses `createDashboard` to mint a new dashboard + open

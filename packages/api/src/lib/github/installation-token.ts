@@ -15,15 +15,25 @@
  *      re-mint transparently afterward.
  *
  * This is the OQ5 "refresh" path: installation-token re-minting, NOT
- * refresh-token rotation (the App private key never reaches the DB; only the
- * installation_id does). Two call sites depend on it:
+ * refresh-token rotation. Three call sites depend on it:
  *
  *   - the install handler (`oauth-datasource-handler.ts`) mints once at install
  *     as a credential health-check (a failure flips the install to
- *     "reconnect needed"), and
+ *     "reconnect needed"),
  *   - the workspace REST datasource resolver (`workspace-datasource.ts`) mints
  *     (or serves the cache) per chat turn to bake a `bearer` credential for the
- *     github-data datasource — "cache the shape, mint the secret".
+ *     github-data datasource — "cache the shape, mint the secret", and
+ *   - the per-workspace `github` ACTION target (`lib/tools/actions/github.ts`,
+ *     #5555), which passes the TENANT's own App id and private key in `deps`
+ *     rather than letting either default to operator env.
+ *
+ * That third caller is why the two claims this module used to make about the
+ * private key both needed narrowing. It is still true of the operator tier
+ * that the key never reaches the DB (only the installation_id is persisted);
+ * for the workspace tier the tenant's key IS stored, encrypted, in
+ * `workspace_action_credentials`, and arrives here already decrypted. And a
+ * caller's credentials are now part of the cache key, so one tier can never be
+ * served a token the other minted — see {@link cacheKey}.
  *
  * The cache is process-local and best-effort: a miss/expiry just re-mints. A
  * mint failure throws {@link GitHubInstallationTokenError} (never cached, so the
@@ -31,6 +41,7 @@
  * fail-soft skip (resolver).
  */
 
+import { createHash } from "node:crypto";
 import { importPKCS8, SignJWT } from "jose";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -90,16 +101,51 @@ interface CacheEntry {
   readonly refreshAtMs: number;
 }
 
-/** Process-local cache keyed by installation id. */
+/**
+ * Process-local cache, keyed by installation id AND a fingerprint of the App
+ * credentials that minted the token — see {@link cacheKey}.
+ */
 const cache = new Map<string, CacheEntry>();
 
 /**
- * In-flight mints keyed by installation id. Coalesces concurrent cold-cache
- * callers (e.g. two chat turns in the same workspace racing on a just-expired
- * token) onto ONE mint round-trip rather than each firing its own. A failed
- * mint rejects all waiters and is removed (never cached), so the next call
- * retries. Concurrent callers share the first caller's `deps` — fine in
- * production where deps are env-derived and identical.
+ * Cache/single-flight key: the installation id plus a fingerprint of the App
+ * credentials the token would be minted with.
+ *
+ * The credential half is load-bearing, not defensive tidiness (#5555). An
+ * installation token carries the permissions of the App that minted it, so
+ * keying on the installation id ALONE means "whoever minted first for this
+ * installation decides which App's token everyone gets". That was harmless
+ * while one operator-env App was the only caller; it stops being harmless the
+ * moment a second caller brings its OWN credentials, which is exactly what
+ * the per-workspace GitHub action target does:
+ *
+ *   Atlas's operator App mints for installation 42 and caches it. A tenant
+ *   then configures the `github` action target with installation 42 and a key
+ *   that is wrong, revoked, or simply theirs — and the cache hands back the
+ *   OPERATOR's token before either the key or the App id is ever exercised.
+ *   The tenant's issue is created as Atlas, with Atlas's scopes.
+ *
+ * Hashing rather than concatenating keeps the private key out of a long-lived
+ * Map key, and the NUL separator keeps `("1", "23")` from colliding with
+ * `("12", "3")`. This is a cache key, never a credential check: a token is
+ * still only ever minted by actually signing with the key presented.
+ */
+function cacheKey(installationId: string, appId: string, privateKey: string): string {
+  const fingerprint = createHash("sha256")
+    .update(`${appId}\u0000${privateKey}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `${installationId}:${fingerprint}`;
+}
+
+/**
+ * In-flight mints, keyed exactly as the cache is ({@link cacheKey}). Coalesces
+ * concurrent cold-cache callers (e.g. two chat turns in the same workspace
+ * racing on a just-expired token) onto ONE mint round-trip rather than each
+ * firing its own. A failed mint rejects all waiters and is removed (never
+ * cached), so the next call retries. Concurrent callers share the first
+ * caller's `deps` — safe because the App credentials, the part of `deps` that
+ * decides WHICH token comes back, are in the key they coalesced on.
  */
 const inFlight = new Map<string, Promise<string>>();
 
@@ -133,32 +179,11 @@ export async function getGitHubInstallationToken(
     );
   }
 
-  const now = deps.now ?? (() => Date.now());
-  const cached = cache.get(installationId);
-  if (cached && now() < cached.refreshAtMs) {
-    return cached.token;
-  }
-
-  // Single-flight: a concurrent caller already minting for this installation
-  // shares that promise instead of issuing a duplicate mint.
-  const existing = inFlight.get(installationId);
-  if (existing) return existing;
-
-  const minting = mintAndCache(installationId, deps, now);
-  inFlight.set(installationId, minting);
-  try {
-    return await minting;
-  } finally {
-    inFlight.delete(installationId);
-  }
-}
-
-/** Sign the App JWT, exchange it for an installation token, and cache the result. */
-async function mintAndCache(
-  installationId: string,
-  deps: InstallationTokenDeps,
-  now: () => number,
-): Promise<string> {
+  // Resolve the App credentials BEFORE the cache lookup: they are half the
+  // cache key, so a hit cannot be established without them (see `cacheKey`).
+  // This is why "not configured" is now reported even when a token for this
+  // installation happens to be cached — that entry belongs to whichever
+  // credentials minted it, and this caller has none to match it with.
   const appId = deps.appId ?? process.env.GITHUB_APP_ID;
   const privateKey = deps.privateKey ?? process.env.GITHUB_APP_PRIVATE_KEY;
   if (!appId || !privateKey) {
@@ -168,6 +193,38 @@ async function mintAndCache(
     );
   }
 
+  const key = cacheKey(installationId, appId, privateKey);
+  const now = deps.now ?? (() => Date.now());
+  const cached = cache.get(key);
+  if (cached && now() < cached.refreshAtMs) {
+    return cached.token;
+  }
+
+  // Single-flight: a concurrent caller already minting for this installation
+  // WITH THE SAME CREDENTIALS shares that promise instead of issuing a
+  // duplicate mint. Keyed the same way as the cache, so two tiers minting for
+  // one installation never share a flight either.
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+
+  const minting = mintAndCache(installationId, key, appId, privateKey, deps, now);
+  inFlight.set(key, minting);
+  try {
+    return await minting;
+  } finally {
+    inFlight.delete(key);
+  }
+}
+
+/** Sign the App JWT, exchange it for an installation token, and cache the result. */
+async function mintAndCache(
+  installationId: string,
+  key: string,
+  appId: string,
+  privateKey: string,
+  deps: InstallationTokenDeps,
+  now: () => number,
+): Promise<string> {
   // Snapshot the clock once so the JWT claims, the expiry-cap fallback, and the
   // debug log all share one timestamp.
   const nowMs = now();
@@ -175,7 +232,7 @@ async function mintAndCache(
   const minted = await mintInstallationToken(installationId, appJwt, deps.fetchImpl, nowMs);
 
   const refreshAtMs = minted.expiresAtMs - TOKEN_REFRESH_MARGIN_MS;
-  cache.set(installationId, { token: minted.token, refreshAtMs });
+  cache.set(key, { token: minted.token, refreshAtMs });
   log.debug(
     { installationIdTail: installationId.slice(-4), refreshInSeconds: Math.round((refreshAtMs - nowMs) / 1000) },
     "Minted GitHub installation token",

@@ -585,12 +585,12 @@ const NEVER_DISOWN_A_VISIBLE_TOOL =
  * The warning for "the operator action tools did not load", authored by
  * {@link buildRegistry} and relayed by every surface that requested them.
  *
- * Names the two tools by their registry names rather than "JIRA and email":
- * `sendEmailReport` is gone, the core `sendEmail` is not, and the model has to
- * be able to tell them apart.
+ * Names the tools by their registry names rather than "JIRA, GitHub and
+ * email": `sendEmailReport` is gone, the core `sendEmail` is not, and the
+ * model has to be able to tell them apart.
  */
 export const ACTION_TOOLS_UNAVAILABLE_WARNING =
-  "The operator action tools (createJiraTicket, sendEmailReport) failed to load and are " +
+  "The operator action tools (createJiraTicket, createGitHubIssue, sendEmailReport) failed to load and are " +
   "unavailable for this session. " +
   NEVER_DISOWN_A_VISIBLE_TOOL;
 
@@ -602,7 +602,7 @@ export const ACTION_TOOLS_UNAVAILABLE_WARNING =
  * the first draft of this fix re-created the bug it was fixing.
  *
  * Relative to a build that SUCCEEDED, a fallback loses only what the env asked
- * for on top of the core set: the `tools/actions` operator pair under
+ * for on top of the core set: the `tools/actions` operator trio under
  * `ATLAS_ACTIONS_ENABLED`, and `executePython` under `ATLAS_PYTHON_ENABLED`.
  * The copy is derived from exactly that, so a deployment that never enabled
  * either is never told it lost them.
@@ -610,7 +610,9 @@ export const ACTION_TOOLS_UNAVAILABLE_WARNING =
 export function registryBuildFailedWarning(): string {
   const lost: string[] = [];
   if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
-    lost.push("the operator action tools (createJiraTicket, sendEmailReport)");
+    lost.push(
+      "the operator action tools (createJiraTicket, createGitHubIssue, sendEmailReport)",
+    );
   }
   if (isPythonToolRequested()) {
     lost.push("Python execution (executePython)");
@@ -714,15 +716,16 @@ export async function buildRegistry(options?: {
 
   if (options?.includeActions) {
     try {
-      const { createJiraTicket, sendEmailReport } = await import("./actions");
+      const { createJiraTicket, createGitHubIssue, sendEmailReport } = await import("./actions");
       registry.register(createJiraTicket as unknown as AtlasTool);
+      registry.register(createGitHubIssue as unknown as AtlasTool);
       registry.register(sendEmailReport as unknown as AtlasTool);
     } catch (err) {
       const { createLogger } = await import("@atlas/api/lib/logger");
       const actionLog = createLogger("registry");
       actionLog.error(
         { err: err instanceof Error ? err : new Error(String(err)) },
-        "Failed to load action tools — JIRA and email actions will be unavailable",
+        "Failed to load action tools — JIRA, GitHub and email actions will be unavailable",
       );
       warnings.push(ACTION_TOOLS_UNAVAILABLE_WARNING);
     }

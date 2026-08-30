@@ -155,6 +155,90 @@ describe("getGitHubInstallationToken — caching", () => {
     expect(a.calls).toHaveLength(1);
     expect(b.calls).toHaveLength(1);
   });
+
+  /**
+   * #5555 — the cache key is (installation, App credentials), not installation
+   * alone. The per-workspace `github` action target brought a SECOND caller
+   * with its OWN App credentials to a minter that until then had exactly one
+   * (operator env). With an id-only key, whoever minted first for an
+   * installation decided which App's token everyone got — and an installation
+   * token carries the permissions of the App that minted it.
+   */
+  describe("credential-scoped cache", () => {
+    const OTHER_APP_ID = "654321";
+    const { privateKey: OTHER_KEY } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+
+    it("a different App ID on the same installation does not read the cached token", async () => {
+      const first = mintFetch({ token: "ghs_operator", expiresInMs: 3_600_000 });
+      const operatorToken = await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: first.fetchImpl, now: () => T0_MS,
+      });
+
+      const second = mintFetch({ token: "ghs_tenant", expiresInMs: 3_600_000 });
+      const tenantToken = await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: OTHER_APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: second.fetchImpl, now: () => T0_MS,
+      });
+
+      expect(operatorToken).toBe("ghs_operator");
+      expect(tenantToken).toBe("ghs_tenant");
+      // The second caller minted rather than being handed the first's token.
+      expect(second.calls).toHaveLength(1);
+    });
+
+    it("a different private key on the same installation does not read the cached token", async () => {
+      const first = mintFetch({ token: "ghs_operator", expiresInMs: 3_600_000 });
+      await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: first.fetchImpl, now: () => T0_MS,
+      });
+
+      const second = mintFetch({ token: "ghs_tenant", expiresInMs: 3_600_000 });
+      const tenantToken = await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: OTHER_KEY, fetchImpl: second.fetchImpl, now: () => T0_MS,
+      });
+
+      expect(tenantToken).toBe("ghs_tenant");
+      expect(second.calls).toHaveLength(1);
+    });
+
+    it("the SAME credentials still hit the cache — the fix costs no mint traffic", async () => {
+      const first = mintFetch({ token: "ghs_same", expiresInMs: 3_600_000 });
+      await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: first.fetchImpl, now: () => T0_MS,
+      });
+      const second = mintFetch({ token: "ghs_never_used", expiresInMs: 3_600_000 });
+      const again = await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: second.fetchImpl, now: () => T0_MS,
+      });
+
+      expect(again).toBe("ghs_same");
+      expect(second.calls).toHaveLength(0);
+    });
+
+    it("concurrent callers with DIFFERENT credentials do not coalesce onto one flight", async () => {
+      // Single-flight is keyed the same way as the cache, so two tiers racing
+      // on one installation each get their own mint rather than sharing the
+      // first caller's `deps`.
+      const a = mintFetch({ token: "ghs_a", expiresInMs: 3_600_000 });
+      const b = mintFetch({ token: "ghs_b", expiresInMs: 3_600_000 });
+      const [tokenA, tokenB] = await Promise.all([
+        getGitHubInstallationToken(INSTALLATION_ID, {
+          appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: a.fetchImpl, now: () => T0_MS,
+        }),
+        getGitHubInstallationToken(INSTALLATION_ID, {
+          appId: OTHER_APP_ID, privateKey: OTHER_KEY, fetchImpl: b.fetchImpl, now: () => T0_MS,
+        }),
+      ]);
+
+      expect(tokenA).toBe("ghs_a");
+      expect(tokenB).toBe("ghs_b");
+      expect(a.calls).toHaveLength(1);
+      expect(b.calls).toHaveLength(1);
+    });
+  });
 });
 
 describe("getGitHubInstallationToken — failure modes", () => {

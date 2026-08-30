@@ -276,6 +276,8 @@ Atlas does not hold a long-lived GitHub token: each call signs a short-lived JWT
 
 This action is marked **reversible** -- the created issue's repository and number are recorded so it can be closed, but Atlas does not close it automatically.
 
+Issues only: Atlas does not open pull requests. A PR needs a branch and commits, which is a different and much larger surface than filing an issue from a finding.
+
 <Callout type="info">
   These environment variables are the **self-hosted** fallback only, and they are deliberately not the `GITHUB_APP_*` variables used elsewhere for Atlas's own GitHub App. Credentials are configured per workspace under **Admin > Action Credentials**; see [Per-workspace action credentials](#per-workspace-action-credentials).
 </Callout>

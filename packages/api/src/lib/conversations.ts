@@ -98,6 +98,38 @@ export type CrudDataResult<T> = { ok: true; data: T } | { ok: false; reason: Cru
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Project a conversation onto its JSON wire shape (#5522).
+ *
+ * Five fields are optional on `Conversation` for WIRE forward-compat — an older
+ * client must tolerate their absence — but `rowToConversation` always emits all
+ * five. Hono's `c.json()` refuses a payload carrying any optional property under
+ * `exactOptionalPropertyTypes`: its response type widens the slot back to
+ * `T | undefined`, which is not a `JSONValue`. Restating them as
+ * always-present-possibly-null makes the guarantee the mapper already provides
+ * part of the response's own type, and changes no value a client can observe.
+ */
+export function conversationResponse(conv: Conversation): Omit<
+  Conversation,
+  "routingMode" | "restExcludedDatasourceIds" | "restFocusDatasourceId" | "groupReach" | "answerStyle"
+> & {
+  routingMode: NonNullable<Conversation["routingMode"]> | null;
+  restExcludedDatasourceIds: string[];
+  restFocusDatasourceId: string | null;
+  groupReach: string | null;
+  answerStyle: NonNullable<Conversation["answerStyle"]> | null;
+} {
+  const { routingMode, restExcludedDatasourceIds, restFocusDatasourceId, groupReach, answerStyle, ...rest } = conv;
+  return {
+    ...rest,
+    routingMode: routingMode ?? null,
+    restExcludedDatasourceIds: restExcludedDatasourceIds ?? [],
+    restFocusDatasourceId: restFocusDatasourceId ?? null,
+    groupReach: groupReach ?? null,
+    answerStyle: answerStyle ?? null,
+  };
+}
+
 function rowToConversation(r: Record<string, unknown>): Conversation {
   return {
     id: r.id as string,

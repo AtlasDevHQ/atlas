@@ -876,7 +876,12 @@ adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c,
     },
   });
 
-  return c.json(result, 200);
+  // `message` is optional on the health-check result, and Hono's `c.json()`
+  // rejects an optional-bearing payload under `exactOptionalPropertyTypes` — its
+  // response type widens the slot back to `T | undefined`, which is not a
+  // `JSONValue`. Project it onto `| null`, the convention this repo already uses
+  // at the same seam (`admin-openapi-datasources.ts`) (#5522).
+  return c.json({ ...result, message: result.message ?? null }, 200);
 }));
 
 // POST / — create connection scoped to active org

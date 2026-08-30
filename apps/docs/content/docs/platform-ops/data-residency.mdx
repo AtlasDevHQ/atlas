@@ -361,7 +361,7 @@ When `executeRegionMigration` fails after Phase 3 succeeded, the row will be `st
 
 > The `region_updated` column is the single source of truth for "destination has taken ownership." It is set inside the same migration executor process that performs the cutover, immediately after `organization.region` is updated, before Phase 4 starts. If you ever need to manually flip `region_updated`, treat it as a destructive operation — the guard exists exactly because the wrong value here corrupts customer data.
 
-### Recovering refused vocabulary aliases (7-day window)
+### Recovering refused vocabulary decisions (7-day window)
 
 A migration can complete successfully and still drop reviewer decisions. The target region **refuses** an arriving alias edge that would contradict a decision already made there — taking a second parent for the same term, or closing a loop between two spellings — because a cyclic vocabulary has no answer for "what is the canonical spelling of this", and destination-wins is what keeps the target consistent at every step. That is the right trade, and it is not free: each refusal is one reviewer's approved decision the destination will never hold.
 
@@ -371,7 +371,9 @@ A migration can complete successfully and still drop reviewer decisions. The tar
 - the migration's own audit events (`region_migration_completed` and `region_migration_cleanup_scheduled`, the latter naming the same 7-day timer);
 - the source region's `region_migrations` row.
 
-**The window.** The source region keeps its own `brain_vocabulary_edge` rows for the whole grace period, then deletes them. That copy needs no cooperation from anyone and is the one to use:
+**Three sections, three tables.** Alias edges are the original case, but a target also refuses arriving **alias-proposal** decisions and **predicate-cardinality** decisions the same way, out of `brain_vocabulary_proposal` and `brain_predicate_cardinality`. Each has its own count/payload pair on the migration row, and the cleanup sweep warns about each separately — a warn naming one section's table cannot be answered by another section's query.
+
+**The window.** The source region keeps its own rows for the whole grace period, then deletes them. That copy needs no cooperation from anyone and is the one to use:
 
 ```sql
 -- Everything the source still holds, before the cleanup runs.
@@ -381,22 +383,35 @@ SELECT slot_position, from_norm, to_norm, approved_by, approved_at
  ORDER BY slot_position, from_norm;
 ```
 
-After the cleanup has run, the surviving record is on the migration row — which is platform-classified, so the sweep never touches it:
+`brain_vocabulary_proposal` and `brain_predicate_cardinality` are scoped by `workspace_id` the same way, and are deleted by the same sweep in the same transaction.
+
+After the cleanup has run, the surviving record is on the migration row — which is platform-classified, so the sweep never touches it. All three sections, because the sweep's own warns name all three:
 
 ```sql
 SELECT vocabulary_edges_refused,
-       jsonb_array_length(COALESCE(vocabulary_refusals, '[]'::jsonb)) AS payloads_recorded,
-       vocabulary_refusals
+       jsonb_array_length(COALESCE(vocabulary_refusals, '[]'::jsonb))
+         AS edge_payloads_recorded,
+       vocabulary_refusals,
+       vocabulary_proposals_refused,
+       jsonb_array_length(COALESCE(vocabulary_proposal_refusals, '[]'::jsonb))
+         AS proposal_payloads_recorded,
+       vocabulary_proposal_refusals,
+       predicate_cardinalities_refused,
+       jsonb_array_length(COALESCE(predicate_cardinality_refusals, '[]'::jsonb))
+         AS cardinality_payloads_recorded,
+       predicate_cardinality_refusals
   FROM region_migrations
  WHERE id = '<migrationId>';
 ```
 
-`payloads_recorded` short of `vocabulary_edges_refused` means part of the set has no payload here — the target's build predated the payload contract, the response's bound truncated the list, or an entry was unreadable. For the remainder, the target region's own log carries the refusal lines for this workspace.
+A `*_payloads_recorded` short of its own `*_refused` means part of **that section's** set has no payload here — the target's build predated the payload contract, the response's bound truncated the list, or an entry was unreadable. For the remainder, the target region's own log carries the refusal lines for this workspace.
+
+Read each pair on its own. The comparison is per section, not across the row: a migration can hold every edge payload and none of its cardinality payloads, and a total would describe neither. A `NULL` count is not `0` — it means the column predates that section's migration, or the source build never asked, so nothing is known either way.
 
 **What to do with them.** Re-approve the ones the target should hold, in the target region, through the normal alias review path — approving re-derives the affected claims' identity under the target's vocabulary. A refusal is not a bug to be fixed by forcing the edge in: the two regions genuinely disagreed, and a human has to decide which spelling wins.
 
 <Callout type="warn" title="Do not wait out the grace period">
-  `vocabulary_edges_refused > 0` is the one migration outcome with a deadline attached. The migration reports success, the workspace serves normally, and nothing degrades — so the only signal is the count, and the source rows it refers to are deleted on schedule.
+  A non-zero `vocabulary_edges_refused`, `vocabulary_proposals_refused` or `predicate_cardinalities_refused` is the one migration outcome with a deadline attached. The migration reports success, the workspace serves normally, and nothing degrades — so the only signal is the count, and the source rows it refers to are deleted on schedule. Any one of the three being non-zero starts the clock; they are not a total.
 </Callout>
 
 ## Limitations

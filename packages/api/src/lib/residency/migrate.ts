@@ -184,16 +184,22 @@ type RefusalAccountingSection = (typeof REFUSAL_ACCOUNTING)[number];
  * clause is emitted only when it is set, because an instruction to go and read a
  * column that does not exist is worse than no instruction — the same rule
  * `cleanup.ts` applies to an empty one.
+ *
+ * ⚠️ `as const satisfies`, and `column` is REQUIRED-but-nullable rather than
+ * optional. Both halves are load-bearing since #5557 gave this record a second
+ * reader:
+ *
+ * - **Required** forces a new accounting section to DECIDE whether it carries
+ *   payloads, instead of inheriting "no" by omitting a line. That decision is what
+ *   says whether the delete-time audit owes it a reader.
+ * - **`as const`** keeps each entry's `column` a literal type rather than the
+ *   widened `string | undefined` the annotation would give all four, which is what
+ *   lets `PayloadCarryingRefusalSection` below name exactly the sections that have
+ *   one. Under the old `const X: Record<…>` form that extraction is not expressible
+ *   and `cleanup.ts` would have to re-spell all three column names — two structures
+ *   that must agree about which column holds the last copy of a human decision.
  */
-const REFUSAL_DISCLOSURE: Record<
-  RefusalAccountingSection,
-  {
-    readonly subject: string;
-    readonly decisions: string;
-    readonly sourceTable: string;
-    readonly column?: string;
-  }
-> = {
+export const REFUSAL_DISCLOSURE = {
   brainVocabularyEdges: {
     subject: "curated alias edges",
     decisions: "approved human review decisions",
@@ -208,6 +214,9 @@ const REFUSAL_DISCLOSURE: Record<
     subject: "Slack ingest-scope narrowings",
     decisions: "human scope decisions",
     sourceTable: "brain_slack_channel",
+    // No payload contract: nothing is persisted for this section, so neither the
+    // pre-cutover disclosure nor the delete-time audit may name a column for it.
+    column: undefined,
   },
   brainVocabularyProposals: {
     subject: "arriving alias-proposal decisions",
@@ -221,7 +230,32 @@ const REFUSAL_DISCLOSURE: Record<
     sourceTable: "brain_predicate_cardinality",
     column: "predicate_cardinality_refusals",
   },
-};
+} as const satisfies Record<
+  RefusalAccountingSection,
+  {
+    readonly subject: string;
+    readonly decisions: string;
+    readonly sourceTable: string;
+    readonly column: string | undefined;
+  }
+>;
+
+/**
+ * The accounting sections whose refusals leave a durable payload on
+ * `region_migrations` — i.e. the ones a delete-time reader can honestly point an
+ * operator at (#5557).
+ *
+ * Derived from `REFUSAL_DISCLOSURE` rather than listed, so a fourth payload-carrying
+ * section widens this union the moment its `column` is filled in. `cleanup.ts`'s
+ * audit table is keyed on it and pins its own completeness against it, which makes
+ * "shipped a payload column with no delete-time reader" — the exact state #5533 left
+ * and this issue closes — a compile error rather than a follow-up issue.
+ */
+export type PayloadCarryingRefusalSection = {
+  [K in RefusalAccountingSection]: (typeof REFUSAL_DISCLOSURE)[K]["column"] extends string
+    ? K
+    : never;
+}[RefusalAccountingSection];
 
 /**
  * Is this section's `refused` ACCOUNTING rather than loss — and if so, what does its
@@ -1196,15 +1230,24 @@ export async function recordMigrationRefusals(
  * is `IS NOT NULL` and does not additionally have to know that an empty array means
  * the same thing.
  *
- * ⚠️ ONE READER FOLDS THE TWO TOGETHER, AND IT ONLY READS ONE OF THESE COLUMNS.
- * `cleanup.ts`'s delete-time audit selects `COALESCE(jsonb_array_length(
- * vocabulary_refusals), 0)` — the EDGE column alone. The two #5533 columns have no
- * reader yet, so the `null` convention here is a property of the write side that
- * nothing downstream depends on so far. Stated exactly because the first version of
- * this comment claimed `cleanup.ts` reads "these columns", which is false for four
- * of the six and would have sent the next maintainer looking for a symmetry that
- * does not exist. Extending that audit to the two new sections is the deliberate
- * follow-up recorded on #5533's PR.
+ * ⚠️ ONE READER FOLDS THE TWO TOGETHER, ACROSS ALL THREE COLUMNS (#5557).
+ * `cleanup.ts`'s delete-time audit selects `COALESCE(jsonb_array_length(<column>),
+ * 0)` for each payload column named in `REFUSAL_DISCLOSURE` — so `NULL` and `'[]'`
+ * arrive as the same `0`, which is the only reading that makes this convention free
+ * to choose: both mean "no payload is recoverable from this row", and the operator
+ * message keyed off that `0` is the same sentence either way.
+ *
+ * That fold is what the convention BUYS, not a caveat on it. The distinction the
+ * `null` preserves is for the other query — "which migrations still hold a
+ * recoverable payload", an `IS NOT NULL` per column that does not have to know an
+ * empty array means the same thing.
+ *
+ * Stated exactly because an earlier version of this comment claimed `cleanup.ts`
+ * reads "these columns" while it read one of the three, and the correction that
+ * replaced it recorded the gap as a deferral. Both are now stale: the reader is
+ * `DELETE_TIME_REFUSAL_SECTIONS` in `cleanup.ts`, keyed on
+ * `PayloadCarryingRefusalSection` above, and a fourth payload column cannot ship
+ * without one.
  */
 function jsonbPayload(details: readonly unknown[]): string | null {
   return details.length === 0 ? null : JSON.stringify(details);

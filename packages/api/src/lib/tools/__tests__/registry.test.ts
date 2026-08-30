@@ -9,6 +9,11 @@ const mockJiraTool = tool({
   inputSchema: z.object({ summary: z.string() }),
   execute: async ({ summary }) => summary,
 });
+const mockGitHubTool = tool({
+  description: "Mock createGitHubIssue tool",
+  inputSchema: z.object({ title: z.string() }),
+  execute: async ({ title }) => title,
+});
 const mockEmailTool = tool({
   description: "Mock sendEmailReport tool",
   inputSchema: z.object({ to: z.string() }),
@@ -24,6 +29,16 @@ void mock.module("@atlas/api/lib/tools/actions", () => ({
     reversible: true,
     defaultApproval: "manual",
     requiredCredentials: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"],
+  },
+  createGitHubIssue: {
+    name: "createGitHubIssue",
+    description: "### Create GitHub Issue\nMock description",
+    tool: mockGitHubTool,
+    actionType: "github:create_issue",
+    reversible: true,
+    defaultApproval: "manual",
+    // Empty, like the real one — GitHub credentials are per-workspace (#5555).
+    requiredCredentials: [],
   },
   sendEmailReport: {
     name: "sendEmailReport",
@@ -375,11 +390,12 @@ describe("buildRegistry", () => {
     expect(Object.keys(headless.getAll())).not.toContain("proposeFact");
   });
 
-  it("with includeActions includes createJiraTicket and sendEmailReport alongside core tools", async () => {
+  it("with includeActions includes every action tool alongside core tools", async () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
       "createDashboard",
+      "createGitHubIssue",
       "createJiraTicket",
       "createLinearIssue",
       "executeSQL",
@@ -469,7 +485,7 @@ describe("buildRegistry", () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const actions = registry.getActions();
     const actionTypes = actions.map((a) => a.actionType).sort();
-    expect(actionTypes).toEqual(["email:send", "jira:create"]);
+    expect(actionTypes).toEqual(["email:send", "github:create_issue", "jira:create"]);
   });
 
   it("core-only registry has no actions", async () => {

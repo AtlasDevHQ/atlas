@@ -138,6 +138,16 @@ const mockJiraAction = {
   defaultApproval: "manual",
   requiredCredentials: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"],
 };
+const mockGitHubAction = {
+  name: "createGitHubIssue",
+  description: "### Create GitHub Issue\nMock",
+  tool: { type: "function" },
+  actionType: "github:create_issue",
+  reversible: true,
+  defaultApproval: "manual",
+  // Empty, like the real one — GitHub credentials are per-workspace (#5555).
+  requiredCredentials: [] as string[],
+};
 const mockEmailAction = {
   name: "sendEmailReport",
   description: "### Send Email Report\nMock",
@@ -149,6 +159,7 @@ const mockEmailAction = {
 };
 void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: mockJiraAction,
+  createGitHubIssue: mockGitHubAction,
   sendEmailReport: mockEmailAction,
 }));
 

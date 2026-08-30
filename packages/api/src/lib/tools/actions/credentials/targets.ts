@@ -20,10 +20,13 @@
  *     "platform default Jira" is meaningless: each tenant brings their own.
  *     So there is no operator rung in the ladder (ADR-0046).
  *
- * Each field maps to an EXISTING global env var so `process.env` stays the
- * self-host fallback unchanged — the field's `envVar` is both the storage key
- * in the encrypted bundle AND the `process.env` key the self-host rung reads.
- * One field spec therefore reads both rungs with no per-target mapping table.
+ * A field's `envVar` is both the storage key in the encrypted bundle AND the
+ * `process.env` key the self-host rung reads, so one field spec reads both
+ * rungs with no per-target mapping table. For a target PORTED off globals
+ * (Jira) that name is the existing global, which is what makes the self-host
+ * rung a no-op change for an existing operator. For a NET-NEW target (GitHub)
+ * there is no existing global to keep, and the name is chosen not to collide
+ * with an unrelated one — see `GITHUB_TARGET` on why it is not `GITHUB_APP_*`.
  *
  * @see ADR-0046 — per-workspace action credentials
  * @see ./resolver.ts — where the precedence ladder is decided
@@ -49,6 +52,41 @@ export interface ActionCredentialField {
    * Optional fields (e.g. a default project key) may legitimately be unset.
    */
   readonly required: boolean;
+  /**
+   * Whether the value spans several lines, so the Admin form renders a
+   * textarea rather than a single-line input. Defaults to false.
+   *
+   * ── Why this attribute exists (#5555, the GitHub App target) ────────────
+   *
+   * The GitHub App target was the first entry whose credential is not the
+   * flat token-shaped bundle Jira uses: it authenticates with an app id, an
+   * installation id and an RSA PRIVATE KEY IN PEM FORM. #5555 asked whether
+   * this vocabulary covers that, or whether the spec has to grow a field
+   * KIND. It covers it, and the reason is worth keeping:
+   *
+   *   A PEM is a long string, not a new kind of value. It is still one entry
+   *   in the `{ <ENV_VAR>: <value> }` map, so the store's JSON + AES-GCM
+   *   round trip, the resolver's all-or-nothing rule, the env rung and the
+   *   masking convention all carry it with no change at all.
+   *
+   * The single thing the vocabulary genuinely could NOT express was that the
+   * Admin form must offer a textarea — a `<input type=password>` makes a
+   * 1,700-character key unpasteable in practice. That is presentation, so it
+   * lands as one more declarative boolean that every consumer reads off the
+   * registry, exactly like `secret`.
+   *
+   * A `kind: "text" | "secret" | "pem"` discriminant was the alternative and
+   * was rejected twice over: `secret` already answers "mask this", so a kind
+   * would give two ways to say it and invite them to disagree; and a
+   * target-named kind is the per-target branch this registry exists to
+   * prevent — the next target with an odd credential would add a fourth.
+   *
+   * What is deliberately NOT here: parsing. Unescaping `\n` and converting a
+   * PKCS#1 key to the PKCS#8 the signer wants is protocol detail of ONE
+   * target, so it lives in that target's action module (`../github.ts`),
+   * never in the spec every target shares.
+   */
+  readonly multiline?: boolean;
 }
 
 /** An action target managed by the workspace credential surface. */
@@ -110,13 +148,73 @@ const JIRA_TARGET: ActionTargetSpec = {
 };
 
 /**
+ * GitHub — a GitHub App the TENANT owns and installs on their own repos
+ * (#5555). Net-new: unlike Jira this was never an env-reading action, so no
+ * existing global is being preserved.
+ *
+ * Auth is the App flow, not a personal access token: an RS256 JWT signed with
+ * the App's private key is exchanged for a short-lived installation token per
+ * call (`lib/github/installation-token.ts`). A PAT would have been the flat
+ * token-shaped bundle Jira uses, and was rejected — it is bound to a human,
+ * carries that human's full account scope, and dies when they leave.
+ *
+ * ── Why these names are not `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` ────
+ *
+ * Those exact env vars are ALREADY read, by the operator-tier GitHub App that
+ * backs the `github-data` datasource. Reusing them would make this
+ * workspace-tier target's self-host rung read Atlas's OWN app registration —
+ * a textual coupling of the two tiers that ADR-0046 keeps structurally apart,
+ * and one that would silently arm this target on any self-host box that had
+ * only ever configured the datasource App. The `GITHUB_ACTION_` prefix keeps
+ * the two sets disjoint by construction.
+ *
+ * `GITHUB_ACTION_DEFAULT_REPO` is optional: the agent may name a repo per
+ * call, and the stored default is only consulted when it doesn't.
+ */
+const GITHUB_TARGET: ActionTargetSpec = {
+  target: "github",
+  label: "GitHub",
+  fields: [
+    {
+      envVar: "GITHUB_ACTION_APP_ID",
+      label: "App ID",
+      hint: "Your GitHub App's numeric App ID (GitHub → Settings → Developer settings → GitHub Apps).",
+      secret: false,
+      required: true,
+    },
+    {
+      envVar: "GITHUB_ACTION_INSTALLATION_ID",
+      label: "Installation ID",
+      hint: "The installation of that App on your org or account — the trailing number in the App's 'Configure' URL.",
+      secret: false,
+      required: true,
+    },
+    {
+      envVar: "GITHUB_ACTION_PRIVATE_KEY",
+      label: "Private Key (PEM)",
+      hint: "The App's private key, pasted whole including the BEGIN/END lines. Either PKCS#1 (GitHub's download) or PKCS#8.",
+      secret: true,
+      required: true,
+      multiline: true,
+    },
+    {
+      envVar: "GITHUB_ACTION_DEFAULT_REPO",
+      label: "Default Repository",
+      hint: "Optional. owner/repo (e.g. acme/platform) used when the agent doesn't name one.",
+      secret: false,
+      required: false,
+    },
+  ],
+};
+
+/**
  * Every action target managed by the workspace credential surface.
  *
- * Pilot scope (#3766): Jira. Linear, GitHub App and Salesforce are one-entry
- * additions here plus their action's port off `process.env` — tracked as
- * children of #3765.
+ * Pilot scope (#3766): Jira. GitHub joined in #5555. Linear and Salesforce are
+ * one-entry additions here plus their action's port off `process.env` —
+ * tracked as children of #3765.
  */
-export const ACTION_TARGETS: readonly ActionTargetSpec[] = [JIRA_TARGET];
+export const ACTION_TARGETS: readonly ActionTargetSpec[] = [JIRA_TARGET, GITHUB_TARGET];
 
 /** Look up a managed action target by slug. `undefined` if unmanaged. */
 export function getActionTarget(target: string): ActionTargetSpec | undefined {

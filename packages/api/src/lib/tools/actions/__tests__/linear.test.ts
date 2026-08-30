@@ -228,7 +228,7 @@ describe("executeLinearCreate", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe("https://api.linear.app/graphql");
     expect(calls[0]!.init?.method).toBe("POST");
-    expect(authHeaderOf(0)).toBe("lin_api_tenant-key");
+    expect(authHeaderOf(0)).toBe("Bearer lin_api_tenant-key");
     expect(lastIssueInput().title).toBe("Bug report");
     expect(lastIssueInput().description).toBe("Something is broken");
     expect(result).toEqual({
@@ -253,7 +253,7 @@ describe("executeLinearCreate", () => {
     );
 
     const auth = authHeaderOf(0);
-    expect(auth).toBe("lin_api_tenant-key");
+    expect(auth).toBe("Bearer lin_api_tenant-key");
     expect(auth).not.toContain("operator");
     // The operator's default team must not have been consulted either — with
     // no team named anywhere, exactly one call (the mutation) is made.
@@ -490,7 +490,7 @@ describe("createLinearTicket — tool execute", () => {
     );
 
     expect(resolverCalls).toEqual([{ target: "linear", workspaceId: "ws-tenant-1" }]);
-    expect(authHeaderOf(0)).toBe("lin_api_tenant-key");
+    expect(authHeaderOf(0)).toBe("Bearer lin_api_tenant-key");
     expect(result.id).toBe("issue-uuid-1");
     expect(result.rollbackInfo).toEqual({
       method: "archive",

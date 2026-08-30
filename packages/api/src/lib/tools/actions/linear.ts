@@ -175,10 +175,13 @@ async function linearGraphQL(
     method: "POST",
     signal,
     headers: {
-      // Linear accepts a personal API key as the raw Authorization value; an
-      // OAuth access token would use `Bearer <token>`. This target stores a
-      // personal key, so no scheme prefix.
-      Authorization: apiKey,
+      // `Bearer <personal key>`, matching the shipped API-key install path in
+      // `integrations/linear/lazy-builder.ts` (its `runIssueCreate` takes the
+      // personal key as the bearer directly). Linear accepts a personal key
+      // both bare and Bearer-prefixed; this module cannot exercise the live
+      // API in tests, so it follows the form already proven in production here
+      // rather than the other one.
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
       Accept: "application/json",
     },
@@ -291,22 +294,29 @@ export async function executeLinearCreate(
       controller.signal,
     );
 
+    // Every one of the three is in the mutation's selection set, so a missing
+    // one means a malformed response, not an optional field. Defaulting them
+    // to "" would hand the agent a success carrying a blank issue key and a
+    // blank link — a silent fallback where CLAUDE.md wants an error.
     const issue = parsed.data?.issueCreate?.issue;
-    if (parsed.data?.issueCreate?.success !== true || !issue?.id) {
+    const { id, identifier, url } = issue ?? {};
+    if (parsed.data?.issueCreate?.success !== true || !id || !identifier || !url) {
       log.error(
-        { success: parsed.data?.issueCreate?.success },
-        "Linear issueCreate returned no issue",
+        {
+          success: parsed.data?.issueCreate?.success,
+          // Names only — which fields were absent, never the response body.
+          missing: [!id && "id", !identifier && "identifier", !url && "url"].filter(
+            (v): v is string => typeof v === "string",
+          ),
+        },
+        "Linear issueCreate returned an incomplete issue",
       );
       throw new Error(
         "Linear issue may have been created but response could not be parsed",
       );
     }
 
-    return {
-      id: issue.id,
-      identifier: issue.identifier ?? "",
-      url: issue.url ?? "",
-    };
+    return { id, identifier, url };
   } catch (err) {
     if (isAbortError(err)) {
       log.error({ timeoutMs: LINEAR_TIMEOUT_MS }, "Linear issueCreate timed out");

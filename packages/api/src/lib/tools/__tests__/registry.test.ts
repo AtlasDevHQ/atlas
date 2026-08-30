@@ -390,13 +390,20 @@ describe("buildRegistry", () => {
     expect(Object.keys(headless.getAll())).not.toContain("proposeFact");
   });
 
-  it("with includeActions includes createJiraTicket and sendEmailReport alongside core tools", async () => {
+  it("with includeActions includes the action tools alongside core tools", async () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const names = Object.keys(registry.getAll()).sort();
+    // An EXACT set, deliberately: this is what catches a tool that joined the
+    // action block without being named anywhere a reader would look.
+    // `createLinearIssue` (core, install-backed, #2750) and
+    // `createLinearTicket` (action, approval-gated, #5554) both appear and are
+    // NOT a shadow pair — two names, two credential paths. See
+    // `lib/tools/actions/linear.ts`'s header.
     expect(names).toEqual([
       "createDashboard",
       "createJiraTicket",
       "createLinearIssue",
+      "createLinearTicket",
       "executeSQL",
       "explore",
       "searchAtlas",
@@ -484,7 +491,7 @@ describe("buildRegistry", () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const actions = registry.getActions();
     const actionTypes = actions.map((a) => a.actionType).sort();
-    expect(actionTypes).toEqual(["email:send", "jira:create"]);
+    expect(actionTypes).toEqual(["email:send", "jira:create", "linear:create"]);
   });
 
   it("core-only registry has no actions", async () => {

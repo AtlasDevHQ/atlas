@@ -275,6 +275,8 @@ Credentials resolve per workspace first (`PUT /api/v1/admin/action-credentials/l
 
 A named team that does not resolve is an **error**, not a fallback: the approver read a card naming that team, so filing elsewhere would not be the action they approved.
 
+This action is **reversible** -- on rollback, Atlas records the created issue for archival (best-effort; the rollback handler is not wired yet, the same standing as JIRA's transition).
+
 ---
 
 ## Configuration

@@ -1,8 +1,5 @@
-diff --git a/node_modules/bun-types/.bun-tag-3cf83bae1d5aae3f b/.bun-tag-3cf83bae1d5aae3f
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/test.d.ts b/test.d.ts
-index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fcef17a2b11 100644
+index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..4e703c107c565a8f8ec863d172c329417f196074 100644
 --- a/test.d.ts
 +++ b/test.d.ts
 @@ -748,7 +748,7 @@ declare module "bun:test" {
@@ -14,37 +11,31 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
    /**
     * Extend this interface with declaration merging to add type support for custom asymmetric matchers.
-@@ -905,7 +905,28 @@ declare module "bun:test" {
+@@ -905,7 +905,22 @@ declare module "bun:test" {
      closeTo(num: number, numDigits?: number): AsymmetricMatcher;
    }
  
 -  export interface MatchersBuiltin<T = unknown> {
 +  /**
-+   * Atlas patch (#4437, re-rolled #4441): the matcher methods reached through
-+   * `.resolves` / `.rejects` are declared to return `void` upstream, even though at
-+   * runtime they return a real thenable that must be awaited. That mismatch makes
-+   * tsgolint's `typescript/await-thenable` flag every
-+   * `await expect(...).rejects/.resolves.X()` as a redundant await (753 false
-+   * positives), and it also blinds `no-floating-promises` to a genuinely missing
-+   * `await` before an async assertion.
++   * Atlas patch (#4437, re-rolled #4441): upstream declares the matcher methods
++   * reached through `.resolves` / `.rejects` as returning `void`, even though at
++   * runtime they return a thenable. That makes `typescript/await-thenable` flag
++   * every awaited async assertion, and blinds `no-floating-promises` to a missing
++   * `await` before one.
 +   *
-+   * The fix is a return-type parameter `R` (default `void`) threaded through every
-+   * matcher signature, instantiated as `Promise<void>` on the async paths. The
-+   * synchronous path is unchanged, so `expect(x).toBe(y)` still returns `void`.
++   * Fix: a return-type parameter `R` (default `void`) threaded through every matcher
++   * signature and instantiated as `Promise<void>` on the async paths — including
++   * `not`, so `.resolves.not.X()` is covered too. The synchronous path is unchanged.
++   * An earlier mapped-type version of this patch flattened the overload pairs via
++   * `infer A` and silently erased matcher ARGUMENT types; threading `R` keeps them.
 +   *
-+   * This replaces an earlier mapped-type workaround that flattened the overload
-+   * pairs via `infer A` and silently erased matcher ARGUMENT types on the async
-+   * path — `await expect(p).resolves.toEqual({ a: 1, b: 2 })` type-checked against
-+   * `{ a: number }`. Threading `R` keeps both overloads intact.
-+   *
-+   * Upstream is still unfixed as of bun-types@1.4.0 and canary
-+   * 1.4.1-canary.20260830T141138. Drop this patch per #4441 when it lands.
++   * Counts, rationale and the drop conditions live in ADR-0031 (Wave 3) and #4441.
 +   */
 +  export interface MatchersBuiltin<T = unknown, R = void> {
      /**
       * Negates the result of a subsequent assertion.
       *
-@@ -917,7 +938,7 @@ declare module "bun:test" {
+@@ -917,7 +932,7 @@ declare module "bun:test" {
       * expect(42).toEqual(42); // will pass
       * expect(42).not.toEqual(42); // will fail
       */
@@ -53,7 +44,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Expects the value to be a promise that resolves.
-@@ -925,7 +946,7 @@ declare module "bun:test" {
+@@ -925,7 +940,7 @@ declare module "bun:test" {
       * @example
       * expect(Promise.resolve(1)).resolves.toBe(1);
       */
@@ -62,7 +53,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Expects the value to be a promise that rejects.
-@@ -933,7 +954,7 @@ declare module "bun:test" {
+@@ -933,7 +948,7 @@ declare module "bun:test" {
       * @example
       * expect(Promise.reject("error")).rejects.toBe("error");
       */
@@ -71,7 +62,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Assertion which passes.
-@@ -980,8 +1001,8 @@ declare module "bun:test" {
+@@ -980,8 +995,8 @@ declare module "bun:test" {
       *
       * @param expected the expected value
       */
@@ -82,7 +73,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a number is odd.
-@@ -991,7 +1012,7 @@ declare module "bun:test" {
+@@ -991,7 +1006,7 @@ declare module "bun:test" {
       * expect(1).toBeOdd();
       * expect(2).not.toBeOdd();
       */
@@ -91,7 +82,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a number is even.
-@@ -1001,7 +1022,7 @@ declare module "bun:test" {
+@@ -1001,7 +1016,7 @@ declare module "bun:test" {
       * expect(2).toBeEven();
       * expect(1).not.toBeEven();
       */
@@ -100,7 +91,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is close to the expected value, within floating point precision.
-@@ -1020,7 +1041,7 @@ declare module "bun:test" {
+@@ -1020,7 +1035,7 @@ declare module "bun:test" {
       * @param expected the expected value
       * @param numDigits the number of digits to check after the decimal point. Default is `2`
       */
@@ -109,7 +100,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is deeply equal to what is expected.
-@@ -1033,8 +1054,8 @@ declare module "bun:test" {
+@@ -1033,8 +1048,8 @@ declare module "bun:test" {
       *
       * @param expected the expected value
       */
@@ -120,7 +111,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is deeply and strictly equal to
-@@ -1059,8 +1080,8 @@ declare module "bun:test" {
+@@ -1059,8 +1074,8 @@ declare module "bun:test" {
       *
       * @param expected the expected value
       */
@@ -131,7 +122,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that the value is deeply equal to an element in the expected array.
-@@ -1074,8 +1095,8 @@ declare module "bun:test" {
+@@ -1074,8 +1089,8 @@ declare module "bun:test" {
       *
       * @param expected the expected value
       */
@@ -142,7 +133,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value contains what is expected.
-@@ -1090,8 +1111,8 @@ declare module "bun:test" {
+@@ -1090,8 +1105,8 @@ declare module "bun:test" {
       *
       * @param expected the expected value
       */
@@ -153,7 +144,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that an `object` contains a key.
-@@ -1106,8 +1127,8 @@ declare module "bun:test" {
+@@ -1106,8 +1121,8 @@ declare module "bun:test" {
       *
       * @param expected the expected value
       */
@@ -164,7 +155,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that an `object` contains all the provided keys.
-@@ -1123,8 +1144,8 @@ declare module "bun:test" {
+@@ -1123,8 +1138,8 @@ declare module "bun:test" {
       *
       * @param expected the expected value
       */
@@ -175,7 +166,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that an `object` contains at least one of the provided keys.
-@@ -1139,8 +1160,8 @@ declare module "bun:test" {
+@@ -1139,8 +1154,8 @@ declare module "bun:test" {
       *
       * @param expected the expected value
       */
@@ -186,7 +177,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that an `object` contains the provided value.
-@@ -1174,7 +1195,7 @@ declare module "bun:test" {
+@@ -1174,7 +1189,7 @@ declare module "bun:test" {
       */
      // Contributor note: In theory we could type this better but it would be a
      // slow union to compute...
@@ -195,7 +186,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that an `object` contains the provided values.
-@@ -1191,7 +1212,7 @@ declare module "bun:test" {
+@@ -1191,7 +1206,7 @@ declare module "bun:test" {
       * expect(o).not.toContainValues(['qux', 'foo']);
       * @param expected the expected value
       */
@@ -204,7 +195,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that an `object` contains all the provided values.
-@@ -1205,7 +1226,7 @@ declare module "bun:test" {
+@@ -1205,7 +1220,7 @@ declare module "bun:test" {
       * expect(o).not.toContainAllValues(['bar', 'foo']);
       * @param expected the expected value
       */
@@ -213,7 +204,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that an `object` contains any of the provided values.
-@@ -1220,7 +1241,7 @@ declare module "bun:test" {
+@@ -1220,7 +1235,7 @@ declare module "bun:test" {
       * expect(o).not.toContainAnyValues(['qux']);
       * @param expected the expected value
       */
@@ -222,7 +213,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that an `object` contains all the provided keys.
-@@ -1232,8 +1253,8 @@ declare module "bun:test" {
+@@ -1232,8 +1247,8 @@ declare module "bun:test" {
       *
       * @param expected the expected value
       */
@@ -233,7 +224,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value contains and equals what is expected.
-@@ -1247,8 +1268,8 @@ declare module "bun:test" {
+@@ -1247,8 +1262,8 @@ declare module "bun:test" {
       *
       * @param expected the expected value
       */
@@ -244,7 +235,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value has a `.length` property
-@@ -1260,7 +1281,7 @@ declare module "bun:test" {
+@@ -1260,7 +1275,7 @@ declare module "bun:test" {
       *
       * @param length the expected length
       */
@@ -253,7 +244,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value has a property with the
-@@ -1275,7 +1296,7 @@ declare module "bun:test" {
+@@ -1275,7 +1290,7 @@ declare module "bun:test" {
       * @param keyPath the expected property name or path, or an index
       * @param value the expected property value, if provided
       */
@@ -262,7 +253,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is "truthy".
-@@ -1288,7 +1309,7 @@ declare module "bun:test" {
+@@ -1288,7 +1303,7 @@ declare module "bun:test" {
       * expect(1).toBeTruthy();
       * expect({}).toBeTruthy();
       */
@@ -271,7 +262,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is "falsy".
-@@ -1301,7 +1322,7 @@ declare module "bun:test" {
+@@ -1301,7 +1316,7 @@ declare module "bun:test" {
       * expect(0).toBeFalsy();
       * expect("").toBeFalsy();
       */
@@ -280,7 +271,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is defined (that is, not `undefined`).
-@@ -1310,7 +1331,7 @@ declare module "bun:test" {
+@@ -1310,7 +1325,7 @@ declare module "bun:test" {
       * expect(true).toBeDefined();
       * expect(undefined).toBeDefined(); // fail
       */
@@ -289,7 +280,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is an instance of the given class or constructor.
-@@ -1319,7 +1340,7 @@ declare module "bun:test" {
+@@ -1319,7 +1334,7 @@ declare module "bun:test" {
       * expect([]).toBeInstanceOf(Array);
       * expect(null).toBeInstanceOf(Array); // fail
       */
@@ -298,7 +289,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is `undefined`.
-@@ -1328,7 +1349,7 @@ declare module "bun:test" {
+@@ -1328,7 +1343,7 @@ declare module "bun:test" {
       * expect(undefined).toBeUndefined();
       * expect(null).toBeUndefined(); // fail
       */
@@ -307,7 +298,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is `null`.
-@@ -1337,7 +1358,7 @@ declare module "bun:test" {
+@@ -1337,7 +1352,7 @@ declare module "bun:test" {
       * expect(null).toBeNull();
       * expect(undefined).toBeNull(); // fail
       */
@@ -316,7 +307,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is `NaN`.
-@@ -1349,7 +1370,7 @@ declare module "bun:test" {
+@@ -1349,7 +1364,7 @@ declare module "bun:test" {
       * expect(Infinity).toBeNaN(); // fail
       * expect("notanumber").toBeNaN(); // fail
       */
@@ -325,7 +316,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `number` and is greater than the expected value.
-@@ -1361,7 +1382,7 @@ declare module "bun:test" {
+@@ -1361,7 +1376,7 @@ declare module "bun:test" {
       *
       * @param expected the expected number
       */
@@ -334,7 +325,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `number` and is greater than or equal to the expected value.
-@@ -1373,7 +1394,7 @@ declare module "bun:test" {
+@@ -1373,7 +1388,7 @@ declare module "bun:test" {
       *
       * @param expected the expected number
       */
@@ -343,7 +334,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `number` and is less than the expected value.
-@@ -1385,7 +1406,7 @@ declare module "bun:test" {
+@@ -1385,7 +1400,7 @@ declare module "bun:test" {
       *
       * @param expected the expected number
       */
@@ -352,7 +343,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `number` and is less than or equal to the expected value.
-@@ -1397,7 +1418,7 @@ declare module "bun:test" {
+@@ -1397,7 +1412,7 @@ declare module "bun:test" {
       *
       * @param expected the expected number
       */
@@ -361,7 +352,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a function throws an error.
-@@ -1418,7 +1439,7 @@ declare module "bun:test" {
+@@ -1418,7 +1433,7 @@ declare module "bun:test" {
       *
       * @param expected the expected error, error message, or error pattern
       */
@@ -370,7 +361,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a function throws an error.
-@@ -1440,7 +1461,7 @@ declare module "bun:test" {
+@@ -1440,7 +1455,7 @@ declare module "bun:test" {
       * @param expected the expected error, error message, or error pattern
       * @alias toThrow
       */
@@ -379,7 +370,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value matches a regular expression or includes a substring.
-@@ -1451,7 +1472,7 @@ declare module "bun:test" {
+@@ -1451,7 +1466,7 @@ declare module "bun:test" {
       *
       * @param expected the expected substring or pattern.
       */
@@ -388,7 +379,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value matches the most recent snapshot.
-@@ -1460,7 +1481,7 @@ declare module "bun:test" {
+@@ -1460,7 +1475,7 @@ declare module "bun:test" {
       * expect([1, 2, 3]).toMatchSnapshot('hint message');
       * @param hint Hint used to identify the snapshot in the snapshot file.
       */
@@ -397,7 +388,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value matches the most recent snapshot.
-@@ -1473,7 +1494,7 @@ declare module "bun:test" {
+@@ -1473,7 +1488,7 @@ declare module "bun:test" {
       * @param propertyMatchers Object containing properties to match against the value.
       * @param hint Hint used to identify the snapshot in the snapshot file.
       */
@@ -406,7 +397,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value matches the most recent inline snapshot.
-@@ -1484,7 +1505,7 @@ declare module "bun:test" {
+@@ -1484,7 +1499,7 @@ declare module "bun:test" {
       *
       * @param value The latest automatically-updated snapshot value.
       */
@@ -415,7 +406,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value matches the most recent inline snapshot.
-@@ -1500,7 +1521,7 @@ declare module "bun:test" {
+@@ -1500,7 +1515,7 @@ declare module "bun:test" {
       * @param propertyMatchers Object containing properties to match against the value.
       * @param value The latest automatically-updated snapshot value.
       */
@@ -424,7 +415,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a function throws an error matching the most recent snapshot.
-@@ -1514,7 +1535,7 @@ declare module "bun:test" {
+@@ -1514,7 +1529,7 @@ declare module "bun:test" {
       *
       * @param hint Hint used to identify the snapshot in the snapshot file.
       */
@@ -433,7 +424,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a function throws an error matching the most recent snapshot.
-@@ -1528,7 +1549,7 @@ declare module "bun:test" {
+@@ -1528,7 +1543,7 @@ declare module "bun:test" {
       *
       * @param value The latest automatically-updated snapshot value.
       */
@@ -442,7 +433,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that an object matches a subset of properties.
-@@ -1539,7 +1560,7 @@ declare module "bun:test" {
+@@ -1539,7 +1554,7 @@ declare module "bun:test" {
       *
       * @param subset Subset of properties to match with.
       */
@@ -451,7 +442,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is empty.
-@@ -1550,7 +1571,7 @@ declare module "bun:test" {
+@@ -1550,7 +1565,7 @@ declare module "bun:test" {
       * expect({}).toBeEmpty();
       * expect(new Set()).toBeEmpty();
       */
@@ -460,7 +451,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is an empty `object`.
-@@ -1559,7 +1580,7 @@ declare module "bun:test" {
+@@ -1559,7 +1574,7 @@ declare module "bun:test" {
       * expect({}).toBeEmptyObject();
       * expect({ a: 'hello' }).not.toBeEmptyObject();
       */
@@ -469,7 +460,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is `null` or `undefined`.
-@@ -1568,7 +1589,7 @@ declare module "bun:test" {
+@@ -1568,7 +1583,7 @@ declare module "bun:test" {
       * expect(null).toBeNil();
       * expect(undefined).toBeNil();
       */
@@ -478,7 +469,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is an `array`.
-@@ -1579,7 +1600,7 @@ declare module "bun:test" {
+@@ -1579,7 +1594,7 @@ declare module "bun:test" {
       * expect(new Array(1)).toBeArray();
       * expect({}).not.toBeArray();
       */
@@ -487,7 +478,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is an `array` of a certain length.
-@@ -1591,7 +1612,7 @@ declare module "bun:test" {
+@@ -1591,7 +1606,7 @@ declare module "bun:test" {
       * expect(new Array(1)).toBeArrayOfSize(1);
       * expect({}).not.toBeArrayOfSize(0);
       */
@@ -496,7 +487,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `boolean`.
-@@ -1602,7 +1623,7 @@ declare module "bun:test" {
+@@ -1602,7 +1617,7 @@ declare module "bun:test" {
       * expect(null).not.toBeBoolean();
       * expect(0).not.toBeBoolean();
       */
@@ -505,7 +496,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is `true`.
-@@ -1612,7 +1633,7 @@ declare module "bun:test" {
+@@ -1612,7 +1627,7 @@ declare module "bun:test" {
       * expect(false).not.toBeTrue();
       * expect(1).not.toBeTrue();
       */
@@ -514,7 +505,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value matches a specific type.
-@@ -1623,7 +1644,7 @@ declare module "bun:test" {
+@@ -1623,7 +1638,7 @@ declare module "bun:test" {
       * expect("hello").toBeTypeOf("string");
       * expect([]).not.toBeTypeOf("boolean");
       */
@@ -523,7 +514,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is `false`.
-@@ -1633,7 +1654,7 @@ declare module "bun:test" {
+@@ -1633,7 +1648,7 @@ declare module "bun:test" {
       * expect(true).not.toBeFalse();
       * expect(0).not.toBeFalse();
       */
@@ -532,7 +523,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `number`.
-@@ -1644,7 +1665,7 @@ declare module "bun:test" {
+@@ -1644,7 +1659,7 @@ declare module "bun:test" {
       * expect(NaN).toBeNumber();
       * expect(BigInt(1)).not.toBeNumber();
       */
@@ -541,7 +532,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `number`, and is an integer.
-@@ -1654,7 +1675,7 @@ declare module "bun:test" {
+@@ -1654,7 +1669,7 @@ declare module "bun:test" {
       * expect(3.14).not.toBeInteger();
       * expect(NaN).not.toBeInteger();
       */
@@ -550,7 +541,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is an `object`.
-@@ -1664,7 +1685,7 @@ declare module "bun:test" {
+@@ -1664,7 +1679,7 @@ declare module "bun:test" {
       * expect("notAnObject").not.toBeObject();
       * expect(NaN).not.toBeObject();
       */
@@ -559,7 +550,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `number`, and is not `NaN` or `Infinity`.
-@@ -1675,7 +1696,7 @@ declare module "bun:test" {
+@@ -1675,7 +1690,7 @@ declare module "bun:test" {
       * expect(NaN).not.toBeFinite();
       * expect(Infinity).not.toBeFinite();
       */
@@ -568,7 +559,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a positive `number`.
-@@ -1685,7 +1706,7 @@ declare module "bun:test" {
+@@ -1685,7 +1700,7 @@ declare module "bun:test" {
       * expect(-3.14).not.toBePositive();
       * expect(NaN).not.toBePositive();
       */
@@ -577,7 +568,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a negative `number`.
-@@ -1695,7 +1716,7 @@ declare module "bun:test" {
+@@ -1695,7 +1710,7 @@ declare module "bun:test" {
       * expect(1).not.toBeNegative();
       * expect(NaN).not.toBeNegative();
       */
@@ -586,7 +577,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a number between a start and end value.
-@@ -1703,7 +1724,7 @@ declare module "bun:test" {
+@@ -1703,7 +1718,7 @@ declare module "bun:test" {
       * @param start the start number (inclusive)
       * @param end the end number (exclusive)
       */
@@ -595,7 +586,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is equal to the expected string, ignoring any whitespace.
-@@ -1714,7 +1735,7 @@ declare module "bun:test" {
+@@ -1714,7 +1729,7 @@ declare module "bun:test" {
       *
       * @param expected the expected string
       */
@@ -604,7 +595,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `symbol`.
-@@ -1723,7 +1744,7 @@ declare module "bun:test" {
+@@ -1723,7 +1738,7 @@ declare module "bun:test" {
       * expect(Symbol("foo")).toBeSymbol();
       * expect("foo").not.toBeSymbol();
       */
@@ -613,7 +604,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `function`.
-@@ -1731,7 +1752,7 @@ declare module "bun:test" {
+@@ -1731,7 +1746,7 @@ declare module "bun:test" {
       * @example
       * expect(() => {}).toBeFunction();
       */
@@ -622,7 +613,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `Date` object.
-@@ -1743,7 +1764,7 @@ declare module "bun:test" {
+@@ -1743,7 +1758,7 @@ declare module "bun:test" {
       * expect(new Date(null)).toBeDate();
       * expect("2020-03-01").not.toBeDate();
       */
@@ -631,7 +622,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a valid `Date` object.
-@@ -1753,7 +1774,7 @@ declare module "bun:test" {
+@@ -1753,7 +1768,7 @@ declare module "bun:test" {
       * expect(new Date(null)).not.toBeValidDate();
       * expect("2020-03-01").not.toBeValidDate();
       */
@@ -640,7 +631,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value is a `string`.
-@@ -1763,7 +1784,7 @@ declare module "bun:test" {
+@@ -1763,7 +1778,7 @@ declare module "bun:test" {
       * expect(new String("bar")).toBeString();
       * expect(123).not.toBeString();
       */
@@ -649,7 +640,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value includes a `string`.
-@@ -1772,14 +1793,14 @@ declare module "bun:test" {
+@@ -1772,14 +1787,14 @@ declare module "bun:test" {
       *
       * @param expected the expected substring
       */
@@ -666,7 +657,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Asserts that a value satisfies a custom condition.
-@@ -1791,47 +1812,47 @@ declare module "bun:test" {
+@@ -1791,47 +1806,47 @@ declare module "bun:test" {
       * @link https://vitest.dev/api/expect.html#tosatisfy
       * @link https://jest-extended.jestcommunity.dev/docs/matchers/toSatisfy
       */
@@ -721,7 +712,7 @@ index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..8b1ccb3b979a7675bdfe875675011fce
  
      /**
       * Ensures that a mock function has returned a specific value on the nth invocation.
-@@ -1839,62 +1860,62 @@ declare module "bun:test" {
+@@ -1839,62 +1854,62 @@ declare module "bun:test" {
       * @param n The 1-based index of the function call
       * @param expected The expected return value
       */

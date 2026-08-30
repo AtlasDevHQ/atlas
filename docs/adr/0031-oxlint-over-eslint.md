@@ -120,8 +120,12 @@ does **not** implement `no-restricted-syntax` natively.
       async path lost argument checking entirely: verified in-tree by adding a bogus property
       to a `.resolves.toEqual({…})` call in `demo-capture.test.ts`, which the mapped type
       accepted silently and the `R`-parameter version reports as `TS2769`. All 1,382
-      `.resolves`/`.rejects` sites had unchecked matcher arguments for the life of the mapped
-      type. Threading `R` preserves both overloads and the precise argument types while
+      `.resolves`/`.rejects` sites (`grep -rio '\.resolves\.\|\.rejects\.' packages apps ee
+      examples plugins | wc -l`) had unchecked matcher arguments for the life of the mapped
+      type. `not` is threaded too (`not: Matchers<unknown, R>`), so `.resolves.not.X()` returns
+      `Promise<void>` as well — that path was effectively unchecked under the mapped type and is
+      the one place the re-roll can produce *new* `no-floating-promises` findings (it produced
+      none). Threading `R` preserves both overloads and the precise argument types while
       keeping `await-thenable` at 0 — re-verified after the re-roll: `lint:type-aware` output
       byte-identical to the mapped-type baseline, `bun run type` clean, so the restored
       checking surfaced no latent failures. Same shape proposed upstream on #4441.
@@ -129,7 +133,11 @@ does **not** implement `no-restricted-syntax` natively.
       `bun patch bun-types@<v>`, reset the working copy to the pristine tarball, then in
       `test.d.ts` rewrite every `): void;` inside `MatchersBuiltin` to `): R;`, add the
       `R = void` parameter to `Matchers` and `MatchersBuiltin`, and set `not: Matchers<unknown, R>`
-      plus `resolves`/`rejects` to `Matchers<…, Promise<void>>`; `bun patch --commit`. Verify
+      plus `resolves`/`rejects` to `Matchers<…, Promise<void>>`. Two steps are easy to lose and
+      neither fails loudly: **re-add the provenance docblock** above `MatchersBuiltin` (it is the
+      only in-tree record of why the patch exists), and **delete the `.bun-tag-*` file** bun drops
+      in the working copy before `bun patch --commit`, or the patch gains a hunk that writes a
+      stale-hashed empty file into the package on every install. Verify
       with `bun run lint:type-aware` (0 `await-thenable`) **and** `bun run type` — the second
       is what catches a re-roll that silently dropped argument checking again.
     - ⚠️ **The "silently disabled assertion" framing is no longer accurate on bun 1.4.**

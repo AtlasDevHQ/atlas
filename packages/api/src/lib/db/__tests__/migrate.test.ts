@@ -437,7 +437,12 @@ describe("runMigrations", () => {
     //   verdict — never stamped `extracted_at`, which would be the
     //   extracted-with-no-facts silent drop 0180's posture forbids. The drain
     //   excludes the mark; clearing it re-queues the episode in place) = 211.
-    expect(count).toBe(211);
+    //   Plus 0211 (plugin_grant_revocation_failures — #3777: the operator
+    //   worklist for onUninstall hooks that threw/timed out, leaving an
+    //   external webhook subscription or OAuth grant possibly live. A record
+    //   and an alert, deliberately never a retry queue — no credential
+    //   material is captured) = 212.
+    expect(count).toBe(212);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -759,6 +764,7 @@ describe("runMigrations", () => {
         "0208_brain_actor_identity.sql",
         "0209_scim_provider_to_managed_connection.sql",
         "0210_brain_triage.sql",
+        "0211_plugin_grant_revocation_failures.sql",
       ],
     });
 

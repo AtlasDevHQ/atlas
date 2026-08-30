@@ -80,7 +80,7 @@ Where a rule names a `scripts/check-*.sh` guard, that guard is the enforcement �
 
 The product surface, each subsystem's design in its ADR: web chat + embeddable React widget + eight chat-platform adapters (Slack live); **dashboards** with draft-first, publish-gated editing ([ADR-0029](docs/adr/0029-dashboards-draft-first-editing.md)); the **Knowledge Base pillar** ([ADR-0028](docs/adr/0028-knowledge-base-fourth-pillar.md)); an OAuth 2.1 **MCP server** with self-serve `start_trial` ([ADR-0016](docs/adr/0016-mcp-v2-security-model.md), [ADR-0018](docs/adr/0018-self-serve-trial-over-mcp.md)); **durable agent sessions** ([ADR-0020](docs/adr/0020-durable-agent-sessions.md)); per-conversation **answer styles** (`lib/answer-styles.ts`); **cross-group reach** ([ADR-0022](docs/adr/0022-cross-group-reach-llm-composition.md)); and 3-region SaaS **residency** where the process is the region ([ADR-0024](docs/adr/0024-regional-identity-isolation.md)).
 
-**The Company Atlas is what `brain_*` stores.** [ADR-0038](docs/adr/0038-the-atlas-is-the-product-the-brain-is-the-category.md) renamed the product noun from *Company Brain*; the **category claim** *"the data-grounded company brain"* is unchanged. The rename is **product copy only** — `brain_facts`/`brain_edges`, `lib/brain/**`, `/admin/brain`, `ATLAS_BRAIN_*` and the `searchBrain` tool name all keep the old noun deliberately, so expect both vocabularies in the tree. Rule of thumb: **if a customer reads it, it says Atlas; if only we read it, it still says brain.** Its destination — what "finished" looks like, the eight finish conditions, and the eight things it will not do — is [docs/prd/company-atlas.md](docs/prd/company-atlas.md).
+**The Company Atlas is what `brain_*` stores.** [ADR-0038](docs/adr/0038-the-atlas-is-the-product-the-brain-is-the-category.md) renamed the product noun from *Company Brain*; the **category claim** *"the data-grounded company brain"* is unchanged. The rename is **product copy plus the agent-facing wire** — `brain_facts`/`brain_edges`, `lib/brain/**`, `/admin/brain` and `ATLAS_BRAIN_*` keep the old noun deliberately (Layer 3), so expect both vocabularies in the tree; the tool is `searchAtlas` and the tier wire values are `attested`/`on-record` since the ADR-0038 Layer 2 rename shipped standalone on 2026-08-30 (#5469 — internal identifiers like `searchBrainCore` still say brain). Rule of thumb: **if a customer reads it, it says Atlas; if only we read it, it still says brain.** Its destination — what "finished" looks like, the eight finish conditions, and the eight things it will not do — is [docs/prd/company-atlas.md](docs/prd/company-atlas.md).
 
 **Two databases:** analytics datasources (the customer's data, read-only, via `ConnectionRegistry`) and the internal DB (`DATABASE_URL` — auth, audit, settings, content mode, knowledge, sessions; optional self-hosted, required for SaaS).
 
@@ -163,7 +163,7 @@ They are one of **two** required axes; the other is kind+area. See
 ### Domain docs
 
 **Multi-context**: [`CONTEXT-MAP.md`](CONTEXT-MAP.md) names 18 bounded contexts and
-`docs/adr/` holds 44 system-wide decisions. **The split is done (#5302)**: every context
+`docs/adr/` holds 45 system-wide decisions. **The split is done (#5302)**: every context
 lives at `docs/contexts/<name>/CONTEXT.md`, and the root [`CONTEXT.md`](CONTEXT.md) keeps
 only the vocabulary rule and a pointer to the map — no context prose. Start at the map, and
 read its *Notes* column: the *Deployment posture* clean-break window was re-verified and is

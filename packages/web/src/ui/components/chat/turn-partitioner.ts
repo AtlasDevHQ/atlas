@@ -250,7 +250,8 @@ export function answerTrustTiers(
       if (!isFailedToolPart(part)) tiers.add("warehouse");
       continue;
     }
-    if (name !== "searchBrain") continue;
+    // Old spelling = pre-#5469 persisted parts that bypassed normalization.
+    if (name !== "searchAtlas" && name !== "searchBrain") continue;
     // ⚠️ `toRows`, the SAME projection the card renders — not a second walk of
     // `results` + `neighbors`. Two copies is two answers to "is a 1-hop
     // neighbor a labelled row?", and ADR-0036 is explicit that it is.
@@ -315,6 +316,7 @@ export function summarizeActivity(
       // #5451 — named rather than counted as "N more steps": the tier chips
       // beside this summary are meaningless if the line does not say the Atlas
       // was read at all.
+      case "searchAtlas":
       case "searchBrain":
         brainSearches++;
         break;

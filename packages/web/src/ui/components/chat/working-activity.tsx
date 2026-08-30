@@ -29,7 +29,11 @@ function stepLabel(part: ToolTurnPart): { active: string; done: string } {
       return { active: "Running query", done: "Ran query" };
     case "executePython":
       return { active: "Running Python", done: "Ran Python" };
-    // #5451 — named rather than falling through to "Running searchBrain…".
+    // #5451 — named rather than falling through to "Running searchAtlas…".
+    // The old spelling is the pre-#5469 wire name; replay normalization in
+    // `transformMessages` maps it away, so this arm is belt-and-braces for a
+    // part that reaches here un-normalized (e.g. a live older API).
+    case "searchAtlas":
     case "searchBrain":
       return { active: "Searching the Atlas", done: "Searched the Atlas" };
     case "createDashboard":

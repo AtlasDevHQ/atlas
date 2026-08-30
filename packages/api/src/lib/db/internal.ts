@@ -4578,6 +4578,11 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const slaThresholds = await del(`DELETE FROM sla_thresholds WHERE workspace_id = $1`);
     const regionMigrations = await del(`DELETE FROM region_migrations WHERE workspace_id = $1`);
     const workspacePlugins = await del(`DELETE FROM workspace_plugins WHERE workspace_id = $1`);
+    // #3777 operator worklist — see purge-scope.ts for why the row dies with
+    // the workspace even though the external grant it points at may not.
+    const pluginGrantRevocationFailures = await del(
+      `DELETE FROM plugin_grant_revocation_failures WHERE workspace_id = $1`,
+    );
     // Per-workspace encrypted credential stores, matched on the workspace_id
     // column (same value as orgId — see the Phase-3 header above). Without
     // these, a "full" purge leaves secrets at rest: integration_credentials =
@@ -5263,6 +5268,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         slaThresholds,
         regionMigrations,
         workspacePlugins,
+        pluginGrantRevocationFailures,
         integrationCredentials,
         twentyIntegrations,
         subscriptions,

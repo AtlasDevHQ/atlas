@@ -306,7 +306,7 @@ describe("#4936 — runAgent's default tool surface fails closed", () => {
     // surface, not a broken one.
     expect(names).toContain("executeSQL");
     expect(names).toContain("explore");
-    expect(names).toContain("searchBrain");
+    expect(names).toContain("searchAtlas");
   });
 
   it("positive control: passing `confirmCapableRegistry` explicitly DOES carry both write verbs", async () => {

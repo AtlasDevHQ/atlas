@@ -1925,6 +1925,40 @@ export const workspacePlugins = pgTable(
   ],
 );
 
+// plugin_grant_revocation_failures — durable record of `onUninstall` hooks
+// that threw, timed out, or never ran (builder failure), leaving an external
+// webhook subscription / OAuth grant possibly live (#3777). An operator
+// worklist, deliberately NOT a retry queue: no credential material is
+// captured and no fiber re-attempts revocation — the migration header
+// carries the security argument. `resolved_at`/`resolved_by` is the manual
+// revoke flow's stamp, and the pair travels together by CHECK. Mirrors
+// migration 0211.
+export const pluginGrantRevocationFailures = pgTable(
+  "plugin_grant_revocation_failures",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    catalogId: text("catalog_id").notNull(),
+    // The resolved candidate whose hook failed — a global registry id, or the
+    // catalog id itself for builder failures. Can differ from `catalogId`;
+    // one uninstall can fail several candidates, one row each.
+    pluginId: text("plugin_id").notNull(),
+    error: text("error").notNull(),
+    attemptedAt: timestamp("attempted_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedBy: text("resolved_by"),
+  },
+  (t) => [
+    index("idx_plugin_grant_revocation_unresolved")
+      .on(t.attemptedAt)
+      .where(sql`resolved_at IS NULL`),
+    check(
+      "chk_plugin_grant_revocation_resolution_pair",
+      sql`num_nonnulls(resolved_at, resolved_by) <> 1 AND error <> ''`,
+    ),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // Knowledge Base pillar (0162 / 0163 — #4206, ADR-0028)
 // ---------------------------------------------------------------------------

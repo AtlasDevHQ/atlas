@@ -72,6 +72,7 @@ void mock.module("@atlas/api/lib/metrics", () => ({
   rateLimitLoaderFailures: { add: () => {} },
   oauthTokenRefresh: { add: () => {} },
   mcpPromptCalls: { add: () => {} },
+  grantRevocationFailures: { add: () => {} },
 }));
 
 // --- Mocks for AI SDK tool execute functions ------------------------------

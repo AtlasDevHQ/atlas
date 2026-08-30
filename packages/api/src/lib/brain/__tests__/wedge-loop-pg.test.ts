@@ -666,7 +666,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       ctx,
       mode: options.mode ?? "published",
       query: options.query,
-      include: ["fact", "raw-episode"],
+      include: ["attested", "on-record"],
       expand: false,
       limit: 25,
     });
@@ -854,8 +854,8 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
   // the compiler checking the literal against the discriminant, so a tier
   // rename in `@useatlas/types` is a TS2367 rather than a filter that silently
   // returns `[]` and satisfies every `not.toContain` in the file.
-  const isFact = (r: BrainSearchResult): r is BrainFactResult => r.tier === "fact";
-  const isEpisode = (r: BrainSearchResult): r is BrainEpisodeResult => r.tier === "raw-episode";
+  const isFact = (r: BrainSearchResult): r is BrainFactResult => r.tier === "attested";
+  const isEpisode = (r: BrainSearchResult): r is BrainEpisodeResult => r.tier === "on-record";
 
   // Explicit comparator, not a bare `toSorted()`: `require-array-sort-compare`
   // refuses the argument-less form because it sorts by UTF-16 code unit, which
@@ -967,7 +967,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       const adminFacts = adminView.results.filter(isFact);
       expect(adminFacts).toHaveLength(1);
       expect(adminFacts[0]).toMatchObject({
-        tier: "fact",
+        tier: "attested",
         trustTier: 2,
         subject: "deploy window",
         object: "Thursdays",
@@ -1099,7 +1099,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     expect(miss.results.filter(isFact)).toHaveLength(0);
     // The store was queried and narrowed to nothing — distinct from the store
     // having been skipped, which an empty projection alone cannot tell apart.
-    expect(miss.stores.fact).toMatchObject({ queried: true, matched: 0 });
+    expect(miss.stores.attested).toMatchObject({ queried: true, matched: 0 });
   }, PG_TEST_TIMEOUT_MS);
 
   // ── the negative cases ──────────────────────────────────────────────────
@@ -1224,9 +1224,9 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     // every episode behind this claim was posted in the exec channel, so
     // `pre_widening_visible_to` is NULL by construction — see the note above.)
     const acquisition = restored.results.find(
-      (r) => r.tier === "fact" && r.subject === "acquisition target",
+      (r) => r.tier === "attested" && r.subject === "acquisition target",
     );
-    if (acquisition?.tier !== "fact") throw new Error("expected an acquisition fact result");
+    if (acquisition?.tier !== "attested") throw new Error("expected an acquisition fact result");
     expect(acquisition.provenance.attribution.visible).toBe(true);
   }, PG_TEST_TIMEOUT_MS);
 
@@ -1241,7 +1241,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     expect(episodes).toHaveLength(2);
     expect(episodes.every((e) => e.extraction === "pending")).toBe(true);
     expect(episodes.find((e) => e.body === BODY.deploy)).toMatchObject({
-      tier: "raw-episode",
+      tier: "on-record",
       trustTier: 3,
       extraction: "pending",
       extractedAt: null,
@@ -1249,7 +1249,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     });
     // The fact store was queried and is genuinely empty — not merely filtered
     // out of the projection.
-    expect(view.stores.fact).toMatchObject({ queried: true, matched: 0 });
+    expect(view.stores.attested).toMatchObject({ queried: true, matched: 0 });
   }, PG_TEST_TIMEOUT_MS);
 
   it("refuses to promote a draft whose grant no reader can ever match, without poisoning the batch", async () => {

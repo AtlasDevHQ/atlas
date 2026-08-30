@@ -179,7 +179,7 @@ describe("Streamable HTTP server — MCP client integration", () => {
       "query",
       "restore_datasource",
       "runMetric",
-      "searchBrain",
+      "searchAtlas",
       "searchGlossary",
       "test_datasource",
     ]);

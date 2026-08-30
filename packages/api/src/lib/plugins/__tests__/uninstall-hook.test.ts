@@ -304,3 +304,148 @@ describe("invokeOnUninstallHook — globally-registered plugins", () => {
     expect(result.invoked).toEqual([CATALOG_ID]);
   });
 });
+
+// #3777 — every failure entry is persisted as an operator worklist row
+// (`plugin_grant_revocation_failures`) through the injected queryFn seam;
+// success paths write nothing, and a persist failure degrades to logs
+// without breaking the never-throws contract.
+describe("invokeOnUninstallHook — #3777 revocation-failure persistence", () => {
+  function makeRecordingQueryFn() {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const queryFn = async <T = unknown>(sql: string, params?: unknown[]): Promise<T[]> => {
+      calls.push({ sql, params: params ?? [] });
+      return [];
+    };
+    return { calls, queryFn };
+  }
+
+  it("persists a hook throw with (workspaceId, catalogId, pluginId, error)", async () => {
+    const registry = new PluginRegistry();
+    registry.register(makePlugin("jira", async () => {
+        throw new Error("token revoked upstream");
+      }));
+    const { calls, queryFn } = makeRecordingQueryFn();
+
+    const result = await invokeOnUninstallHook({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      catalogSlug: "jira",
+      loader: emptyLoader(),
+      registry,
+      queryFn,
+    });
+
+    expect(result.failures).toEqual([{ pluginId: "jira", error: "token revoked upstream" }]);
+    expect(calls).toHaveLength(1);
+    const call = calls[0]!;
+    expect(call.sql).toContain("INSERT INTO plugin_grant_revocation_failures");
+    expect(call.params).toEqual([WSID, CATALOG_ID, ["jira"], ["token revoked upstream"]]);
+  });
+
+  it("persists a builder failure under the catalog id", async () => {
+    const { loader } = makeStubLoader({
+      hasBuilder: () => true,
+      getOrInstantiate: async () => {
+        throw new Error("decrypt failed");
+      },
+    });
+    const { calls, queryFn } = makeRecordingQueryFn();
+
+    const result = await invokeOnUninstallHook({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      loader,
+      registry: new PluginRegistry(),
+      queryFn,
+    });
+
+    expect(result.failures).toEqual([{ pluginId: CATALOG_ID, error: "decrypt failed" }]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.params).toEqual([WSID, CATALOG_ID, [CATALOG_ID], ["decrypt failed"]]);
+  });
+
+  it("batches several failures into ONE statement", async () => {
+    const registry = new PluginRegistry();
+    registry.register(makePlugin("jira", async () => {
+        throw new Error("first");
+      }));
+    registry.register(makePlugin("jira-action", async () => {
+        throw new Error("second");
+      }));
+    const { calls, queryFn } = makeRecordingQueryFn();
+
+    const result = await invokeOnUninstallHook({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      catalogSlug: "jira",
+      loader: emptyLoader(),
+      registry,
+      queryFn,
+    });
+
+    expect(result.failures).toHaveLength(2);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.params?.[2]).toEqual(["jira", "jira-action"]);
+    expect(calls[0]!.params?.[3]).toEqual(["first", "second"]);
+  });
+
+  it("writes nothing when every hook succeeds", async () => {
+    const registry = new PluginRegistry();
+    registry.register(makePlugin("jira", async () => {}));
+    const { calls, queryFn } = makeRecordingQueryFn();
+
+    const result = await invokeOnUninstallHook({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      catalogSlug: "jira",
+      loader: emptyLoader(),
+      registry,
+      queryFn,
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("a persist failure degrades to logs — the helper still never throws", async () => {
+    const registry = new PluginRegistry();
+    registry.register(makePlugin("jira", async () => {
+        throw new Error("hook down");
+      }));
+    const queryFn = async <T = unknown>(): Promise<T[]> => {
+      throw new Error("db down too");
+    };
+
+    const result = await invokeOnUninstallHook({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      catalogSlug: "jira",
+      loader: emptyLoader(),
+      registry,
+      queryFn,
+    });
+
+    // The failure is still reported to the caller even though the durable
+    // record could not be written.
+    expect(result.failures).toEqual([{ pluginId: "jira", error: "hook down" }]);
+  });
+
+  it("substitutes a label for an empty error message (0211's CHECK refuses '')", async () => {
+    const registry = new PluginRegistry();
+    registry.register(makePlugin("jira", async () => {
+        throw new Error("");
+      }));
+    const { calls, queryFn } = makeRecordingQueryFn();
+
+    await invokeOnUninstallHook({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      catalogSlug: "jira",
+      loader: emptyLoader(),
+      registry,
+      queryFn,
+    });
+
+    expect(calls[0]!.params?.[3]).toEqual(["(hook failed with an empty error message)"]);
+  });
+});

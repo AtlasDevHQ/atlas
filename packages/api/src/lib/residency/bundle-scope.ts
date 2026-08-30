@@ -105,6 +105,7 @@ export const BUNDLE_TABLE_DECISIONS = {
   // than the UX win). The docs carry a post-migration re-connect checklist.
   workspace_plugins: { decision: "stays", reason: "Datasource/plugin installs are re-created in the target (explicitly separate scope on #4460); configs may embed region-bound secrets/hosts." },
   plugin_settings: { decision: "stays", reason: "Per-plugin settings follow their install — re-created with the plugin." },
+  plugin_grant_revocation_failures: { decision: "stays", reason: "Operator worklist of failed onUninstall revocations (#3777). The un-revoked grants were provisioned by THIS region's installs (which stay), and the origin operator is the one who can still act on them — a row exported to the target region points at nothing it can revoke." },
   integration_credentials: { decision: "stays", reason: "Per-region ciphertext (INTEGRATION_TABLES) — customer re-connects the integration." },
   twenty_integrations: { decision: "stays", reason: "Per-region ciphertext (INTEGRATION_TABLES) — customer re-connects." },
   discord_installations: { decision: "stays", reason: "OAuth install bound to region-specific callback hosts — re-install." },

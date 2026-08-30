@@ -417,7 +417,7 @@ describe("the description tells the agent when NOT to call it", () => {
   // because a model that never reads the workflow block still reads the schema.
   it("the workflow block names correct_fact as the verb for a wrong EXISTING fact", () => {
     expect(PROPOSE_FACT_DESCRIPTION).toContain("correct_fact");
-    expect(PROPOSE_FACT_DESCRIPTION.toLowerCase()).toContain("searchbrain");
+    expect(PROPOSE_FACT_DESCRIPTION.toLowerCase()).toContain("searchatlas");
     expect(PROPOSE_FACT_DESCRIPTION).toMatch(/rival belief|instead of replacing|adds a rival/i);
   });
 

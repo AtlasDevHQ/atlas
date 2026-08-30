@@ -180,10 +180,16 @@ export function toChanged(raw: unknown): string | null {
  */
 export function toRow(raw: unknown, linked: boolean): ResultLine {
   const row = raw != null && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const tier = typeof row.tier === "string" ? row.tier : "";
+  const rawTier = typeof row.tier === "string" ? row.tier : "";
+  // Pre-#5469 persisted rows spell the wire tiers `fact` / `raw-episode`
+  // (`messages.content` is unversioned jsonb). Normalized here so every
+  // downstream consumer — the chip-class map, the tier chips the partitioner
+  // collects off these rows — speaks only the current vocabulary.
+  const tier =
+    rawTier === "fact" ? "attested" : rawTier === "raw-episode" ? "on-record" : rawTier;
 
   switch (tier) {
-    case "fact": {
+    case "attested": {
       const claim = [str(row.subject), str(row.predicate), str(row.object)]
         .filter(Boolean)
         .join(" ");
@@ -205,7 +211,7 @@ export function toRow(raw: unknown, linked: boolean): ResultLine {
         changed: toChanged(row),
       };
     }
-    case "raw-episode": {
+    case "on-record": {
       const said = stripHeadlineMarkup(row.snippet) ?? str(row.body) ?? str(row.locator);
       const who = str(row.sourceActor);
       const when = formatDate(row.occurredAt);

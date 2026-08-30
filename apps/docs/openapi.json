@@ -26448,7 +26448,7 @@
           "Admin — Brain Facts"
         ],
         "summary": "List published warehouse-derived facts awaiting retirement",
-        "description": "Enumerates PUBLISHED, warehouse-derived facts — the population ADR-0042 stranded — with the fact `id` that `POST /{id}/retract` consumes. It exists because no other surface could produce that id (#5403): `searchBrain` excludes observations from both content-mode arms (#5341), `/admin/brain-coverage` emits predicates without ids, `executeSQL` is whitelist-scoped and `brain_facts` is not a whitelisted entity, and the review queue excludes them at every `?status=` including `all`. ⚠️ This is NOT the review queue with a filter, and it does not weaken one. An observation is not a candidate for REVIEW — a reviewer has no trust call to make on it — and `lib/brain/candidates.ts` still excludes these rows at every status. What this surface serves is a different question with a different verb: RETIREMENT, for a closed legacy population that can only shrink (the publish gate has refused warehouse-derived promotions since #5342). Retracting a warehouse-derived fact is admitted and says only that the row should not have been blessed — it asserts no belief about the warehouse, which is why `supersede`, `re-authority` and `pin` remain refused on these rows. Reader-scoped like every read on this router: `total` is what THIS reviewer can see, not what exists, and the audit override is deliberately not wired up. Retracted rows are excluded, so an empty page after a clearing is the confirmation that it worked. Rows whose `validTo` has passed ARE listed, unlike on every serving surface: this is a discovery listing, not a belief, and a superseded observation is reachable by no other path, so filtering it out would strand it exactly as this endpoint exists to prevent. `validTo` is in the projection, so an already-inert row is visibly inert. ⚠️ A workspace-admin session authenticates against exactly ONE region (ADR-0024), so this listing covers the region you are authenticated against and no other. A workspace holding facts in more than one region needs a session PER REGION — a `200` here says nothing about the others, and an empty page is equally what a region with nothing to retire looks like.",
+        "description": "Enumerates PUBLISHED, warehouse-derived facts — the population ADR-0042 stranded — with the fact `id` that `POST /{id}/retract` consumes. It exists because no other surface could produce that id (#5403): `searchAtlas` excludes observations from both content-mode arms (#5341), `/admin/brain-coverage` emits predicates without ids, `executeSQL` is whitelist-scoped and `brain_facts` is not a whitelisted entity, and the review queue excludes them at every `?status=` including `all`. ⚠️ This is NOT the review queue with a filter, and it does not weaken one. An observation is not a candidate for REVIEW — a reviewer has no trust call to make on it — and `lib/brain/candidates.ts` still excludes these rows at every status. What this surface serves is a different question with a different verb: RETIREMENT, for a closed legacy population that can only shrink (the publish gate has refused warehouse-derived promotions since #5342). Retracting a warehouse-derived fact is admitted and says only that the row should not have been blessed — it asserts no belief about the warehouse, which is why `supersede`, `re-authority` and `pin` remain refused on these rows. Reader-scoped like every read on this router: `total` is what THIS reviewer can see, not what exists, and the audit override is deliberately not wired up. Retracted rows are excluded, so an empty page after a clearing is the confirmation that it worked. Rows whose `validTo` has passed ARE listed, unlike on every serving surface: this is a discovery listing, not a belief, and a superseded observation is reachable by no other path, so filtering it out would strand it exactly as this endpoint exists to prevent. `validTo` is in the projection, so an already-inert row is visibly inert. ⚠️ A workspace-admin session authenticates against exactly ONE region (ADR-0024), so this listing covers the region you are authenticated against and no other. A workspace holding facts in more than one region needs a session PER REGION — a `200` here says nothing about the others, and an empty page is equally what a region with nothing to retire looks like.",
         "parameters": [
           {
             "schema": {
@@ -28098,7 +28098,7 @@
           "Admin — Brain Facts"
         ],
         "summary": "Clear one author's directory snapshot",
-        "description": "Clears the DATED DIRECTORY SNAPSHOT Atlas holds for one source principal (#5440, ADR-0036 §T5). Every claim that principal authored returns to the `opaque` identity state — the review surface and `searchBrain` render an explicit \"cannot name this person\" instead of the name — and **no claim is deleted, retracted or otherwise changed**. That is the `retract` shape applied to a person: the record keeps the statement and loses the person. The erasure is DURABLE. The audience sync's capture pass skips an erased handle forever, so the name does not come back on the next cycle. There is no un-erase verb; re-capturing a cleared name is a deliberate database operation, not an API call. ⚠️ Only a `directory` snapshot can be erased, and the narrowness is the point. An `atlas` identity stores no snapshot — its name is a live join to a Better Auth account whose own erasure path is account deletion — so clearing one would remove nothing and would leave a current colleague unnameable on every claim they made. Needs the owner or admin entitlement, re-resolved against this workspace rather than read off the session, on the same bar `/tension-sweep` applies: this writes workspace-wide state that no per-claim grant scopes.",
+        "description": "Clears the DATED DIRECTORY SNAPSHOT Atlas holds for one source principal (#5440, ADR-0036 §T5). Every claim that principal authored returns to the `opaque` identity state — the review surface and `searchAtlas` render an explicit \"cannot name this person\" instead of the name — and **no claim is deleted, retracted or otherwise changed**. That is the `retract` shape applied to a person: the record keeps the statement and loses the person. The erasure is DURABLE. The audience sync's capture pass skips an erased handle forever, so the name does not come back on the next cycle. There is no un-erase verb; re-capturing a cleared name is a deliberate database operation, not an API call. ⚠️ Only a `directory` snapshot can be erased, and the narrowness is the point. An `atlas` identity stores no snapshot — its name is a live join to a Better Auth account whose own erasure path is account deletion — so clearing one would remove nothing and would leave a current colleague unnameable on every claim they made. Needs the owner or admin entitlement, re-resolved against this workspace rather than read off the session, on the same bar `/tension-sweep` applies: this writes workspace-wide state that no per-claim grant scopes.",
         "requestBody": {
           "required": true,
           "content": {
@@ -91474,6 +91474,261 @@
           }
         },
         "operationId": "deletePlatformPluginsCatalogById"
+      }
+    },
+    "/api/v1/platform/plugins/catalog/revocation-failures": {
+      "get": {
+        "tags": [
+          "Platform — Plugin Catalog"
+        ],
+        "summary": "List unresolved onUninstall revocation failures",
+        "description": "External webhook subscriptions / OAuth grants whose revocation hook failed at uninstall time and may still be live. Oldest first. Resolve a row after revoking manually on the external platform.",
+        "responses": {
+          "200": {
+            "description": "Unresolved revocation failures",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "failures": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "catalogId": {
+                            "type": "string"
+                          },
+                          "pluginId": {
+                            "type": "string"
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "attemptedAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "workspaceId",
+                          "catalogId",
+                          "pluginId",
+                          "error",
+                          "attemptedAt"
+                        ]
+                      }
+                    },
+                    "total": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "failures",
+                    "total"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No internal database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformPluginsCatalogRevocationFailures"
+      }
+    },
+    "/api/v1/platform/plugins/catalog/revocation-failures/{id}/resolve": {
+      "post": {
+        "tags": [
+          "Platform — Plugin Catalog"
+        ],
+        "summary": "Mark a revocation failure resolved",
+        "description": "The operator's assertion that the external grant was revoked by hand (or verified already gone). Stamps who resolved it and when; already-resolved rows are refused rather than re-stamped.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "example": "revocation-failure-id"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "resolved": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "resolved"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postPlatformPluginsCatalogRevocationFailuresByIdResolve"
       }
     },
     "/api/v1/platform/invitations": {

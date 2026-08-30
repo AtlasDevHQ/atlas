@@ -95,7 +95,7 @@ const SHARED_INTERPOLATIONS = [
   {
     name: "KNOWLEDGE_TRUST_FRAMING",
     text: KNOWLEDGE_TRUST_FRAMING,
-    interpolatedInto: ["explore", "searchBrain"],
+    interpolatedInto: ["explore", "searchAtlas"],
   },
 ] as const;
 
@@ -155,7 +155,7 @@ const TOOLS: readonly ToolUnderRubric[] = [
   { name: "searchGlossary", base: SEARCH_GLOSSARY_TOOL_DESCRIPTION, codes: SEARCH_GLOSSARY_ERROR_CODES },
   { name: "runMetric", base: RUN_METRIC_TOOL_DESCRIPTION, codes: RUN_METRIC_ERROR_CODES },
   { name: "query", base: QUERY_TOOL_DESCRIPTION, codes: QUERY_ERROR_CODES },
-  { name: "searchBrain", base: SEARCH_BRAIN_TOOL_DESCRIPTION, codes: SEARCH_BRAIN_ERROR_CODES },
+  { name: "searchAtlas", base: SEARCH_BRAIN_TOOL_DESCRIPTION, codes: SEARCH_BRAIN_ERROR_CODES },
 ];
 
 function wordCount(text: string): number {
@@ -204,7 +204,7 @@ describe("MCP tool description rubric", () => {
       "listEntities",
       "query",
       "runMetric",
-      "searchBrain",
+      "searchAtlas",
       "searchGlossary",
     ]);
   });

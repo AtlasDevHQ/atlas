@@ -44,7 +44,8 @@ company's actual data**: facts and edges the system can re-derive and re-validat
 live sources, rather than a document store that drifts the moment reality moves.
 
 ⚠️ Two vocabularies, deliberately. The product noun is **Atlas**; the storage noun is still
-**brain** (`brain_facts`, `lib/brain/**`, `ATLAS_BRAIN_*`, `searchBrain`). If a customer
+**brain** (`brain_facts`, `lib/brain/**`, `ATLAS_BRAIN_*` — the agent-facing tool became
+`searchAtlas` with ADR-0038 Layer 2, #5469). If a customer
 reads it, it says Atlas; if only we read it, it still says brain. This is not drift — see
 ADR-0038 before "fixing" either one. The Company Atlas arc is mid-flight; its destination
 and its eight finish conditions are in [docs/prd/company-atlas.md](docs/prd/company-atlas.md).

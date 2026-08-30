@@ -78,9 +78,31 @@ describe("ToolPart", () => {
     expect(container.textContent).toContain("Test query");
   });
 
-  test("dispatches searchBrain to SearchBrainCard, not the gray fallback", () => {
-    // #5451 — this dispatch is the whole bug: `searchBrain` fell through to
+  test("dispatches searchAtlas to SearchBrainCard, not the gray fallback", () => {
+    // #5451 — this dispatch is the whole bug: the tool fell through to
     // `default:`, so ADR-0036's tier label was rendered by no surface at all.
+    const { container } = render(
+      <ToolPart
+        part={makePart("searchAtlas", {
+          input: { query: "who owns billing" },
+          output: {
+            results: [
+              { tier: "attested", subject: "Billing", predicate: "is owned by", object: "Payments", corroborationCount: 1, decay: { level: "fresh" } },
+            ],
+            neighbors: [],
+            tensionsTruncated: false,
+          },
+        })}
+      />,
+    );
+    expect(container.textContent).not.toContain("Tool: searchAtlas");
+    expect(container.querySelectorAll('[data-testid="tier-badge"]')).toHaveLength(1);
+  });
+
+  // #5469 — a pre-rename persisted part replays the OLD tool name and OLD tier
+  // spellings. The legacy dispatch arm plus row normalization must keep it on
+  // the card; falling to the gray box would re-open #5451 for all history.
+  test("dispatches a pre-#5469 searchBrain part to SearchBrainCard too", () => {
     const { container } = render(
       <ToolPart
         part={makePart("searchBrain", {
@@ -96,10 +118,11 @@ describe("ToolPart", () => {
       />,
     );
     expect(container.textContent).not.toContain("Tool: searchBrain");
-    expect(container.querySelectorAll('[data-testid="tier-badge"]')).toHaveLength(1);
+    const chip = container.querySelector('[data-testid="tier-badge"]');
+    expect(chip?.getAttribute("data-tier")).toBe("attested");
   });
 
-  test("executeSQL carries the warehouse tier — SURVEYED is this card, not searchBrain", () => {
+  test("executeSQL carries the warehouse tier — SURVEYED is this card, not searchAtlas", () => {
     const { container } = render(
       <ToolPart
         part={makePart("executeSQL", {

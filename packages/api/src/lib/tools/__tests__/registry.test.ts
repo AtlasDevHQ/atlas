@@ -230,7 +230,7 @@ describe("defaultRegistry", () => {
     expect(defaultRegistry.get("explore")).toBeDefined();
     expect(defaultRegistry.get("executeSQL")).toBeDefined();
     expect(defaultRegistry.get("createDashboard")).toBeDefined();
-    expect(defaultRegistry.get("searchBrain")).toBeDefined();
+    expect(defaultRegistry.get("searchAtlas")).toBeDefined();
     // #5496 — `correct_fact` is NO LONGER here. It stages onto a confirm card,
     // so it registers only where that card is rendered, and `defaultRegistry`
     // is what the embeddable widget gets: same `/api/v1/chat` route, same
@@ -263,7 +263,7 @@ describe("defaultRegistry", () => {
       "createLinearIssue",
       "executeSQL",
       "explore",
-      "searchBrain",
+      "searchAtlas",
       "sendEmail",
     ]);
   });
@@ -329,7 +329,7 @@ describe("buildRegistry", () => {
         "executePython",
         "executeSQL",
         "explore",
-        "searchBrain",
+        "searchAtlas",
         "sendEmail",
       ]);
       expect(registry.describe()).toContain("### 4. Analyze Data with Python");
@@ -349,7 +349,7 @@ describe("buildRegistry", () => {
       "createLinearIssue",
       "executeSQL",
       "explore",
-      "searchBrain",
+      "searchAtlas",
       "sendEmail",
     ]);
   });
@@ -384,7 +384,7 @@ describe("buildRegistry", () => {
       "createLinearIssue",
       "executeSQL",
       "explore",
-      "searchBrain",
+      "searchAtlas",
       "sendEmail",
       "sendEmailReport",
     ]);
@@ -436,7 +436,7 @@ describe("buildRegistry", () => {
       expect(names).not.toContain("createDashboard");
       expect(names).not.toContain("correct_fact");
       expect(names).not.toContain("proposeFact");
-      for (const core of ["explore", "executeSQL", "searchBrain", "sendEmail", "createLinearIssue"]) {
+      for (const core of ["explore", "executeSQL", "searchAtlas", "sendEmail", "createLinearIssue"]) {
         expect(names).toContain(core);
       }
     });
@@ -461,7 +461,7 @@ describe("buildRegistry", () => {
       expect(nonDashboardRegistry.get("proposeFact")).toBeUndefined();
       expect(nonDashboardRegistry.get("executeSQL")).toBeDefined();
       expect(nonDashboardRegistry.get("explore")).toBeDefined();
-      expect(nonDashboardRegistry.get("searchBrain")).toBeDefined();
+      expect(nonDashboardRegistry.get("searchAtlas")).toBeDefined();
     });
   });
 
@@ -542,7 +542,7 @@ describe("buildHeadlessRegistry (#4936)", () => {
     expect(names).not.toContain("correct_fact");
     expect(names).not.toContain("proposeFact");
     // Not vacuous — a headless surface is still a full read surface.
-    for (const core of ["explore", "executeSQL", "searchBrain"]) {
+    for (const core of ["explore", "executeSQL", "searchAtlas"]) {
       expect(names).toContain(core);
     }
   });

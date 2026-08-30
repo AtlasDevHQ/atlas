@@ -191,7 +191,7 @@ describeIfPg("searchBrain against the live schema", () => {
     return searchBrainCore(pool, {
       ctx,
       mode: "published",
-      include: ["fact", "raw-episode"],
+      include: ["attested", "on-record"],
       limit: 50,
       expand: false,
       ...overrides,
@@ -218,7 +218,7 @@ describeIfPg("searchBrain against the live schema", () => {
       const res = await search(outsider(), { query: "invoicing pipeline" });
       expect(ids(res.results)).toContain(fact);
       expect(ids(res.results)).toContain(ep);
-      const hit = res.results.find((r) => r.tier === "fact") as BrainFactResult;
+      const hit = res.results.find((r) => r.tier === "attested") as BrainFactResult;
       // `ts_headline` ran, which is only possible if the tsquery bound and the
       // generated column parsed.
       expect(hit.snippet).toContain("**");
@@ -260,10 +260,10 @@ describeIfPg("searchBrain against the live schema", () => {
         episodeId: ep,
       });
 
-      const spaced = await search(outsider(), { query: "escalates to", include: ["fact"] });
+      const spaced = await search(outsider(), { query: "escalates to", include: ["attested"] });
       expect(ids(spaced.results)).toContain(predicateOnly);
 
-      const ranked = await search(outsider(), { query: "escalates", include: ["fact"] });
+      const ranked = await search(outsider(), { query: "escalates", include: ["attested"] });
       const order = ids(ranked.results);
       expect(order).toContain(subjectHit);
       expect(order).toContain(predicateOnly);
@@ -291,7 +291,7 @@ describeIfPg("searchBrain against the live schema", () => {
       expect(ids(denied.results)).not.toContain(restricted);
       // Not a post-fetch drop: the store reports it never MATCHED the row, so
       // there is no count or latency signal that it exists.
-      const deniedFacts = denied.stores.fact;
+      const deniedFacts = denied.stores.attested;
       expect(deniedFacts.queried).toBe(true);
       if (!deniedFacts.queried) throw new Error("unreachable");
       expect(deniedFacts.matched).toBe(0);
@@ -319,7 +319,7 @@ describeIfPg("searchBrain against the live schema", () => {
         invalidated: true,
       });
 
-      const res = await search(outsider(), { query: "Kestrel deployment", include: ["fact"] });
+      const res = await search(outsider(), { query: "Kestrel deployment", include: ["attested"] });
       expect(ids(res.results)).toContain(live);
       // Both rows are `status = 'published'`, so `brainFactStatusClause` admits
       // BOTH. Only the tombstone filter removes the withdrawn one — and as of
@@ -379,10 +379,10 @@ describeIfPg("searchBrain against the live schema", () => {
         extracted: true,
       });
 
-      const res = await search(outsider(), { query: "Osprey migration", include: ["raw-episode"] });
+      const res = await search(outsider(), { query: "Osprey migration", include: ["on-record"] });
       const byId = new Map(
         res.results
-          .filter((r): r is Extract<BrainSearchResult, { tier: "raw-episode" }> => r.tier === "raw-episode")
+          .filter((r): r is Extract<BrainSearchResult, { tier: "on-record" }> => r.tier === "on-record")
           .map((r) => [r.id, r]),
       );
       expect(byId.get(pending)?.extraction).toBe("pending");
@@ -408,13 +408,13 @@ describeIfPg("searchBrain against the live schema", () => {
 
       const published = await search(outsider(), {
         query: "Nightjar rollout",
-        include: ["fact"],
+        include: ["attested"],
       });
       expect(ids(published.results)).not.toContain(draft);
 
       const developer = await search(outsider(), {
         query: "Nightjar rollout",
-        include: ["fact"],
+        include: ["attested"],
         mode: "developer",
       });
       expect(ids(developer.results)).toContain(draft);
@@ -452,9 +452,9 @@ describeIfPg("searchBrain against the live schema", () => {
         [WS, open, secret],
       );
 
-      const res = await search(outsider(), { query: "Petrel owner", include: ["fact"] });
+      const res = await search(outsider(), { query: "Petrel owner", include: ["attested"] });
       const fact = res.results.find(
-        (r): r is BrainFactResult => r.tier === "fact" && r.id === open,
+        (r): r is BrainFactResult => r.tier === "attested" && r.id === open,
       );
       expect(fact).toBeDefined();
       // Present, withheld, and counted — "there is a rival you cannot see" is
@@ -464,9 +464,9 @@ describeIfPg("searchBrain against the live schema", () => {
       // assertion refuses.
       expect(fact!.tensions).toEqual([{ visible: false, withheldCount: 1 }]);
 
-      const forInsider = await search(insider(), { query: "Petrel owner", include: ["fact"] });
+      const forInsider = await search(insider(), { query: "Petrel owner", include: ["attested"] });
       const insiderFact = forInsider.results.find(
-        (r): r is BrainFactResult => r.tier === "fact" && r.id === open,
+        (r): r is BrainFactResult => r.tier === "attested" && r.id === open,
       );
       const rival = insiderFact!.tensions[0];
       expect(rival).toMatchObject({ visible: true, factId: secret });
@@ -533,7 +533,7 @@ describeIfPg("searchBrain against the live schema", () => {
         const res = await search(outsider(), {
           mode,
           query: "Kittiwake",
-          include: ["fact"],
+          include: ["attested"],
         });
         expect([mode, ids(res.results)]).toEqual([mode, expect.arrayContaining([belief])]);
         expect([mode, ids(res.results)]).toEqual([
@@ -586,12 +586,12 @@ describeIfPg("searchBrain against the live schema", () => {
         [WS, observation, belief],
       );
 
-      const res = await search(outsider(), { query: "Dharma plan", include: ["fact"] });
+      const res = await search(outsider(), { query: "Dharma plan", include: ["attested"] });
       // Not served in its own right…
       expect(ids(res.results)).not.toContain(observation);
       // …and still the counterpart on the belief that disagrees with it.
       const owner = res.results.find(
-        (r): r is BrainFactResult => r.tier === "fact" && r.id === belief,
+        (r): r is BrainFactResult => r.tier === "attested" && r.id === belief,
       );
       expect(owner).toBeDefined();
       const rival = owner!.tensions[0];
@@ -647,7 +647,7 @@ describeIfPg("searchBrain against the live schema", () => {
       // The insider at Tuesday: Monday's belief, through Monday's grant.
       const insiderAtTuesday = await search(insider(), {
         query: "Osprey rollout",
-        include: ["fact"],
+        include: ["attested"],
         asOf: tuesday,
       });
       expect(ids(insiderAtTuesday.results)).toContain(privateV1);
@@ -661,7 +661,7 @@ describeIfPg("searchBrain against the live schema", () => {
       // historical access.
       const outsiderAtTuesday = await search(outsider(), {
         query: "Osprey rollout",
-        include: ["fact"],
+        include: ["attested"],
         asOf: tuesday,
       });
       expect(ids(outsiderAtTuesday.results)).not.toContain(privateV1);
@@ -670,7 +670,7 @@ describeIfPg("searchBrain against the live schema", () => {
       // Default (as-of-now) reads are unchanged by any of the above: the
       // superseded v1 is hidden, the current v2 serves — for both readers.
       for (const reader of [insider(), outsider()]) {
-        const nowRead = await search(reader, { query: "Osprey rollout", include: ["fact"] });
+        const nowRead = await search(reader, { query: "Osprey rollout", include: ["attested"] });
         expect(ids(nowRead.results)).toContain(publicV2);
         expect(ids(nowRead.results)).not.toContain(privateV1);
         expect("asOf" in nowRead).toBe(false);
@@ -704,7 +704,7 @@ describeIfPg("searchBrain against the live schema", () => {
 
       const atBoundary = await search(outsider(), {
         query: "Gannet migration",
-        include: ["fact"],
+        include: ["attested"],
         asOf: handover.toISOString(),
       });
       expect(ids(atBoundary.results)).toContain(v2);
@@ -743,7 +743,7 @@ describeIfPg("searchBrain against the live schema", () => {
 
       const outsiderAtTuesday = await search(outsider(), {
         query: "Skua incident review",
-        include: ["fact"],
+        include: ["attested"],
         asOf: "2026-07-07T09:00:00Z",
       });
       expect(ids(outsiderAtTuesday.results)).toContain(publicV1);
@@ -751,7 +751,7 @@ describeIfPg("searchBrain against the live schema", () => {
 
       const outsiderNow = await search(outsider(), {
         query: "Skua incident review",
-        include: ["fact"],
+        include: ["attested"],
       });
       // As of now: v1 is superseded, v2 is granted elsewhere — nothing serves.
       expect(ids(outsiderNow.results)).not.toContain(publicV1);
@@ -779,7 +779,7 @@ describeIfPg("searchBrain against the live schema", () => {
 
       const res = await search(outsider(), {
         query: "Heron pricing",
-        include: ["fact"],
+        include: ["attested"],
         asOf: "2026-07-10T00:00:00Z",
       });
       expect(ids(res.results)).not.toContain(retracted);
@@ -802,7 +802,7 @@ describeIfPg("searchBrain against the live schema", () => {
 
       const res = await search(outsider(), {
         query: "Puffin oncall",
-        include: ["fact"],
+        include: ["attested"],
         asOf: "2026-01-01T00:00:00Z",
       });
       expect(ids(res.results)).toContain(openStart);
@@ -857,8 +857,8 @@ describeIfPg("searchBrain against the live schema", () => {
       });
       await seedSupersedes(live, old);
 
-      const res = await search(outsider(), { query: "Kestrel raise", include: ["fact"] });
-      const fact = res.results.find((r) => r.tier === "fact" && r.id === live) as BrainFactResult;
+      const res = await search(outsider(), { query: "Kestrel raise", include: ["attested"] });
+      const fact = res.results.find((r) => r.tier === "attested" && r.id === live) as BrainFactResult;
 
       expect(fact.history.priorCount).toBe(1);
       expect(fact.history.prior).toMatchObject({ visible: true, object: "8M" });
@@ -901,8 +901,8 @@ describeIfPg("searchBrain against the live schema", () => {
       });
       await seedSupersedes(live, erased);
 
-      const res = await search(outsider(), { query: "Gannet raise", include: ["fact"] });
-      const fact = res.results.find((r) => r.tier === "fact" && r.id === live) as BrainFactResult;
+      const res = await search(outsider(), { query: "Gannet raise", include: ["attested"] });
+      const fact = res.results.find((r) => r.tier === "attested" && r.id === live) as BrainFactResult;
 
       expect(fact.history.prior).toBeNull();
       expect(fact.history.priorCount).toBe(0);
@@ -946,10 +946,10 @@ describeIfPg("searchBrain against the live schema", () => {
 
       const res = await search(outsider(), {
         query: "Petrel raise",
-        include: ["fact"],
+        include: ["attested"],
         asOf: "2026-07-10T00:00:00Z",
       });
-      const fact = res.results.find((r) => r.tier === "fact" && r.id === live) as BrainFactResult;
+      const fact = res.results.find((r) => r.tier === "attested" && r.id === live) as BrainFactResult;
 
       expect(fact.history.prior).toBeNull();
       expect(fact.history.priorCount).toBe(0);
@@ -980,8 +980,8 @@ describeIfPg("searchBrain against the live schema", () => {
       });
       await seedSupersedes(live, old);
 
-      const res = await search(outsider(), { query: "Merlin margin", include: ["fact"] });
-      const fact = res.results.find((r) => r.tier === "fact" && r.id === live) as BrainFactResult;
+      const res = await search(outsider(), { query: "Merlin margin", include: ["attested"] });
+      const fact = res.results.find((r) => r.tier === "attested" && r.id === live) as BrainFactResult;
 
       // Existence is disclosed, content is not — `BrainSearchTensionWithheld`'s
       // split. Omitting it would read as "this never changed".
@@ -1003,8 +1003,8 @@ describeIfPg("searchBrain against the live schema", () => {
         episodeId: ep,
       });
 
-      const res = await search(outsider(), { query: "Osprey runbook", include: ["fact"] });
-      const fact = res.results.find((r) => r.tier === "fact" && r.id === only) as BrainFactResult;
+      const res = await search(outsider(), { query: "Osprey runbook", include: ["attested"] });
+      const fact = res.results.find((r) => r.tier === "attested" && r.id === only) as BrainFactResult;
 
       expect(fact.history).toEqual({
         prior: null,

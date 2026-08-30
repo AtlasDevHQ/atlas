@@ -108,7 +108,7 @@ export type CorrectFactToolReason =
  * before it offers a correction that will be refused.
  */
 export const CORRECT_FACT_DESCRIPTION = `### Correct a Company-Brain Fact
-Use the correct_fact tool when a user with authority states that a reviewed fact (\`tier: "fact"\` from searchBrain) is wrong. The tool does NOT apply the correction — it STAGES it and the user confirms it on a card:
+Use the correct_fact tool when a user with authority states that a reviewed fact (\`tier: "attested"\` from searchAtlas) is wrong. The tool does NOT apply the correction — it STAGES it and the user confirms it on a card:
 - \`retract\` withdraws a false or to-be-erased claim (the only deletion-like verb; dependents are flagged for human re-review, never auto-removed)
 - \`supersede\` replaces an outdated value: pass \`replacement.object\` with the corrected value; the old fact stays readable as history
 - \`re-authority\` / \`pin\` confirm a claim is still true on the user's authority, resetting its staleness clock — refused once a claim's validity window has closed, since nothing serves it any more; if a newer claim replaced it, vouch for that one instead
@@ -157,7 +157,7 @@ export const correctFactTool = tool({
   inputSchema: z.object({
     factId: z
       .string()
-      .describe("The fact id, exactly as returned by searchBrain (`tier: \"fact\"` results only)."),
+      .describe("The fact id, exactly as returned by searchAtlas (`tier: \"attested\"` results only)."),
     verb: z
       .enum(CORRECTION_VERBS)
       .describe(

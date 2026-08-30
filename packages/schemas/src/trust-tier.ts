@@ -30,21 +30,25 @@
  * the two drift. The duplication is a packaging constraint; the test is what
  * keeps it from being a second thing to keep true.
  *
- * ## Why the labels are the WIRE vocabulary and not ADR-0038's display names
+ * ## The wire moved (ADR-0038 Layer 2); the LABELS did not
  *
- * [ADR-0038](../../../docs/adr/0038-the-atlas-is-the-product-the-brain-is-the-category.md)
- * proposes *Surveyed / Attested / On the record*, and the `searchBrain` tool
- * description already teaches the model those words. They are deliberately NOT
- * used here. [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375) owns
- * whether they ship, and says so in as many words:
+ * The ADR-0038 Layer 2 rename (#5469, 2026-08-30) moved the WIRE values to
+ * `attested` / `on-record` — the table keys and `tier` fields below follow the
+ * wire. The `label` strings are display vocabulary and stay on the pre-rename
+ * words deliberately: [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375)
+ * owns whether ADR-0038's display names (*Surveyed / Attested / On the
+ * record*) ship, and says so in as many words:
  *
  * > **Do not rename first and test after.** Testing the current state is what
  * > produces evidence about which words are needed; shipping the proposed three
  * > names first turns this into a check of a guess.
  *
- * So this ships the render SITE those names would need in order to exist at
- * all, carrying today's vocabulary. If #5375 adopts the proposed names, the
- * `label` fields below (and the mirror) are the entire edit.
+ * If #5375 adopts the proposed names, the `label` fields below (and the
+ * mirror) are the entire edit. `LEGACY_WIRE_TIER_ALIASES` is the read-side
+ * half of the Layer 2 rename: pre-rename conversations replay their stored
+ * `tier` values verbatim from `messages.content`, and an alias resolving them
+ * beats a loud "unknown tier" chip on rows that were correctly labelled when
+ * written.
  */
 
 import type { BrainResultTier } from "@useatlas/types";
@@ -55,20 +59,20 @@ import type { BrainResultTier } from "@useatlas/types";
  * Strictly wider than {@link BrainResultTier}: `warehouse` is tier 1, which has
  * no row representation in the brain at all — it resolves live through the
  * semantic layer and belongs to `executeSQL`. A table that only covered the
- * three `searchBrain` classes would leave the tier the wedge most depends on
+ * three `searchAtlas` classes would leave the tier the wedge most depends on
  * unlabelled, which is the specific hole #5451 calls out.
  */
 export const ANSWER_TRUST_TIERS = [
   "warehouse",
-  "fact",
-  "raw-episode",
+  "attested",
+  "on-record",
   "document",
 ] as const;
 
 export type AnswerTrustTier = (typeof ANSWER_TRUST_TIERS)[number];
 
 /**
- * Compile error if a `searchBrain` result class exists that no surface can
+ * Compile error if a `searchAtlas` result class exists that no surface can
  * label.
  *
  * The direction matters: every {@link BrainResultTier} must be an
@@ -124,14 +128,14 @@ export const TRUST_TIER_PRESENTATION: Readonly<
       "Read live from your warehouse by this query — it cannot go stale between readings.",
     trustTier: 1,
   },
-  fact: {
-    tier: "fact",
+  attested: {
+    tier: "attested",
     label: "fact",
     meaning: "A reviewed claim a named person read and stood behind.",
     trustTier: 2,
   },
-  "raw-episode": {
-    tier: "raw-episode",
+  "on-record": {
+    tier: "on-record",
     label: "raw episode",
     meaning:
       "Source material — what someone said, unedited. Evidence of what was said, not of what is true.",
@@ -144,6 +148,19 @@ export const TRUST_TIER_PRESENTATION: Readonly<
       "A hosted knowledge-base document. Descriptive prose, not a claim about the world.",
     trustTier: null,
   },
+};
+
+/**
+ * Pre-rename wire spellings → their ADR-0038 Layer 2 successors (#5469).
+ * `messages.content` is unversioned jsonb: every conversation persisted before
+ * the rename replays `tier: "fact"` / `"raw-episode"` verbatim, and those rows
+ * were correctly labelled when written — so they resolve here rather than
+ * rendering the loud unknown-tier chip that exists for genuinely foreign
+ * values. Read-side only: nothing may ever WRITE these spellings again.
+ */
+export const LEGACY_WIRE_TIER_ALIASES: Readonly<Record<string, AnswerTrustTier>> = {
+  fact: "attested",
+  "raw-episode": "on-record",
 };
 
 /** Narrow an untrusted value to the render vocabulary. */
@@ -165,5 +182,9 @@ export function isAnswerTrustTier(value: unknown): value is AnswerTrustTier {
 export function answerTrustTierPresentation(
   value: unknown,
 ): TrustTierPresentation | null {
-  return isAnswerTrustTier(value) ? TRUST_TIER_PRESENTATION[value] : null;
+  if (isAnswerTrustTier(value)) return TRUST_TIER_PRESENTATION[value];
+  if (typeof value === "string" && value in LEGACY_WIRE_TIER_ALIASES) {
+    return TRUST_TIER_PRESENTATION[LEGACY_WIRE_TIER_ALIASES[value]!];
+  }
+  return null;
 }

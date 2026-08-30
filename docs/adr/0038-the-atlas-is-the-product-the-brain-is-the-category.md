@@ -45,6 +45,14 @@ The tool **name** `searchBrain` and the wire enum values (`tier: "fact"`, `"raw-
 
 **It happens before the `v1.0.0` contract freeze, bundled into the milestone that already changes the tool** — retrieval depth — and **never as a standalone rename PR.** Two reasons the timing is forced rather than preferred: `v1.0.0` is reserved for frozen REST + MCP + plugin SDK contracts ([ADR-0008](./0008-versioning-and-release-tags.md)), so the window closes permanently; and `searchBrain` is itself only one milestone old — it replaced `searchKnowledge` in M1 — so the population bound to the name is the smallest it will ever be.
 
+> **Amendment (2026-08-30, #5469): the carrier rule above is retired, and Layer 2 shipped standalone.**
+>
+> The paragraph above named retrieval depth as the carrier; retrieval depth left the cut on 2026-08-13 ([#5198](https://github.com/AtlasDevHQ/atlas/issues/5198)), [#5468](https://github.com/AtlasDevHQ/atlas/issues/5468) explicitly declined the rename for M6, and a qualifying tool change (#5462's `history` arm) went by without anyone considering it — the bundling rule was producing exactly the silent-expiry failure #5469 documents, while every shipped milestone grew the bound population the rule existed to keep small. The maintainer decided on 2026-08-30 to reverse "never as a standalone rename PR" and ship Layer 2 immediately.
+>
+> **What shipped:** the tool is **`searchAtlas`**; the wire tier values are **`attested`** (was `fact`) and **`on-record`** (was `raw-episode`); `document` is unchanged — it never carried storage vocabulary. The wire values stop leaking Layer 3's storage nouns (`brain_facts` / `brain_episodes`) and align with the trust vocabulary the Layer 1 descriptions already teach. Display labels did NOT move — #5375 still owns them, and `@useatlas/schemas/trust-tier` documents the decoupling.
+>
+> **Blast radius, corrected:** the population is not only MCP clients. The published `@useatlas/react` widget binds the tier enum and can face older self-hosted APIs, so the widget keeps read-side tolerance for the old spellings (dispatch fall-throughs plus a legacy alias map); `RENAMED_TOOLS` in `lib/tools/registry.ts` normalizes `searchBrain` (and re-points `searchKnowledge`) at the `atlas.config.ts` seam so no self-hoster's boot breaks; and `transformMessages` normalizes replayed history, since `messages.content` stores the old tool name and tier values verbatim. MCP registration itself is a clean break — one name, per this repo's standing two-names-is-worse rule.
+
 ### Layer 3 — internal schema. Explicitly not renamed.
 
 `brain_facts`, `brain_edges`, `brain_vocabulary_edge`, `lib/brain/**`, the migration series, and `ATLAS_BRAIN_EXTRACTION_ENABLED` **stay as they are.** Nobody outside the codebase reads them, and churning them mid-arc means touching the just-bumped region bundle v3, the bundle-scope registry, the cleanup rule map, and their tripwire tests — for zero user-visible value. `ATLAS_BRAIN_EXTRACTION_ENABLED` additionally costs a coordinated three-region deploy to rename, which buys nothing an operator would notice.
@@ -55,13 +63,13 @@ The tool **name** `searchBrain` and the wire enum values (`tier: "fact"`, `"raw-
 
 The three trust tiers have internal names and no user-facing ones. Proposed:
 
-| Wire value (unchanged) | What a person reads | Why they can trust it |
+| Wire value (moved with Layer 2, 2026-08-30) | What a person reads | Why they can trust it |
 |---|---|---|
 | tier-1 warehouse | **Surveyed** | True by construction — the answer re-reads live rows, so it cannot go stale between readings |
 | tier-2 reviewed | **Attested** | A named colleague read this claim and stood behind it, and is on the record |
 | tier-3 episode | **On the record** | What was actually said, unedited. Testimony, not fact |
 
-**Display names and wire values are decoupled** — the wire values move with Layer 2 or not at all. What does *not* move is ADR-0036's consequence that the tiers stay permanently distinguishable to whoever is reading: *"every retrieval result and every UI surface must carry the tier label, or the wedge is invisible and the worse-Glean trap re-opens."* Renaming the label never weakens that; it is an attempt to make the label land on someone who has not read an ADR.
+**Display names and wire values are decoupled** — the wire values moved with Layer 2 (2026-08-30, to `attested` / `on-record`); the display labels remain #5375's to settle. What does *not* move is ADR-0036's consequence that the tiers stay permanently distinguishable to whoever is reading: *"every retrieval result and every UI surface must carry the tier label, or the wedge is invisible and the worse-Glean trap re-opens."* Renaming the label never weakens that; it is an attempt to make the label land on someone who has not read an ADR.
 
 ## Consequences
 

@@ -17,14 +17,14 @@ import {
 } from "../trust-tier";
 
 describe("trust tier presentation", () => {
-  test("every searchBrain wire tier has a presentation entry", () => {
+  test("every searchAtlas wire tier has a presentation entry", () => {
     for (const tier of BRAIN_RESULT_TIERS) {
       expect(answerTrustTierPresentation(tier)).not.toBeNull();
     }
   });
 
-  test("the warehouse tier is present — SURVEYED does not come from searchBrain", () => {
-    // AC: "SURVEYED is handled explicitly. It does not come from `searchBrain`
+  test("the warehouse tier is present — SURVEYED does not come from searchAtlas", () => {
+    // AC: "SURVEYED is handled explicitly. It does not come from `searchAtlas`
     // at all — it is `executeSQL` — so a UI that only labels brain results
     // leaves the tier the wedge most depends on unlabelled."
     expect(BRAIN_RESULT_TIERS as readonly string[]).not.toContain("warehouse");
@@ -55,8 +55,8 @@ describe("trust tier presentation", () => {
     // Not an invented 4: a KB document is descriptive prose, not a claim.
     expect(TRUST_TIER_PRESENTATION.document.trustTier).toBeNull();
     expect(TRUST_TIER_PRESENTATION.warehouse.trustTier).toBe(1);
-    expect(TRUST_TIER_PRESENTATION.fact.trustTier).toBe(2);
-    expect(TRUST_TIER_PRESENTATION["raw-episode"].trustTier).toBe(3);
+    expect(TRUST_TIER_PRESENTATION.attested.trustTier).toBe(2);
+    expect(TRUST_TIER_PRESENTATION["on-record"].trustTier).toBe(3);
   });
 
   test("an unrecognized tier resolves to null rather than a silent default", () => {
@@ -64,5 +64,18 @@ describe("trust tier presentation", () => {
     expect(answerTrustTierPresentation("episode")).toBeNull();
     expect(answerTrustTierPresentation(undefined)).toBeNull();
     expect(answerTrustTierPresentation(2)).toBeNull();
+  });
+
+  // #5469 — the read-side half of the ADR-0038 Layer 2 wire rename: pre-rename
+  // persisted rows replay `fact` / `raw-episode` verbatim and must resolve to
+  // their successors' presentation, not to the unknown-tier chip. The alias is
+  // resolution-only: the old spellings are NOT valid tiers.
+  test("pre-#5469 wire spellings resolve through the legacy alias map", () => {
+    expect(isAnswerTrustTier("fact")).toBe(false);
+    expect(isAnswerTrustTier("raw-episode")).toBe(false);
+    expect(answerTrustTierPresentation("fact")).toBe(TRUST_TIER_PRESENTATION.attested);
+    expect(answerTrustTierPresentation("raw-episode")).toBe(
+      TRUST_TIER_PRESENTATION["on-record"],
+    );
   });
 });

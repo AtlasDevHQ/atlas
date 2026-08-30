@@ -71,8 +71,8 @@ const mockSearchBrainExecute = mock<(...args: unknown[]) => Promise<unknown>>(as
   results: [],
   neighbors: [],
   stores: {
-    fact: { queried: true, matched: 0, truncated: false },
-    "raw-episode": { queried: true, matched: 0, truncated: false },
+    attested: { queried: true, matched: 0, truncated: false },
+    "on-record": { queried: true, matched: 0, truncated: false },
     document: { queried: true, matched: 0, truncated: false },
   },
   tensionsTruncated: false,
@@ -185,7 +185,7 @@ describe("MCP tools", () => {
       // #4773 — ADDITIVE. `searchKnowledge` was never on this surface, so the
       // rename removes no MCP tool name; the stability contract's
       // frozen-tool-name rule is untouched.
-      "searchBrain",
+      "searchAtlas",
       "searchGlossary",
     ]);
   });
@@ -212,7 +212,7 @@ describe("MCP tools", () => {
       "describeEntity",
       "searchGlossary",
       "runMetric",
-      "searchBrain",
+      "searchAtlas",
     ]) {
       expect(annotationsByName.get(name)?.readOnlyHint).toBe(true);
     }
@@ -225,7 +225,7 @@ describe("MCP tools", () => {
       "listEntities",
       "describeEntity",
       "searchGlossary",
-      "searchBrain",
+      "searchAtlas",
     ]) {
       expect(annotationsByName.get(name)?.openWorldHint).toBe(false);
     }
@@ -1033,7 +1033,7 @@ describe("MCP tools", () => {
 
   // --- searchBrain dispatch (#4773) ---
 
-  describe("searchBrain", () => {
+  describe("searchAtlas", () => {
     it("advertises the tool prose the api package owns, not a local copy (#4933)", async () => {
       // The link that makes #4933's api-side fix reach an MCP client at all:
       // `registerTools` must keep deriving this description from
@@ -1056,7 +1056,7 @@ describe("MCP tools", () => {
       // test exists to catch.
       const { client } = await createTestClient();
       const { tools } = await client.listTools();
-      const description = tools.find((t) => t.name === "searchBrain")?.description;
+      const description = tools.find((t) => t.name === "searchAtlas")?.description;
       expect(description?.split("\n\n")[0]).toBe("Search the Company Atlas");
       expect(description).toContain("Error contract:");
     });
@@ -1124,11 +1124,11 @@ describe("MCP tools", () => {
       registerTools(server, { actor: TEST_ACTOR });
 
       expect(
-        seen.has("searchBrain"),
+        seen.has("searchAtlas"),
         "searchBrain was never registered — the identity check below would pass vacuously",
       ).toBe(true);
       expect(
-        seen.get("searchBrain"),
+        seen.get("searchAtlas"),
         "src/tools.ts no longer passes SEARCH_BRAIN_INPUT_SHAPE itself. A spread or a re-declared literal is deep-equal on the day it is written and drifts on the next api-side prose fix — which is the entire failure #4954 removed.",
       ).toBe(SEARCH_BRAIN_INPUT_SHAPE);
     });
@@ -1140,7 +1140,7 @@ describe("MCP tools", () => {
       // does with the object afterwards.
       const { client } = await createTestClient();
       const { tools } = await client.listTools();
-      const served = tools.find((t) => t.name === "searchBrain");
+      const served = tools.find((t) => t.name === "searchAtlas");
       expect(served, "searchBrain is not registered — the comparison below would pass vacuously").toBeDefined();
 
       // `properties` AND `required`, not `properties` alone: in JSON Schema an
@@ -1223,7 +1223,7 @@ describe("MCP tools", () => {
       // `callTool` does not reject — which is the part most likely to be
       // mis-remembered when someone adds a constraint to a sibling argument.
       const { client } = await createTestClient();
-      const result = await client.callTool({ name: "searchBrain", arguments: { limit: 0 } });
+      const result = await client.callTool({ name: "searchAtlas", arguments: { limit: 0 } });
 
       expect(result.isError).toBe(true);
       expect(
@@ -1238,10 +1238,10 @@ describe("MCP tools", () => {
 
     it("returns the fused payload as JSON on success", async () => {
       const { client } = await createTestClient();
-      const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });
+      const result = await client.callTool({ name: "searchAtlas", arguments: { query: "x" } });
       expect(result.isError).toBeFalsy();
       const payload = JSON.parse(getContentText(result.content));
-      expect(payload.stores.fact.queried).toBe(true);
+      expect(payload.stores.attested.queried).toBe(true);
       expect(payload.results).toEqual([]);
     });
 
@@ -1256,7 +1256,7 @@ describe("MCP tools", () => {
         reason: REAL_BRAIN_TOOL_REASONS.readerUnresolved,
       });
       const { client } = await createTestClient();
-      const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });
+      const result = await client.callTool({ name: "searchAtlas", arguments: { query: "x" } });
       expect(result.isError).toBe(true);
       const envelope = parseAtlasMcpToolError(getContentText(result.content));
       expect(envelope?.code).toBe("forbidden");
@@ -1275,7 +1275,7 @@ describe("MCP tools", () => {
       });
       const { client } = await createTestClient();
       const result = await client.callTool({
-        name: "searchBrain",
+        name: "searchAtlas",
         arguments: { query: "x", asOf: "yesterday-ish" },
       });
       expect(result.isError).toBe(true);
@@ -1296,8 +1296,8 @@ describe("MCP tools", () => {
         results: [],
         neighbors: [],
         stores: {
-          fact: { queried: true, matched: 0, truncated: false },
-          "raw-episode": { queried: false },
+          attested: { queried: true, matched: 0, truncated: false },
+          "on-record": { queried: false },
           document: { queried: false },
         },
         tensionsTruncated: false,
@@ -1305,7 +1305,7 @@ describe("MCP tools", () => {
       });
       const { client } = await createTestClient();
       const result = await client.callTool({
-        name: "searchBrain",
+        name: "searchAtlas",
         arguments: { query: "x", asOf: "2026-07-01T00:00:00Z" },
       });
       expect(result.isError).toBeFalsy();
@@ -1324,7 +1324,7 @@ describe("MCP tools", () => {
         reason: REAL_BRAIN_TOOL_REASONS.searchFailed,
       });
       const { client } = await createTestClient();
-      const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });
+      const result = await client.callTool({ name: "searchAtlas", arguments: { query: "x" } });
       expect(result.isError).toBe(true);
       const envelope = parseAtlasMcpToolError(getContentText(result.content));
       expect(envelope?.code).toBe("internal_error");
@@ -1340,14 +1340,14 @@ describe("MCP tools", () => {
         neighbors: [],
         stores: {
           fact: { queried: false },
-          "raw-episode": { queried: false },
+          "on-record": { queried: false },
           document: { queried: false },
         },
         tensionsTruncated: false,
         unavailable: REAL_BRAIN_TOOL_REASONS.noWorkspace,
       });
       const { client } = await createTestClient();
-      const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });
+      const result = await client.callTool({ name: "searchAtlas", arguments: { query: "x" } });
       expect(result.isError).toBeFalsy();
       expect(JSON.parse(getContentText(result.content)).unavailable).toBe("no_workspace");
     });

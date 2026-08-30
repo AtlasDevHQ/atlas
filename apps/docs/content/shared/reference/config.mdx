@@ -257,7 +257,7 @@ export default defineConfig({
 });
 ```
 
-The default tools are `explore` (read semantic layer files) and `executeSQL` (run validated SQL queries). Other registrable names include `searchBrain` (Knowledge Base + [Company Atlas](/guides/atlas-temporal-model) search); the legacy name `searchKnowledge` is still accepted and normalized to `searchBrain` with a startup warning. When the action framework is enabled, action tools are also registered. See [Actions](#actions) below.
+The default tools are `explore` (read semantic layer files) and `executeSQL` (run validated SQL queries). Other registrable names include `searchAtlas` (Knowledge Base + [Company Atlas](/guides/atlas-temporal-model) search); the legacy names `searchBrain` and `searchKnowledge` are still accepted and normalized to `searchAtlas` with a startup warning. When the action framework is enabled, action tools are also registered. See [Actions](#actions) below.
 
 ---
 

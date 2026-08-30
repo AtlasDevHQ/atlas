@@ -1480,12 +1480,15 @@ export interface BrainCoverage {
  * is `null` rather than an invented 4 — a number would imply "less
  * authoritative than a raw episode", which is not what it is.
  *
- * `raw-episode` is spelled exactly as ADR-0036 commits it, including for
- * episodes that HAVE been extracted: the tier names what the row is (raw
- * source content), and {@link BrainEpisodeResult.extraction} carries whether a
- * pass has run over it.
+ * Wire spellings are the ADR-0038 Layer 2 trust vocabulary (`attested` /
+ * `on-record`), renamed 2026-08-30 (#5469) from the storage-leaking `fact` /
+ * `raw-episode` that ADR-0036 originally committed — the ADR-0038 amendment
+ * carries the cutover and the legacy-tolerance seams. `on-record` names what
+ * the row is (raw source content) including for episodes that HAVE been
+ * extracted: {@link BrainEpisodeResult.extraction} carries whether a pass has
+ * run over it.
  */
-export type BrainResultTier = "fact" | "raw-episode" | "document";
+export type BrainResultTier = "attested" | "on-record" | "document";
 
 /**
  * Whether an extraction pass has run over the episode backing this result.
@@ -1678,7 +1681,7 @@ export interface BrainFactHistoryView {
 
 /** tier-2 — a reviewed claim. Authoritative for its class; yields to the warehouse. */
 export interface BrainFactResult {
-  readonly tier: "fact";
+  readonly tier: "attested";
   /** `TRUST_TIERS.fact`. A literal, so a fact result cannot be built mislabeled. */
   readonly trustTier: 2;
   readonly id: string;
@@ -1717,7 +1720,7 @@ export interface BrainFactResult {
 
 /** tier-3 — raw source content. Source-of-truth for what was said, never for what is true. */
 interface BrainEpisodeResultBase {
-  readonly tier: "raw-episode";
+  readonly tier: "on-record";
   /** `TRUST_TIERS.episode`. */
   readonly trustTier: 3;
   readonly id: string;

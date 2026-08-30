@@ -53,9 +53,11 @@ export const ToolPart = memo(function ToolPart({
       return <ExploreCard part={part} />;
     case "executeSQL":
       return <SQLResultCard part={part} previousExecution={previousExecution} repeatedCount={repeatedCount} />;
-    // #5451 — `searchBrain` used to fall through to the gray "Tool: searchBrain"
+    // #5451 — this tool used to fall through to the gray "Tool: searchBrain"
     // box, which is how ADR-0036's tier label came to be rendered by no surface
-    // at all. The card labels every row.
+    // at all. The card labels every row. The old spelling is the pre-#5469
+    // wire name, kept so an un-normalized part never re-opens that hole.
+    case "searchAtlas":
     case "searchBrain":
       return <SearchBrainCard part={part} />;
     case "executePython": {

@@ -152,7 +152,7 @@ function warnings(fragment: string): LogCall[] {
   return logCalls.filter((c) => c.level === "warn" && c.message.includes(fragment));
 }
 
-function run(db: BrainSearchReader, include: ("fact" | "raw-episode" | "document")[] = ["fact"]) {
+function run(db: BrainSearchReader, include: ("attested" | "on-record" | "document")[] = ["attested"]) {
   return searchBrainCore(db, { ctx: ctx(), mode: "published", include, limit: 10, expand: false });
 }
 
@@ -253,7 +253,7 @@ describe("searchBrain observation", () => {
           ],
         },
       ]),
-      ["raw-episode"],
+      ["on-record"],
     );
     const anomalies = warnings("outside the grammar");
     expect(anomalies).toHaveLength(1);

@@ -198,6 +198,22 @@ function isContentPart(v: unknown): v is Record<string, unknown> {
 }
 
 /**
+ * Renamed agent-visible tool names, old → new, applied on REPLAY only (#5469).
+ *
+ * `messages.content` is unversioned jsonb: every conversation persisted
+ * before the ADR-0038 Layer 2 rename stores `toolName: "searchBrain"`
+ * verbatim, and without this map each replays into the render layer's
+ * `default:` arm — the gray "Tool: searchBrain" box, i.e. the #5451 defect
+ * re-introduced for all history. Normalizing here fixes every client
+ * dispatch site at once, in the one package web and the widget both consume.
+ * The live stream always carries the current name; nothing writes the old
+ * one again.
+ */
+const REPLAYED_RENAMED_TOOLS: Readonly<Record<string, string>> = {
+  searchBrain: "searchAtlas",
+};
+
+/**
  * Converts persisted `Message[]` into a UI-ready array.
  *
  * Filters to user/assistant messages, maps content parts to text and
@@ -216,10 +232,11 @@ export function transformMessages(messages: Message[]): TransformedMessage[] {
                 typeof p.toolCallId === "string" && p.toolCallId
                   ? (p.toolCallId as string)
                   : `unknown-${idx}`;
+              const storedToolName =
+                typeof p.toolName === "string" ? p.toolName : "unknown";
               return {
                 type: "dynamic-tool" as const,
-                toolName:
-                  typeof p.toolName === "string" ? p.toolName : "unknown",
+                toolName: REPLAYED_RENAMED_TOOLS[storedToolName] ?? storedToolName,
                 toolCallId,
                 toolInvocationId: toolCallId,
                 state: "output-available" as const,

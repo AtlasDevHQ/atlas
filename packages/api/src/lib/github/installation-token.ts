@@ -5,9 +5,10 @@
  * the `installation_id`; the executable credential is a short-lived
  * **installation access token** (~1hr) minted on demand:
  *
- *   1. Sign a short App JWT (RS256) with the App's private key
- *      (`GITHUB_APP_PRIVATE_KEY`, operator env) — `iss = appId`, back-dated `iat`
- *      for clock skew, ≤10min `exp`.
+ *   1. Sign a short App JWT (RS256) with the App's private key — whichever
+ *      caller's key is passed in `deps` (operator env `GITHUB_APP_PRIVATE_KEY`,
+ *      or a workspace's own; see the call sites below) — `iss = appId`,
+ *      back-dated `iat` for clock skew, ≤10min `exp`.
  *   2. POST it (as `Authorization: Bearer <jwt>`) to
  *      `/app/installations/<installation_id>/access_tokens`.
  *   3. GitHub returns `{ token, expires_at }`. We cache the token in-process
@@ -15,15 +16,25 @@
  *      re-mint transparently afterward.
  *
  * This is the OQ5 "refresh" path: installation-token re-minting, NOT
- * refresh-token rotation (the App private key never reaches the DB; only the
- * installation_id does). Two call sites depend on it:
+ * refresh-token rotation. Three call sites depend on it:
  *
  *   - the install handler (`oauth-datasource-handler.ts`) mints once at install
  *     as a credential health-check (a failure flips the install to
- *     "reconnect needed"), and
+ *     "reconnect needed"),
  *   - the workspace REST datasource resolver (`workspace-datasource.ts`) mints
  *     (or serves the cache) per chat turn to bake a `bearer` credential for the
- *     github-data datasource — "cache the shape, mint the secret".
+ *     github-data datasource — "cache the shape, mint the secret", and
+ *   - the per-workspace `github` ACTION target (`lib/tools/actions/github.ts`,
+ *     #5555), which passes the TENANT's own App id and private key in `deps`
+ *     rather than letting either default to operator env.
+ *
+ * That third caller is why the two claims this module used to make about the
+ * private key both needed narrowing. It is still true of the operator tier
+ * that the key never reaches the DB (only the installation_id is persisted);
+ * for the workspace tier the tenant's key IS stored, encrypted, in
+ * `workspace_action_credentials`, and arrives here already decrypted. And a
+ * caller's credentials are now part of the cache key, so one tier can never be
+ * served a token the other minted — see {@link cacheKey}.
  *
  * The cache is process-local and best-effort: a miss/expiry just re-mints. A
  * mint failure throws {@link GitHubInstallationTokenError} (never cached, so the
@@ -31,6 +42,7 @@
  * fail-soft skip (resolver).
  */
 
+import { createHash } from "node:crypto";
 import { importPKCS8, SignJWT } from "jose";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -90,16 +102,51 @@ interface CacheEntry {
   readonly refreshAtMs: number;
 }
 
-/** Process-local cache keyed by installation id. */
+/**
+ * Process-local cache, keyed by installation id AND a fingerprint of the App
+ * credentials that minted the token — see {@link cacheKey}.
+ */
 const cache = new Map<string, CacheEntry>();
 
 /**
- * In-flight mints keyed by installation id. Coalesces concurrent cold-cache
- * callers (e.g. two chat turns in the same workspace racing on a just-expired
- * token) onto ONE mint round-trip rather than each firing its own. A failed
- * mint rejects all waiters and is removed (never cached), so the next call
- * retries. Concurrent callers share the first caller's `deps` — fine in
- * production where deps are env-derived and identical.
+ * Cache/single-flight key: the installation id plus a fingerprint of the App
+ * credentials the token would be minted with.
+ *
+ * The credential half is load-bearing, not defensive tidiness (#5555). An
+ * installation token carries the permissions of the App that minted it, so
+ * keying on the installation id ALONE means "whoever minted first for this
+ * installation decides which App's token everyone gets". That was harmless
+ * while one operator-env App was the only caller; it stops being harmless the
+ * moment a second caller brings its OWN credentials, which is exactly what
+ * the per-workspace GitHub action target does:
+ *
+ *   Atlas's operator App mints for installation 42 and caches it. A tenant
+ *   then configures the `github` action target with installation 42 and a key
+ *   that is wrong, revoked, or simply theirs — and the cache hands back the
+ *   OPERATOR's token before either the key or the App id is ever exercised.
+ *   The tenant's issue is created as Atlas, with Atlas's scopes.
+ *
+ * Hashing rather than concatenating keeps the private key out of a long-lived
+ * Map key, and the NUL separator keeps `("1", "23")` from colliding with
+ * `("12", "3")`. This is a cache key, never a credential check: a token is
+ * still only ever minted by actually signing with the key presented.
+ */
+function cacheKey(installationId: string, appId: string, privateKey: string): string {
+  const fingerprint = createHash("sha256")
+    .update(`${appId}\u0000${privateKey}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `${installationId}:${fingerprint}`;
+}
+
+/**
+ * In-flight mints, keyed exactly as the cache is ({@link cacheKey}). Coalesces
+ * concurrent cold-cache callers (e.g. two chat turns in the same workspace
+ * racing on a just-expired token) onto ONE mint round-trip rather than each
+ * firing its own. A failed mint rejects all waiters and is removed (never
+ * cached), so the next call retries. Concurrent callers share the first
+ * caller's `deps` — safe because the App credentials, the part of `deps` that
+ * decides WHICH token comes back, are in the key they coalesced on.
  */
 const inFlight = new Map<string, Promise<string>>();
 
@@ -133,32 +180,11 @@ export async function getGitHubInstallationToken(
     );
   }
 
-  const now = deps.now ?? (() => Date.now());
-  const cached = cache.get(installationId);
-  if (cached && now() < cached.refreshAtMs) {
-    return cached.token;
-  }
-
-  // Single-flight: a concurrent caller already minting for this installation
-  // shares that promise instead of issuing a duplicate mint.
-  const existing = inFlight.get(installationId);
-  if (existing) return existing;
-
-  const minting = mintAndCache(installationId, deps, now);
-  inFlight.set(installationId, minting);
-  try {
-    return await minting;
-  } finally {
-    inFlight.delete(installationId);
-  }
-}
-
-/** Sign the App JWT, exchange it for an installation token, and cache the result. */
-async function mintAndCache(
-  installationId: string,
-  deps: InstallationTokenDeps,
-  now: () => number,
-): Promise<string> {
+  // Resolve the App credentials BEFORE the cache lookup: they are half the
+  // cache key, so a hit cannot be established without them (see `cacheKey`).
+  // This is why "not configured" is now reported even when a token for this
+  // installation happens to be cached — that entry belongs to whichever
+  // credentials minted it, and this caller has none to match it with.
   const appId = deps.appId ?? process.env.GITHUB_APP_ID;
   const privateKey = deps.privateKey ?? process.env.GITHUB_APP_PRIVATE_KEY;
   if (!appId || !privateKey) {
@@ -168,6 +194,38 @@ async function mintAndCache(
     );
   }
 
+  const key = cacheKey(installationId, appId, privateKey);
+  const now = deps.now ?? (() => Date.now());
+  const cached = cache.get(key);
+  if (cached && now() < cached.refreshAtMs) {
+    return cached.token;
+  }
+
+  // Single-flight: a concurrent caller already minting for this installation
+  // WITH THE SAME CREDENTIALS shares that promise instead of issuing a
+  // duplicate mint. Keyed the same way as the cache, so two tiers minting for
+  // one installation never share a flight either.
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+
+  const minting = mintAndCache(installationId, key, appId, privateKey, deps, now);
+  inFlight.set(key, minting);
+  try {
+    return await minting;
+  } finally {
+    inFlight.delete(key);
+  }
+}
+
+/** Sign the App JWT, exchange it for an installation token, and cache the result. */
+async function mintAndCache(
+  installationId: string,
+  key: string,
+  appId: string,
+  privateKey: string,
+  deps: InstallationTokenDeps,
+  now: () => number,
+): Promise<string> {
   // Snapshot the clock once so the JWT claims, the expiry-cap fallback, and the
   // debug log all share one timestamp.
   const nowMs = now();
@@ -175,7 +233,23 @@ async function mintAndCache(
   const minted = await mintInstallationToken(installationId, appJwt, deps.fetchImpl, nowMs);
 
   const refreshAtMs = minted.expiresAtMs - TOKEN_REFRESH_MARGIN_MS;
-  cache.set(installationId, { token: minted.token, refreshAtMs });
+
+  // Opportunistic sweep of spent entries, on the rare path (a mint happens
+  // about hourly per credential set). Keying by credentials rather than by
+  // installation id alone removed the in-place overwrite that used to bound
+  // this map: a rotated key now leaves behind an entry nothing will ever
+  // replace. Dropping entries already past their refresh point bounds the map
+  // by LIVE credentials instead of by every credential the process has seen.
+  //
+  // Deliberately not "evict the other entries for this installation": the two
+  // tiers legitimately hold concurrent entries for one installation, so that
+  // rule would have each mint evict the other's and make both re-mint every
+  // call.
+  for (const [existingKey, entry] of cache) {
+    if (nowMs >= entry.refreshAtMs) cache.delete(existingKey);
+  }
+
+  cache.set(key, { token: minted.token, refreshAtMs });
   log.debug(
     { installationIdTail: installationId.slice(-4), refreshInSeconds: Math.round((refreshAtMs - nowMs) / 1000) },
     "Minted GitHub installation token",
@@ -183,15 +257,47 @@ async function mintAndCache(
   return minted.token;
 }
 
-/** Sign the short-lived App JWT (RS256). Throws on a malformed private key. */
+/**
+ * Sign the short-lived App JWT (RS256). Throws on a malformed private key.
+ *
+ * ── Why neither catch here interpolates the caught message ────────────────
+ *
+ * Both used to. That was defensible while `GITHUB_APP_PRIVATE_KEY` was the
+ * only key this module ever saw: the message went to an operator reading
+ * their own logs. It stopped being defensible when the per-workspace `github`
+ * action target started passing a TENANT's key (#5555), because a
+ * `GitHubInstallationTokenError` raised on that path is caught by the action
+ * handler, written to `action_log.error`, and handed back to the model — so a
+ * parser message that quotes its input would publish tenant key bytes to
+ * three places at once.
+ *
+ * The reachable case is not hypothetical: `normalizeAppPrivateKey` in
+ * `lib/tools/actions/github.ts` validates via `createPrivateKey`, which
+ * accepts an EC or Ed25519 key and re-exports it as valid PKCS#8 — and then
+ * `importPKCS8(pem, "RS256")` rejects it here, with a message derived from
+ * that key.
+ *
+ * The message also names no env var. This module now serves two tiers with
+ * two different field names (`GITHUB_APP_PRIVATE_KEY` for Atlas's own App,
+ * `GITHUB_ACTION_PRIVATE_KEY` for the workspace target), and naming either
+ * one sends half its callers to a variable they cannot set.
+ */
 async function signAppJwt(appId: string, privateKeyPem: string, nowMs: number): Promise<string> {
   let key: Awaited<ReturnType<typeof importPKCS8>>;
   try {
     key = await importPKCS8(privateKeyPem, JWT_ALG);
   } catch (err) {
+    // Logs and rethrows, so it takes no `intentionally ignored` marker — the
+    // dropped detail is a secrecy decision, explained above. `err.name` is a
+    // class name and carries nothing derived from the key.
+    log.error(
+      { reason: err instanceof Error ? err.name : "unknown" },
+      "GitHub App private key is not a usable RS256 signing key",
+    );
     throw new GitHubInstallationTokenError(
       "invalid_private_key",
-      `GITHUB_APP_PRIVATE_KEY is not a valid PKCS8 RSA key: ${err instanceof Error ? err.message : String(err)}`,
+      "The GitHub App private key is not a usable RS256 signing key. GitHub App keys are RSA — " +
+        "re-enter the App's private key, the whole PEM including its BEGIN and END lines.",
     );
   }
   const nowS = Math.floor(nowMs / 1000);
@@ -203,9 +309,15 @@ async function signAppJwt(appId: string, privateKeyPem: string, nowMs: number): 
       .setExpirationTime(nowS + APP_JWT_TTL_SECONDS)
       .sign(key);
   } catch (err) {
+    // Same reasoning as the import catch above: this message can reach a
+    // tenant-visible surface, and the signer holds the key.
+    log.error(
+      { reason: err instanceof Error ? err.name : "unknown" },
+      "Failed to sign the GitHub App JWT",
+    );
     throw new GitHubInstallationTokenError(
       "jwt_sign_failed",
-      `Failed to sign the GitHub App JWT: ${err instanceof Error ? err.message : String(err)}`,
+      "Failed to sign the GitHub App JWT with the configured private key.",
     );
   }
 }
@@ -256,7 +368,10 @@ async function mintInstallationToken(
     );
     throw new GitHubInstallationTokenError(
       `http_${resp.status}`,
-      `GitHub rejected the installation-token request (HTTP ${resp.status}). The App may have been uninstalled or its access revoked — reconnect the datasource.`,
+      // Tier-neutral: a workspace admin hitting this through the `github`
+      // action target has no datasource to reconnect, and telling them to
+      // find one is the kind of unactionable message CLAUDE.md rules out.
+      `GitHub rejected the installation-token request (HTTP ${resp.status}). The App may have been uninstalled, or its installation id or access revoked — re-check the App's installation and its credentials.`,
     );
   }
 

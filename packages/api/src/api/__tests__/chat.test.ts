@@ -147,7 +147,17 @@ const mockLinearAction = {
   defaultApproval: "manual",
   // Empty, like the real action (#5554): Linear action credentials are
   // per-workspace, so there is no global env set to validate against.
-  requiredCredentials: [],
+  requiredCredentials: [] as string[],
+};
+const mockGitHubAction = {
+  name: "createGitHubIssue",
+  description: "### Create GitHub Issue\nMock",
+  tool: { type: "function" },
+  actionType: "github:create_issue",
+  reversible: true,
+  defaultApproval: "manual",
+  // Empty, like the real one — GitHub credentials are per-workspace (#5555).
+  requiredCredentials: [] as string[],
 };
 const mockEmailAction = {
   name: "sendEmailReport",
@@ -161,6 +171,7 @@ const mockEmailAction = {
 void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: mockJiraAction,
   createLinearTicket: mockLinearAction,
+  createGitHubIssue: mockGitHubAction,
   sendEmailReport: mockEmailAction,
 }));
 

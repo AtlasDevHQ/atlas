@@ -13,7 +13,10 @@ The action framework lets the Atlas agent perform write operations -- sending em
 - Internal database (`DATABASE_URL`) recommended for persistent action log (in-memory fallback available but lost on restart)
 - For email actions: `RESEND_API_KEY`
 - For JIRA actions: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`
+- For GitHub actions: `GITHUB_ACTION_APP_ID`, `GITHUB_ACTION_INSTALLATION_ID`, `GITHUB_ACTION_PRIVATE_KEY`
 - For Linear actions: `LINEAR_API_KEY`
+
+Credentials for JIRA, GitHub and Linear can also be set per workspace under **Admin > Action Credentials**, which takes precedence over these variables.
 </Callout>
 </WhenSelfHosted>
 
@@ -250,6 +253,36 @@ Create JIRA issues from data insights.
 
 This action is **reversible** -- on rollback, Atlas transitions the created issue to "Closed" (best-effort, depends on JIRA workflow).
 
+### GitHub (`github:create_issue`)
+
+Open GitHub issues from data insights, as a GitHub App **you** own and install on your own repositories.
+
+**Default approval:** `manual`
+
+**Required credentials:**
+- `GITHUB_ACTION_APP_ID` -- Your GitHub App's numeric App ID
+- `GITHUB_ACTION_INSTALLATION_ID` -- The installation of that App on your org or account
+- `GITHUB_ACTION_PRIVATE_KEY` -- The App's private key, PEM (either PKCS#1, which is what GitHub's download button gives you, or PKCS#8)
+
+**Optional:**
+- `GITHUB_ACTION_DEFAULT_REPO` -- Default repository as `owner/repo` when not specified
+
+**Input:**
+- `title` -- Issue title (max 255 chars)
+- `body` -- Issue body (Markdown)
+- `repo` -- Repository as `owner/repo` (optional, falls back to `GITHUB_ACTION_DEFAULT_REPO`)
+- `labels` -- Optional labels
+
+Atlas does not hold a long-lived GitHub token: each call signs a short-lived JWT with your App's private key and exchanges it for an installation token, so the issue is created by your App with exactly the permissions you granted it. The private key is stored encrypted, is never echoed back on read, and never appears in an error message or an approval card.
+
+This action is marked **reversible** -- the created issue's repository and number are recorded so it can be closed, but Atlas does not close it automatically.
+
+Issues only: Atlas does not open pull requests. A PR needs a branch and commits, which is a different and much larger surface than filing an issue from a finding.
+
+<Callout type="info">
+  These environment variables are the **self-hosted** fallback only, and they are deliberately not the `GITHUB_APP_*` variables used elsewhere for Atlas's own GitHub App. Credentials are configured per workspace under **Admin > Action Credentials**; see [Per-workspace action credentials](#per-workspace-action-credentials).
+</Callout>
+
 ### Linear (`linear:create`)
 
 Create Linear issues from data insights, gated on approval.
@@ -264,8 +297,6 @@ Distinct from the `createLinearIssue` agent tool, which posts immediately throug
 **Optional:**
 - `LINEAR_DEFAULT_TEAM_KEY` -- Default team key when not specified
 
-Credentials resolve per workspace first (`PUT /api/v1/admin/action-credentials/linear`) and fall back to the two environment variables above only on self-hosted deployments. A workspace row that is missing a required field is an error rather than a partial fall-through to the environment.
-
 **Input:**
 - `title` -- Issue title (max 255 chars)
 - `description` -- Issue description (markdown)
@@ -276,6 +307,24 @@ Credentials resolve per workspace first (`PUT /api/v1/admin/action-credentials/l
 A named team that does not resolve is an **error**, not a fallback: the approver read a card naming that team, so filing elsewhere would not be the action they approved.
 
 This action is **reversible** -- on rollback, Atlas records the created issue for archival (best-effort; the rollback handler is not wired yet, the same standing as JIRA's transition).
+
+---
+
+## Per-workspace action credentials
+
+Action targets — JIRA, GitHub and Linear today — resolve their credentials **per workspace**, from an encrypted row a workspace admin sets under **Admin > Action Credentials** (`PUT /api/v1/admin/action-credentials/{target}`).
+
+The ladder is short, and what is missing from it is deliberate:
+
+```
+workspace row  ->  environment variables (SELF-HOSTED ONLY)  ->  error
+```
+
+- **On SaaS there is no environment rung at all.** A workspace with no stored credentials gets an actionable error, never someone else's target. There is no "platform default JIRA" — each tenant brings their own.
+- **A credential set comes from exactly one rung.** The rungs are never merged field by field: a stored row that is missing a required field is a misconfiguration that errors, rather than quietly borrowing the missing field from the deployment's environment.
+- **Secret values are never echoed back.** The admin surface reports presence and which rung would win, never a stored value.
+
+See [ADR-0046](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0046-per-workspace-action-credentials.md) for the full rationale.
 
 ---
 

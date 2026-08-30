@@ -155,6 +155,121 @@ describe("getGitHubInstallationToken — caching", () => {
     expect(a.calls).toHaveLength(1);
     expect(b.calls).toHaveLength(1);
   });
+
+  /**
+   * #5555 — the cache key is (installation, App credentials), not installation
+   * alone. The per-workspace `github` action target brought a SECOND caller
+   * with its OWN App credentials to a minter that until then had exactly one
+   * (operator env). With an id-only key, whoever minted first for an
+   * installation decided which App's token everyone got — and an installation
+   * token carries the permissions of the App that minted it.
+   */
+  describe("credential-scoped cache", () => {
+    const OTHER_APP_ID = "654321";
+    const { privateKey: OTHER_KEY } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+
+    it("a different App ID on the same installation does not read the cached token", async () => {
+      const first = mintFetch({ token: "ghs_operator", expiresInMs: 3_600_000 });
+      const operatorToken = await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: first.fetchImpl, now: () => T0_MS,
+      });
+
+      const second = mintFetch({ token: "ghs_tenant", expiresInMs: 3_600_000 });
+      const tenantToken = await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: OTHER_APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: second.fetchImpl, now: () => T0_MS,
+      });
+
+      expect(operatorToken).toBe("ghs_operator");
+      expect(tenantToken).toBe("ghs_tenant");
+      // The second caller minted rather than being handed the first's token.
+      expect(second.calls).toHaveLength(1);
+    });
+
+    it("a different private key on the same installation does not read the cached token", async () => {
+      const first = mintFetch({ token: "ghs_operator", expiresInMs: 3_600_000 });
+      await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: first.fetchImpl, now: () => T0_MS,
+      });
+
+      const second = mintFetch({ token: "ghs_tenant", expiresInMs: 3_600_000 });
+      const tenantToken = await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: OTHER_KEY, fetchImpl: second.fetchImpl, now: () => T0_MS,
+      });
+
+      expect(tenantToken).toBe("ghs_tenant");
+      expect(second.calls).toHaveLength(1);
+    });
+
+    it("the SAME credentials still hit the cache — the fix costs no mint traffic", async () => {
+      const first = mintFetch({ token: "ghs_same", expiresInMs: 3_600_000 });
+      await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: first.fetchImpl, now: () => T0_MS,
+      });
+      const second = mintFetch({ token: "ghs_never_used", expiresInMs: 3_600_000 });
+      const again = await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: second.fetchImpl, now: () => T0_MS,
+      });
+
+      expect(again).toBe("ghs_same");
+      expect(second.calls).toHaveLength(0);
+    });
+
+    it("sweeps spent entries on mint, so a rotated key does not leak one forever", async () => {
+      // Keying by credentials removed the in-place overwrite that used to
+      // bound the map; without a sweep every rotation would leave an entry
+      // nothing replaces. Two rotations, then a mint past both expiries: the
+      // spent entries go, and the surviving one is still served from cache.
+      const r1 = mintFetch({ token: "ghs_rot1", expiresInMs: 3_600_000 });
+      await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: r1.fetchImpl, now: () => T0_MS,
+      });
+      const r2 = mintFetch({ token: "ghs_rot2", expiresInMs: 3_600_000 });
+      await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: OTHER_APP_ID, privateKey: OTHER_KEY, fetchImpl: r2.fetchImpl, now: () => T0_MS,
+      });
+
+      // Two hours on, both are spent. A third credential set mints, sweeping.
+      const later = T0_MS + 7_200_000;
+      const r3 = mintFetch({ token: "ghs_live", expiresInMs: 3_600_000, nowMs: later });
+      await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: "777777", privateKey: OTHER_KEY, fetchImpl: r3.fetchImpl, now: () => later,
+      });
+
+      // The survivor is live and served from cache — the sweep took only the
+      // spent entries, not the one it had just written.
+      const r4 = mintFetch({ token: "ghs_never_used", expiresInMs: 3_600_000, nowMs: later });
+      const cached = await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: "777777", privateKey: OTHER_KEY, fetchImpl: r4.fetchImpl, now: () => later,
+      });
+      expect(cached).toBe("ghs_live");
+      expect(r4.calls).toHaveLength(0);
+    });
+
+    it("concurrent callers with DIFFERENT credentials do not coalesce onto one flight", async () => {
+      // Single-flight is keyed the same way as the cache, so two tiers racing
+      // on one installation each get their own mint rather than sharing the
+      // first caller's `deps`.
+      const a = mintFetch({ token: "ghs_a", expiresInMs: 3_600_000 });
+      const b = mintFetch({ token: "ghs_b", expiresInMs: 3_600_000 });
+      const [tokenA, tokenB] = await Promise.all([
+        getGitHubInstallationToken(INSTALLATION_ID, {
+          appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: a.fetchImpl, now: () => T0_MS,
+        }),
+        getGitHubInstallationToken(INSTALLATION_ID, {
+          appId: OTHER_APP_ID, privateKey: OTHER_KEY, fetchImpl: b.fetchImpl, now: () => T0_MS,
+        }),
+      ]);
+
+      expect(tokenA).toBe("ghs_a");
+      expect(tokenB).toBe("ghs_b");
+      expect(a.calls).toHaveLength(1);
+      expect(b.calls).toHaveLength(1);
+    });
+  });
 });
 
 describe("getGitHubInstallationToken — failure modes", () => {
@@ -166,6 +281,55 @@ describe("getGitHubInstallationToken — failure modes", () => {
         now: () => T0_MS,
       }),
     ).rejects.toBeInstanceOf(GitHubInstallationTokenError);
+  });
+
+  it("a key that is not RSA fails without echoing the key or naming an env var", async () => {
+    // Reachable through the per-workspace `github` action target (#5555):
+    // `normalizeAppPrivateKey` validates via `createPrivateKey`, which accepts
+    // an EC key and re-exports it as valid PKCS#8 — and only THEN does the
+    // RS256 import reject it here. A GitHubInstallationTokenError on that path
+    // is written to `action_log.error` and handed back to the model, so the
+    // message must carry nothing derived from the key.
+    const { privateKey: EC_KEY } = generateKeyPairSync("ec", {
+      namedCurve: "P-256",
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+
+    try {
+      await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: EC_KEY, now: () => T0_MS,
+      });
+      expect.unreachable("an EC key must not sign an RS256 App JWT");
+    } catch (err) {
+      expect(err).toBeInstanceOf(GitHubInstallationTokenError);
+      const message = (err as Error).message;
+      expect(message).toContain("not a usable RS256 signing key");
+      // No fragment of the key, and no `err.message` forwarded from the parser.
+      const keyBody = EC_KEY.split("\n").filter((l) => !l.startsWith("-----")).join("");
+      for (const chunk of [keyBody.slice(0, 16), keyBody.slice(16, 32)]) {
+        if (chunk.length > 0) expect(message).not.toContain(chunk);
+      }
+      // Names no env var: this module serves two tiers with two field names,
+      // so naming either sends half its callers to one they cannot set.
+      expect(message).not.toContain("GITHUB_APP_PRIVATE_KEY");
+      expect(message).not.toContain("GITHUB_ACTION_PRIVATE_KEY");
+    }
+  });
+
+  it("a rejected mint does not tell the caller to reconnect a datasource", async () => {
+    // The workspace action target has no datasource — the message has to be
+    // actionable for both tiers.
+    const { fetchImpl } = mintFetch({ token: "", expiresInMs: 0, status: 404 });
+    try {
+      await getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl, now: () => T0_MS,
+      });
+      expect.unreachable("a 404 mint must throw");
+    } catch (err) {
+      expect((err as Error).message).not.toContain("reconnect the datasource");
+      expect((err as Error).message).toContain("HTTP 404");
+    }
   });
 
   it("throws when GitHub rejects the App JWT (non-2xx)", async () => {

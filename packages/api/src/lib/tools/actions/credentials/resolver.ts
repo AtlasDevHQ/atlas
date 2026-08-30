@@ -279,6 +279,8 @@ export interface ActionTargetFieldStatus {
   readonly hint: string;
   readonly secret: boolean;
   readonly required: boolean;
+  /** Mirrors the spec — the Admin form renders a textarea (#5555). */
+  readonly multiline: boolean;
   readonly present: boolean;
   /** `"unset"` when neither the workspace row nor the (self-host) env has it. */
   readonly source: ActionCredentialSource | "unset";
@@ -357,6 +359,9 @@ export async function getActionTargetStatus(
       hint: field.hint,
       secret: field.secret,
       required: field.required,
+      // Normalized to a boolean here so every consumer reads one shape; the
+      // spec leaves it optional so an ordinary single-line field says nothing.
+      multiline: field.multiline === true,
       present,
       source: present && winner ? winner : "unset",
     };

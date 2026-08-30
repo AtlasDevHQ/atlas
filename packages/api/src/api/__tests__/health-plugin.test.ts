@@ -107,6 +107,15 @@ void mock.module("@atlas/api/lib/tools/actions", () => ({
     defaultApproval: "manual",
     requiredCredentials: [],
   },
+  createGitHubIssue: {
+    name: "createGitHubIssue",
+    description: "Mock",
+    tool: { type: "function" },
+    actionType: "github:create_issue",
+    reversible: true,
+    defaultApproval: "manual",
+    requiredCredentials: [],
+  },
   sendEmailReport: {
     name: "sendEmailReport",
     description: "Mock",

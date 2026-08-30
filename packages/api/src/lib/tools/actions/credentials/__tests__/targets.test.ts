@@ -41,6 +41,36 @@ describe("ACTION_TARGETS — registry invariants", () => {
     }
   });
 
+  it("no env-var name is claimed by two different targets", () => {
+    // Two targets sharing a key would make the self-host env rung ambiguous —
+    // one operator value would arm both, and clearing it would disarm both.
+    const seen = new Map<string, string>();
+    for (const target of ACTION_TARGETS) {
+      for (const field of target.fields) {
+        const owner = seen.get(field.envVar);
+        expect(
+          owner,
+          `${field.envVar} is declared by both "${owner}" and "${target.target}"`,
+        ).toBeUndefined();
+        seen.set(field.envVar, target.target);
+      }
+    }
+  });
+
+  it("only secret fields are marked multiline, and multiline is opt-in", () => {
+    // Not a law of nature — a check that the attribute stays the narrow
+    // presentational hint #5555 introduced (a pasted PEM) rather than drifting
+    // into a general "big text field" flag on ordinary config.
+    for (const target of ACTION_TARGETS) {
+      for (const field of target.fields) {
+        // Opt-in: a single-line field says nothing rather than `false`, so the
+        // registry reads as "GITHUB_ACTION_PRIVATE_KEY is the odd one".
+        if (field.multiline !== undefined) expect(field.multiline).toBe(true);
+        if (field.multiline) expect(field.secret).toBe(true);
+      }
+    }
+  });
+
   it("every target marks at least one field secret", () => {
     // An action target with no secret at all would mean Atlas is dispatching
     // to a tenant system unauthenticated — worth failing loudly on.
@@ -115,5 +145,45 @@ describe("Linear — the first target added on the seam (#5554)", () => {
     // future shared helper would look plausible.
     expect(linear?.target).toBe("linear");
     expect(linear?.fields.map((f) => f.envVar)).not.toContain("api_key");
+  });
+});
+
+describe("GitHub — the App target (#5555)", () => {
+  const github = getActionTarget("github");
+
+  it("is registered", () => {
+    expect(github).toBeDefined();
+  });
+
+  it("requires the three App fields and leaves the default repo optional", () => {
+    expect(github?.fields.filter((f) => f.required).map((f) => f.envVar)).toEqual([
+      "GITHUB_ACTION_APP_ID",
+      "GITHUB_ACTION_INSTALLATION_ID",
+      "GITHUB_ACTION_PRIVATE_KEY",
+    ]);
+    expect(
+      github?.fields.find((f) => f.envVar === "GITHUB_ACTION_DEFAULT_REPO")?.required,
+    ).toBe(false);
+  });
+
+  it("marks only the private key secret, and marks it multiline", () => {
+    // The App id and installation id are public identifiers — masking them
+    // would only stop an admin checking they typed the right ones.
+    expect(github?.fields.filter((f) => f.secret).map((f) => f.envVar)).toEqual([
+      "GITHUB_ACTION_PRIVATE_KEY",
+    ]);
+    expect(github?.fields.filter((f) => f.multiline).map((f) => f.envVar)).toEqual([
+      "GITHUB_ACTION_PRIVATE_KEY",
+    ]);
+  });
+
+  it("claims no `GITHUB_APP_*` name the operator-tier App already reads", () => {
+    // `lib/github/installation-token.ts` reads GITHUB_APP_ID and
+    // GITHUB_APP_PRIVATE_KEY for ATLAS's own App. Reusing either name here
+    // would make this workspace-tier target's self-host rung read the operator
+    // tier's registration — the coupling ADR-0046 keeps structural.
+    for (const field of github?.fields ?? []) {
+      expect(field.envVar.startsWith("GITHUB_APP_")).toBe(false);
+    }
   });
 });

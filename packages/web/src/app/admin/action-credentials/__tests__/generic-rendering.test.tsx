@@ -288,11 +288,58 @@ describe("/admin/action-credentials renders any ACTION_TARGETS entry (#5553)", (
         throw new Error("env status not rendered yet");
       }
     });
-    expect(document.body.textContent).toContain("environment variables");
-    // No stored row, so there is nothing to remove.
+    expect(document.body.textContent).toContain("environment");
+    // `resolvedFrom: "env"` is reached only when no workspace row exists at
+    // all, so this is the one state where there is provably nothing to remove.
     expect(
       Array.from(document.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Remove"),
     ).toBe(false);
+  });
+
+  test("an unconfigured target still offers Remove — a partial row reads exactly like no row", async () => {
+    // The bug this pins: gating Remove on `resolvedFrom === "workspace"` hides
+    // the only escape hatch in the one state that needs it. A workspace row
+    // missing a required field reports `resolvedFrom: null` with every field
+    // `unset` — indistinguishable from no row — while shadowing the
+    // environment rung and making the target throw (ADR-0046).
+    mockApi({ deployMode: "self-hosted", targets: [SYNTHETIC_TARGET] });
+
+    render(<ActionCredentialsPage />, { wrapper: Wrapper });
+
+    await waitFor(() => findButton("Remove"));
+    expect(findButton("Remove").disabled).toBe(false);
+  });
+
+  test("saving a partial entry warns before it breaks a working env fallback", async () => {
+    mockApi({ deployMode: "self-hosted", targets: [ENV_TARGET] });
+
+    render(<ActionCredentialsPage />, { wrapper: Wrapper });
+
+    await waitFor(() => input("WIDGETRON_URL"));
+    // An env-resolved target has NOTHING stored, so filling one required field
+    // and saving creates a row that is missing the other — which stops the
+    // environment fallback rather than topping it up.
+    await act(async () => {
+      fireEvent.change(input("WIDGETRON_URL"), { target: { value: "https://widgets.acme.dev" } });
+    });
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("API Token");
+    expect(text).toContain("all-or-nothing");
+    // Named the remaining field, not the one just filled in.
+    expect(text).not.toContain("leaves Base URL unset");
+  });
+
+  test("an env-sourced field is never told that leaving it blank keeps it working", async () => {
+    // It only keeps working while nothing is saved for the workspace; the
+    // moment a sibling field is saved it stops. See `fieldPlaceholder`.
+    mockApi({ deployMode: "self-hosted", targets: [ENV_TARGET] });
+
+    render(<ActionCredentialsPage />, { wrapper: Wrapper });
+
+    await waitFor(() => input("WIDGETRON_URL"));
+    expect(input("WIDGETRON_URL").placeholder).not.toContain("leave blank");
+    expect(input("WIDGETRON_URL").placeholder).toContain("environment");
   });
 
   test("the self-hosted fallback note is absent on SaaS, where that rung does not exist", async () => {

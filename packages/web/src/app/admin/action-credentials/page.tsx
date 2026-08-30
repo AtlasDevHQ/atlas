@@ -8,6 +8,8 @@ import {
   buildUpdatePayload,
   fieldPlaceholder,
   isDraftDirty,
+  mayHaveStoredRow,
+  requiredFieldsUnsatisfied,
   setValue,
   summarizeTarget,
   toggleCleared,
@@ -37,9 +39,14 @@ import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError, type FetchError } from "@/ui/lib/fetch-error";
-import { Eye, EyeOff, Loader2, Plug, Server } from "lucide-react";
+import { AlertTriangle, Eye, EyeOff, Loader2, Plug, Server } from "lucide-react";
 
 const API_PATH = "/api/v1/admin/action-credentials";
+
+/** Both writes address one target; stating the path build once keeps them agreeing. */
+function targetPath(target: string): string {
+  return `${API_PATH}/${encodeURIComponent(target)}`;
+}
 
 /**
  * Workspace action-target credentials (#5553) — the page over the #3766 API.
@@ -81,8 +88,6 @@ export default function ActionCredentialsPage() {
 
   // Per-target drafts, keyed by target slug. Absent = untouched.
   const [drafts, setDrafts] = useState<Record<string, TargetDraft>>({});
-  // Revealed secret inputs, keyed `${target}:${envVar}`.
-  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [pendingClear, setPendingClear] = useState<TargetStatus | null>(null);
 
   function draftFor(target: string): TargetDraft {
@@ -98,10 +103,10 @@ export default function ActionCredentialsPage() {
     if (!isDraftDirty(draft)) return;
     clearErrorFor(target.target);
     const result = await mutate({
-      path: `${API_PATH}/${encodeURIComponent(target.target)}`,
+      path: targetPath(target.target),
       method: "PUT",
       itemId: target.target,
-      body: { ...buildUpdatePayload(draft) },
+      body: buildUpdatePayload(draft),
     });
     // Re-baseline only on success: a failed save must keep what the admin
     // typed, or a transient 500 costs them credentials they cannot re-read
@@ -112,7 +117,7 @@ export default function ActionCredentialsPage() {
   async function clearStored(target: TargetStatus) {
     clearErrorFor(target.target);
     const result = await mutate({
-      path: `${API_PATH}/${encodeURIComponent(target.target)}`,
+      path: targetPath(target.target),
       method: "DELETE",
       itemId: target.target,
     });
@@ -161,10 +166,6 @@ export default function ActionCredentialsPage() {
                   deployMode={data.deployMode}
                   draft={draftFor(target.target)}
                   onDraftChange={(next) => updateDraft(target.target, next)}
-                  revealed={revealed}
-                  onToggleReveal={(key) =>
-                    setRevealed((prev) => ({ ...prev, [key]: !prev[key] }))
-                  }
                   busy={isMutating(target.target)}
                   itemError={errorFor(target.target)}
                   onSave={() => save(target)}
@@ -179,6 +180,9 @@ export default function ActionCredentialsPage() {
       <ClearDialog
         target={pendingClear}
         busy={pendingClear ? isMutating(pendingClear.target) : false}
+        // The dialog stays open on failure, so its own error must render
+        // inside it — the card's error surface sits behind the modal overlay.
+        error={pendingClear ? errorFor(pendingClear.target) : undefined}
         onCancel={() => setPendingClear(null)}
         onConfirm={() => pendingClear && clearStored(pendingClear)}
       />
@@ -212,8 +216,6 @@ interface TargetCardProps {
   deployMode: DeployMode;
   draft: TargetDraft;
   onDraftChange: (next: TargetDraft) => void;
-  revealed: Record<string, boolean>;
-  onToggleReveal: (key: string) => void;
   busy: boolean;
   itemError: FetchError | undefined;
   onSave: () => void;
@@ -225,8 +227,6 @@ function TargetCard({
   deployMode,
   draft,
   onDraftChange,
-  revealed,
-  onToggleReveal,
   busy,
   itemError,
   onSave,
@@ -234,6 +234,11 @@ function TargetCard({
 }: TargetCardProps) {
   const summary = summarizeTarget(target, deployMode);
   const dirty = isDraftDirty(draft);
+  const removable = mayHaveStoredRow(target);
+  // What would still be missing if this draft were saved as-is. Only worth
+  // saying once the admin has actually typed something — before that, the
+  // card's status line already says the target is unconfigured.
+  const unsatisfied = dirty ? requiredFieldsUnsatisfied(target, draft) : [];
 
   return (
     <Card>
@@ -257,7 +262,12 @@ function TargetCard({
             </div>
             <p className="text-xs text-muted-foreground">{summary.detail}</p>
           </div>
-          {target.resolvedFrom === "workspace" && (
+          {/*
+            Offered whenever a row MAY exist, not only when one demonstrably
+            wins. A partial row reports as unconfigured and is exactly the
+            state that needs clearing — see `mayHaveStoredRow`.
+          */}
+          {removable && (
             <Button
               type="button"
               variant="outline"
@@ -279,11 +289,29 @@ function TargetCard({
             field={field}
             draft={draft}
             onDraftChange={onDraftChange}
-            revealed={revealed}
-            onToggleReveal={onToggleReveal}
+            removable={removable}
             disabled={busy}
           />
         ))}
+
+        {unsatisfied.length > 0 && (
+          <div
+            role="status"
+            className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-800 dark:bg-amber-950/40"
+          >
+            <AlertTriangle
+              className="size-4 shrink-0 mt-0.5 text-amber-700 dark:text-amber-400"
+              aria-hidden
+            />
+            <p className="text-xs text-amber-800 dark:text-amber-300">
+              Saving now leaves {unsatisfied.map((f) => f.label).join(", ")} unset, and
+              credentials saved here are all-or-nothing — the incomplete entry will stop{" "}
+              {target.label} actions rather than falling back
+              {target.resolvedFrom === "env" ? " to the environment" : ""}. Fill in every
+              required field, or remove the entry entirely.
+            </p>
+          </div>
+        )}
 
         {itemError && (
           <p className="text-xs text-red-600 dark:text-red-400">{friendlyError(itemError)}</p>
@@ -310,8 +338,8 @@ interface CredentialFieldProps {
   field: FieldStatus;
   draft: TargetDraft;
   onDraftChange: (next: TargetDraft) => void;
-  revealed: Record<string, boolean>;
-  onToggleReveal: (key: string) => void;
+  /** False when the target provably has no stored row — nothing to remove. */
+  removable: boolean;
   disabled: boolean;
 }
 
@@ -320,15 +348,17 @@ function CredentialField({
   field,
   draft,
   onDraftChange,
-  revealed,
-  onToggleReveal,
+  removable,
   disabled,
 }: CredentialFieldProps) {
+  // Whether this one input is unmasked is transient state nobody outside this
+  // component reads, so it lives here rather than in a map drilled down from
+  // the page (web-frontend.md: transient UI state stays `useState`).
+  const [show, setShow] = useState(false);
   const key = `${target}:${field.envVar}`;
   const inputId = `cred-${key}`;
   const clearId = `clear-${key}`;
   const isCleared = draft.cleared.includes(field.envVar);
-  const show = Boolean(revealed[key]);
   // Secrets render as a password input and are NEVER prefilled — the server
   // sends presence, not bytes. Non-secret fields are not prefilled either, for
   // the same reason: the read is masked status-only for every field.
@@ -370,7 +400,7 @@ function CredentialField({
             size="sm"
             className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
             aria-label={show ? `Hide ${field.label}` : `Show ${field.label}`}
-            onClick={() => onToggleReveal(key)}
+            onClick={() => setShow((prev) => !prev)}
           >
             {show ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
           </Button>
@@ -381,19 +411,27 @@ function CredentialField({
         {field.hint} Stored as <code className="font-mono">{field.envVar}</code>.
       </p>
 
-      <div className="flex items-center gap-2">
-        <Checkbox
-          id={clearId}
-          checked={isCleared}
-          disabled={disabled}
-          onCheckedChange={(checked) =>
-            onDraftChange(toggleCleared(draft, field.envVar, checked === true))
-          }
-        />
-        <Label htmlFor={clearId} className="text-xs font-normal text-muted-foreground">
-          Remove this workspace&apos;s saved value on save
-        </Label>
-      </div>
+      {/*
+        Hidden only when the target provably stores nothing (env-resolved).
+        Elsewhere the copy says "any value saved here" rather than asserting a
+        stored value exists: a partial row reports every field as unset, so the
+        status cannot tell the admin which of them are actually stored.
+      */}
+      {removable && (
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id={clearId}
+            checked={isCleared}
+            disabled={disabled}
+            onCheckedChange={(checked) =>
+              onDraftChange(toggleCleared(draft, field.envVar, checked === true))
+            }
+          />
+          <Label htmlFor={clearId} className="text-xs font-normal text-muted-foreground">
+            Remove any value saved here for this field
+          </Label>
+        </div>
+      )}
     </div>
   );
 }
@@ -401,11 +439,13 @@ function CredentialField({
 function ClearDialog({
   target,
   busy,
+  error,
   onCancel,
   onConfirm,
 }: {
   target: TargetStatus | null;
   busy: boolean;
+  error: FetchError | undefined;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -421,6 +461,9 @@ function ClearDialog({
             for them.
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {error && (
+          <p className="text-xs text-red-600 dark:text-red-400">{friendlyError(error)}</p>
+        )}
         <AlertDialogFooter>
           <Button type="button" variant="outline" disabled={busy} onClick={onCancel}>
             Cancel

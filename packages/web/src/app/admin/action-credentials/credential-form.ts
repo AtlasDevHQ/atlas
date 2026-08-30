@@ -78,11 +78,16 @@ export interface TargetDraft {
 
 export const EMPTY_DRAFT: TargetDraft = { values: {}, cleared: [] };
 
-/** The PUT body shape — `fields` always, `clearFields` only when non-empty. */
-export interface UpdatePayload {
+/**
+ * The PUT body shape — `fields` always, `clearFields` only when non-empty.
+ * A `type` rather than an `interface` so it satisfies the mutation hook's
+ * `Record<string, unknown>` body parameter directly, with no widening spread
+ * at the call site.
+ */
+export type UpdatePayload = {
   fields: Record<string, string>;
   clearFields?: string[];
-}
+};
 
 /**
  * Build the PUT body from a draft.
@@ -200,12 +205,72 @@ export function summarizeTarget(target: TargetStatus, deployMode: DeployMode): T
 /**
  * Placeholder text for a field's input.
  *
- * A field that currently resolves gets "leave blank to keep" rather than its
- * hint: it is the one moment the write-only contract is load-bearing, and the
- * hint is still shown below the input either way.
+ * A field saved for the workspace gets "leave blank to keep" — the one moment
+ * the write-only contract is load-bearing, since the admin cannot read the
+ * value back to retype it.
+ *
+ * An env-sourced field deliberately does NOT say that. Under the all-or-nothing
+ * rung rule (ADR-0046) leaving it blank keeps using the environment only while
+ * NOTHING is saved for this workspace; the moment a sibling field is saved, the
+ * new workspace row shadows the environment entirely and this field reads as
+ * missing. Telling the admin "leave blank to keep using it" would be an
+ * instruction to create exactly the partial row that makes the target throw.
  */
 export function fieldPlaceholder(field: FieldStatus): string {
   if (field.source === "workspace") return "Saved — leave blank to keep";
-  if (field.source === "env") return "Set in the environment — leave blank to keep using it";
+  if (field.source === "env") return "Currently from the environment — enter a value to save it here";
   return field.required ? "Required" : "Optional";
+}
+
+/**
+ * Whether this workspace could have a stored row for the target — i.e. whether
+ * there is anything a "remove" could act on.
+ *
+ * Read off the resolver's own precedence rather than guessed: `resolvedFrom`
+ * is `"env"` ONLY when `bundle === null` (`getActionTargetStatus` consults the
+ * env rung solely when no workspace row exists at all), so an env-resolved
+ * target provably has nothing stored. Every other state might.
+ *
+ * That "might" is the point. A PARTIAL workspace row — one that exists but
+ * misses a required field — reports `resolvedFrom: null` and every field as
+ * `unset`, indistinguishable from having no row at all. It is also the single
+ * state ADR-0046 warns about: it shadows the environment rung and makes the
+ * target throw. Gating removal on `resolvedFrom === "workspace"` would hide
+ * the only escape hatch in precisely that case, leaving the admin with a
+ * broken target and no way to clear it. So removal is offered whenever a row
+ * may exist; DELETE against no row is a no-op the route already handles.
+ */
+export function mayHaveStoredRow(target: TargetStatus): boolean {
+  return target.resolvedFrom !== "env";
+}
+
+/**
+ * Required fields that would NOT resolve if this draft were saved as-is.
+ *
+ * The all-or-nothing rung rule makes a partial save actively harmful rather
+ * than merely incomplete: the workspace row it creates stops the environment
+ * fallback instead of topping it up, so an admin who saves one field of a
+ * target that was working from `process.env` breaks it. This is what the page
+ * warns on before that save.
+ *
+ * A field survives the save if the admin typed a value, or if it is already
+ * stored for the workspace and not being removed. An env-sourced value does
+ * NOT count: it lives in the environment, not in the row being written.
+ *
+ * Conservative by construction — a stored-but-shadowed field of a partial row
+ * reports `unset`, so this can warn about a field that turns out to be
+ * present. Over-warning on a hazard the admin can check beats staying silent
+ * on the one that throws.
+ */
+export function requiredFieldsUnsatisfied(
+  target: TargetStatus,
+  draft: TargetDraft,
+): FieldStatus[] {
+  const cleared = new Set(draft.cleared);
+  return target.fields.filter((field) => {
+    if (!field.required) return false;
+    if (cleared.has(field.envVar)) return true;
+    if ((draft.values[field.envVar] ?? "").trim().length > 0) return false;
+    return field.source !== "workspace";
+  });
 }

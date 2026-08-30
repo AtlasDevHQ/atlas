@@ -5,7 +5,9 @@ import {
   buildUpdatePayload,
   fieldPlaceholder,
   isDraftDirty,
+  mayHaveStoredRow,
   missingRequiredFields,
+  requiredFieldsUnsatisfied,
   setValue,
   summarizeTarget,
   toggleCleared,
@@ -217,15 +219,102 @@ describe("fieldPlaceholder", () => {
     );
   });
 
-  test("an env-sourced field says so rather than claiming it is saved here", () => {
-    expect(fieldPlaceholder(field({ envVar: "X", source: "env", present: true }))).toContain(
-      "environment",
-    );
+  test("an env-sourced field is NOT told that leaving it blank keeps it working", () => {
+    // Under the all-or-nothing rung rule it only keeps working while nothing
+    // is saved for the workspace. "Leave blank to keep using it" would be an
+    // instruction to create the partial row that makes the target throw.
+    const placeholder = fieldPlaceholder(field({ envVar: "X", source: "env", present: true }));
+
+    expect(placeholder).toContain("environment");
+    expect(placeholder).not.toContain("leave blank");
   });
 
   test("an unset field distinguishes required from optional", () => {
     expect(fieldPlaceholder(field({ envVar: "X", required: true }))).toBe("Required");
     expect(fieldPlaceholder(field({ envVar: "X", required: false }))).toBe("Optional");
+  });
+});
+
+describe("mayHaveStoredRow", () => {
+  test("a workspace-resolved target has a row", () => {
+    expect(mayHaveStoredRow(TARGET)).toBe(true);
+  });
+
+  test("an env-resolved target provably has none — that rung is only consulted when the row is absent", () => {
+    expect(mayHaveStoredRow({ ...TARGET, resolvedFrom: "env" })).toBe(false);
+  });
+
+  test("an unconfigured target MIGHT have a partial row, so removal stays offered", () => {
+    // The state ADR-0046 warns about: a row missing a required field shadows
+    // the env rung and makes the target throw, while reporting exactly like no
+    // row at all. Hiding removal here would leave no way out of it.
+    expect(mayHaveStoredRow({ ...TARGET, configured: false, resolvedFrom: null })).toBe(true);
+  });
+});
+
+describe("requiredFieldsUnsatisfied", () => {
+  const unconfigured: TargetStatus = {
+    ...TARGET,
+    configured: false,
+    resolvedFrom: null,
+    fields: TARGET.fields.map((f) => ({ ...f, present: false, source: "unset" as const })),
+  };
+
+  test("an untouched target with nothing stored lists every required field", () => {
+    expect(requiredFieldsUnsatisfied(unconfigured, EMPTY_DRAFT).map((f) => f.envVar)).toEqual([
+      "WIDGETRON_URL",
+      "WIDGETRON_TOKEN",
+    ]);
+  });
+
+  test("a typed value satisfies its field", () => {
+    const draft = setValue(EMPTY_DRAFT, "WIDGETRON_URL", "https://widgets.acme.dev");
+
+    expect(requiredFieldsUnsatisfied(unconfigured, draft).map((f) => f.envVar)).toEqual([
+      "WIDGETRON_TOKEN",
+    ]);
+  });
+
+  test("a value already stored for the workspace satisfies its field when left blank", () => {
+    // The whole point of blank-preserves: an admin editing only the base URL
+    // is not warned about the token they cannot see.
+    expect(requiredFieldsUnsatisfied(TARGET, setValue(EMPTY_DRAFT, "WIDGETRON_URL", "x"))).toEqual(
+      [],
+    );
+  });
+
+  test("an ENV-sourced value does not satisfy the row being written", () => {
+    // It lives in the environment, not in the workspace row — so saving a
+    // sibling field creates a row that is missing this one, and the
+    // all-or-nothing rule then stops the env fallback entirely.
+    const envTarget: TargetStatus = {
+      ...TARGET,
+      resolvedFrom: "env",
+      fields: TARGET.fields.map((f) => ({ ...f, source: f.present ? ("env" as const) : ("unset" as const) })),
+    };
+    const draft = setValue(EMPTY_DRAFT, "WIDGETRON_URL", "https://widgets.acme.dev");
+
+    expect(requiredFieldsUnsatisfied(envTarget, draft).map((f) => f.envVar)).toEqual([
+      "WIDGETRON_TOKEN",
+    ]);
+  });
+
+  test("clearing a stored required field makes it unsatisfied", () => {
+    const draft = toggleCleared(EMPTY_DRAFT, "WIDGETRON_TOKEN", true);
+
+    expect(requiredFieldsUnsatisfied(TARGET, draft).map((f) => f.envVar)).toEqual([
+      "WIDGETRON_TOKEN",
+    ]);
+  });
+
+  test("optional fields never count, cleared or not", () => {
+    const draft = toggleCleared(EMPTY_DRAFT, "WIDGETRON_PROJECT", true);
+
+    expect(requiredFieldsUnsatisfied(TARGET, draft)).toEqual([]);
+  });
+
+  test("a fully stored target with an untouched draft is satisfied", () => {
+    expect(requiredFieldsUnsatisfied(TARGET, EMPTY_DRAFT)).toEqual([]);
   });
 });
 

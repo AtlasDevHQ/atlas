@@ -37,7 +37,19 @@ interface TokenUsage {
   totalTokens: number;
 }
 
-function addUsage(accumulator: TokenUsage, usage: Partial<TokenUsage>): void {
+/**
+ * Accumulate one call's token usage.
+ *
+ * `usage` is declared loose-optional rather than `Partial<TokenUsage>` because
+ * its callers pass the AI SDK's `LanguageModelUsage`, whose counters really are
+ * `number | undefined` when a provider omits them — a third-party contract, not
+ * a shape this repo chooses. Each field is read once through `?? 0`, so absent
+ * and present-and-undefined are indistinguishable here by construction (#5522).
+ */
+function addUsage(
+  accumulator: TokenUsage,
+  usage: { [K in keyof TokenUsage]?: TokenUsage[K] | undefined },
+): void {
   accumulator.promptTokens += usage.promptTokens ?? 0;
   accumulator.completionTokens += usage.completionTokens ?? 0;
   accumulator.totalTokens += usage.totalTokens ?? 0;

@@ -1850,6 +1850,7 @@ export async function runAgent({
   // glossary AND the durable memory block (#3755), and is passed to the model
   // separately, so neither ever enters the message array compaction rewrites
   // (#3759).
+  const resolvedAnswerStyle = answerStyle ?? resolveWorkspaceDefaultAnswerStyle(orgId);
   const systemParam = buildSystemParam(providerType, {
     registry: activeRegistry,
     ...(warnings !== undefined ? { warnings } : {}),
@@ -1867,11 +1868,15 @@ export async function runAgent({
     // `buildSystemParam` when this resolves to undefined). Re-read per turn
     // through the settings cache, so an admin's change (or clear) takes
     // effect on the next turn without a restart.
-    answerStyle: answerStyle ?? resolveWorkspaceDefaultAnswerStyle(orgId),
-    restRepresentation,
+    // Read once into a local: both arms can be undefined, and the option is an
+    // exact optional, so the resolved style has to be spread rather than
+    // assigned. `buildSystemParam` applies `DEFAULT_ANSWER_STYLE` when the key
+    // is absent, which is exactly what "neither resolved" should mean (#5522).
+    ...(resolvedAnswerStyle !== undefined ? { answerStyle: resolvedAnswerStyle } : {}),
+    ...(restRepresentation !== undefined ? { restRepresentation } : {}),
     modelId: resolvedModelId,
-    memoryBlock,
-    sourceCatalog,
+    ...(memoryBlock !== undefined ? { memoryBlock } : {}),
+    ...(sourceCatalog !== undefined ? { sourceCatalog } : {}),
     dialectSpecialists,
   });
 
@@ -2077,8 +2082,9 @@ export async function runAgent({
       temperature: 0.2,
       maxOutputTokens: 4096,
       // #4294 — explicit user stop (see the option doc above). Absent for every
-      // caller that doesn't wire a Stop control; `streamText` ignores undefined.
-      abortSignal,
+      // caller that doesn't wire a Stop control. `CallSettings.abortSignal` is an
+      // exact optional, so absence is spread rather than passed as `undefined`.
+      ...(abortSignal !== undefined ? { abortSignal } : {}),
       // #3747 — this cap is PER-`streamText`: `stepCountIs` counts the AI-SDK
       // internal `stepNumber`, which restarts at 0 on a resumed run, so a resumed
       // turn gets a fresh full N-step per-request budget here. That is intentional

@@ -644,6 +644,26 @@ export interface ArrivingAliasEdge extends AliasEdgeInput {
  * is already telling the operator the two vocabularies disagree structurally
  * rather than incidentally, and the fifty-first payload adds nothing.
  *
+ * ## ⚠️ IT IS A PER-SECTION BOUND, AND SINCE #5533 THERE ARE THREE SECTIONS
+ *
+ * Stated because the paragraphs above were written when this bounded exactly one
+ * array and read as though it bounded a whole response. #5533 gave
+ * `brainVocabularyProposals` and `brainPredicateCardinalities` their own capped
+ * `refusalDetails` under this same constant, so the worst case is now 3 × 50 = 150
+ * payloads on one import response and on one `region_migrations` row, not 50.
+ *
+ * The sizing argument survives that multiplication, which is why the number did not
+ * move: the bound exists to stop an array scaling with the BUNDLE (a hand-built or
+ * corrupted bundle conflicting with itself on every row), and 150 bounded payloads
+ * is still a constant. What would break it is a section whose refusals are routine
+ * rather than rare — none of the three is — so a fourth section joining this cap
+ * should re-run this paragraph rather than assume it.
+ *
+ * The three arrays are capped SEPARATELY and deliberately: each carries its own
+ * `refusalDetails.length < refused` truncation signal, and one shared budget would
+ * let a structurally-disagreeing vocabulary starve the other two sections' payloads
+ * without either one's comparison saying so.
+ *
  * ## ⚠️ Why this lives HERE and not in `@useatlas/types` beside the type it bounds
  *
  * It did, for one CI run, and `Deploy Validation`'s scaffold build is what caught

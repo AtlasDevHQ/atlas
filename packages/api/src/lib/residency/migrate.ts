@@ -231,9 +231,12 @@ const REFUSAL_DISCLOSURE: Record<
  * `REFUSAL_ACCOUNTING` beside the record above, and two structures that must agree
  * are two structures that can disagree — the record is keyed on
  * `RefusalAccountingSection`, so membership and copy are now the SAME fact and a
- * section cannot be accounted-for without a sentence to say so. It also removes the
- * `as RefusalAccountingSection` the split forced at the call site: the lookup itself
- * is the narrowing.
+ * section cannot be accounted-for without a sentence to say so.
+ *
+ * The `as RefusalAccountingSection` is RELOCATED here, not removed — `Object.hasOwn`
+ * narrows the object, not the key, so the assertion below still does the work. What
+ * the move buys is that it now sits one line under the runtime check that justifies
+ * it, instead of at a call site where the check was three statements away.
  */
 function refusalDisclosureFor(
   section: string,
@@ -448,8 +451,12 @@ export type VocabularyRefusalEvidence = RefusalEvidence<VocabularyRefusalDetail>
  * discriminator on the wire that no region sends, and would turn three independent
  * truncation signals into one that cannot say which section was truncated.
  *
- * A section added here without a column to write it to is a compile error at
- * `recordMigrationRefusals`, which destructures all three.
+ * ⚠️ A section added here without a column to write it to is a compile error at
+ * `transferBundleToTarget`'s `return { … }`, which must name every member — NOT,
+ * as an earlier version of this said, at `recordMigrationRefusals`, which merely
+ * destructures three of them. Destructuring a subset is legal TypeScript, so that
+ * site would have stayed green. The safety property is real; only the mechanism was
+ * misnamed, and a pin that names the wrong site is one nobody can check.
  */
 export interface MigrationRefusalEvidence {
   readonly vocabularyEdges: RefusalEvidence<VocabularyRefusalDetail>;
@@ -904,33 +911,39 @@ async function transferBundleToTarget(
     // all three to `unknown` — which is the one thing the screens exist to prevent.
     // The repetition is three lines; the shared half (the two warns, and the
     // evidence it builds) is `captureRefusalPayloads`.
+    //
+    // ⚠️ EACH ARM ASSIGNS BOTH, and `captured` is NOT re-derived from `section`
+    // afterwards. It was, in this change's first cut: a second `section === …`
+    // ternary spelling the same mapping a second time, with nothing tying the two
+    // together. That is the defect this very change removed one block down — the
+    // hard-coded `section === "brainVocabularyEdges" ? … : undefined` that left
+    // `detailsRecorded` and `malformedDetails` `undefined` on every other
+    // section — reintroduced by its own fix. A fourth payload section added to the
+    // chain and missed in the ternary would set `disclosure.column`, so the warn
+    // would tell the operator to "read `detailsRecorded` on this line first" while
+    // that field was absent: a recovery instruction naming a field that is not
+    // there, which is the same defect as one naming an empty column. One
+    // assignment per arm makes the two impossible to disagree.
+    let captured: RefusalEvidence<unknown> | undefined;
     if (section === "brainVocabularyEdges") {
-      vocabularyEdges = captureRefusalPayloads(
+      captured = vocabularyEdges = captureRefusalPayloads(
         migrationId, section, refused, screenRefusalDetails(got?.refusalDetails),
       );
     } else if (section === "brainVocabularyProposals") {
-      vocabularyProposals = captureRefusalPayloads(
+      captured = vocabularyProposals = captureRefusalPayloads(
         migrationId, section, refused, screenProposalRefusalDetails(got?.refusalDetails),
       );
     } else if (section === "brainPredicateCardinalities") {
-      predicateCardinalities = captureRefusalPayloads(
+      captured = predicateCardinalities = captureRefusalPayloads(
         migrationId, section, refused, screenCardinalityRefusalDetails(got?.refusalDetails),
       );
     }
-
-    // The evidence this section just captured, or `undefined` for a refusal-
-    // accounting section that carries no payload contract at all
-    // (`brainSlackChannelExclusions`). Both the numbers below and the recovery
-    // clause key off this being present, so a payload-less section is never told
-    // to read a field that is not on its line.
-    const captured =
-      section === "brainVocabularyEdges"
-        ? vocabularyEdges
-        : section === "brainVocabularyProposals"
-          ? vocabularyProposals
-          : section === "brainPredicateCardinalities"
-            ? predicateCardinalities
-            : undefined;
+    // `undefined` means this section has no payload contract — every section in
+    // `RECONCILED_SECTIONS` except the three above, which includes the one
+    // refusal-ACCOUNTING section that carries no payloads
+    // (`brainSlackChannelExclusions`). The numbers and the recovery clause below
+    // both key off it being present, so a payload-less section is never told to
+    // read a field that is not on its line.
 
     if (disclosure && refused > 0) {
       log.warn(
@@ -1060,7 +1073,8 @@ function captureRefusalPayloads<TDetail>(
  * durable and another's is not, and the abort decision below is made against the
  * TOTAL — so a partial write would have to be either re-attempted or reasoned about
  * per section, for no gain. One `UPDATE` either lands the whole record or lands
- * none of it, which is the only state this function's two callers can act on.
+ * none of it, which is the only state its caller (`executeRegionMigration`) can act
+ * on.
  *
  * ## Failing here ABORTS the migration when there is something to lose
  *
@@ -1180,9 +1194,17 @@ export async function recordMigrationRefusals(
  *
  * `null` rather than `'[]'`, so a query for "migrations with recoverable payloads"
  * is `IS NOT NULL` and does not additionally have to know that an empty array means
- * the same thing. `cleanup.ts` reads these columns with
- * `COALESCE(jsonb_array_length(...), 0)`, which folds the two together deliberately
- * on the other side — both mean "no payload is recoverable from this row".
+ * the same thing.
+ *
+ * ⚠️ ONE READER FOLDS THE TWO TOGETHER, AND IT ONLY READS ONE OF THESE COLUMNS.
+ * `cleanup.ts`'s delete-time audit selects `COALESCE(jsonb_array_length(
+ * vocabulary_refusals), 0)` — the EDGE column alone. The two #5533 columns have no
+ * reader yet, so the `null` convention here is a property of the write side that
+ * nothing downstream depends on so far. Stated exactly because the first version of
+ * this comment claimed `cleanup.ts` reads "these columns", which is false for four
+ * of the six and would have sent the next maintainer looking for a symmetry that
+ * does not exist. Extending that audit to the two new sections is the deliberate
+ * follow-up recorded on #5533's PR.
  */
 function jsonbPayload(details: readonly unknown[]): string | null {
   return details.length === 0 ? null : JSON.stringify(details);

@@ -2828,14 +2828,22 @@ export async function importBundle(
       if ((applied.rowCount ?? 0) > 0) {
         result.brainVocabularyProposals.imported++;
       } else {
-        // ⚠️ RE-READ, and the extra query is what makes the payload a statement
-        // rather than a guess. `held.status` was `pending` at the SELECT above and
-        // is stale by definition on this arm — that staleness IS the arm. Recording
-        // it as `existingStatus` would put a value on the recovery record that was
-        // false at the moment the refusal was decided, which is worse than `null`.
-        // Under READ COMMITTED each statement takes a fresh snapshot, so this sees
-        // the decision that defeated the UPDATE; the cardinality section's own racy
-        // arm already relies on exactly that, one table over.
+        // ⚠️ RE-READ rather than recording `held.status`, which was `pending` at the
+        // SELECT above and is stale by definition on this arm — that staleness IS the
+        // arm. Reporting it as `existingStatus` would put a value on the recovery
+        // record that was already false when the refusal was decided, which is worse
+        // than `null`. Under READ COMMITTED each statement takes a fresh snapshot, so
+        // this sees the decision that defeated the UPDATE.
+        //
+        // ⚠️ DEFENSIVE HERE, LOAD-BEARING ONE TABLE OVER, and the asymmetry is worth
+        // stating so nobody "simplifies" the wrong one. Every other writer to
+        // `brain_vocabulary_proposal` runs under the advisory lock this loop already
+        // holds (see the section header), so the window between the SELECT and the
+        // UPDATE is closed and this arm should be unreachable — the query is here
+        // because "should be unreachable" is not a thing to record a payload from.
+        // `brain_predicate_cardinality`'s own writers take NO lock (its section says
+        // so explicitly), so the equivalent re-read there is reachable in normal
+        // operation.
         const raced = await client.query(
           `SELECT status FROM brain_vocabulary_proposal
             WHERE id = $1 AND workspace_id = $2`,
@@ -4102,8 +4110,12 @@ function logVocabularyRefusalsCommitted(
  * `migrate.ts`'s `_refusalSectionsReviewed` idiom, applied on the target side. A
  * section that grows a `refusalDetails` payload and is not added here would refuse
  * rows, persist them, and never confirm the drop — the exact asymmetry #5533 exists
- * to remove, re-introduced silently by a future section. Typed this way it is a
- * COMPILE error instead: the annotation demands every payload-carrying key.
+ * to remove, re-introduced silently by a future section.
+ *
+ * ⚠️ The completeness guarantee is `_everyRefusalSectionConfirmed` below, NOT an
+ * annotation on the array — an earlier version of this sentence credited "the
+ * annotation", which is the one construction the note under the list forbids
+ * precisely because it makes the pin vacuous. Read both together.
  */
 type RefusalPayloadSection = {
   [K in keyof ImportResult]: ImportResult[K] extends { refusalDetails: unknown[] } ? K : never;
@@ -4188,12 +4200,18 @@ const REFUSAL_CONFIRMATION_COPY: Record<
  * The catch logs at `error` and re-narrows, so the failure is never silent: what is
  * lost is the confirmation, and that loss is itself announced.
  */
-function logRefusalConfirmation(
-  section: RefusalPayloadSection,
+// ⚠️ GENERIC IN THE SECTION, so `section` and the array beside it cannot drift.
+// Typed `readonly unknown[]` — as the first cut had it — nothing stops a future
+// caller emitting the edge copy over the cardinality payload, and `migrate.ts`
+// justifies its own three-branch repetition on exactly that ground ("a table would
+// have to erase all three to `unknown` — the one thing the screens exist to
+// prevent"). Same argument, so the same treatment.
+function logRefusalConfirmation<K extends RefusalPayloadSection>(
+  section: K,
   correlationId: string,
   orgId: string,
   refused: number,
-  refusalDetails: readonly unknown[],
+  refusalDetails: ImportResult[K]["refusalDetails"],
 ): void {
   try {
     emitRefusalConfirmation(section, correlationId, orgId, refused, refusalDetails);
@@ -4207,12 +4225,12 @@ function logRefusalConfirmation(
   }
 }
 
-function emitRefusalConfirmation(
-  section: RefusalPayloadSection,
+function emitRefusalConfirmation<K extends RefusalPayloadSection>(
+  section: K,
   correlationId: string,
   orgId: string,
   refused: number,
-  refusalDetails: readonly unknown[],
+  refusalDetails: ImportResult[K]["refusalDetails"],
 ): void {
   const { subject, decisions, sourceTable } = REFUSAL_CONFIRMATION_COPY[section];
   log.warn(

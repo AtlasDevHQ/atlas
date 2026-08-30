@@ -592,4 +592,206 @@ describeIfPg("region migration preserves vocabulary memory (real Postgres, #5113
     },
     PG_TEST_TIMEOUT_MS,
   );
+
+  // ── The concurrent arms (#5533) ────────────────────────────────────────────
+  //
+  // ⚠️ WHY THESE ARE DRIVEN WITH AN INTERLEAVED SECOND CONNECTION rather than
+  // left uncovered like every other race in this file.
+  //
+  // #5533 added a re-read to each of the two `pending`-defeated arms, so that the
+  // persisted payload reports the status that ACTUALLY defeated the update instead
+  // of the stale `pending` the surrounding SELECT saw. Those two statements are new
+  // SQL on a path no test reached, and the failure mode is not a wrong number: a
+  // refusal arm that throws takes the whole import transaction with it, so a
+  // mistyped column here fails every migration that carries a refusal — the exact
+  // shape `migrate-roundtrip-pg.test.ts`'s writer case exists to prevent one module
+  // over, and the reason "it is only reachable under a race" is not a reason to ship
+  // it unexecuted.
+  //
+  // The interleave is real, not simulated: a SECOND pool connection commits between
+  // the import's SELECT and its write. Nothing blocks it — `pg_advisory_xact_lock`
+  // only excludes other takers of the same lock, and neither of these statements
+  // takes one.
+  const importWithRace = async (
+    bundle: ImportBundleArgs[1],
+    orgId: string,
+    // ⚠️ KEYED ON THE ROW, NOT JUST THE STATEMENT, and the first version of this
+    // was not — which is what makes it worth a comment. Both import loops run the
+    // same SELECT once per arriving row, so "fire after the first matching SQL"
+    // interleaved against whichever row the bundle happened to order first. The
+    // race then landed BEFORE the target row's own SELECT, and the importer took
+    // the ordinary contradictory-decision branch: a green-looking test that never
+    // entered the arm it was written for. Matching the bound parameters too is
+    // what pins the interleave to the one row whose window this is.
+    race: {
+      when: (sql: string, params: readonly unknown[]) => boolean;
+      run: (racer: Pool) => Promise<void>;
+    },
+  ): Promise<ImportResult> => {
+    const client = await pool.connect();
+    let fired = false;
+    // The client the importer sees. `query` is wrapped; everything else is the
+    // real client, so the transaction, the advisory lock and the release below
+    // behave exactly as they do in production.
+    const wrapped = new Proxy(client, {
+      get(target, prop, receiver) {
+        if (prop !== "query") return Reflect.get(target, prop, receiver) as unknown;
+        return async (sql: string, params?: unknown[]) => {
+          const result = await target.query(sql, params as never);
+          if (!fired && race.when(sql, params ?? [])) {
+            fired = true;
+            await race.run(pool);
+          }
+          return result;
+        };
+      },
+    });
+    try {
+      await client.query("BEGIN");
+      const result = await importBundleWithCorrelationId(
+        wrapped as unknown as ImportBundleArgs[0],
+        bundle,
+        orgId,
+        "req-vocab-memory-race",
+      );
+      await client.query("COMMIT");
+      expect(fired, "the interleaved write never ran — this test proved nothing").toBe(true);
+      return result;
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  };
+
+  it(
+    "⭐ #5533: the cardinality CONCURRENT-INSERT arm records what actually took the key",
+    async () => {
+      const RACE_ORG = "org-5113-card-race";
+      const bundle = await exportWorkspaceBundle(SOURCE_ORG, "vocab-memory-test");
+      const isolated: ExportBundle = JSON.parse(JSON.stringify(bundle));
+      isolated.brainVocabularyProposals = [];
+      isolated.manifest.counts.brainVocabularyProposals = 0;
+
+      // Committed AFTER the importer's "does this key already exist" SELECT and
+      // BEFORE its `ON CONFLICT DO NOTHING` insert, which is the only window in
+      // which this arm exists. `multi` against the arriving `single`, so the raced
+      // row is a genuine CONTRADICTION and not the identical-decision skip.
+      const result = await importWithRace(isolated, RACE_ORG, {
+        // The key's own existence check — NOT the predicate-closure read one
+        // statement earlier, which binds the same string to a different table.
+        when: (sql, params) =>
+          sql.includes("FROM brain_predicate_cardinality") && params.includes("ships to"),
+        run: async (racer) => {
+          await racer.query(
+            `INSERT INTO brain_predicate_cardinality
+               (workspace_id, predicate_key, cardinality, status, source_class, proposed_by)
+             VALUES ($1, 'ships to', 'multi', 'approved', 'human', 'user-racer')
+             ON CONFLICT (workspace_id, predicate_key) DO NOTHING`,
+            [RACE_ORG],
+          );
+        },
+      });
+
+      // `billed monthly` lands normally; `ships to` lost its slot to the racer.
+      expect(result.brainPredicateCardinalities).toMatchObject({
+        imported: 1,
+        skipped: 0,
+        refused: 1,
+      });
+      // ⭐ The payload names the row that WON, which is the whole point of the
+      // re-read: `held` was `undefined` on this path, so an implementation that
+      // reported what it had in hand would record two nulls and tell the operator
+      // nothing about what they would be overturning.
+      expect(result.brainPredicateCardinalities.refusalDetails).toMatchObject([
+        {
+          predicateKey: "ships to",
+          arrivingCardinality: "single",
+          arrivingStatus: "approved",
+          existingCardinality: "multi",
+          existingStatus: "approved",
+          canonicalHere: null,
+          refusal: "concurrent-insert",
+        },
+      ]);
+      // Destination-wins really held — the racer's row is untouched.
+      const kept = await pool.query(
+        `SELECT cardinality, status, proposed_by FROM brain_predicate_cardinality
+          WHERE workspace_id = $1 AND predicate_key = 'ships to'`,
+        [RACE_ORG],
+      );
+      expect(kept.rows[0]).toMatchObject({
+        cardinality: "multi",
+        status: "approved",
+        proposed_by: "user-racer",
+      });
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "⭐ #5533: the proposal CONCURRENT-DECISION arm reports the decision that defeated the update, not the stale `pending`",
+    async () => {
+      const RACE_ORG = "org-5113-prop-race";
+      // A pending queue entry for the pair the bundle decides. The importer reads
+      // it as `pending`, so it takes the decision-over-pending branch — and then
+      // its `WHERE status = 'pending'` matches nothing, because the racer decided
+      // it first. `held.status` is `pending` and WRONG from that moment on.
+      await pool.query(
+        `INSERT INTO brain_vocabulary_proposal
+           (id, workspace_id, slot_position, from_norm, to_norm, directed, source_class,
+            confidence, status, proposed_by, proposed_at)
+         VALUES ('prop-5533-race', $1, 'subject', 'acme corp', 'acme corporation', TRUE,
+                 'warehouse_key', 0.9, 'pending', 'producer:warehouse', now())`,
+        [RACE_ORG],
+      );
+
+      const bundle = await exportWorkspaceBundle(SOURCE_ORG, "vocab-memory-test");
+      const isolated: ExportBundle = JSON.parse(JSON.stringify(bundle));
+      isolated.brainPredicateCardinalities = [];
+      isolated.manifest.counts.brainPredicateCardinalities = 0;
+
+      const result = await importWithRace(isolated, RACE_ORG, {
+        when: (sql, params) =>
+          sql.includes("FROM brain_vocabulary_proposal") && params.includes("acme corp"),
+        run: async (racer) => {
+          await racer.query(
+            `UPDATE brain_vocabulary_proposal
+                SET status = 'approved', reviewed_by = 'user-racer', reviewed_at = now()
+              WHERE id = 'prop-5533-race'`,
+          );
+        },
+      });
+
+      // The arriving `pending` predicate proposal lands verbatim — this org holds
+      // no row for that pair, so there is no decision for the queue entry to lose
+      // to. Only the subject pair meets the race.
+      expect(result.brainVocabularyProposals).toMatchObject({
+        imported: 1,
+        skipped: 0,
+        refused: 1,
+      });
+      // ⭐ `approved` — the racer's decision — and NOT `pending`. This assertion is
+      // the entire reason the re-read exists: without it the payload records the
+      // value the surrounding SELECT saw, which was already false when the refusal
+      // was decided, on a record whose only job is to be true later.
+      expect(result.brainVocabularyProposals.refusalDetails).toMatchObject([
+        {
+          slotPosition: "subject",
+          fromNorm: "acme corp",
+          toNorm: "acme corporation",
+          arrivingStatus: "rejected",
+          existingStatus: "approved",
+          reviewedBy: "user-reviewer",
+          refusal: "concurrent-decision",
+        },
+      ]);
+      const kept = await pool.query(
+        `SELECT status, reviewed_by FROM brain_vocabulary_proposal WHERE id = 'prop-5533-race'`,
+      );
+      expect(kept.rows[0]).toMatchObject({ status: "approved", reviewed_by: "user-racer" });
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
 });

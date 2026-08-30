@@ -14,6 +14,11 @@ const mockEmailTool = tool({
   inputSchema: z.object({ to: z.string() }),
   execute: async ({ to }) => to,
 });
+const mockSalesforceTool = tool({
+  description: "Mock createSalesforceRecord tool",
+  inputSchema: z.object({ object: z.string() }),
+  execute: async ({ object }) => object,
+});
 
 void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: {
@@ -33,6 +38,17 @@ void mock.module("@atlas/api/lib/tools/actions", () => ({
     reversible: false,
     defaultApproval: "admin-only",
     requiredCredentials: ["RESEND_API_KEY"],
+  },
+  // #5556 — per-workspace credentials, so `requiredCredentials` is empty
+  // (the real action declares it empty for the same reason).
+  createSalesforceRecord: {
+    name: "createSalesforceRecord",
+    description: "### Create Salesforce Record\nMock description",
+    tool: mockSalesforceTool,
+    actionType: "salesforce:create",
+    reversible: true,
+    defaultApproval: "manual",
+    requiredCredentials: [],
   },
 }));
 
@@ -375,13 +391,14 @@ describe("buildRegistry", () => {
     expect(Object.keys(headless.getAll())).not.toContain("proposeFact");
   });
 
-  it("with includeActions includes createJiraTicket and sendEmailReport alongside core tools", async () => {
+  it("with includeActions includes the operator action tools alongside core tools", async () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
       "createDashboard",
       "createJiraTicket",
       "createLinearIssue",
+      "createSalesforceRecord",
       "executeSQL",
       "explore",
       "searchAtlas",
@@ -469,7 +486,7 @@ describe("buildRegistry", () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const actions = registry.getActions();
     const actionTypes = actions.map((a) => a.actionType).sort();
-    expect(actionTypes).toEqual(["email:send", "jira:create"]);
+    expect(actionTypes).toEqual(["email:send", "jira:create", "salesforce:create"]);
   });
 
   it("core-only registry has no actions", async () => {

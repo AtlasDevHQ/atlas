@@ -22,6 +22,11 @@ export { logActionAudit, type ActionAuditEntry } from "./audit";
 
 export { createJiraTicket } from "./jira";
 export { sendEmailReport } from "./email";
+export {
+  createSalesforceRecord,
+  SALESFORCE_ACTION_OBJECTS,
+  type SalesforceActionObject,
+} from "./salesforce";
 
 // Per-workspace action-target credentials (#3766). The resolver is the single
 // place the workspace → self-host-env ladder is decided; the target registry

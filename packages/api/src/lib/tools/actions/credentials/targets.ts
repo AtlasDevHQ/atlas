@@ -6,8 +6,9 @@
  * credential surface is a one-entry addition here — the resolver, the store,
  * the Admin route and the health surface all iterate this registry and have
  * no per-target branches. That is what makes the remaining targets (Linear,
- * GitHub App, Salesforce) one-entry children of #3765 rather than four more
- * design passes.
+ * GitHub App) one-entry children of #3765 rather than more design passes.
+ * Salesforce (#5556) was the first to cash that in: a spec below plus
+ * `../salesforce.ts`, and nothing else in the seam moved.
  *
  * Workspace tier, deliberately. This registry is the analogue of
  * `integrations/operator-credentials/platforms.ts` (`OperatorPlatformSpec`),
@@ -110,13 +111,70 @@ const JIRA_TARGET: ActionTargetSpec = {
 };
 
 /**
+ * Salesforce — the first one-entry child of the seam (#5556). Net-new: unlike
+ * Jira there was no Salesforce ACTION reading globals, so these field names
+ * are chosen rather than inherited.
+ *
+ * ⚠️ `SALESFORCE_ACTION_*`, deliberately NOT the existing `SALESFORCE_CLIENT_ID`
+ * / `SALESFORCE_CLIENT_SECRET` / `SALESFORCE_LOGIN_URL`. Those are the
+ * OPERATOR's connected app for the datasource OAuth dance (ADR-0014) — a
+ * different app, a different grant, and useless for creating a record in a
+ * tenant's org. Reusing the names would let the self-host env rung report this
+ * target "configured" from credentials the action can never authenticate with,
+ * which is the failure mode the all-or-nothing rule exists to prevent, one
+ * level up.
+ *
+ * Auth is the OAuth 2.0 client-credentials flow on a Connected App, so the
+ * stored set is static (no refresh lifecycle) and carries no user password —
+ * keeping ADR-0014's objection to long-lived stored passwords intact.
+ *
+ * `SALESFORCE_ACTION_DEFAULT_OBJECT` is optional: the agent may name an object
+ * per call, and the stored default is only consulted when it doesn't.
+ */
+const SALESFORCE_TARGET: ActionTargetSpec = {
+  target: "salesforce",
+  label: "Salesforce",
+  fields: [
+    {
+      envVar: "SALESFORCE_ACTION_INSTANCE_URL",
+      label: "Instance URL",
+      hint: "Your org's My Domain URL, e.g. https://acme.my.salesforce.com. Client-credentials tokens are minted here, not at login.salesforce.com.",
+      secret: false,
+      required: true,
+    },
+    {
+      envVar: "SALESFORCE_ACTION_CLIENT_ID",
+      label: "Consumer Key",
+      hint: "Connected App consumer key (Setup → App Manager → your app → View). Enable the client-credentials flow and set a run-as user.",
+      secret: false,
+      required: true,
+    },
+    {
+      envVar: "SALESFORCE_ACTION_CLIENT_SECRET",
+      label: "Consumer Secret",
+      hint: "Connected App consumer secret. Records are created as the app's run-as user.",
+      secret: true,
+      required: true,
+    },
+    {
+      envVar: "SALESFORCE_ACTION_DEFAULT_OBJECT",
+      label: "Default Object",
+      hint: "Optional. Object (Lead, Case, Task, Contact or Opportunity) used when the agent doesn't name one.",
+      secret: false,
+      required: false,
+    },
+  ],
+};
+
+/**
  * Every action target managed by the workspace credential surface.
  *
- * Pilot scope (#3766): Jira. Linear, GitHub App and Salesforce are one-entry
- * additions here plus their action's port off `process.env` — tracked as
- * children of #3765.
+ * Pilot (#3766): Jira. Salesforce (#5556) is the first one-entry child —
+ * a spec here plus its action; the resolver, store, Admin route and status
+ * surface gained nothing. Linear and GitHub App follow the same way, tracked
+ * as children of #3765.
  */
-export const ACTION_TARGETS: readonly ActionTargetSpec[] = [JIRA_TARGET];
+export const ACTION_TARGETS: readonly ActionTargetSpec[] = [JIRA_TARGET, SALESFORCE_TARGET];
 
 /** Look up a managed action target by slug. `undefined` if unmanaged. */
 export function getActionTarget(target: string): ActionTargetSpec | undefined {

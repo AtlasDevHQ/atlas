@@ -6,9 +6,11 @@ every bounded context and points at the `CONTEXT.md` that governs it. Consumer r
 
 ## Status: the split is COMPLETE — 18 of 18 extracted
 
-⚠️ **Read the *Governed by* column before following any path below.** It says, per context,
-whether that context has its own file yet. Eighteen do; the other zero are still sections of
-the root [`CONTEXT.md`](CONTEXT.md), which shrank from ~85 KB to ~3 KB as they left.
+⚠️ **Every row below points at a real file now — but still read the *Governed by* and
+*Notes* columns**, because they say what each context IS: one is marked stale, one is history
+only. All eighteen were extracted between 2026-08-17 and 2026-08-30; the root
+[`CONTEXT.md`](CONTEXT.md) shrank from ~85 KB to ~1 KB and now holds only the vocabulary rule
+and a pointer back here.
 
 This map lists no path that does not exist. A map naming files that were never written would
 be the same defect this repo spent 2026-08-17 removing from its agent docs — a pointer that
@@ -17,17 +19,22 @@ extracted, its row moves in the same commit that creates its file**; nothing her
 at the root file for prose that has left it.
 
 Tracking issue for the split: **[#5302](https://github.com/AtlasDevHQ/atlas/issues/5302)**.
-It is deliberately incremental — each extraction is a chance to re-verify prose nobody has
-read in months, and the first three did exactly that: *Deployment posture* went out marked
-**stale** (its "no external customers" window predates the 2026-07-24 public-launch tag) and
-*Notebooks* went out fenced as history.
+The last context came out 2026-08-30. It was deliberately incremental — one commit per
+context, each moving its row here in the same commit — because each extraction is a chance
+to re-verify prose nobody has read in months. The first three did exactly that:
+*Deployment posture* went out marked **stale** (its "no external customers" window predates
+the 2026-07-24 public-launch tag) and *Notebooks* went out fenced as history.
+
+**A new context is added the same way**: write `docs/contexts/<name>/CONTEXT.md` and add its
+row below in the same commit. The root `CONTEXT.md` is no longer a place to put context
+prose — it is the front door and the vocabulary rule, nothing more.
 
 ## Contexts
 
-Derived from `CONTEXT.md`'s own section structure — these are the seams the domain doc
-already uses, not a new taxonomy imposed on it. Note they cut **across** workspace packages;
-the Company Atlas context alone spans `packages/api/src/lib/brain/**`, `/admin/brain` in
-`packages/web`, and its migrations.
+Derived from the root `CONTEXT.md`'s own section structure as it stood before the split —
+these are the seams the domain doc already used, not a new taxonomy imposed on it. Note they
+cut **across** workspace packages; the Company Atlas context alone spans
+`packages/api/src/lib/brain/**`, `/admin/brain` in `packages/web`, and its migrations.
 
 | Context | Governed by | Notes |
 | --- | --- | --- |
@@ -50,5 +57,5 @@ the Company Atlas context alone spans `packages/api/src/lib/brain/**`, `/admin/b
 | Lead source (CRM acquisition) | [`docs/contexts/lead-source/CONTEXT.md`](docs/contexts/lead-source/CONTEXT.md) | |
 | Notebooks | [`docs/contexts/notebooks/CONTEXT.md`](docs/contexts/notebooks/CONTEXT.md) | 🪦 **retired** — kept so the words don't dangle; read only for history |
 
-System-wide decisions stay in [`docs/adr/`](docs/adr/) (43 ADRs). A context gets its own
+System-wide decisions stay in [`docs/adr/`](docs/adr/) (44 ADRs). A context gets its own
 `docs/adr/` only once it has a decision that is genuinely local to it.

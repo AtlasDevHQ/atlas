@@ -644,6 +644,13 @@ describe("migrateAuthTables", () => {
             // so it runs in every auth mode — must be in the already-applied
             // set so this "all applied" test sees zero new migrations.
             { name: "0211_plugin_grant_revocation_failures.sql" },
+            // 0212 (#3766) — workspace_action_credentials, the
+            // workspace-tier action-target credential store. Additive
+            // CREATE TABLE on an Atlas-internal table, no Better Auth
+            // involvement, so it runs in every auth mode — must be in
+            // the already-applied set so this "all applied" test sees
+            // zero new migrations.
+            { name: "0212_workspace_action_credentials.sql" },
           ],
         };
       }

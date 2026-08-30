@@ -474,6 +474,22 @@ try {
   );
 }
 
+// Workspace-tier action-target credential routes — a WORKSPACE admin points
+// Atlas's action targets (Jira first) at their own external system, without
+// operator involvement or a redeploy (#3766). Sibling of the operator router
+// above, one tier down: org-scoped, encrypted at rest, and with no operator
+// rung to fall back on (ADR-0046).
+try {
+  const { adminActionCredentials } = await import("./routes/admin-action-credentials");
+  app.route("/api/v1/admin/action-credentials", adminActionCredentials);
+  log.info("Workspace action credential routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load workspace action credential routes — workspace action-target credential console will be unavailable",
+  );
+}
+
 // Platform admin action log routes — cross-tenant action audit.
 try {
   const { platformActions } = await import("./routes/platform-actions");

@@ -77,6 +77,15 @@ export const INTEGRATION_TABLES: ReadonlyArray<IntegrationTable> = [
   // rotation / audit scripts walk it generically (single-PK assumption
   // preserved). The encrypted blob is a JSON `{ <ENV_VAR>: <value> }` map.
   { table: "operator_integration_credentials", pk: "id",   encrypted: "credentials_encrypted",        keyVersionColumn: "credentials_key_version" },
+  // 0212 (#3766) — WORKSPACE-tier action-target credentials (a tenant's own
+  // Jira/Linear/GitHub/Salesforce, set from workspace Admin without operator
+  // involvement). One row per `(workspace_id, target)`; the table keys on a
+  // single uuid `id` so the rotation / audit scripts walk it generically
+  // (single-PK assumption preserved). The encrypted blob is a JSON
+  // `{ <ENV_VAR>: <value> }` map, same shape as the operator table above —
+  // but a strictly separate tier: no operator rung exists for action targets
+  // (ADR-0046), and neither store ever reads the other's table.
+  { table: "workspace_action_credentials", pk: "id",       encrypted: "credentials_encrypted",        keyVersionColumn: "credentials_key_version" },
 ] as const;
 
 /**

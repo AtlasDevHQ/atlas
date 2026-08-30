@@ -765,6 +765,7 @@ describe("runMigrations", () => {
         "0209_scim_provider_to_managed_connection.sql",
         "0210_brain_triage.sql",
         "0211_plugin_grant_revocation_failures.sql",
+        "0212_workspace_action_credentials.sql",
       ],
     });
 

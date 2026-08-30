@@ -163,7 +163,7 @@ They are one of **two** required axes; the other is kind+area. See
 ### Domain docs
 
 **Multi-context**: [`CONTEXT-MAP.md`](CONTEXT-MAP.md) names 18 bounded contexts and
-`docs/adr/` holds 45 system-wide decisions. **The split is done (#5302)**: every context
+`docs/adr/` holds 46 system-wide decisions. **The split is done (#5302)**: every context
 lives at `docs/contexts/<name>/CONTEXT.md`, and the root [`CONTEXT.md`](CONTEXT.md) keeps
 only the vocabulary rule and a pointer to the map — no context prose. Start at the map, and
 read its *Notes* column: the *Deployment posture* clean-break window was re-verified and is

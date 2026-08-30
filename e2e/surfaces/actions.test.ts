@@ -28,6 +28,22 @@ process.env.JIRA_BASE_URL ??= "http://placeholder"; // overridden per test
 process.env.JIRA_EMAIL ??= "test@example.com";
 process.env.JIRA_API_TOKEN ??= "test-token";
 process.env.JIRA_DEFAULT_PROJECT ??= "TEST";
+
+/**
+ * Credentials for the Jira action. Since #3766 `executeJiraCreate` takes them
+ * as an argument instead of reading `process.env` — the resolver owns the
+ * workspace → self-host-env ladder — so these tests build the set from the
+ * mock server's URL directly. `JIRA_BASE_URL` is still read here (rather than
+ * captured once at module load) because each case points it at a fresh mock.
+ */
+function jiraCreds() {
+  return {
+    JIRA_BASE_URL: process.env.JIRA_BASE_URL ?? "",
+    JIRA_EMAIL: process.env.JIRA_EMAIL ?? "",
+    JIRA_API_TOKEN: process.env.JIRA_API_TOKEN ?? "",
+    JIRA_DEFAULT_PROJECT: process.env.JIRA_DEFAULT_PROJECT,
+  };
+}
 process.env.RESEND_API_KEY ??= "re_test_key";
 
 // ---------------------------------------------------------------------------
@@ -461,12 +477,15 @@ describe("E2E: Action framework", () => {
           "../../packages/api/src/lib/tools/actions/jira"
         );
 
-        const result = await executeJiraCreate({
-          summary: "Test ticket from E2E",
-          description: "Automated test",
-          project: "TEST",
-          labels: ["e2e"],
-        });
+        const result = await executeJiraCreate(
+          {
+            summary: "Test ticket from E2E",
+            description: "Automated test",
+            project: "TEST",
+            labels: ["e2e"],
+          },
+          jiraCreds(),
+        );
 
         expect(result.key).toBe("TEST-42");
         expect(result.url).toContain("/browse/TEST-42");
@@ -515,10 +534,13 @@ describe("E2E: Action framework", () => {
         );
 
         await expect(
-          executeJiraCreate({
-            summary: "Should fail",
-            description: "Error test",
-          }),
+          executeJiraCreate(
+            {
+              summary: "Should fail",
+              description: "Error test",
+            },
+            jiraCreds(),
+          ),
         ).rejects.toThrow("JIRA API error");
       } finally {
         process.env.JIRA_BASE_URL = origBaseUrl;
@@ -566,7 +588,10 @@ describe("E2E: Action framework", () => {
           },
           () =>
             handleAction(request, async (payload) => {
-              return executeJiraCreate(payload as { summary: string; description: string; project?: string; labels?: string[] });
+              return executeJiraCreate(
+                payload as { summary: string; description: string; project?: string; labels?: string[] },
+                jiraCreds(),
+              );
             }),
         );
 

@@ -791,8 +791,7 @@ adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test c
   try {
     connections.register(tempId, {
       url,
-      description: undefined,
-      schema: typeof schema === "string" ? schema : undefined,
+      ...(typeof schema === "string" ? { schema } : {}),
     });
     const result = await connections.healthCheck(tempId);
     logAdminAction({
@@ -1011,8 +1010,8 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   try {
     connections.register(id, {
       url,
-      description: typeof description === "string" ? description : undefined,
-      schema: typeof schema === "string" ? schema : undefined,
+      ...(typeof description === "string" ? { description } : {}),
+      ...(typeof schema === "string" ? { schema } : {}),
     });
     await connections.healthCheck(id);
   } catch (err) {

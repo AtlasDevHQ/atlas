@@ -351,7 +351,7 @@ export function wireMcpToolPlugins(
         const toolName = tool && typeof tool === "object" ? (tool as { name?: unknown }).name : undefined;
         failed.push({
           pluginId: plugin.id,
-          tool: typeof toolName === "string" ? toolName : undefined,
+          ...(typeof toolName === "string" ? { tool: toolName } : {}),
           error: msg,
         });
         log.error(

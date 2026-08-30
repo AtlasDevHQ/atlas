@@ -440,7 +440,7 @@ function profileImplInner(
           ...(opts.selectedTables !== undefined ? { selectedTables: opts.selectedTables } : {}),
           ...(opts.prefetchedObjects !== undefined ? { prefetchedObjects: opts.prefetchedObjects } : {}),
           ...(opts.progress !== undefined ? { progress: opts.progress } : {}),
-          logger: opts.logger,
+          ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
           // Decrypted tenant config for separate-field-credential / non-url-shaped
           // plugins (Elasticsearch's apiKey, BigQuery's service_account_json +
           // project — #3664). The in-core pg/mysql profilers and url-embedded

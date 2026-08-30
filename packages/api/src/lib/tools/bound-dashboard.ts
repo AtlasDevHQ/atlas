@@ -32,6 +32,10 @@ import {
   dashboardCardAnnotationsSchema,
   dashboardCardInputSchema,
   dashboardTextCardContentSchema,
+  toDashboardCardAnnotations,
+  toDashboardChartConfig,
+  toDashboardChartConfigOrNull,
+  toDashboardKpiConfig,
 } from "@useatlas/schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -51,6 +55,7 @@ import {
 import type { DashboardWithCards } from "@atlas/api/lib/dashboard-types";
 import { seedDraftCards, type CardSeedOutcome } from "@atlas/api/lib/dashboard-seeding";
 import type { DashboardCard, DashboardCardKind, DashboardCardLayout } from "@atlas/api/lib/dashboard-types";
+import type { DashboardCardAnnotation, DashboardChartConfig } from "@useatlas/types";
 import { buildCardSummary } from "@atlas/api/lib/bound-chat-context";
 import {
   screenshotDashboard,
@@ -136,10 +141,10 @@ async function maybeApplyToDraft(
     };
   }
   const published = await getDashboard(ctx.dashboardId, {
-    orgId: ctx.orgId ?? undefined,
+    orgId: ctx.orgId ?? null,
     // #4320 — first-publish gate; the bound board is already gated at bind, this
     // keeps the tool read consistent (owner of a never-published board matches).
-    viewerId: ctx.userId ?? undefined,
+    viewerId: ctx.userId ?? null,
   });
   if (!published.ok) {
     return { ok: false, error: `Could not read dashboard: ${published.reason}` };
@@ -252,7 +257,7 @@ export function createBoundDashboardTools(
     description: `Read the current state of the dashboard you are editing. Returns the title, description, and a compact summary of every card (id, title, chart type, position, layout). Call this when you need a fresh read after several mutations. Card SQL is NOT returned — use \`getCardDetail\` for that.`,
     inputSchema: z.object({}).describe("No arguments"),
     execute: async () => {
-      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? null, viewerId: userId ?? null });
       if (!dash.ok) {
         return { kind: "err" as const, error: `Could not read dashboard: ${dash.reason}` };
       }
@@ -293,7 +298,7 @@ export function createBoundDashboardTools(
       // it's REPLACE-ALL on updateCard, so returning the published markers here
       // would let the agent fetch a stale set and drop staged ones when it
       // sends back a "merged" array.
-      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? null, viewerId: userId ?? null });
       if (!dash.ok) {
         return { kind: "err" as const, error: `Could not read dashboard: ${dash.reason}` };
       }
@@ -408,7 +413,10 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
         // the prior-period shift is a no-op. (Date-typing of the params is
         // enforced where the dashboard's parameter defs are loaded — the REST
         // routes + createDashboard; here we have the card SQL only.)
-        const addAutoErr = validateAutoComparison(sql, chartConfig.kpi);
+        const addAutoErr = validateAutoComparison(
+          sql,
+          chartConfig.kpi ? toDashboardKpiConfig(chartConfig.kpi) : null,
+        );
         if (addAutoErr) {
           return { kind: "err" as const, error: addAutoErr };
         }
@@ -429,8 +437,8 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
           position: 0,
           title,
           sql,
-          chartConfig,
-          annotations: annotations ?? [],
+          chartConfig: toDashboardChartConfig(chartConfig),
+          annotations: toDashboardCardAnnotations(annotations ?? []),
           // #4322 — inherit the conversation's content scope so the added
           // card queries the right database. `createDashboard` already does
           // this for its initial cards; a card added later via the bound
@@ -493,16 +501,16 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
       try {
         const updates: {
           title?: string;
-          chartConfig?: z.infer<typeof ChartConfigSchema> | null;
+          chartConfig?: DashboardChartConfig | null;
           content?: string;
-          annotations?: z.infer<typeof dashboardCardAnnotationsSchema>;
+          annotations?: DashboardCardAnnotation[];
           layout?: DashboardCardLayout | null;
           position?: number;
         } = {};
         if (title !== undefined) updates.title = title;
-        if (chartConfig !== undefined) updates.chartConfig = chartConfig;
+        if (chartConfig !== undefined) updates.chartConfig = toDashboardChartConfigOrNull(chartConfig);
         if (content !== undefined) updates.content = content;
-        if (annotations !== undefined) updates.annotations = annotations;
+        if (annotations !== undefined) updates.annotations = toDashboardCardAnnotations(annotations);
         if (layout !== undefined) updates.layout = layout;
         if (position !== undefined) updates.position = position;
 
@@ -559,7 +567,7 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
             // EXISTING sql (updateCard never changes the query): it has to filter
             // by both window params.
             if (updates.chartConfig?.kpi?.autoComparison && current.ok) {
-              const updateAutoErr = validateAutoComparison(current.sql, updates.chartConfig.kpi);
+              const updateAutoErr = validateAutoComparison(current.sql, updates.chartConfig.kpi ?? null);
               if (updateAutoErr) {
                 return { kind: "err" as const, error: updateAutoErr };
               }
@@ -787,7 +795,7 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
     | { ok: false; error: string }
   > {
     if (ctx.userId) {
-      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? null, viewerId: userId ?? null });
       if (!dash.ok) {
         return { ok: false, error: `Could not read dashboard: ${dash.reason}` };
       }
@@ -821,7 +829,7 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
     if (!ctx.userId) {
       return { ok: false, error: "removeCard requires an authenticated user — edits are per-user." };
     }
-    const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
+    const dash = await getDashboard(dashboardId, { orgId: orgId ?? null, viewerId: userId ?? null });
     if (!dash.ok) {
       return { ok: false, error: `Could not read dashboard: ${dash.reason}` };
     }

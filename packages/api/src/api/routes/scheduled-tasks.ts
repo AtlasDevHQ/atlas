@@ -555,7 +555,7 @@ authed.openapi(listAllRunsRoute, async (c) => {
     const dateFrom = dateFromParam && ISO_DATE_RE.test(dateFromParam) ? dateFromParam : undefined;
     const dateTo = dateToParam && ISO_DATE_RE.test(dateToParam) ? dateToParam : undefined;
 
-    const runs = yield* Effect.promise(() => listAllRuns({ ...(orgId !== undefined ? { orgId } : {}), ...(taskId !== undefined ? { taskId } : {}), ...(status !== undefined ? { status } : {}), ...(dateFrom !== undefined ? { dateFrom } : {}), dateTo, limit, offset }));
+    const runs = yield* Effect.promise(() => listAllRuns({ ...(orgId !== undefined ? { orgId } : {}), ...(taskId !== undefined ? { taskId } : {}), ...(status !== undefined ? { status } : {}), ...(dateFrom !== undefined ? { dateFrom } : {}), ...(dateTo !== undefined ? { dateTo } : {}), limit, offset }));
     return c.json(runs, 200);
   }), { label: "list all runs" });
 });

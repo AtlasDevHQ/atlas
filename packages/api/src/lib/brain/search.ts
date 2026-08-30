@@ -1024,7 +1024,7 @@ export async function searchBrainCore(
     ...(options.type !== undefined ? { type: options.type } : {}),
     ...(options.tags !== undefined ? { tags: options.tags } : {}),
     ...(options.collection !== undefined ? { collection: options.collection } : {}),
-    since: options.since,
+    ...(options.since !== undefined ? { since: options.since } : {}),
     limit,
     expand: options.expand,
   };

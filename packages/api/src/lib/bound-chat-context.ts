@@ -64,8 +64,8 @@ export async function bindConversationToDashboard(
   // first-publish gate so a teammate can't bind a drawer to (and thereby read)
   // a never-published dashboard they didn't create.
   const dash = await getDashboard(dashboardId, {
-    orgId: opts.orgId ?? undefined,
-    viewerId: opts.viewerId ?? undefined,
+    orgId: opts.orgId ?? null,
+    viewerId: opts.viewerId ?? null,
   });
   if (!dash.ok) {
     if (dash.reason === "not_found") return { ok: false, reason: "dashboard_not_found" };
@@ -119,8 +119,8 @@ export async function resolveBoundDashboard(
     // `viewerId` carries the #4320 first-publish gate through the binding read —
     // a never-published board resolves only for its creator.
     const dash = await getDashboard(boundId, {
-      orgId: opts.orgId ?? undefined,
-      viewerId: opts.viewerId ?? undefined,
+      orgId: opts.orgId ?? null,
+      viewerId: opts.viewerId ?? null,
     });
     if (!dash.ok) {
       // Dashboard either deleted between bind and read (FK SET NULL hasn't

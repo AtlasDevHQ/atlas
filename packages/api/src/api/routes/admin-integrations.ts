@@ -874,7 +874,7 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
         try: () =>
           saveDiscordInstallation(applicationId, {
             orgId,
-            guildName: meResult.botUsername ? `@${meResult.botUsername}` : undefined,
+            ...(meResult.botUsername ? { guildName: `@${meResult.botUsername}` } : {}),
             botToken,
             applicationId,
             publicKey,

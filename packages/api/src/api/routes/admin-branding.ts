@@ -238,7 +238,7 @@ adminBranding.openapi(setBrandingRoute, async (c) => {
       ...(body.logoText !== undefined ? { logoText: body.logoText } : {}),
       ...(body.primaryColor !== undefined ? { primaryColor: body.primaryColor } : {}),
       ...(body.faviconUrl !== undefined ? { faviconUrl: body.faviconUrl } : {}),
-      hideAtlasBranding: body.hideAtlasBranding,
+      ...(body.hideAtlasBranding !== undefined ? { hideAtlasBranding: body.hideAtlasBranding } : {}),
     });
     // Metadata mirrors the request body so compliance review can distinguish a
     // cosmetic tweak (primaryColor) from a white-label takeover

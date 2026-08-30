@@ -87,10 +87,7 @@ export function readEntitySummaries(semanticDir: string, logger?: { warn(msg: st
 
       summaries.push({
         table: doc.table,
-        description:
-          typeof doc.description === "string"
-            ? doc.description.trim()
-            : undefined,
+        ...(typeof doc.description === "string" ? { description: doc.description.trim() } : {}),
         dimensionCount:
           doc.dimensions && typeof doc.dimensions === "object"
             ? Object.keys(doc.dimensions as object).length
@@ -154,11 +151,8 @@ export function readMetricSummaries(semanticDir: string, logger?: { warn(msg: st
         if (typeof m.name === "string") {
           summaries.push({
             name: m.name,
-            description:
-              typeof m.description === "string"
-                ? m.description.trim()
-                : undefined,
-            entity,
+            ...(typeof m.description === "string" ? { description: m.description.trim() } : {}),
+            ...(entity !== undefined ? { entity } : {}),
           });
         }
       }

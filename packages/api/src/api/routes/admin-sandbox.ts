@@ -215,7 +215,7 @@ async function getAvailableBackends(): Promise<AvailableBackend[]> {
         name: plugin.name ?? plugin.id,
         type: "plugin",
         available: true,
-        description: plugin.name ? `${plugin.name} sandbox plugin` : undefined,
+        ...(plugin.name ? { description: `${plugin.name} sandbox plugin` } : {}),
       });
     }
   } catch (err) {

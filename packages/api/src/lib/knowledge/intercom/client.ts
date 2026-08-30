@@ -487,7 +487,7 @@ function collectLocaleContents(
         ...(raw.body !== undefined ? { body: raw.body } : {}),
         ...(raw.state !== undefined ? { state: raw.state } : {}),
         ...(raw.updated_at !== undefined ? { updated_at: raw.updated_at } : {}),
-        url: raw.url,
+        ...(raw.url !== undefined ? { url: raw.url } : {}),
       },
     });
   }

@@ -1856,10 +1856,10 @@ export async function runAgent({
     ...(persona !== undefined ? { persona } : {}),
     ...(briefing !== undefined ? { briefing } : {}),
     ...(orgSemanticIndex !== undefined ? { orgSemanticIndex } : {}),
-    orgKnowledgeToc,
-    learnedPatternsSection,
-    routingContext: scopeRoutingContext,
-    boundDashboardContext,
+    ...(orgKnowledgeToc !== undefined ? { orgKnowledgeToc } : {}),
+    ...(learnedPatternsSection !== undefined ? { learnedPatternsSection } : {}),
+    ...(scopeRoutingContext !== undefined ? { routingContext: scopeRoutingContext } : {}),
+    ...(boundDashboardContext !== undefined ? { boundDashboardContext } : {}),
     // #4303 — answer-style precedence: the caller's explicit style (the
     // #4302 per-conversation pick, or a chat-platform surface's explicit
     // "conversational") > the workspace default from the settings registry

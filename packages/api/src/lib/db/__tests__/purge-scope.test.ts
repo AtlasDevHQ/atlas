@@ -40,6 +40,7 @@ import {
   USER_SCOPE_COLUMNS,
   BETTER_AUTH_PURGED_TABLES,
   BETTER_AUTH_ORPHAN_DELETE_TABLES,
+  BETTER_AUTH_DUAL_ARM_TABLES,
   viaParentDeleteSql,
   parentKeySubquery,
   type PurgeParentLink,
@@ -304,22 +305,42 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     ).toEqual([]);
   });
 
-  it("issues EXACTLY ONE DELETE per table (a duplicate hides a stray statement)", () => {
+  it("issues EXACTLY ONE DELETE per table, bar the declared dual-arm ones", () => {
     // The check that would have caught this PR's own comment-satisfied scan
     // independently of the comment strip: `scim_group_mappings` and
     // `organization` both resolved twice before the fix. It also catches the
     // reverse mistake — the same table deleted under two different predicates,
     // where only one of them is scoped correctly.
+    //
+    // The exception is DERIVED, not named (#5525): a Better Auth table whose
+    // registry entry is `purged` AND carries an `orphanArm` has declared that
+    // its workspace scope and its user scope are different columns with neither
+    // subsuming the other, so two predicates is the correct shape and one would
+    // be the bug. `apikey` is the case. Deriving it means the exemption cannot
+    // outlive the declaration that justifies it, and a second undeclared
+    // statement on the same table still fails here.
+    //
+    // Exactly TWO, not "at least two": a third would be a stray again, and
+    // better-auth-purge-scope.test.ts separately pins that one of the two is
+    // the orphan arm.
     const counts = new Map<string, number>();
     for (const t of deleteMatches) counts.set(t, (counts.get(t) ?? 0) + 1);
     const duplicated = [...counts.entries()]
-      .filter(([, n]) => n > 1)
+      .filter(([t, n]) => n > (BETTER_AUTH_DUAL_ARM_TABLES.has(t) ? 2 : 1))
       .map(([t, n]) => `${t} (${n}×)`);
     expect(
       duplicated,
-      `Table(s) with more than one DELETE FROM in hardDeleteWorkspace: ${duplicated.join(", ")}. ` +
-        `If that is deliberate, say why here; if it is a comment, the strip above should have ` +
-        `removed it; if it is a stray statement, remove it.`,
+      `Table(s) with more DELETE FROM statements than declared: ${duplicated.join(", ")}. ` +
+        `If that is deliberate, declare it (a Better Auth entry that is 'purged' with an ` +
+        `orphanArm gets two); if it is a comment, the strip above should have removed it; ` +
+        `if it is a stray statement, remove it.`,
+    ).toEqual([]);
+    // …and the declaration is not free: a dual-arm table missing its second
+    // statement fails here too, rather than quietly passing the relaxed bound.
+    const missingArm = [...BETTER_AUTH_DUAL_ARM_TABLES].filter((t) => (counts.get(t) ?? 0) < 2);
+    expect(
+      missingArm,
+      `Table(s) declared dual-arm with fewer than two DELETE statements: ${missingArm.join(", ")}.`,
     ).toEqual([]);
   });
 

@@ -40,6 +40,10 @@ import {
   type ScimPluginTableName,
   type ViaParentTableName,
 } from "@atlas/api/lib/db/purge-scope";
+// The workspace-binding predicate for the purge's `apikey` arm (#5525), kept in
+// the module that owns `apikey.metadata` semantics so mint, use and erasure read
+// one definition. Pure — no DB, no Better Auth import.
+import { apiKeyMetadataNamesOrg } from "@atlas/api/lib/auth/api-key-metadata";
 import { foldRollingMean } from "@atlas/api/lib/learn/rolling-mean";
 import { REPEATED_PATTERN_MIN_REPETITIONS } from "@atlas/api/lib/learn/pattern-tiers";
 import {
@@ -4057,6 +4061,12 @@ type CountFieldFor<T extends string> = T extends keyof CountFieldAliases
  * `decision === "purged"` only. Nothing here counts them, and
  * `purge-scope.test.ts` covers them instead — it asserts each has a real
  * DELETE, which is the claim that matters for a user-keyed erasure.
+ *
+ * `apikey` is the one table on BOTH sides of that line (#5525): it is `purged`,
+ * so it has a derived field, AND it has an orphan-arm statement whose rows
+ * would otherwise be discarded like session's. The field sums the two arms —
+ * see the `apikey +=` at the orphan arm for why understating a destruction
+ * count on an erasure receipt is the wrong default.
  */
 /**
  * The one name `skippedTables` can carry that is a skipped WRITE, not a skipped
@@ -5093,6 +5103,47 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // Delete Better Auth invitations for this org
     const betterAuthInvitations = await del(`DELETE FROM invitation WHERE "organizationId" = $1`);
 
+    // ── Phase 4a: workspace API keys bound to this org (#5525) ──
+    //
+    // The 1.7 `apikey` table declares NO foreign key at all — the owner sits in
+    // `referenceId` and the workspace binding in `metadata.orgId` (JSON text) —
+    // so neither the organization delete below nor the orphaned-user arm below
+    // reaches a key bound to this workspace whose owner survives elsewhere. The
+    // registry entry carries the decision (delete, no retention arm) and why.
+    //
+    // ⚠️ THE SCOPE PREDICATE IS EVALUATED IN TYPESCRIPT, NOT SQL, and that is
+    // deliberate on two counts:
+    //
+    //  - `metadata` is `text`, not `jsonb` (the plugin declares the field
+    //    `type: "string"` with a JSON.stringify transform). Any SQL predicate
+    //    has to CAST to read `orgId`, and a cast that meets one malformed row
+    //    raises 22P02 and takes the WHOLE erasure transaction down. Guarding it
+    //    with `IS JSON` needs Postgres 16, which nothing in this repo requires
+    //    of a self-hosted deploy, and `AND` does not guarantee the guard is
+    //    evaluated first anyway.
+    //  - `apiKeyMetadataNamesOrg` lives beside `buildApiKeyMetadata` and
+    //    `parseApiKeyMetadata`, so "bound to workspace X" keeps ONE definition
+    //    shared with what mint wrote — rather than a second copy of the binding
+    //    semantics, in SQL, in this file (the #5176 shape).
+    //
+    // The read is the whole table because there is no index — nor any
+    // substring predicate that is safe to narrow by, since JSON escaping means
+    // an org id is not guaranteed to appear verbatim in the stored text. Two
+    // columns of a table holding per-workspace CI credentials, once per
+    // workspace erasure.
+    const apiKeyRows = await client.query(
+      `SELECT id, metadata FROM apikey WHERE metadata IS NOT NULL`,
+      [],
+    );
+    const boundApiKeyIds = apiKeyRows.rows
+      .filter((row) => apiKeyMetadataNamesOrg(row.metadata, orgId))
+      .map((row) => row.id)
+      .filter((id): id is string => typeof id === "string");
+    let apikey = 0;
+    if (boundApiKeyIds.length > 0) {
+      apikey = await delRaw(`DELETE FROM apikey WHERE id = ANY($1) RETURNING 1`, [boundApiKeyIds]);
+    }
+
     // Clean up orphaned users — sessions, accounts, onboarding, email prefs, then user
     let orphanedUsers = 0;
     if (orphanedUserIds.length > 0) {
@@ -5128,6 +5179,23 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
           [orphanedUserIds],
         );
       }
+      // The SECOND apikey arm (#5525). Phase 4a removed every key BOUND to this
+      // workspace; this removes every key OWNED by a user the purge is about to
+      // erase, whatever workspace its metadata names. The two sets overlap but
+      // neither contains the other: a key minted while its owner was a member
+      // of some other org, whose membership was later removed, names that other
+      // org and is reached only here — a user-linked row surviving its own
+      // account, which is the class the purge registry exists to make visible.
+      // No FK and no cascade to fall back on: the 1.7 table declares neither.
+      const orphanApiKeys = await delRaw(
+        `DELETE FROM apikey WHERE "referenceId" = ANY($1) RETURNING 1`,
+        [orphanedUserIds],
+      );
+      // Summed into the ONE reported field rather than counted separately: both
+      // statements destroy rows of the same table in the same transaction, and
+      // `counts.apikey` is read off a DPA erasure receipt as "apikey rows this
+      // purge destroyed". Reporting only the workspace arm would understate it.
+      apikey += orphanApiKeys;
       const userResult = await client.query(
         `DELETE FROM "user" WHERE id = ANY($1) RETURNING 1`,
         [orphanedUserIds],
@@ -5332,6 +5400,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         adminActionLogAnonymized,
         members,
         betterAuthInvitations,
+        apikey,
         orphanedUsers,
         organization,
       },

@@ -123,9 +123,15 @@ const USER_SHARED = "user-purge-shared";
 
 /**
  * Minimal Better Auth bootstrap — `hardDeleteWorkspace` reads and writes
- * `organization`, `member`, `invitation`, `session`, `account` and `user`,
- * none of which are Atlas-owned tables (global by ADR-0024). Only the columns
- * the purge actually touches.
+ * `organization`, `member`, `invitation`, `session`, `account`, `apikey` and
+ * `user`, none of which are Atlas-owned tables (global by ADR-0024). Only the
+ * columns the purge actually touches.
+ *
+ * `apikey` carries NO foreign key, deliberately: the 1.7 table declares none at
+ * all, which is the whole of #5525. Giving `referenceId` an FK here would let a
+ * cascade do the orphan arm's work and make the statement deletable with this
+ * suite still green — the exact shape the `session`/`account` note below warns
+ * about, except that here the cascade would be fiction.
  */
 const BETTER_AUTH_BOOTSTRAP_SQL = `
   CREATE TABLE IF NOT EXISTS "user" (
@@ -165,6 +171,14 @@ const BETTER_AUTH_BOOTSTRAP_SQL = `
     id TEXT PRIMARY KEY,
     "organizationId" TEXT NOT NULL REFERENCES "organization"(id) ON DELETE CASCADE,
     email TEXT,
+    "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE TABLE IF NOT EXISTS "apikey" (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    start TEXT,
+    "referenceId" TEXT NOT NULL,
+    metadata TEXT,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 `;

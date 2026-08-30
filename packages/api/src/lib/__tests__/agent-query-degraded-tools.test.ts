@@ -96,7 +96,8 @@ async function withEnv(
   }
 }
 
-const ACTION_WARNING = "The operator action tools (createJiraTicket, sendEmailReport) failed to load";
+const ACTION_WARNING =
+  "The operator action tools (createJiraTicket, createLinearTicket, sendEmailReport) failed to load";
 
 describe("#4941 — headless surfaces relay a degraded tool load", () => {
   it("the headless seam surfaces buildRegistry's action-tool warning to its caller", async () => {

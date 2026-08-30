@@ -13,6 +13,7 @@ The action framework lets the Atlas agent perform write operations -- sending em
 - Internal database (`DATABASE_URL`) recommended for persistent action log (in-memory fallback available but lost on restart)
 - For email actions: `RESEND_API_KEY`
 - For JIRA actions: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`
+- For Linear actions: `LINEAR_API_KEY`
 </Callout>
 </WhenSelfHosted>
 
@@ -248,6 +249,31 @@ Create JIRA issues from data insights.
 - `labels` -- Optional labels
 
 This action is **reversible** -- on rollback, Atlas transitions the created issue to "Closed" (best-effort, depends on JIRA workflow).
+
+### Linear (`linear:create`)
+
+Create Linear issues from data insights, gated on approval.
+
+Distinct from the `createLinearIssue` agent tool, which posts immediately through the workspace's Linear **integration** install (**Admin > Integrations**). This action uses the workspace's Linear **action credentials** and goes through the approval queue; the two hold separate credentials and neither reads the other's.
+
+**Default approval:** `manual`
+
+**Required credentials:**
+- `LINEAR_API_KEY` -- Linear personal API key (Linear > Settings > Security & access > Personal API keys)
+
+**Optional:**
+- `LINEAR_DEFAULT_TEAM_KEY` -- Default team key when not specified
+
+Credentials resolve per workspace first (`PUT /api/v1/admin/action-credentials/linear`) and fall back to the two environment variables above only on self-hosted deployments. A workspace row that is missing a required field is an error rather than a partial fall-through to the environment.
+
+**Input:**
+- `title` -- Issue title (max 255 chars)
+- `description` -- Issue description (markdown)
+- `teamKey` -- Team key such as `ENG` (optional, falls back to `LINEAR_DEFAULT_TEAM_KEY`)
+- `priority` -- `0`=none, `1`=urgent, `2`=high, `3`=medium, `4`=low (optional)
+- `labelIds` -- Optional Linear label ids
+
+A named team that does not resolve is an **error**, not a fallback: the approver read a card naming that team, so filing elsewhere would not be the action they approved.
 
 ---
 

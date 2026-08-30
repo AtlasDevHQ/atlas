@@ -9,6 +9,11 @@ const mockJiraTool = tool({
   inputSchema: z.object({ summary: z.string() }),
   execute: async ({ summary }) => summary,
 });
+const mockLinearTool = tool({
+  description: "Mock createLinearTicket tool",
+  inputSchema: z.object({ title: z.string() }),
+  execute: async ({ title }) => title,
+});
 const mockEmailTool = tool({
   description: "Mock sendEmailReport tool",
   inputSchema: z.object({ to: z.string() }),
@@ -24,6 +29,16 @@ void mock.module("@atlas/api/lib/tools/actions", () => ({
     reversible: true,
     defaultApproval: "manual",
     requiredCredentials: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"],
+  },
+  createLinearTicket: {
+    name: "createLinearTicket",
+    description: "### Create Linear Issue\nMock description",
+    tool: mockLinearTool,
+    actionType: "linear:create",
+    reversible: true,
+    defaultApproval: "manual",
+    // Empty, like the real action (#5554) — per-workspace credentials.
+    requiredCredentials: [],
   },
   sendEmailReport: {
     name: "sendEmailReport",

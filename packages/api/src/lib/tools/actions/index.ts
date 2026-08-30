@@ -21,6 +21,7 @@ export {
 export { logActionAudit, type ActionAuditEntry } from "./audit";
 
 export { createJiraTicket } from "./jira";
+export { createLinearTicket } from "./linear";
 export { sendEmailReport } from "./email";
 
 // Per-workspace action-target credentials (#3766). The resolver is the single

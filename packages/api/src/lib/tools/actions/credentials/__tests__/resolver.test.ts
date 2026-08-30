@@ -45,6 +45,12 @@ const OPERATOR_ENV: NodeJS.ProcessEnv = {
   JIRA_DEFAULT_PROJECT: "OPS",
 };
 
+/** The same, for the Linear target (#5554). */
+const LINEAR_OPERATOR_ENV: NodeJS.ProcessEnv = {
+  LINEAR_API_KEY: "lin_api_operator-key",
+  LINEAR_DEFAULT_TEAM_KEY: "OPS",
+};
+
 beforeEach(() => {
   mockRead.mockReset();
   mockRead.mockResolvedValue(null);
@@ -228,6 +234,70 @@ describe("resolveActionCredentials — the all-or-nothing rule", () => {
         env: OPERATOR_ENV,
       }),
     ).rejects.toThrow(ActionCredentialError);
+  });
+
+  // ── Linear (#5554) ──────────────────────────────────────────────────
+  //
+  // The seam's claim is that a new target inherits the rung rules with no
+  // resolver change. That claim is only worth something if it is measured per
+  // target: these run the same three cases against Linear's own field spec, so
+  // a future target whose fields the resolver happened to mis-handle would
+  // fail here rather than pass on Jira's coverage.
+
+  it("linear × a PARTIAL workspace row throws rather than filling the gap from env", async () => {
+    // Linear's required set is one field, so "partial" here means a row that
+    // exists carrying only the OPTIONAL default team. Under per-field
+    // precedence the missing key would come from the operator's env and the
+    // issue would be filed as ATLAS into the tenant's Linear.
+    mockRead.mockResolvedValue({ LINEAR_DEFAULT_TEAM_KEY: "ENG" });
+    try {
+      await resolveActionCredentials("linear", {
+        workspaceId: WS,
+        deployMode: "self-hosted",
+        env: LINEAR_OPERATOR_ENV,
+      });
+      expect(true).toBe(false); // should not reach here
+    } catch (err) {
+      const e = err as InstanceType<typeof ActionCredentialError>;
+      expect(e.reason).toBe("partial-workspace-row");
+      expect(e.message).toContain("LINEAR_API_KEY");
+      expect(e.message).not.toContain("lin_api_operator-key");
+    }
+  });
+
+  it("linear × a complete workspace row wins outright, env ignored", async () => {
+    mockRead.mockResolvedValue({ LINEAR_API_KEY: "lin_api_tenant-key" });
+    const resolved = await resolveActionCredentials("linear", {
+      workspaceId: WS,
+      deployMode: "self-hosted",
+      env: LINEAR_OPERATOR_ENV,
+    });
+    expect(resolved.resolvedFrom).toBe("workspace");
+    expect(resolved.values.LINEAR_API_KEY).toBe("lin_api_tenant-key");
+    // The operator's optional default team must NOT leak in alongside.
+    expect(resolved.values.LINEAR_DEFAULT_TEAM_KEY).toBeUndefined();
+  });
+
+  it("linear × saas × no row → throws, never falls back to env", async () => {
+    mockRead.mockResolvedValue(null);
+    await expect(
+      resolveActionCredentials("linear", {
+        workspaceId: WS,
+        deployMode: "saas",
+        env: LINEAR_OPERATOR_ENV,
+      }),
+    ).rejects.toThrow(ActionCredentialError);
+  });
+
+  it("linear × self-hosted × no row × env present → returns env (the operator carve-out)", async () => {
+    mockRead.mockResolvedValue(null);
+    const resolved = await resolveActionCredentials("linear", {
+      workspaceId: WS,
+      deployMode: "self-hosted",
+      env: LINEAR_OPERATOR_ENV,
+    });
+    expect(resolved.resolvedFrom).toBe("env");
+    expect(resolved.values.LINEAR_API_KEY).toBe("lin_api_operator-key");
   });
 
   it("a complete row missing only an OPTIONAL field resolves fine", async () => {

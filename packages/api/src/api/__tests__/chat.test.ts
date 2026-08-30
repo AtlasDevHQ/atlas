@@ -138,6 +138,17 @@ const mockJiraAction = {
   defaultApproval: "manual",
   requiredCredentials: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"],
 };
+const mockLinearAction = {
+  name: "createLinearTicket",
+  description: "### Create Linear Issue\nMock",
+  tool: { type: "function" },
+  actionType: "linear:create",
+  reversible: true,
+  defaultApproval: "manual",
+  // Empty, like the real action (#5554): Linear action credentials are
+  // per-workspace, so there is no global env set to validate against.
+  requiredCredentials: [],
+};
 const mockEmailAction = {
   name: "sendEmailReport",
   description: "### Send Email Report\nMock",
@@ -149,6 +160,7 @@ const mockEmailAction = {
 };
 void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: mockJiraAction,
+  createLinearTicket: mockLinearAction,
   sendEmailReport: mockEmailAction,
 }));
 

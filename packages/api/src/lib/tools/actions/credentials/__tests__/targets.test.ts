@@ -1,9 +1,10 @@
 /**
- * Action target registry tests (#3766).
+ * Action target registry tests (#3766, #5554).
  *
- * The registry is the one-entry seam the remaining action targets (Linear,
- * GitHub App, Salesforce) extend, so these pin the invariants a new entry has
- * to keep — not just Jira's current shape.
+ * The registry is the one-entry seam the remaining action targets (GitHub App,
+ * Salesforce) extend, so the first block pins the invariants a new entry has to
+ * keep — not just the shape of the entries present today. The per-target blocks
+ * below pin what is specific to each.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -71,5 +72,48 @@ describe("Jira — the pilot target", () => {
     expect(jira?.fields.filter((f) => f.secret).map((f) => f.envVar)).toEqual([
       "JIRA_API_TOKEN",
     ]);
+  });
+});
+
+describe("Linear — the first target added on the seam (#5554)", () => {
+  const linear = getActionTarget("linear");
+
+  it("is registered", () => {
+    expect(linear).toBeDefined();
+  });
+
+  it("requires the API key and nothing else", () => {
+    // Two fields against Jira's four: Linear's endpoint is a fixed GraphQL URL
+    // (no per-tenant base URL) and the key identifies the actor (no account
+    // email). A field added here without a matching read in `linear.ts` would
+    // show up in the Admin form as a credential that does nothing.
+    expect(linear?.fields.filter((f) => f.required).map((f) => f.envVar)).toEqual([
+      "LINEAR_API_KEY",
+    ]);
+  });
+
+  it("keeps the default team key optional", () => {
+    // Same standing as JIRA_DEFAULT_PROJECT: the agent may name a team per
+    // call, so a workspace that sets only the key is fully configured.
+    expect(
+      linear?.fields.find((f) => f.envVar === "LINEAR_DEFAULT_TEAM_KEY")?.required,
+    ).toBe(false);
+  });
+
+  it("marks only the API key secret", () => {
+    expect(linear?.fields.filter((f) => f.secret).map((f) => f.envVar)).toEqual([
+      "LINEAR_API_KEY",
+    ]);
+  });
+
+  it("does not collide with the Linear INTEGRATION install's storage", () => {
+    // ADR-0046: the query plugin's OAuth bundle lives in
+    // `integration_credentials` keyed by catalog id; this target is keyed
+    // `(workspace_id, "linear")` in `workspace_action_credentials`. The slug
+    // being the plain platform name is fine precisely because the two tables
+    // are separate — but the field names must not be the install's, or a
+    // future shared helper would look plausible.
+    expect(linear?.target).toBe("linear");
+    expect(linear?.fields.map((f) => f.envVar)).not.toContain("api_key");
   });
 });

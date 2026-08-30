@@ -43,13 +43,13 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import { resolveDeployMode } from "@atlas/api/lib/effect/deploy-mode";
 import {
   ACTION_TARGETS,
   getActionTarget,
 } from "@atlas/api/lib/tools/actions/credentials/targets";
 import {
   getActionTargetStatus,
+  resolveActionDeployMode,
   type ActionTargetStatus,
 } from "@atlas/api/lib/tools/actions/credentials/resolver";
 import {
@@ -102,6 +102,13 @@ const UpdateBodySchema = z.object({
     description:
       "Map of env-var name → value. Blank values are ignored (they preserve the stored value rather than clearing it); keys outside the target's field spec are dropped.",
   }),
+  clearFields: z
+    .array(z.string())
+    .optional()
+    .openapi({
+      description:
+        "Env-var names to remove from the stored bundle. Blank values in `fields` deliberately PRESERVE a stored secret, so this is the only way to unset one — without it an optional field (e.g. a default project) could only be cleared by deleting the whole target and re-entering every credential. Required fields may be listed too; the target then reports unconfigured rather than resolving a partial row.",
+    }),
 });
 
 const TargetParamSchema = z.object({
@@ -141,6 +148,7 @@ const listTargetsRoute = createRoute({
   method: "get",
   path: "/",
   summary: "List action targets and their per-workspace credential status",
+  tags: ["Admin — Action Credentials"],
   description:
     "Masked status only — presence + winning rung per field, never a secret value.",
   responses: {
@@ -156,6 +164,7 @@ const updateTargetRoute = createRoute({
   method: "put",
   path: "/{target}",
   summary: "Set this workspace's credentials for an action target",
+  tags: ["Admin — Action Credentials"],
   request: {
     params: TargetParamSchema,
     body: { content: { "application/json": { schema: UpdateBodySchema } }, required: true },
@@ -174,6 +183,7 @@ const deleteTargetRoute = createRoute({
   method: "delete",
   path: "/{target}",
   summary: "Clear this workspace's credentials for an action target",
+  tags: ["Admin — Action Credentials"],
   request: { params: TargetParamSchema },
   responses: {
     200: { description: "Updated status", content: { "application/json": { schema: TargetStatusSchema } } },
@@ -198,12 +208,14 @@ adminActionCredentials.use(requirePermission("admin:settings"));
 
 adminActionCredentials.openapi(listTargetsRoute, async (c) => {
   const { orgId, requestId } = c.get("orgContext");
-  const deployMode = resolveDeployMode();
+  const deployMode = resolveActionDeployMode();
   try {
     // One status read per target — independent, so they run concurrently
     // rather than as a waterfall.
     const targets = await Promise.all(
-      ACTION_TARGETS.map((spec) => getActionTargetStatus(orgId, spec.target, deployMode)),
+      ACTION_TARGETS.map((spec) =>
+        getActionTargetStatus(spec.target, { workspaceId: orgId, deployMode }),
+      ),
     );
     return c.json(
       {
@@ -234,7 +246,7 @@ adminActionCredentials.openapi(updateTargetRoute, async (c) => {
   const { orgId, requestId } = c.get("orgContext");
   const { target } = c.req.valid("param");
   const body = c.req.valid("json");
-  const deployMode = resolveDeployMode();
+  const deployMode = resolveActionDeployMode();
 
   const spec = getActionTarget(target);
   if (!spec) {
@@ -268,6 +280,13 @@ adminActionCredentials.openapi(updateTargetRoute, async (c) => {
     }
     if (typeof value === "string" && value.trim().length > 0) incoming[key] = value.trim();
   }
+  // Same allowlist applies to removals — a caller cannot name a key outside
+  // the spec, so this can never reach into another target's stored bundle.
+  const cleared = (body.clearFields ?? []).filter((key) => {
+    if (declared.has(key)) return true;
+    ignored.push(key);
+    return false;
+  });
   if (ignored.length > 0) {
     log.warn(
       { orgId, target: spec.target, ignored, requestId },
@@ -277,7 +296,11 @@ adminActionCredentials.openapi(updateTargetRoute, async (c) => {
 
   try {
     const existing = (await readActionCredentials(orgId, spec.target)) ?? {};
-    const merged = { ...existing, ...incoming };
+    const merged: Record<string, string> = { ...existing, ...incoming };
+    // Removals apply AFTER the merge, so a key named in both `fields` and
+    // `clearFields` ends up cleared — the explicit removal wins over a value
+    // that may just be a stale form field.
+    for (const key of cleared) delete merged[key];
     await saveActionCredentials(orgId, spec.target, merged);
 
     await logAdminActionAwait({
@@ -288,13 +311,17 @@ adminActionCredentials.openapi(updateTargetRoute, async (c) => {
       metadata: {
         target: spec.target,
         fieldsSet: Object.keys(incoming),
+        fieldsCleared: cleared,
         hasSecret: spec.fields.some((f) => f.secret && incoming[f.envVar] !== undefined),
       },
     });
 
     // Non-null by construction: `getActionTarget(target)` already resolved the
     // same slug above, and both read the one registry.
-    const status = await getActionTargetStatus(orgId, spec.target, deployMode);
+    const status = await getActionTargetStatus(spec.target, {
+      workspaceId: orgId,
+      deployMode,
+    });
     if (!status) {
       throw new Error(`Action target "${spec.target}" vanished from the registry mid-request`);
     }
@@ -318,7 +345,7 @@ adminActionCredentials.openapi(updateTargetRoute, async (c) => {
 adminActionCredentials.openapi(deleteTargetRoute, async (c) => {
   const { orgId, requestId } = c.get("orgContext");
   const { target } = c.req.valid("param");
-  const deployMode = resolveDeployMode();
+  const deployMode = resolveActionDeployMode();
 
   const spec = getActionTarget(target);
   if (!spec) {
@@ -348,7 +375,10 @@ adminActionCredentials.openapi(deleteTargetRoute, async (c) => {
       metadata: { target: spec.target, removed },
     });
     // Non-null by construction — same registry lookup as the guard above.
-    const status = await getActionTargetStatus(orgId, spec.target, deployMode);
+    const status = await getActionTargetStatus(spec.target, {
+      workspaceId: orgId,
+      deployMode,
+    });
     if (!status) {
       throw new Error(`Action target "${spec.target}" vanished from the registry mid-request`);
     }

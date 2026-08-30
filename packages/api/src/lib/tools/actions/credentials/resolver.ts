@@ -39,6 +39,8 @@
 
 import type { DeployMode } from "@useatlas/types";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { getConfig } from "@atlas/api/lib/config";
+import { resolveDeployMode } from "@atlas/api/lib/effect/deploy-mode";
 import { createLogger } from "@atlas/api/lib/logger";
 import { readActionCredentials } from "./store";
 import type { ActionCredentialBundle } from "./store";
@@ -90,15 +92,40 @@ export class ActionCredentialError extends Error {
   readonly reason: ActionCredentialErrorReason;
   constructor(
     message: string,
-    details: { target: string; reason: ActionCredentialErrorReason; cause?: unknown },
+    details: { target: string; reason: ActionCredentialErrorReason },
   ) {
     super(message);
     this.target = details.target;
     this.reason = details.reason;
-    if (details.cause !== undefined) {
-      (this as { cause?: unknown }).cause = details.cause;
-    }
   }
+}
+
+/**
+ * The deploy mode the action-credential ladder runs under.
+ *
+ * Prefers the RESOLVED mode off the loaded config, because that is where a
+ * hosted region declares it: `deploy/api/atlas.config.ts` sets
+ * `deployMode: "saas"` and sets no `ATLAS_DEPLOY_MODE` env var at all (#3702).
+ * Reading raw env would therefore not read the operator's declaration on prod —
+ * it would re-derive the mode from the `auto` heuristic
+ * (`isEnterpriseEnabled() && hasInternalDB()`), and any drift in that heuristic
+ * resolves a SaaS region to `self-hosted`, which is precisely the rung that
+ * opens `process.env.JIRA_*`. `startup.ts` reads the resolved mode for the same
+ * reason.
+ *
+ * The `resolveDeployMode()` arm covers only the case where config is not loaded
+ * — unreachable on a live request path, since the app cannot serve one before
+ * boot. It is there so an unloaded config falls through to env-based resolution
+ * rather than silently assuming `self-hosted` and opening the env rung.
+ *
+ * Shared by the action exec path and the Admin route so the two can never
+ * disagree about which rungs exist for a given deployment.
+ */
+export function resolveActionDeployMode(): DeployMode {
+  const configured = getConfig()?.deployMode;
+  if (configured === "saas") return "saas";
+  if (configured === "self-hosted") return "self-hosted";
+  return resolveDeployMode();
 }
 
 export interface ResolveActionCredentialsOptions {
@@ -148,14 +175,16 @@ function unconfiguredMessage(spec: ActionTargetSpec, deployMode: DeployMode): st
   if (deployMode === "saas") {
     return (
       `${spec.label} is not configured for this workspace. ` +
-      `A workspace admin sets it under Admin → Integrations → ${spec.label}. ` +
+      `A workspace admin can set it via the workspace action-credential settings ` +
+      `(PUT /api/v1/admin/action-credentials/${spec.target}). ` +
       `Action targets are per-workspace only — Atlas has no shared ${spec.label} to fall back to.`
     );
   }
   const envVars = spec.fields.filter((f) => f.required).map((f) => f.envVar).join(", ");
   return (
     `${spec.label} is not configured. ` +
-    `Set it under Admin → Integrations → ${spec.label}, or set ${envVars} in the environment.`
+    `Set this workspace's credentials via PUT /api/v1/admin/action-credentials/${spec.target}, ` +
+    `or set ${envVars} in the environment.`
   );
 }
 
@@ -211,7 +240,7 @@ export async function resolveActionCredentials(
       );
       throw new ActionCredentialError(
         `${spec.label} credentials for this workspace are incomplete — missing ${missing.join(", ")}. ` +
-          `Complete them under Admin → Integrations → ${spec.label}. ` +
+          `Complete them via PUT /api/v1/admin/action-credentials/${spec.target}. ` +
           `Atlas will not fill the gap from the deployment's environment.`,
         { target: spec.target, reason: "partial-workspace-row" },
       );
@@ -269,6 +298,11 @@ export interface ActionTargetStatus {
  * Masked status of one action target for one workspace, for the Admin surface
  * and diagnostics. Never returns secret values.
  *
+ * Takes the same `(target, options)` shape as {@link resolveActionCredentials}
+ * deliberately — the two answer the same question (which rung wins for this
+ * workspace) and differ only in whether they return the values or just their
+ * presence, so a caller can swap one for the other without re-ordering args.
+ *
  * Field `source` reflects the SAME all-or-nothing rule the resolver applies:
  * when the workspace row wins, env-only fields read `"unset"` rather than
  * `"env"`, because at execution time they would not be consulted. Reporting
@@ -276,11 +310,11 @@ export interface ActionTargetStatus {
  * of a rung the resolver will never reach.
  */
 export async function getActionTargetStatus(
-  workspaceId: string | null | undefined,
   target: string,
-  deployMode: DeployMode,
-  env: NodeJS.ProcessEnv = process.env,
+  options: ResolveActionCredentialsOptions,
 ): Promise<ActionTargetStatus | null> {
+  const { workspaceId, deployMode } = options;
+  const env = options.env ?? process.env;
   const spec = getActionTarget(target);
   if (!spec) return null;
 

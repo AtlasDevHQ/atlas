@@ -7,21 +7,12 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import {
-  ACTION_TARGETS,
-  getActionTarget,
-  getActionTargetForActionType,
-} from "../targets";
+import { ACTION_TARGETS, getActionTarget } from "../targets";
 
 describe("ACTION_TARGETS — registry invariants", () => {
   it("every target slug is unique", () => {
     const slugs = ACTION_TARGETS.map((t) => t.target);
     expect(new Set(slugs).size).toBe(slugs.length);
-  });
-
-  it("every actionType prefix is unique", () => {
-    const prefixes = ACTION_TARGETS.map((t) => t.actionTypePrefix);
-    expect(new Set(prefixes).size).toBe(prefixes.length);
   });
 
   it("every target declares at least one required field", () => {
@@ -80,27 +71,5 @@ describe("Jira — the pilot target", () => {
     expect(jira?.fields.filter((f) => f.secret).map((f) => f.envVar)).toEqual([
       "JIRA_API_TOKEN",
     ]);
-  });
-});
-
-describe("getActionTargetForActionType", () => {
-  it("maps an action type to its owning target", () => {
-    expect(getActionTargetForActionType("jira:create")?.target).toBe("jira");
-  });
-
-  it("returns undefined for an action with no managed target", () => {
-    // `sendEmailReport` resolves through the platform email provider, not a
-    // per-workspace action credential.
-    expect(getActionTargetForActionType("email:send")).toBeUndefined();
-  });
-
-  it("matches the whole prefix segment, not a string prefix", () => {
-    // A `startsWith` implementation would capture this for Jira.
-    expect(getActionTargetForActionType("jira-cloud:create")).toBeUndefined();
-  });
-
-  it("returns undefined for an empty or colon-leading action type", () => {
-    expect(getActionTargetForActionType("")).toBeUndefined();
-    expect(getActionTargetForActionType(":create")).toBeUndefined();
   });
 });

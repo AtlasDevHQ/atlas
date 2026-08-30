@@ -37,7 +37,6 @@ export {
 export {
   ACTION_TARGETS,
   getActionTarget,
-  getActionTargetForActionType,
   type ActionTargetSpec,
   type ActionCredentialField,
 } from "./credentials/targets";

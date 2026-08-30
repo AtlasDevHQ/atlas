@@ -57,13 +57,6 @@ export interface ActionTargetSpec {
   readonly target: string;
   /** Human label for the Admin UI. */
   readonly label: string;
-  /**
-   * The `actionType` prefixes this target owns (e.g. `jira:create` →
-   * `"jira"`). The exec path maps an action's `actionType` back to its target
-   * through {@link getActionTargetForActionType}, so an action never names its
-   * own credential source.
-   */
-  readonly actionTypePrefix: string;
   /** Settable credential fields, in display order. */
   readonly fields: readonly ActionCredentialField[];
 }
@@ -84,7 +77,6 @@ export interface ActionTargetSpec {
 const JIRA_TARGET: ActionTargetSpec = {
   target: "jira",
   label: "Jira",
-  actionTypePrefix: "jira",
   fields: [
     {
       envVar: "JIRA_BASE_URL",
@@ -129,22 +121,4 @@ export const ACTION_TARGETS: readonly ActionTargetSpec[] = [JIRA_TARGET];
 /** Look up a managed action target by slug. `undefined` if unmanaged. */
 export function getActionTarget(target: string): ActionTargetSpec | undefined {
   return ACTION_TARGETS.find((t) => t.target === target);
-}
-
-/**
- * Map an action's `actionType` (`"jira:create"`) to the target that owns its
- * credentials (`"jira"`). Returns `undefined` for an actionType no managed
- * target claims — e.g. `email:send`, whose credentials come from the platform
- * email provider rather than a per-workspace action credential.
- *
- * Matching is on the segment BEFORE the first colon, not a `startsWith`, so a
- * hypothetical future `jira-cloud:create` target cannot be silently captured
- * by Jira's prefix.
- */
-export function getActionTargetForActionType(
-  actionType: string,
-): ActionTargetSpec | undefined {
-  const prefix = actionType.split(":")[0];
-  if (!prefix) return undefined;
-  return ACTION_TARGETS.find((t) => t.actionTypePrefix === prefix);
 }

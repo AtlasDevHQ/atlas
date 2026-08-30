@@ -74,10 +74,6 @@ type StoredRow = {
   credentials_key_version: number | null;
 };
 
-type StoredMetaRow = StoredRow & {
-  updated_at: string | Date;
-};
-
 /**
  * Upsert the credential bundle for (`workspaceId`, `target`), encrypting the
  * whole map. `created_at` (and the row `id`) are preserved on conflict so F-47
@@ -144,33 +140,6 @@ export async function readActionCredentials(
   );
   if (rows.length === 0) return null;
   return parseBundle(workspaceId, target, rows[0].credentials_encrypted);
-}
-
-/** Read result carrying the bundle plus the "last updated" timestamp for the Admin UI. */
-export interface ActionCredentialRecord {
-  readonly bundle: ActionCredentialBundle;
-  readonly updatedAt: Date;
-}
-
-/**
- * Like {@link readActionCredentials} but also returns `updated_at` for the
- * Admin "last updated" surface. Separate function so the hot-path resolver
- * (every action execution) doesn't pay for the extra column it ignores.
- */
-export async function readActionCredentialRecord(
-  workspaceId: string,
-  target: string,
-): Promise<ActionCredentialRecord | null> {
-  const rows = await internalQuery<StoredMetaRow>(
-    `SELECT credentials_encrypted, credentials_key_version, updated_at
-       FROM workspace_action_credentials
-      WHERE workspace_id = $1 AND target = $2
-      LIMIT 1`,
-    [workspaceId, target],
-  );
-  if (rows.length === 0) return null;
-  const bundle = parseBundle(workspaceId, target, rows[0].credentials_encrypted);
-  return { bundle, updatedAt: new Date(rows[0].updated_at) };
 }
 
 /**

@@ -84648,6 +84648,645 @@
         "operationId": "deletePlatformOperatorIntegrationsByPlatform"
       }
     },
+    "/api/v1/admin/action-credentials": {
+      "get": {
+        "summary": "List action targets and their per-workspace credential status",
+        "tags": [
+          "Admin — Action Credentials"
+        ],
+        "description": "Masked status only — presence + winning rung per field, never a secret value.",
+        "responses": {
+          "200": {
+            "description": "Target statuses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deployMode": {
+                      "type": "string",
+                      "enum": [
+                        "saas",
+                        "self-hosted"
+                      ],
+                      "description": "Resolved deploy mode. On `saas` the environment rung does not exist — a target is configured only by a workspace row."
+                    },
+                    "targets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "target": {
+                            "type": "string",
+                            "description": "Action-target slug (e.g. `jira`)."
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "configured": {
+                            "type": "boolean",
+                            "description": "True ⇒ every required field resolves for this workspace."
+                          },
+                          "resolvedFrom": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "enum": [
+                              "workspace",
+                              "env",
+                              null
+                            ],
+                            "description": "The rung that would win at execution time, or null when unconfigured."
+                          },
+                          "fields": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "envVar": {
+                                  "type": "string",
+                                  "description": "Env-var name this field maps to (bundle storage key + self-host env key)."
+                                },
+                                "label": {
+                                  "type": "string"
+                                },
+                                "hint": {
+                                  "type": "string"
+                                },
+                                "secret": {
+                                  "type": "boolean",
+                                  "description": "True ⇒ masked in the UI + never echoed back on read."
+                                },
+                                "required": {
+                                  "type": "boolean",
+                                  "description": "True ⇒ the target does not resolve without it."
+                                },
+                                "present": {
+                                  "type": "boolean",
+                                  "description": "True ⇒ resolved to a non-empty value from the winning rung."
+                                },
+                                "source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "workspace",
+                                    "env",
+                                    "unset"
+                                  ],
+                                  "description": "Where the resolved value came from. `env` appears on self-hosted only, and only when no workspace row wins — the rungs are never mixed."
+                                }
+                              },
+                              "required": [
+                                "envVar",
+                                "label",
+                                "hint",
+                                "secret",
+                                "required",
+                                "present",
+                                "source"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "target",
+                          "label",
+                          "configured",
+                          "resolvedFrom",
+                          "fields"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "deployMode",
+                    "targets"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminActionCredentials"
+      }
+    },
+    "/api/v1/admin/action-credentials/{target}": {
+      "put": {
+        "summary": "Set this workspace's credentials for an action target",
+        "tags": [
+          "Admin — Action Credentials"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "jira"
+            },
+            "required": true,
+            "name": "target",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "fields": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Map of env-var name → value. Blank values are ignored (they preserve the stored value rather than clearing it); keys outside the target's field spec are dropped."
+                  },
+                  "clearFields": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Env-var names to remove from the stored bundle. Blank values in `fields` deliberately PRESERVE a stored secret, so this is the only way to unset one — without it an optional field (e.g. a default project) could only be cleared by deleting the whole target and re-entering every credential. Required fields may be listed too; the target then reports unconfigured rather than resolving a partial row."
+                  }
+                },
+                "required": [
+                  "fields"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "target": {
+                      "type": "string",
+                      "description": "Action-target slug (e.g. `jira`)."
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "configured": {
+                      "type": "boolean",
+                      "description": "True ⇒ every required field resolves for this workspace."
+                    },
+                    "resolvedFrom": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "workspace",
+                        "env",
+                        null
+                      ],
+                      "description": "The rung that would win at execution time, or null when unconfigured."
+                    },
+                    "fields": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "envVar": {
+                            "type": "string",
+                            "description": "Env-var name this field maps to (bundle storage key + self-host env key)."
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "hint": {
+                            "type": "string"
+                          },
+                          "secret": {
+                            "type": "boolean",
+                            "description": "True ⇒ masked in the UI + never echoed back on read."
+                          },
+                          "required": {
+                            "type": "boolean",
+                            "description": "True ⇒ the target does not resolve without it."
+                          },
+                          "present": {
+                            "type": "boolean",
+                            "description": "True ⇒ resolved to a non-empty value from the winning rung."
+                          },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "workspace",
+                              "env",
+                              "unset"
+                            ],
+                            "description": "Where the resolved value came from. `env` appears on self-hosted only, and only when no workspace row wins — the rungs are never mixed."
+                          }
+                        },
+                        "required": [
+                          "envVar",
+                          "label",
+                          "hint",
+                          "secret",
+                          "required",
+                          "present",
+                          "source"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "label",
+                    "configured",
+                    "resolvedFrom",
+                    "fields"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown target, or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putAdminActionCredentialsByTarget"
+      },
+      "delete": {
+        "summary": "Clear this workspace's credentials for an action target",
+        "tags": [
+          "Admin — Action Credentials"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "jira"
+            },
+            "required": true,
+            "name": "target",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "target": {
+                      "type": "string",
+                      "description": "Action-target slug (e.g. `jira`)."
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "configured": {
+                      "type": "boolean",
+                      "description": "True ⇒ every required field resolves for this workspace."
+                    },
+                    "resolvedFrom": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "workspace",
+                        "env",
+                        null
+                      ],
+                      "description": "The rung that would win at execution time, or null when unconfigured."
+                    },
+                    "fields": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "envVar": {
+                            "type": "string",
+                            "description": "Env-var name this field maps to (bundle storage key + self-host env key)."
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "hint": {
+                            "type": "string"
+                          },
+                          "secret": {
+                            "type": "boolean",
+                            "description": "True ⇒ masked in the UI + never echoed back on read."
+                          },
+                          "required": {
+                            "type": "boolean",
+                            "description": "True ⇒ the target does not resolve without it."
+                          },
+                          "present": {
+                            "type": "boolean",
+                            "description": "True ⇒ resolved to a non-empty value from the winning rung."
+                          },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "workspace",
+                              "env",
+                              "unset"
+                            ],
+                            "description": "Where the resolved value came from. `env` appears on self-hosted only, and only when no workspace row wins — the rungs are never mixed."
+                          }
+                        },
+                        "required": [
+                          "envVar",
+                          "label",
+                          "hint",
+                          "secret",
+                          "required",
+                          "present",
+                          "source"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "label",
+                    "configured",
+                    "resolvedFrom",
+                    "fields"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown target, or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminActionCredentialsByTarget"
+      }
+    },
     "/api/v1/platform/actions": {
       "get": {
         "tags": [
@@ -95843,6 +96482,9 @@
     },
     {
       "name": "Admin — Abuse Prevention"
+    },
+    {
+      "name": "Admin — Action Credentials"
     },
     {
       "name": "Admin — Admin-Action Retention"

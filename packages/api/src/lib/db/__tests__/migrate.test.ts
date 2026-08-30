@@ -442,7 +442,13 @@ describe("runMigrations", () => {
     //   external webhook subscription or OAuth grant possibly live. A record
     //   and an alert, deliberately never a retry queue — no credential
     //   material is captured) = 212.
-    expect(count).toBe(212);
+    //   Plus 0212 (workspace_action_credentials — #3766: WORKSPACE-tier
+    //   action-target credentials, a tenant's own Jira/Linear/GitHub/Salesforce
+    //   set from workspace Admin without operator involvement or a redeploy.
+    //   One row per (workspace_id, target), encrypted at rest. Deliberately NOT
+    //   an operator tier — the ladder is workspace row → process.env on
+    //   self-hosted only → throw, per ADR-0046) = 213.
+    expect(count).toBe(213);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");

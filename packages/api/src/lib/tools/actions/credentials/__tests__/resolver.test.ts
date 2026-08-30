@@ -14,9 +14,13 @@ const mockRead: Mock<
   (workspaceId: string, target: string) => Promise<Record<string, string> | null>
 > = mock(() => Promise.resolve(null));
 const mockHasInternalDB: Mock<() => boolean> = mock(() => true);
+const mockGetConfig: Mock<() => { deployMode?: string } | undefined> = mock(() => ({
+  deployMode: "self-hosted",
+}));
 
 void mock.module("../store", () => ({ readActionCredentials: mockRead }));
 void mock.module("@atlas/api/lib/db/internal", () => ({ hasInternalDB: mockHasInternalDB }));
+void mock.module("@atlas/api/lib/config", () => ({ getConfig: mockGetConfig }));
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
@@ -46,6 +50,8 @@ beforeEach(() => {
   mockRead.mockResolvedValue(null);
   mockHasInternalDB.mockReset();
   mockHasInternalDB.mockReturnValue(true);
+  mockGetConfig.mockReset();
+  mockGetConfig.mockReturnValue({ deployMode: "self-hosted" });
 });
 afterEach(() => mockRead.mockReset());
 
@@ -266,7 +272,7 @@ describe("resolveActionCredentials — the all-or-nothing rule", () => {
 describe("getActionTargetStatus", () => {
   it("reports presence + source and never a secret value", async () => {
     mockRead.mockResolvedValue(TENANT_ROW);
-    const status = await getActionTargetStatus(WS, "jira", "saas", OPERATOR_ENV);
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "saas", env: OPERATOR_ENV });
     expect(status).not.toBeNull();
     expect(status?.configured).toBe(true);
     expect(status?.resolvedFrom).toBe("workspace");
@@ -281,7 +287,7 @@ describe("getActionTargetStatus", () => {
     // time the resolver would never read it, so the status must not advertise
     // it as configured-from-env.
     mockRead.mockResolvedValue(TENANT_ROW);
-    const status = await getActionTargetStatus(WS, "jira", "self-hosted", OPERATOR_ENV);
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV });
     const defaultProject = status?.fields.find((f) => f.envVar === "JIRA_DEFAULT_PROJECT");
     expect(defaultProject?.present).toBe(false);
     expect(defaultProject?.source).toBe("unset");
@@ -294,26 +300,49 @@ describe("getActionTargetStatus", () => {
     // Mirrors the resolver: the incomplete row shadows env, so reporting
     // `configured: true` here would promise an execution that will throw.
     mockRead.mockResolvedValue({ JIRA_BASE_URL: "https://tenant.atlassian.net" });
-    const status = await getActionTargetStatus(WS, "jira", "self-hosted", OPERATOR_ENV);
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV });
     expect(status?.configured).toBe(false);
     expect(status?.resolvedFrom).toBeNull();
   });
 
   it("on saas the env rung never shows as a source", async () => {
     mockRead.mockResolvedValue(null);
-    const status = await getActionTargetStatus(WS, "jira", "saas", OPERATOR_ENV);
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "saas", env: OPERATOR_ENV });
     expect(status?.configured).toBe(false);
     expect(status?.fields.every((f) => f.source !== "env")).toBe(true);
   });
 
   it("on self-hosted with no row, env is reported as the source", async () => {
     mockRead.mockResolvedValue(null);
-    const status = await getActionTargetStatus(WS, "jira", "self-hosted", OPERATOR_ENV);
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV });
     expect(status?.configured).toBe(true);
     expect(status?.resolvedFrom).toBe("env");
   });
 
   it("returns null for an unmanaged target", async () => {
-    expect(await getActionTargetStatus(WS, "not-a-target", "saas", {})).toBeNull();
+    expect(await getActionTargetStatus("not-a-target", { workspaceId: WS, deployMode: "saas", env: {} })).toBeNull();
+  });
+});
+
+describe("resolveActionDeployMode", () => {
+  it("prefers the config's resolved mode over raw env", async () => {
+    // A hosted region declares `deployMode: "saas"` in atlas.config.ts and sets
+    // NO ATLAS_DEPLOY_MODE env var, so reading raw env would re-derive the mode
+    // from the `auto` heuristic instead of reading the operator's declaration.
+    mockGetConfig.mockReturnValue({ deployMode: "saas" });
+    const { resolveActionDeployMode } = await import("../resolver");
+    expect(resolveActionDeployMode()).toBe("saas");
+
+    mockGetConfig.mockReturnValue({ deployMode: "self-hosted" });
+    expect(resolveActionDeployMode()).toBe("self-hosted");
+  });
+
+  it("falls through to env-based resolution when config is not loaded", async () => {
+    // Unreachable on a live request path (the app cannot serve one before
+    // boot). It exists so an unloaded config does not silently assume
+    // self-hosted and open the env rung.
+    mockGetConfig.mockReturnValue(undefined);
+    const { resolveActionDeployMode } = await import("../resolver");
+    expect(["saas", "self-hosted"]).toContain(resolveActionDeployMode());
   });
 });

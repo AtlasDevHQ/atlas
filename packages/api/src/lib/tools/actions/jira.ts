@@ -22,7 +22,10 @@ import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
 import { buildActionRequest, handleAction, type ActionExecutionContext } from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
-import { resolveActionCredentials } from "./credentials/resolver";
+import {
+  resolveActionCredentials,
+  resolveActionDeployMode,
+} from "./credentials/resolver";
 
 const log = createLogger("action:jira");
 
@@ -118,10 +121,9 @@ export function toJiraCredentials(
 export async function resolveJiraCredentials(
   ctx: ActionExecutionContext,
 ): Promise<JiraCredentials> {
-  const { getConfig } = await import("@atlas/api/lib/config");
   const resolved = await resolveActionCredentials("jira", {
     workspaceId: ctx.workspaceId,
-    deployMode: getConfig()?.deployMode === "saas" ? "saas" : "self-hosted",
+    deployMode: resolveActionDeployMode(),
   });
   log.info(
     { workspaceId: ctx.workspaceId, resolvedFrom: resolved.resolvedFrom },

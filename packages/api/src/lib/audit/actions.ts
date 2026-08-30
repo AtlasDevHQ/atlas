@@ -598,6 +598,9 @@ export const ADMIN_ACTIONS = {
     catalogUpdate: "plugin.catalog_update",
     catalogDelete: "plugin.catalog_delete",
     catalogCascadeUninstall: "plugin.catalog_cascade_uninstall",
+    // #3777 — the operator resolved a failed-revocation worklist row, i.e.
+    // asserted the external grant was revoked by hand or verified gone.
+    revocationResolve: "plugin.revocation_resolve",
   },
   /**
    * Knowledge Base pillar (#4207, ADR-0028). Collection install rides the shared

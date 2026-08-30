@@ -325,3 +325,24 @@ export const trialAbuseRejections: Counter = meter.createCounter(
       "Self-serve start_trial attempts rejected by the per-IP / per-email rate limiter (#3654)",
   },
 );
+
+/**
+ * `atlas.plugins.grant_revocation_failures` — one increment per durable
+ * `plugin_grant_revocation_failures` row persisted when an `onUninstall`
+ * hook throws, times out, or its per-workspace instance fails to build
+ * (#3777). The row is the operator's worklist; this counter is the alert
+ * feed — an un-revoked external webhook subscription / OAuth grant keeps
+ * delivering into a workspace that uninstalled the plugin, so a nonzero
+ * rate is on-call signal, not noise. There is deliberately NO auto-retry
+ * behind this metric (the migration 0211 header carries the argument).
+ *
+ * Attributes:
+ *   - `catalog.id` — the uninstalled `plugin_catalog.id`.
+ */
+export const grantRevocationFailures: Counter = meter.createCounter(
+  "atlas.plugins.grant_revocation_failures",
+  {
+    description:
+      "onUninstall revocation failures persisted for operator action — external grant possibly still live (#3777)",
+  },
+);

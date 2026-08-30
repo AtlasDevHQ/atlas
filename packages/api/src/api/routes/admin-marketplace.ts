@@ -330,6 +330,68 @@ const deleteCatalogRoute = createRoute({
   },
 });
 
+// #3777 — the operator worklist of failed onUninstall revocations. A row means
+// an external webhook subscription / OAuth grant may still be live for a
+// workspace that uninstalled the plugin. Listing is unresolved-only (the
+// partial index's population — what an operator can still act on); resolving
+// is the operator asserting "I revoked this by hand", which is why it stamps
+// who and is audited. There is deliberately no retry endpoint.
+const RevocationFailureSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  catalogId: z.string(),
+  pluginId: z.string(),
+  error: z.string(),
+  attemptedAt: z.string(),
+});
+
+const listRevocationFailuresRoute = createRoute({
+  method: "get",
+  path: "/revocation-failures",
+  tags: ["Platform — Plugin Catalog"],
+  summary: "List unresolved onUninstall revocation failures",
+  description:
+    "External webhook subscriptions / OAuth grants whose revocation hook failed at uninstall time and may still be live. Oldest first. Resolve a row after revoking manually on the external platform.",
+  responses: {
+    200: {
+      description: "Unresolved revocation failures",
+      content: {
+        "application/json": {
+          schema: z.object({
+            failures: z.array(RevocationFailureSchema),
+            total: z.number(),
+          }),
+        },
+      },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "No internal database", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const resolveRevocationFailureRoute = createRoute({
+  method: "post",
+  path: "/revocation-failures/{id}/resolve",
+  tags: ["Platform — Plugin Catalog"],
+  summary: "Mark a revocation failure resolved",
+  description:
+    "The operator's assertion that the external grant was revoked by hand (or verified already gone). Stamps who resolved it and when; already-resolved rows are refused rather than re-stamped.",
+  request: {
+    params: createIdParamSchema("revocation-failure-id"),
+  },
+  responses: {
+    200: {
+      description: "Resolved",
+      content: { "application/json": { schema: z.object({ resolved: z.boolean() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Already resolved", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Platform router
 // ---------------------------------------------------------------------------
@@ -668,6 +730,101 @@ platformCatalog.openapi(deleteCatalogRoute, async (c) => {
       return c.json({ deleted: true }, 200);
     }),
     { label: "delete catalog entry" },
+  );
+});
+
+type RevocationFailureRow = {
+  id: string;
+  workspace_id: string;
+  catalog_id: string;
+  plugin_id: string;
+  error: string;
+  attempted_at: string;
+};
+
+platformCatalog.openapi(listRevocationFailuresRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
+      }
+      // Oldest first — the longest-lived possibly-still-live grant is the one
+      // to act on. Capped: a backlog past this size is an incident, not a page.
+      const rows = yield* queryEffect<RevocationFailureRow>(
+        `SELECT id, workspace_id, catalog_id, plugin_id, error, attempted_at
+         FROM plugin_grant_revocation_failures
+         WHERE resolved_at IS NULL
+         ORDER BY attempted_at ASC
+         LIMIT 500`,
+      );
+      return c.json(
+        {
+          failures: rows.map((r) => ({
+            id: r.id,
+            workspaceId: r.workspace_id,
+            catalogId: r.catalog_id,
+            pluginId: r.plugin_id,
+            error: r.error,
+            attemptedAt: r.attempted_at,
+          })),
+          total: rows.length,
+        },
+        200,
+      );
+    }),
+    { label: "list revocation failures" },
+  );
+});
+
+platformCatalog.openapi(resolveRevocationFailureRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { id } = c.req.valid("param");
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
+      }
+      const authResult = c.get("authResult");
+      const actorId = authResult?.user?.id ?? "unknown";
+      // Guarded UPDATE: only an unresolved row takes the stamp, so a resolved
+      // row's original who/when can never be silently overwritten.
+      const updated = yield* queryEffect<{ id: string }>(
+        `UPDATE plugin_grant_revocation_failures
+         SET resolved_at = now(), resolved_by = $2
+         WHERE id = $1 AND resolved_at IS NULL
+         RETURNING id`,
+        [id, actorId],
+      );
+      if (updated.length === 0) {
+        const existing = yield* queryEffect<{ id: string }>(
+          `SELECT id FROM plugin_grant_revocation_failures WHERE id = $1`,
+          [id],
+        );
+        if (existing.length === 0) {
+          return c.json({ error: "not_found", message: `Revocation failure "${id}" not found.`, requestId }, 404);
+        }
+        return c.json(
+          {
+            error: "already_resolved",
+            message: `Revocation failure "${id}" is already resolved — its original resolver stamp is kept.`,
+            requestId,
+          },
+          409,
+        );
+      }
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.plugin.revocationResolve,
+        targetType: "plugin",
+        targetId: id,
+        scope: "platform",
+        metadata: { revocationFailureId: id },
+      });
+      return c.json({ resolved: true }, 200);
+    }),
+    { label: "resolve revocation failure" },
   );
 });
 

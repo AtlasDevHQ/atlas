@@ -61,13 +61,40 @@
  * reported in the returned summary; the caller's install-row removal
  * always proceeds. Callers still wrap the call defensively so even a
  * defect here can't abort an uninstall.
+ *
+ * #3777 — every failure entry is additionally persisted to
+ * `plugin_grant_revocation_failures` (migration 0211) and counted on
+ * `atlas.plugins.grant_revocation_failures`, because a failed hook means an
+ * external webhook subscription / OAuth grant may still be live with nothing
+ * durable pointing an operator at it. Persisting HERE covers both callers
+ * with one seam (`tearDownWorkspaceInstall` and `WorkspaceInstaller.uninstall`
+ * both enter through this function) — the same rationale as the loader evict
+ * below. The row is an operator worklist entry, deliberately NOT a retry
+ * queue: no credential material is captured and nothing re-attempts
+ * revocation. The persist is itself best-effort — a DB failure here degrades
+ * to what the pre-#3777 world always was (log lines only) rather than
+ * blocking the uninstall.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { grantRevocationFailures } from "@atlas/api/lib/metrics";
 import { lazyPluginLoader, type LazyPluginLoader } from "./lazy-loader";
 import { plugins, type PluginLike, type PluginRegistry, type PluginType } from "./registry";
 
 const log = createLogger("plugins:uninstall-hook");
+
+type InternalQueryFn = <T = unknown>(sql: string, params?: unknown[]) => Promise<T[]>;
+
+// Lazy `require` mirrors the pattern in `teardown.ts` / `workspace-installer.ts`:
+// keeps `db/internal` off the static import graph so partial `mock.module()`
+// setups elsewhere don't trip bun's "Export named 'X' not found" loader error.
+function lazyInternalDB(): { internalQuery: InternalQueryFn; hasInternalDB: () => boolean } {
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
+  return require("@atlas/api/lib/db/internal") as {
+    internalQuery: InternalQueryFn;
+    hasInternalDB: () => boolean;
+  };
+}
 
 // Record-keyed so a new `PluginType` union member is a compile error here
 // (a missing key fails tsc) instead of a silently-unmatched `<slug>-<type>`
@@ -102,6 +129,8 @@ export interface InvokeOnUninstallArgs {
   readonly registry?: Pick<PluginRegistry, "get">;
   /** Test seam — per-hook deadline; defaults to {@link ON_UNINSTALL_HOOK_TIMEOUT_MS}. */
   readonly hookTimeoutMs?: number;
+  /** Test seam — defaults to `internalQuery` (lazily required, #3777 persist). */
+  readonly queryFn?: InternalQueryFn;
 }
 
 export interface OnUninstallInvocationResult {
@@ -208,6 +237,49 @@ export async function invokeOnUninstallHook(
       );
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  // #3777 — persist every failure as an operator worklist row (see module
+  // JSDoc: a record and an alert, never a retry queue). One statement for the
+  // whole batch so a mid-batch DB hiccup can't persist half an uninstall's
+  // failures. Skipped without an internal DB — on those deployments the log
+  // lines above are the whole (pre-#3777) signal, and warning on every
+  // uninstall for a DB the deployment never had would be noise.
+  if (failures.length > 0) {
+    grantRevocationFailures.add(failures.length, { "catalog.id": catalogId });
+    try {
+      let queryFn = args.queryFn;
+      if (!queryFn) {
+        const db = lazyInternalDB();
+        if (db.hasInternalDB()) queryFn = db.internalQuery;
+      }
+      if (queryFn) {
+        await queryFn(
+          `INSERT INTO plugin_grant_revocation_failures (workspace_id, catalog_id, plugin_id, error)
+           SELECT $1, $2, f.plugin_id, f.error
+           FROM unnest($3::text[], $4::text[]) AS f(plugin_id, error)`,
+          [
+            workspaceId,
+            catalogId,
+            failures.map((f) => f.pluginId),
+            // 0211's CHECK refuses '' — an empty message (some libs throw
+            // `new Error("")`) still names a real failure, so label it
+            // rather than dropping the row.
+            failures.map((f) => f.error || "(hook failed with an empty error message)"),
+          ],
+        );
+      }
+    } catch (err) {
+      log.warn(
+        {
+          workspaceId,
+          catalogId,
+          failureCount: failures.length,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "onUninstall: persisting revocation-failure records failed — external grants may be orphaned with NO durable record; see the preceding per-plugin warnings for what failed",
+      );
     }
   }
 

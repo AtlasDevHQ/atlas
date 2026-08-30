@@ -24,8 +24,8 @@ Concretely, today: **the split is complete** — all eighteen contexts have thei
 `docs/contexts/<name>/CONTEXT.md` (#5302), and the root `CONTEXT.md` holds no context prose.
 It is kept as the front door: the vocabulary rule that applies to every context, plus a
 pointer back to the map. The map's *Governed by* column is still where you look, because it
-also carries what each context IS — *Deployment posture* is marked stale, *Notebooks* is
-history only. This sentence is a summary and the map wins.
+also carries what each context IS — *Deployment posture* was re-verified and its clean-break
+window is CLOSED, *Notebooks* is history only. This sentence is a summary and the map wins.
 
 ## File structure
 
@@ -47,7 +47,7 @@ The split followed those seams, not `packages/*`:
 ├── docs/adr/                          ← system-wide decisions (44 today)
 └── docs/contexts/                     ← one directory per context, eighteen of them
     ├── company-atlas/CONTEXT.md       ← extracted 2026-08-17
-    ├── deployment-posture/CONTEXT.md  ← extracted 2026-08-17 (marked stale)
+    ├── deployment-posture/CONTEXT.md  ← extracted 2026-08-17 (re-verified 2026-08-18)
     ├── notebooks/CONTEXT.md           ← extracted 2026-08-17 (history only)
     └── …                              ← the other fifteen, extracted 2026-08-30
 ```

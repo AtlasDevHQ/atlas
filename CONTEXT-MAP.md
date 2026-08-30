@@ -9,7 +9,7 @@ every bounded context and points at the `CONTEXT.md` that governs it. Consumer r
 ⚠️ **Every row below points at a real file now — but still read the *Governed by* and
 *Notes* columns**, because they say what each context IS: one is marked stale, one is history
 only. All eighteen were extracted between 2026-08-17 and 2026-08-30; the root
-[`CONTEXT.md`](CONTEXT.md) shrank from ~85 KB to ~1 KB and now holds only the vocabulary rule
+[`CONTEXT.md`](CONTEXT.md) shrank from ~68 KB to ~1 KB and now holds only the vocabulary rule
 and a pointer back here.
 
 This map lists no path that does not exist. A map naming files that were never written would

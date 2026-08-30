@@ -6,7 +6,7 @@
 **Posture:** pre-customer (two internal Workspaces only); clean breaks allowed. Precedent: #2620 / #2626 / #2634 / #2641.
 
 Read alongside:
-- `/CONTEXT-MAP.md` — canonical glossary, one file per bounded context. The terms this PRD leans on: Platform, Adapter, App Registration and Workspace Connection in [Chat Platform mechanics](../contexts/chat-platform-mechanics/CONTEXT.md); Plugin Catalog, Workspace Install and Eager/Lazy plugins in [Plugin lifecycle](../contexts/plugin-lifecycle/CONTEXT.md); Operator vs Customer in [its own context](../contexts/operator-vs-customer/CONTEXT.md)
+- `/CONTEXT-MAP.md` — the index of bounded contexts; the canonical glossary is the per-context file each row points at. The terms this PRD leans on: Platform, Adapter, App Registration and Workspace Connection in [Chat Platform mechanics](../contexts/chat-platform-mechanics/CONTEXT.md); Plugin Catalog, Workspace Install and Eager/Lazy plugins in [Plugin lifecycle](../contexts/plugin-lifecycle/CONTEXT.md); Operator vs Customer in [its own context](../contexts/operator-vs-customer/CONTEXT.md)
 - `/docs/adr/0001-saas-uses-one-app-registration-per-platform.md`
 - `/docs/adr/0002-catalog-seeded-from-config-at-boot.md`
 - `/docs/adr/0003-two-store-chat-install-metadata-credentials.md`

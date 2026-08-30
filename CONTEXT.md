@@ -1,8 +1,13 @@
 # Atlas Domain Context
 
-Canonical terminology for Atlas. This document is a glossary, not a spec — implementation details belong in code, ADRs, or `architecture-wins.md`.
+The front door to Atlas's domain vocabulary. **The terminology itself is not here** — it
+lives in the per-context files under [docs/contexts/](docs/contexts/), and
+[CONTEXT-MAP.md](CONTEXT-MAP.md) names every context and points at the file that governs it.
 
-When you find yourself reaching for one of these words, use the canonical form. When you see a term used loosely in conversation or code, sharpen it back to one of these.
+The rule that holds across all of them: when you reach for one of these words, use the
+canonical form its governing file gives it, and when you see a term used loosely in
+conversation or code, sharpen it back to that form. Each context file is a glossary, not a
+spec — implementation details belong in code, ADRs, or `architecture-wins.md`.
 
 > **The split is COMPLETE — no context prose lives in this file.** Atlas uses the
 > multi-context layout, and all eighteen of its bounded contexts now have their own file

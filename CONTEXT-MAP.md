@@ -4,11 +4,11 @@ Atlas uses the **multi-context** domain-doc layout (adopted 2026-08-17). This fi
 every bounded context and points at the `CONTEXT.md` that governs it. Consumer rules:
 [docs/agents/domain.md](docs/agents/domain.md).
 
-## Status: the split is underway — 17 of 18 extracted
+## Status: the split is COMPLETE — 18 of 18 extracted
 
 ⚠️ **Read the *Governed by* column before following any path below.** It says, per context,
-whether that context has its own file yet. Seventeen do; the other one are still sections of
-the root [`CONTEXT.md`](CONTEXT.md), which shrank from ~85 KB to ~6 KB as they left.
+whether that context has its own file yet. Eighteen do; the other zero are still sections of
+the root [`CONTEXT.md`](CONTEXT.md), which shrank from ~85 KB to ~3 KB as they left.
 
 This map lists no path that does not exist. A map naming files that were never written would
 be the same defect this repo spent 2026-08-17 removing from its agent docs — a pointer that
@@ -47,7 +47,7 @@ the Company Atlas context alone spans `packages/api/src/lib/brain/**`, `/admin/b
 | Install models | [`docs/contexts/install-models/CONTEXT.md`](docs/contexts/install-models/CONTEXT.md) | |
 | Deployment posture | [`docs/contexts/deployment-posture/CONTEXT.md`](docs/contexts/deployment-posture/CONTEXT.md) | 🔒 **window CLOSED 2026-08-18** — expand-contract is the default; no standing authorization to break anything |
 | Operator vs Customer | [`docs/contexts/operator-vs-customer/CONTEXT.md`](docs/contexts/operator-vs-customer/CONTEXT.md) | |
-| Lead source (CRM acquisition) | `CONTEXT.md` § Lead source | |
+| Lead source (CRM acquisition) | [`docs/contexts/lead-source/CONTEXT.md`](docs/contexts/lead-source/CONTEXT.md) | |
 | Notebooks | [`docs/contexts/notebooks/CONTEXT.md`](docs/contexts/notebooks/CONTEXT.md) | 🪦 **retired** — kept so the words don't dangle; read only for history |
 
 System-wide decisions stay in [`docs/adr/`](docs/adr/) (43 ADRs). A context gets its own

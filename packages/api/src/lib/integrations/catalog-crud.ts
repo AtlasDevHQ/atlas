@@ -72,13 +72,25 @@ export function pillarFromCatalogType(type: CatalogType): Exclude<Pillar, "knowl
 }
 
 /** `POST /catalog` body after Zod validation (CreateCatalogBodySchema). */
+/**
+ * Loose-optional (`| undefined`) throughout — a REST INPUT contract, not a
+ * domain value (#5522).
+ *
+ * Every field arrives from a Zod-validated request body, where `.optional()`
+ * infers `T | undefined`, and every consumer below reads it through an
+ * `if (x !== undefined)` guard: absent and present-and-`undefined` take the
+ * same branch by construction, so the exact optional rejects a call it would
+ * treat identically. The bug class `exactOptionalPropertyTypes` exists to catch
+ * — an explicit `undefined` overwriting a stored value — cannot occur here,
+ * because the guard skips that field's SET clause entirely.
+ */
 export interface CatalogCreateFields {
   name: string;
   slug: string;
-  description?: string;
+  description?: string | undefined;
   type: CatalogType;
-  npmPackage?: string;
-  iconUrl?: string;
+  npmPackage?: string | undefined;
+  iconUrl?: string | undefined;
   configSchema?: unknown;
   minPlan: PlanTier;
   enabled: boolean;
@@ -86,14 +98,14 @@ export interface CatalogCreateFields {
 
 /** `PUT /catalog/:id` body after Zod validation (UpdateCatalogBodySchema). */
 export interface CatalogUpdateFields {
-  name?: string;
-  description?: string;
-  type?: CatalogType;
-  npmPackage?: string;
-  iconUrl?: string;
+  name?: string | undefined;
+  description?: string | undefined;
+  type?: CatalogType | undefined;
+  npmPackage?: string | undefined;
+  iconUrl?: string | undefined;
   configSchema?: unknown;
-  minPlan?: PlanTier;
-  enabled?: boolean;
+  minPlan?: PlanTier | undefined;
+  enabled?: boolean | undefined;
 }
 
 /**

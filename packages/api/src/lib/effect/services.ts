@@ -2597,15 +2597,27 @@ export interface CustomRole {
   updatedAt: string;
 }
 
+/**
+ * Loose-optional (`| undefined`) throughout — a REST INPUT contract, not a
+ * domain value (#5522).
+ *
+ * Every field arrives from a Zod-validated request body, where `.optional()`
+ * infers `T | undefined`, and every consumer below reads it through an
+ * `if (x !== undefined)` guard: absent and present-and-`undefined` take the
+ * same branch by construction, so the exact optional rejects a call it would
+ * treat identically. The bug class `exactOptionalPropertyTypes` exists to catch
+ * — an explicit `undefined` overwriting a stored value — cannot occur here,
+ * because the guard skips that field's SET clause entirely.
+ */
 export interface CreateRoleInput {
   readonly name: string;
-  readonly description?: string;
+  readonly description?: string | undefined;
   readonly permissions: string[];
 }
 
 export interface UpdateRoleInput {
-  readonly description?: string;
-  readonly permissions?: string[];
+  readonly description?: string | undefined;
+  readonly permissions?: string[] | undefined;
 }
 
 export interface RoleMember {

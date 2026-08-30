@@ -307,6 +307,38 @@ describe("executeSalesforceCreate", () => {
     expect(lastOAuth2Config).toBeNull();
   });
 
+  it("refuses an internal instance URL before the consumer secret leaves the process", async () => {
+    // The instance URL is typed by a WORKSPACE admin — a tenant on SaaS, not
+    // the operator — and the consumer secret is POSTed to whatever host it
+    // names. Unguarded, that turns a settings form into an outbound probe of
+    // the deployment's own network.
+    for (const host of ["https://localhost", "https://127.0.0.1", "https://169.254.169.254"]) {
+      await expect(
+        executeSalesforceCreate(
+          { object: "Lead", fields: { LastName: "Reyes" } },
+          creds({ SALESFORCE_ACTION_INSTANCE_URL: host }),
+        ),
+      ).rejects.toThrow(/reachable public Salesforce host/);
+    }
+    // Never reached the network, and the refusal names no internal detail —
+    // repeating the guard's verdict back would make the form a scanner with a
+    // readout.
+    expect(lastOAuth2Config).toBeNull();
+  });
+
+  it("re-validates the instance URL Salesforce echoes back", async () => {
+    // The echo decides where the record POST goes and what host the approval
+    // card links to, so it gets the same guard the configured URL got.
+    tokenResponse = {
+      access_token: "sf-access-token",
+      instance_url: "http://169.254.169.254",
+    };
+    await expect(
+      executeSalesforceCreate({ object: "Lead", fields: { LastName: "Reyes" } }, creds()),
+    ).rejects.toThrow(/Salesforce returned/);
+    expect(lastCreate).toBeNull();
+  });
+
   it("surfaces a token rejection without echoing the consumer secret", async () => {
     // Salesforce does not normally echo the secret; the redaction is the
     // belt-and-braces that keeps an unreviewed vendor error path from
@@ -357,6 +389,34 @@ describe("executeSalesforceCreate", () => {
     await expect(
       executeSalesforceCreate({ object: "Lead", fields: { LastName: "Reyes" } }, creds()),
     ).rejects.toThrow(/REQUIRED_FIELD_MISSING: Required fields are missing/);
+  });
+
+  it("redacts credentials out of a REFUSAL body too, not just a thrown error", async () => {
+    // A refusal body is no more trustworthy than a thrown one; leaving this
+    // path unguarded is how a file ends up guarding only the paths someone
+    // happened to think about.
+    createResponse = {
+      success: false,
+      errors: [
+        {
+          statusCode: "INSUFFICIENT_ACCESS",
+          message: "App tenant-consumer-secret cannot create this record",
+        },
+        "raw string error mentioning sf-access-token",
+      ],
+    };
+    try {
+      await executeSalesforceCreate(
+        { object: "Lead", fields: { LastName: "Reyes" } },
+        creds(),
+      );
+      expect(true).toBe(false); // should not reach here
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).toContain("INSUFFICIENT_ACCESS");
+      expect(message).not.toContain("tenant-consumer-secret");
+      expect(message).not.toContain("sf-access-token");
+    }
   });
 
   it("throws when the token response carries no access token", async () => {

@@ -51,7 +51,7 @@ import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
 import { buildActionRequest, handleAction, type ActionExecutionContext } from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hostForLog } from "@atlas/api/lib/openapi/egress-guard";
+import { assertBaseUrlAllowed, hostForLog } from "@atlas/api/lib/openapi/egress-guard";
 import {
   resolveActionCredentials,
   resolveActionDeployMode,
@@ -249,16 +249,22 @@ function safeMessage(err: unknown, secrets: readonly string[]): string {
   return redactCredentials(err instanceof Error ? err.message : String(err), secrets);
 }
 
-/** Salesforce's `SaveResult.errors[]`, flattened to `CODE: message` strings. */
-function describeSaveErrors(errors: unknown): string[] {
+/**
+ * Salesforce's `SaveResult.errors[]`, flattened to `CODE: message` strings.
+ *
+ * Redacted like every other vendor text this module surfaces: a refusal body
+ * is no more trustworthy than a thrown one, and leaving one path unguarded is
+ * how the next editor concludes the file guards nothing.
+ */
+function describeSaveErrors(errors: unknown, secrets: readonly string[]): string[] {
   if (!Array.isArray(errors)) return [];
   return errors.map((raw) => {
-    if (typeof raw === "string") return raw;
+    if (typeof raw === "string") return redactCredentials(raw, secrets);
     const e = raw as { statusCode?: unknown; message?: unknown; fields?: unknown };
     const code = typeof e.statusCode === "string" ? e.statusCode : "ERROR";
     const detail = typeof e.message === "string" ? e.message : "(no message)";
     const fields = Array.isArray(e.fields) && e.fields.length > 0 ? ` [${e.fields.join(", ")}]` : "";
-    return `${code}: ${detail}${fields}`;
+    return redactCredentials(`${code}: ${detail}${fields}`, secrets);
   });
 }
 
@@ -304,23 +310,52 @@ function validateRecordFields(fields: unknown): Record<string, string> {
   return validated;
 }
 
-/** The org's My Domain origin, trailing slash stripped, validated as https. */
-function normalizeInstanceUrl(raw: string): string {
+/**
+ * A Salesforce origin this module is willing to talk to: https, and past the
+ * repo's SSRF chokepoint.
+ *
+ * Both URLs that reach the network here are attacker-influenceable in the
+ * threat model the guard exists for. The instance URL is typed by a workspace
+ * admin — on SaaS that is a tenant, not the operator — and the consumer secret
+ * is POSTed to whatever host it names, so an unguarded value turns a settings
+ * form into an outbound probe of the deployment's own network. The token
+ * response's `instance_url` is the same problem one hop later: it decides where
+ * the record POST goes and what link the approval card shows. `assertBaseUrlAllowed`
+ * is the sync chokepoint the form-install handlers use (`isSafeExternalUrl`:
+ * scheme, internal-hostname denylist, IP-literal ranges), and the sync one is
+ * the right one here — the async `assertSafeEgressTarget` hands back a pin the
+ * caller must connect through, which `jsforce` gives us no way to honour.
+ *
+ * @param label how to name this URL in the operator-facing error.
+ */
+function normalizeInstanceUrl(raw: string, label: string): string {
   let parsed: URL;
   try {
     parsed = new URL(raw);
   } catch (err) {
     log.error({ err }, "Salesforce instance URL is not a valid URL");
     throw new Error(
-      "The configured Salesforce instance URL is not a valid URL. Set it to your org's My Domain URL, e.g. https://acme.my.salesforce.com.",
+      `${label} is not a valid URL. It should be your org's My Domain URL, e.g. https://acme.my.salesforce.com.`,
     );
   }
   if (parsed.protocol !== "https:") {
+    throw new Error(`${label} must use https (got "${parsed.protocol}").`);
+  }
+  try {
+    assertBaseUrlAllowed(parsed.origin);
+  } catch (err) {
+    // The message is deliberately not the guard's: it names the host, and
+    // repeating "blocked internal address" back to whoever typed it turns the
+    // form into a network scanner with a readout.
+    log.error(
+      { host: hostForLog(parsed.origin), err: err instanceof Error ? err.message : String(err) },
+      "Salesforce instance URL was refused by the egress guard",
+    );
     throw new Error(
-      `The configured Salesforce instance URL must use https (got "${parsed.protocol}").`,
+      `${label} does not point at a reachable public Salesforce host. Use your org's My Domain URL, e.g. https://acme.my.salesforce.com.`,
     );
   }
-  return `${parsed.origin}`;
+  return parsed.origin;
 }
 
 /**
@@ -340,7 +375,12 @@ export async function executeSalesforceCreate(
 
   const requested = params.object ?? credentials.SALESFORCE_ACTION_DEFAULT_OBJECT;
   if (!requested) {
-    log.error({}, "No Salesforce object specified");
+    // Field NAMES, never values — enough to correlate the failed dispatch in
+    // logs without putting record content in them.
+    log.error(
+      { fields: Object.keys(params.fields ?? {}) },
+      "No Salesforce object specified",
+    );
     throw new Error(
       "No Salesforce object specified. Name one, or set a default object under Admin → Integrations → Salesforce.",
     );
@@ -353,7 +393,10 @@ export async function executeSalesforceCreate(
   }
 
   const fields = validateRecordFields(params.fields);
-  const instanceUrl = normalizeInstanceUrl(credentials.SALESFORCE_ACTION_INSTANCE_URL);
+  const instanceUrl = normalizeInstanceUrl(
+    credentials.SALESFORCE_ACTION_INSTANCE_URL,
+    "The configured Salesforce instance URL",
+  );
 
   const jsforce = requireJsforce();
 
@@ -383,10 +426,13 @@ export async function executeSalesforceCreate(
     );
   }
   // Salesforce echoes the org's canonical host; fall back to the configured
-  // one rather than failing a call that is otherwise authorized.
+  // one rather than failing a call that is otherwise authorized. The echo is
+  // re-validated rather than trusted: it decides where the record POST goes
+  // and what host the approval card links to, so it gets the same guard the
+  // configured URL got.
   const sessionUrl =
     typeof token.instance_url === "string" && token.instance_url.length > 0
-      ? token.instance_url.replace(/\/+$/, "")
+      ? normalizeInstanceUrl(token.instance_url, "The instance URL Salesforce returned")
       : instanceUrl;
 
   let saved: JsforceSaveResult;
@@ -403,7 +449,9 @@ export async function executeSalesforceCreate(
   }
 
   if (saved.success !== true) {
-    const detail = describeSaveErrors(saved.errors).join("; ") || "no reason given";
+    const detail =
+      describeSaveErrors(saved.errors, [...secrets, accessToken]).join("; ") ||
+      "no reason given";
     log.error({ object, detail }, "Salesforce refused the record");
     throw new Error(`Salesforce did not create the ${object}: ${detail}`);
   }

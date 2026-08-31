@@ -3128,10 +3128,15 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
   // in workspace A while the user is SCIM-provisioned in workspace B —
   // scoping the SCIM check to the actor's active org would silently let
   // the ban through and the next sync from B would re-activate the user.
-  // OMIT `orgId` so the guard searches across ALL SCIM providers
+  // Pass `orgId: undefined` so the guard searches across ALL SCIM providers
   // for this user; matches the global blast-radius of the mutation.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
+    // Explicit, not omitted: `undefined` is the marker for the cross-provider
+    // scan described above. `evaluateSCIMGuardAsync` keeps `orgId` a LOOSE
+    // optional so it stays writable under `exactOptionalPropertyTypes`, and
+    // `scim-provenance-enforcement.test.ts` pins the explicit pass (#5522).
+    orgId: undefined,
     requestId,
   });
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
@@ -3365,10 +3370,15 @@ admin.openapi(deleteUserRoute, async (c) => {
   // to the actor's active org would let a workspace-admin path silently
   // delete a user provisioned via SCIM in some other workspace, then the
   // next sync re-provisions them with a fresh userId, orphaning every
-  // audit_log / RLS reference to the old id. OMIT `orgId` so
+  // audit_log / RLS reference to the old id. Pass `orgId: undefined` so
   // the guard searches across ALL SCIM providers for this user.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
+    // Explicit, not omitted: `undefined` is the marker for the cross-provider
+    // scan described above. `evaluateSCIMGuardAsync` keeps `orgId` a LOOSE
+    // optional so it stays writable under `exactOptionalPropertyTypes`, and
+    // `scim-provenance-enforcement.test.ts` pins the explicit pass (#5522).
+    orgId: undefined,
     requestId,
   });
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
@@ -3562,7 +3572,7 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
   // override revokes anyway and stamps the audit row.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
-    ...(authResult.user?.activeOrganizationId !== undefined ? { orgId: authResult.user?.activeOrganizationId } : {}),
+    orgId: authResult.user?.activeOrganizationId,
     requestId,
   });
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);

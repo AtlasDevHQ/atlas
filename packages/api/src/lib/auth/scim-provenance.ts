@@ -78,6 +78,10 @@ export function getSCIMOverridePolicy(orgId: string | undefined): SCIMOverridePo
  */
 export const isSCIMProvisioned = (
   userId: string,
+  // Bare `?:` — this is a PARAMETER, where `exactOptionalPropertyTypes` does
+  // not apply and `| undefined` is redundant (oxlint
+  // `no-duplicate-type-constituents` rejects it). The `orgId` *properties* on
+  // the two options bags below are the ones that need the loose optional.
   orgId?: string,
 ): Effect.Effect<boolean, Error, SCIMProvenance> => {
   // EE-gate via the `SCIMProvenance` Tag (#2570). The no-op default
@@ -231,7 +235,18 @@ export type SCIMGuardResult =
  */
 export const evaluateSCIMGuard = (opts: {
   userId: string;
-  orgId?: string;
+  /**
+   * The LOOSE optional (`| undefined`) on purpose, not an oversight under
+   * `exactOptionalPropertyTypes`. Absent and explicit `undefined` mean the same
+   * thing — per `isSCIMProvisioned` above, an omitted `orgId` scans every SCIM
+   * provider — and the global-blast-radius call sites in `admin.ts` (`banUser`,
+   * `deleteUser`) pass `orgId: undefined` *explicitly*, as the marker that
+   * cross-provider scanning is the intent rather than a missing org scope. Two
+   * tests in `scim-provenance-enforcement.test.ts` pin that explicit pass; an
+   * exact optional would make the marker unwritable and silently demote it to
+   * an omission (#5522).
+   */
+  orgId?: string | undefined;
   requestId: string;
 }): Effect.Effect<SCIMGuardResult, Error, SCIMProvenance> =>
   Effect.gen(function* () {
@@ -258,7 +273,18 @@ export const evaluateSCIMGuard = (opts: {
  */
 export async function evaluateSCIMGuardAsync(opts: {
   userId: string;
-  orgId?: string;
+  /**
+   * The LOOSE optional (`| undefined`) on purpose, not an oversight under
+   * `exactOptionalPropertyTypes`. Absent and explicit `undefined` mean the same
+   * thing — per `isSCIMProvisioned` above, an omitted `orgId` scans every SCIM
+   * provider — and the global-blast-radius call sites in `admin.ts` (`banUser`,
+   * `deleteUser`) pass `orgId: undefined` *explicitly*, as the marker that
+   * cross-provider scanning is the intent rather than a missing org scope. Two
+   * tests in `scim-provenance-enforcement.test.ts` pin that explicit pass; an
+   * exact optional would make the marker unwritable and silently demote it to
+   * an omission (#5522).
+   */
+  orgId?: string | undefined;
   requestId: string;
 }): Promise<SCIMGuardResult> {
   return runEnterprise(evaluateSCIMGuard(opts));

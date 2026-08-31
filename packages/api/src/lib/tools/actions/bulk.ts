@@ -88,7 +88,7 @@ function bucketOutcome(
   id: string,
   outcome: ApproveActionOutcome | DenyActionOutcome,
   result: BulkActionsResult,
-  input: { orgId: string | null; userId: string | undefined; requestId?: string },
+  input: { orgId: string | null; userId: string | undefined; requestId: string | undefined },
 ): void {
   switch (outcome.kind) {
     case "not_found":

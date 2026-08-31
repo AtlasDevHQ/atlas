@@ -488,7 +488,10 @@ describe("executeJiraCreate — base-URL guard and timeout", () => {
     // runtime. Without the bound, `executeWithTimeout(fn, undefined)` on a
     // default deployment returns fn() unguarded and a hung Jira host hangs
     // the agent turn.
-    globalThis.fetch = (async (): Promise<Response> => {
+    globalThis.fetch = (async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ): Promise<Response> => {
       // Simulate the runtime's abort rejection without waiting 15s.
       throw new DOMException("The operation was aborted.", "AbortError");
     }) as typeof globalThis.fetch;

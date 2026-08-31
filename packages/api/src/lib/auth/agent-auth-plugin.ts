@@ -120,7 +120,9 @@ function toIdentity(session: AgentSession): AgentAuthIdentity {
   const label = session.agent.name || session.user.name;
   return {
     userId: session.userId ?? session.user.id,
-    ...(requestedWorkspaceId !== undefined ? { requestedWorkspaceId } : {}),
+    // Required on `AgentAuthIdentity` (declared `string | undefined`), so it is
+    // assigned, not spread — only `label` is an exact optional here.
+    requestedWorkspaceId,
     agentId: session.agentId,
     ...(label ? { label } : {}),
   };

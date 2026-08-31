@@ -609,15 +609,19 @@ function loadEntities(semanticRoot: string): ParsedEntity[] {
       return {
         ...(raw.name !== undefined ? { name: raw.name as string } : {}),
         table: raw.table as string,
-        type: raw.type as string | undefined,
-        connection: group !== "default" ? group : undefined,
-        grain: raw.grain as string | undefined,
-        description: raw.description as string | undefined,
-        dimensions: Array.isArray(raw.dimensions) ? (raw.dimensions as EntityDimension[]) : undefined,
-        measures: Array.isArray(raw.measures) ? (raw.measures as EntityMeasure[]) : undefined,
-        joins: Array.isArray(raw.joins) ? (raw.joins as EntityJoin[]) : undefined,
-        query_patterns: Array.isArray(raw.query_patterns) ? (raw.query_patterns as EntityQueryPattern[]) : undefined,
-        indexes: Array.isArray(raw.indexes) ? (raw.indexes as EntityIndex[]) : undefined,
+        // Every slot below is an exact optional on `ParsedEntity`, so a key the
+        // YAML omits has to be absent rather than present-and-`undefined`. The
+        // `raw` object is a plain parsed record, so re-reading it in the guard
+        // is free (#5522).
+        ...(raw.type !== undefined ? { type: raw.type as string } : {}),
+        ...(group !== "default" ? { connection: group } : {}),
+        ...(raw.grain !== undefined ? { grain: raw.grain as string } : {}),
+        ...(raw.description !== undefined ? { description: raw.description as string } : {}),
+        ...(Array.isArray(raw.dimensions) ? { dimensions: raw.dimensions as EntityDimension[] } : {}),
+        ...(Array.isArray(raw.measures) ? { measures: raw.measures as EntityMeasure[] } : {}),
+        ...(Array.isArray(raw.joins) ? { joins: raw.joins as EntityJoin[] } : {}),
+        ...(Array.isArray(raw.query_patterns) ? { query_patterns: raw.query_patterns as EntityQueryPattern[] } : {}),
+        ...(Array.isArray(raw.indexes) ? { indexes: raw.indexes as EntityIndex[] } : {}),
       };
     });
 }

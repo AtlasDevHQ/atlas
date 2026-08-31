@@ -1378,10 +1378,10 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     // the nested slot has to be spread on presence too (#5522).
     ...(config.pool
       ? {
-          pool: {
-            ...config.pool,
-            ...(config.pool.perOrg !== undefined ? { perOrg: config.pool.perOrg } : {}),
-          },
+          pool: (({ perOrg, ...restPool }) => ({
+            ...restPool,
+            ...(perOrg !== undefined ? { perOrg } : {}),
+          }))(config.pool),
         }
       : {}),
     ...(config.starterPrompts ? { starterPrompts: config.starterPrompts } : {}),

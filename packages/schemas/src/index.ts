@@ -29,3 +29,8 @@ export * from "./durable-run";
 export * from "./sla";
 export * from "./brain";
 export * from "./trust-tier";
+// The `exactOptionalPropertyTypes` adapter (#4955). Internal to this package
+// until #5522 — `@atlas/api` now has `satisfies z.ZodType<T>` sites of its own
+// against types that live in `@useatlas/types`, and the issue's rule is to
+// reuse this helper rather than re-derive it per package.
+export * from "./exact-optional";

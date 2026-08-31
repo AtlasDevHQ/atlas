@@ -2881,8 +2881,10 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
         ...(saasImmutable !== undefined ? { saasImmutable } : {}),
         currentValue,
         source,
-        platformValue,
-        platformSource,
+        // Both are exact optionals: a setting with no platform-tier value must
+        // omit the keys rather than hold `undefined` (#5522).
+        ...(platformValue !== undefined ? { platformValue } : {}),
+        ...(platformSource !== undefined ? { platformSource } : {}),
       };
     });
 }

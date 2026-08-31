@@ -67,7 +67,7 @@ export const ACTION_TOOLS: readonly AtlasAction[] = [
 export {
   resolveActionCredentials,
   getActionTargetStatus,
-  missingRequiredFor,
+  unsatisfiedRequiredFields,
   ActionCredentialError,
   type ResolvedActionCredentials,
   type ActionCredentialSource,

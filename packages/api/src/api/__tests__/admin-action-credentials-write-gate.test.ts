@@ -44,7 +44,24 @@ void mock.module("@atlas/api/lib/tools/actions/credentials/store", () => ({
   saveActionCredentials: mockSave,
   deleteActionCredentials: mockDelete,
 }));
-void mock.module("@atlas/api/lib/db/internal", () => ({ hasInternalDB: () => true }));
+// `mock.module` REPLACES the module, so anything the route's import graph reads
+// has to be here (testing.md). The throwing stubs are the defensive half: this
+// suite drives its own store mock, so a call reaching the real pool is a bug in
+// the test, and bun surfaces a missing named export as a load-time SyntaxError
+// rather than a silent `undefined`. Same shape as
+// `purge_partial_action_credentials.test.ts`, so the two agree.
+void mock.module("@atlas/api/lib/db/internal", () => ({
+  hasInternalDB: () => true,
+  internalQuery: () => {
+    throw new Error("admin-action-credentials must reach the store, not the pool");
+  },
+  queryEffect: () => {
+    throw new Error("admin-action-credentials must reach the store, not the pool");
+  },
+  getInternalDB: () => {
+    throw new Error("admin-action-credentials must reach the store, not the pool");
+  },
+}));
 void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({ deployMode: "self-hosted" }),
 }));

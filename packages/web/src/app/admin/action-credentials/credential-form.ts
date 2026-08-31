@@ -323,6 +323,22 @@ export function hasStoredRow(target: TargetStatus): boolean {
 }
 
 /**
+ * Whether an environment rung is standing behind this target — i.e. whether
+ * "falls back to the environment" is a true thing to say about it.
+ *
+ * Beside {@link hasStoredRow} rather than inline at the call site: "these two
+ * states have a complete env rung" is a fact about the discriminant, and the
+ * page had begun re-stating it in JSX where it could drift from the copy
+ * `summarizeTarget` writes from the same fact.
+ *
+ * Both members are self-hosted-only, so this is always false on SaaS — where
+ * the rung does not exist at all (ADR-0046).
+ */
+export function hasEnvFallback(target: TargetStatus): boolean {
+  return target.state === "env" || target.state === "partial-row-shadowing-env";
+}
+
+/**
  * Required fields that would NOT resolve if this draft were saved as-is.
  *
  * The all-or-nothing rung rule makes a partial save actively harmful rather

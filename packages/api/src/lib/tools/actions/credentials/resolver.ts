@@ -194,7 +194,7 @@ function missingRequired(
  * form. `admin-action-credentials.ts` now asks it of the exact merged bundle
  * it is about to persist.
  */
-export function missingRequiredFor(
+export function unsatisfiedRequiredFields(
   spec: ActionTargetSpec,
   read: (key: string) => string | undefined,
 ): string[] {
@@ -360,6 +360,16 @@ export interface ActionTargetFieldStatus {
    * Presence only, never a value — the same contract `present` carries, and it
    * discloses nothing that `source: "workspace"` does not already disclose on
    * the winning path.
+   *
+   * Yes, this is a third boolean-ish member beside `present` and `source`, and
+   * no, the field triple is not a discriminant the way {@link ActionTargetState}
+   * is. Worth being precise about what is and is not representable here:
+   * `present` is already exactly `source !== "unset"` — a redundancy that
+   * predates this field — and `stored` cannot contradict them, because when the
+   * workspace rung wins the winning values ARE the row's, so `present` implies
+   * `stored`. Collapsing the triple would reshape the per-field read-back
+   * contract, which #5564 puts out of scope; it is a fair follow-up, not a
+   * thing to smuggle into this change.
    */
   readonly stored: boolean;
 }

@@ -107,21 +107,29 @@ describe("classifyRow", () => {
   });
 });
 
-function fakeDB(rows: StoredCredentialRow[]): { db: PurgeDB; deletes: unknown[][] } {
+function fakeDB(
+  rows: StoredCredentialRow[],
+  onSelect?: () => void,
+): { db: PurgeDB; deletes: unknown[][]; statements: string[] } {
   const deletes: unknown[][] = [];
+  const statements: string[] = [];
   const db: PurgeDB = {
-    // oxlint-disable-next-line no-explicit-any -- the fake answers two known
-    // statements; a generic `{ rows }` is the whole contract `PurgeDB` states.
     query: (async (sql: string, params?: unknown[]) => {
-      if (sql.trimStart().startsWith("DELETE")) {
+      const head = sql.trimStart().split(/\s+/)[0]!.toUpperCase();
+      statements.push(head);
+      if (head === "DELETE") {
         deletes.push(params ?? []);
         const ids = (params?.[0] ?? []) as string[];
         return { rows: ids.map((id) => ({ id })) };
       }
-      return { rows };
+      if (head === "SELECT") {
+        onSelect?.();
+        return { rows };
+      }
+      return { rows: [] };
     }) as PurgeDB["query"],
   };
-  return { db, deletes };
+  return { db, deletes, statements };
 }
 
 describe("purgePartialRows", () => {
@@ -161,6 +169,38 @@ describe("purgePartialRows", () => {
     await purgePartialRows(db, { confirm: true, log: () => {} });
 
     expect(deletes).toHaveLength(0);
+  });
+
+  it("classifies and deletes inside ONE transaction, with the rows locked", async () => {
+    // The TOCTOU this closes: an unlocked SELECT then a DELETE by id lets a
+    // workspace complete its row through the live Admin form in between, and
+    // the delete then destroys a row that is no longer partial.
+    const { db, statements } = fakeDB(mixed);
+    await purgePartialRows(db, { confirm: true, log: () => {} });
+
+    expect(statements[0]).toBe("BEGIN");
+    expect(statements.at(-1)).toBe("COMMIT");
+    expect(statements.indexOf("DELETE")).toBeGreaterThan(statements.indexOf("SELECT"));
+  });
+
+  it("takes the locks on a dry run too, so what it reports is what it would remove", async () => {
+    const { db, statements } = fakeDB(mixed);
+    await purgePartialRows(db, { confirm: false, log: () => {} });
+
+    expect(statements[0]).toBe("BEGIN");
+    expect(statements).not.toContain("DELETE");
+    expect(statements.at(-1)).toBe("COMMIT");
+  });
+
+  it("rolls back rather than leaving the transaction open when classification throws", async () => {
+    const boom = new Error("connection reset mid-scan");
+    const { db, statements } = fakeDB(mixed, () => {
+      throw boom;
+    });
+
+    await expect(purgePartialRows(db, { confirm: true, log: () => {} })).rejects.toThrow(boom);
+    expect(statements).toContain("ROLLBACK");
+    expect(statements).not.toContain("DELETE");
   });
 
   it("reports env-var names, never values", async () => {

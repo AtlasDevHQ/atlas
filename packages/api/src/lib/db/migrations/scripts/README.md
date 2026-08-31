@@ -7,7 +7,13 @@ real code rather than a `DO $$` block, or because the migration has to land
 shape-only so deploys don't stall.
 
 Each file is named `NNNN_<short_slug>.ts` where `NNNN` matches the migration
-number it accompanies. The file's header docblock states the **exact**
+number it accompanies — **unless it accompanies no numbered migration**, in
+which case it is named after its source table or domain (see the three such
+scripts listed below). A helper has no number when the work has no DDL half:
+the table is created at runtime by a plugin, the transform bridges two existing
+tables, or — as with `purge_partial_action_credentials.ts` — the rows can only
+be classified by application code holding the encryption key, so no SQL
+migration could do it. The file's header docblock states the **exact**
 `bun run` command and the **date** it was run on prod, so anyone retracing
 the deploy can confirm whether the backfill is already applied to a given
 environment.

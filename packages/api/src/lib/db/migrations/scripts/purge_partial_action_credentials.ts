@@ -43,21 +43,36 @@
  *     corruption, and whether corruption is repaired or discarded is a
  *     different decision from this one. Both are reported, never removed.
  *
- * Invocation (DRY RUN unless `--confirm`):
- *   DATABASE_URL=... bun run packages/api/src/lib/db/migrations/scripts/purge_partial_action_credentials.ts
- *   DATABASE_URL=... bun run packages/api/src/lib/db/migrations/scripts/purge_partial_action_credentials.ts --confirm
+ * ── Gating, and why it is doubled ─────────────────────────────────────────
  *
- * Prod run date: NOT YET RUN.
+ * This deletes tenant secrets that no admin can read back — a Jira API token
+ * or a GitHub App private key is gone for good and has to be re-issued at the
+ * far end. CLAUDE.md double-gates every irrecoverable tenant-data command for
+ * that reason (`ops wipe` takes `ATLAS_WIPE_OK=1` AND `--confirm`;
+ * `ops teardown-verify-accounts` takes `ATLAS_TEARDOWN_OK=1` AND `--confirm`),
+ * and this belongs in that class rather than in the backfill class. So:
+ * DRY RUN unless BOTH `ATLAS_PURGE_PARTIAL_OK=1` and `--confirm`.
+ *
+ * ⚠️ RESIDENCY: this opens its own connection from `DATABASE_URL`, and under
+ * ADR-0024 the process IS the region — each of us/eu/apac has its own internal
+ * database. Running it once clears one region. It must be run once PER REGION,
+ * and the prod-run line below records each separately.
+ *
+ * Invocation (DRY RUN unless both gates are set):
+ *   DATABASE_URL=... bun run packages/api/src/lib/db/migrations/scripts/purge_partial_action_credentials.ts
+ *   DATABASE_URL=... ATLAS_PURGE_PARTIAL_OK=1 bun run packages/api/src/lib/db/migrations/scripts/purge_partial_action_credentials.ts --confirm
+ *
+ * Prod run dates: us — NOT YET RUN. eu — NOT YET RUN. apac — NOT YET RUN.
  *
  * @see ADR-0046 — per-workspace action credentials
- * @see packages/api/src/lib/tools/actions/credentials/resolver.ts — `missingRequiredFor`
+ * @see packages/api/src/lib/tools/actions/credentials/resolver.ts — `unsatisfiedRequiredFields`
  */
 
 import { Client } from "pg";
 import { z } from "zod";
 import { decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { getActionTarget } from "@atlas/api/lib/tools/actions/credentials/targets";
-import { missingRequiredFor } from "@atlas/api/lib/tools/actions/credentials/resolver";
+import { unsatisfiedRequiredFields } from "@atlas/api/lib/tools/actions/credentials/resolver";
 
 /**
  * The one code path this script touches, so its unit tests are decoupled from
@@ -115,7 +130,7 @@ export function classifyRow(row: StoredCredentialRow): RowVerdict {
     };
   }
 
-  const missing = missingRequiredFor(spec, (key) => bundle[key]);
+  const missing = unsatisfiedRequiredFields(spec, (key) => bundle[key]);
   return missing.length === 0 ? { kind: "complete" } : { kind: "partial", missing };
 }
 
@@ -140,10 +155,36 @@ export async function purgePartialRows(
   opts: { confirm: boolean; log?: (line: string) => void } = { confirm: false },
 ): Promise<PurgeSummary> {
   const emit = opts.log ?? ((line: string) => console.log(line));
+
+  // One transaction, and the SELECT takes row locks. Classifying from an
+  // unlocked read and then deleting by id opens a window in which a workspace
+  // COMPLETES its row — through the Admin form, which is live while this runs —
+  // between the two statements, and the delete then destroys a row that is no
+  // longer partial. The lock is what makes "partial" true at the moment of the
+  // delete rather than merely true a moment earlier.
+  //
+  // Taken even on a dry run, so what the dry run reports is what a confirmed
+  // run would remove. It is a table of one row per (workspace, target) with no
+  // hot write path, so holding the locks costs nothing worth optimizing.
+  await db.query("BEGIN");
+  try {
+    return await runInTransaction(db, opts.confirm, emit);
+  } catch (err) {
+    await db.query("ROLLBACK");
+    throw err;
+  }
+}
+
+async function runInTransaction(
+  db: PurgeDB,
+  confirm: boolean,
+  emit: (line: string) => void,
+): Promise<PurgeSummary> {
   const { rows } = await db.query<StoredCredentialRow>(
     `SELECT id, workspace_id, target, credentials_encrypted
        FROM workspace_action_credentials
-      ORDER BY workspace_id, target`,
+      ORDER BY workspace_id, target
+        FOR UPDATE`,
   );
 
   const summary: PurgeSummary = {
@@ -181,20 +222,24 @@ export async function purgePartialRows(
     }
   }
 
-  if (doomed.length > 0 && opts.confirm) {
+  if (doomed.length > 0 && confirm) {
     const { rows: removed } = await db.query<{ id: string }>(
       `DELETE FROM workspace_action_credentials WHERE id = ANY($1::uuid[]) RETURNING id`,
       [doomed],
     );
     summary.deleted = removed.length;
   }
+  // COMMIT either way: on a dry run it commits nothing but releases the locks.
+  await db.query("COMMIT");
 
   emit(
     `scanned=${summary.scanned} partial=${summary.partial} complete=${summary.complete} ` +
       `unmanaged=${summary.unmanaged} unreadable=${summary.unreadable} deleted=${summary.deleted}`,
   );
-  if (doomed.length > 0 && !opts.confirm) {
-    emit("DRY RUN — re-run with --confirm to delete the rows listed above.");
+  if (doomed.length > 0 && !confirm) {
+    emit(
+      "DRY RUN — re-run with ATLAS_PURGE_PARTIAL_OK=1 and --confirm to delete the rows listed above.",
+    );
   }
   return summary;
 }
@@ -202,7 +247,14 @@ export async function purgePartialRows(
 // `import.meta.main` so importing this module from a test does not open a
 // database connection.
 if (import.meta.main) {
-  const confirm = process.argv.includes("--confirm");
+  // BOTH gates, or it is a dry run — see the gating note in the module doc.
+  const confirm =
+    process.argv.includes("--confirm") && process.env.ATLAS_PURGE_PARTIAL_OK === "1";
+  if (process.argv.includes("--confirm") && !confirm) {
+    console.error(
+      "--confirm was passed without ATLAS_PURGE_PARTIAL_OK=1; proceeding as a DRY RUN.",
+    );
+  }
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
     console.error("Missing required env var: DATABASE_URL");

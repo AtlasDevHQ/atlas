@@ -71,7 +71,7 @@ import {
 } from "@atlas/api/lib/tools/actions/credentials/targets";
 import {
   getActionTargetStatus,
-  missingRequiredFor,
+  unsatisfiedRequiredFields,
   resolveActionDeployMode,
   type ActionTargetStatus,
 } from "@atlas/api/lib/tools/actions/credentials/resolver";
@@ -353,7 +353,7 @@ adminActionCredentials.openapi(updateTargetRoute, async (c) => {
     // way out of a target an admin no longer wants is DELETE, which clears the
     // row whole and is deliberately not gated on completeness — so refusing
     // here traps nobody.
-    const unsatisfied = missingRequiredFor(spec, (key) => merged[key]);
+    const unsatisfied = unsatisfiedRequiredFields(spec, (key) => merged[key]);
     if (unsatisfied.length > 0) {
       const labels = spec.fields
         .filter((f) => unsatisfied.includes(f.envVar))

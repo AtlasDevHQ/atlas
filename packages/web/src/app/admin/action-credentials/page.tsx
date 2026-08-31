@@ -7,6 +7,7 @@ import {
   buildUpdatePayload,
   fieldPlaceholder,
   fieldSourceLabel,
+  hasEnvFallback,
   hasStoredRow,
   isDraftDirty,
   requiredFieldsUnsatisfied,
@@ -317,9 +318,7 @@ function TargetCard({
               Saving now would leave {unsatisfied.map((f) => f.label).join(", ")} unset, and
               credentials saved here are all-or-nothing — the incomplete entry would stop{" "}
               {target.label} actions rather than falling back
-              {target.state === "env" || target.state === "partial-row-shadowing-env"
-                ? " to the environment"
-                : ""}
+              {hasEnvFallback(target) ? " to the environment" : ""}
               , so the save is refused until every required field is answered. Fill them in,
               or remove the entry entirely.
             </p>

@@ -428,22 +428,53 @@ describe("getActionTargetStatus — the five-state matrix", () => {
     expect(status?.fields.every((f) => f.source !== "env")).toBe(true);
   });
 
-  it("on SaaS only `unconfigured`, `workspace` and `partial-row` are reachable", async () => {
+  it("on SaaS only `unconfigured`, `workspace` and `partial-row` are reachable — EVERY target", async () => {
     // The env rung does not exist on SaaS (ADR-0046 — no operator tier), so
     // neither state that names it can be produced there. Asserted over the
-    // whole arrangement space rather than by inspection: every combination of
-    // {no row, partial row, complete row} × {empty env, complete operator env}.
-    const rows = [null, { JIRA_BASE_URL: "https://tenant.atlassian.net" }, TENANT_ROW];
-    const envs: NodeJS.ProcessEnv[] = [{}, OPERATOR_ENV];
-    const seen = new Set<string>();
-    for (const row of rows) {
-      for (const env of envs) {
-        mockRead.mockResolvedValue(row);
-        const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "saas", env });
-        if (status) seen.add(status.state);
+    // whole arrangement space rather than by inspection — every combination of
+    // {no row, partial row, complete row} × {empty env, complete operator env}
+    // — and over the REGISTRY rather than the pilot target, so target #5 is
+    // covered the day it is added. Set EQUALITY, so an `env` state anywhere in
+    // the space fails this rather than passing unnoticed.
+    const { ACTION_TARGETS: targets } = await import("../targets");
+    for (const spec of targets) {
+      const fullRow: Record<string, string> = {};
+      const fullEnv: NodeJS.ProcessEnv = {};
+      for (const field of spec.fields) {
+        fullRow[field.envVar] = `row-${field.envVar}`;
+        fullEnv[field.envVar] = `env-${field.envVar}`;
       }
+      const partialRow = { ...fullRow };
+      const firstRequired = spec.fields.find((f) => f.required);
+      if (firstRequired) delete partialRow[firstRequired.envVar];
+
+      const seen = new Set<string>();
+      for (const row of [null, partialRow, fullRow]) {
+        for (const env of [{}, fullEnv]) {
+          mockRead.mockResolvedValue(row);
+          const status = await getActionTargetStatus(spec.target, {
+            workspaceId: WS,
+            deployMode: "saas",
+            env,
+          });
+          if (status) seen.add(status.state);
+        }
+      }
+      expect([...seen].toSorted()).toEqual(["partial-row", "unconfigured", "workspace"]);
     }
-    expect([...seen].toSorted()).toEqual(["partial-row", "unconfigured", "workspace"]);
+  });
+
+  it("on self-hosted the two env-naming states ARE reachable — the SaaS assertion is about the rung, not the ladder", async () => {
+    // Without this, the assertion above would also pass if the two states were
+    // unreachable everywhere, which would make it vacuous.
+    mockRead.mockResolvedValue(null);
+    expect(
+      (await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV }))?.state,
+    ).toBe("env");
+    mockRead.mockResolvedValue({ JIRA_BASE_URL: "https://tenant.atlassian.net" });
+    expect(
+      (await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV }))?.state,
+    ).toBe("partial-row-shadowing-env");
   });
 
   it("`stored` tracks the ROW, so a shadowed field is not reported missing", async () => {
@@ -527,7 +558,7 @@ describe("spec evolution turns a stored row partial", () => {
     // spec that now has three. `getActionTargetStatus` reads its spec from the
     // live registry, so this is the one place the evolved spec can be supplied
     // rather than imitated.
-    const { missingRequiredFor } = await import("../resolver");
+    const { unsatisfiedRequiredFields } = await import("../resolver");
     const yesterdaysRow = { ACME_URL: "https://acme.example", ACME_KEY: "k" };
     const todaysSpec = {
       target: "acme",
@@ -538,7 +569,7 @@ describe("spec evolution turns a stored row partial", () => {
         { envVar: "ACME_REGION", label: "Region", hint: "", secret: false, required: true },
       ],
     };
-    expect(missingRequiredFor(todaysSpec, (k) => yesterdaysRow[k as keyof typeof yesterdaysRow])).toEqual([
+    expect(unsatisfiedRequiredFields(todaysSpec, (k) => yesterdaysRow[k as keyof typeof yesterdaysRow])).toEqual([
       "ACME_REGION",
     ]);
   });

@@ -183,8 +183,22 @@ export async function runStagedConfirm<TBinding, TOutcome>(
           },
         };
       default: {
+        // Fail closed. Unreachable by construction — the assignment is what makes
+        // a new `StagedActorResolution` arm a compile error — but a THROW here
+        // would escape `route.onError` to the global handler, which mints a FRESH
+        // request id: the 500 a caller quotes would then correlate with nothing.
         const unexpected: never = actor;
-        throw new Error(`Unhandled staged-actor failure: ${JSON.stringify(unexpected)}`);
+        log.error(
+          { workspaceId, requestId, failure: String(unexpected), ...fields },
+          `${verb.name} confirm refused: unhandled actor-resolution arm (fail-closed)`,
+        );
+        return {
+          ok: false,
+          refusal: {
+            status: 500,
+            body: { error: "internal_error", message: copy.actorFailed, requestId },
+          },
+        };
       }
     }
   }
@@ -249,8 +263,21 @@ export async function runStagedConfirm<TBinding, TOutcome>(
           },
         };
       default: {
+        // Fail closed, and on the SAFE side of this boundary: an unrecognized
+        // gate arm must refuse, never fall through toward the write. Returned
+        // rather than thrown for the request-id reason above.
         const unexpected: never = gate;
-        throw new Error(`Unhandled staged-confirm gate failure: ${JSON.stringify(unexpected)}`);
+        log.error(
+          { workspaceId: ctx.workspaceId, requestId, failure: String(unexpected), ...fields },
+          `${verb.name} confirm rejected: unhandled confirm-gate arm (fail-closed)`,
+        );
+        return {
+          ok: false,
+          refusal: {
+            status: 500,
+            body: { error: "internal_error", message: copy.executeFailed, requestId },
+          },
+        };
       }
     }
   }

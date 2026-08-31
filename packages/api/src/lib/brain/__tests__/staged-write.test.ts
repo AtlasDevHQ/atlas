@@ -23,6 +23,13 @@
  * what a correction token binds and what tampering with each field does, and
  * the two route suites still pin the HTTP contract. This file sits between
  * them, on the part that used to be written twice.
+ *
+ * ⚠️ **The REST write gate is deliberately absent from the table.** It is the
+ * third confirm gate in the product, and it is not a `StagedVerb` because its
+ * invariant genuinely differs: `rest-operations.ts` interposes the allowlist
+ * re-validation between verification and the burn, so a confirm its allowlist
+ * refuses does NOT spend its nonce — the opposite of the burn-on-attempt these
+ * two verbs share. `rest-write-confirm.ts` carries the full note.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test";
 
@@ -30,10 +37,17 @@ import {
   mintStagedConfirmToken,
   verifyAndBurnStagedConfirm,
   verifyStagedConfirmToken,
-  type StagedVerb,
+  type StagedConfirmGate,
 } from "@atlas/api/lib/brain/staged-write";
-import { PROPOSAL_STAGED_VERB } from "@atlas/api/lib/brain/staged-propose";
-import { CORRECTION_STAGED_VERB } from "@atlas/api/lib/brain/staged-correct";
+import {
+  PROPOSAL_STAGED_VERB,
+  type ProposalConfirmBinding,
+} from "@atlas/api/lib/brain/staged-propose";
+import {
+  CORRECTION_STAGED_VERB,
+  type CorrectionConfirmBinding,
+} from "@atlas/api/lib/brain/staged-correct";
+import type { MintConfirmTokenOptions } from "@atlas/api/lib/confirm-token";
 import { _resetConfirmNonces } from "@atlas/api/lib/confirm-token";
 import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
 
@@ -74,98 +88,127 @@ beforeEach(() => {
 });
 
 /**
- * One row per staged verb.
+ * One row per staged verb, as already-closed operations rather than as a verb
+ * plus a loose binding.
  *
- * `binding` is what the confirm endpoint re-derives; `tampered` is the same
- * binding with ONE bound field changed — whichever field, for that verb, means
- * the human agreed to a different write. The gate must reject it identically for
- * every verb, which is the property a per-route copy could not give you.
- *
- * ⚠️ **A third staged verb goes here, and nowhere else.** If adding it needs a
- * new case below rather than a new row, the gate grew a per-verb branch and the
- * refactor has been undone. `registry.test.ts` pins the confirm-capable delta as
- * an exact set, so the verb has to be named there too — that is the other half
- * of the same guard.
+ * The gate is generic in its binding, so a table holding `StagedVerb<A>` beside
+ * `StagedVerb<B>` needs an existential the language does not have — and casting
+ * the rows to a common erased type would throw away the one guarantee the seam
+ * exists to give: that a verb's token is minted and verified against the SAME
+ * binding type. So each row closes over its own concrete types HERE, where the
+ * compiler still checks the pairing, and exposes only the erased operations the
+ * cases below need. Every `mint`/`gate` call in this file is type-checked
+ * against its verb's real binding.
  */
 interface VerbRow {
   readonly label: string;
-  // The gate is generic in its binding, and each row closes over its own; the
-  // table is deliberately heterogeneous, so the shared type is the erased one.
-  readonly verb: StagedVerb<never>;
-  readonly binding: () => unknown;
-  readonly tampered: () => unknown;
-  /** What was changed in `tampered`, for the assertion message. */
+  readonly typ: string;
+  readonly ttlEnvVar: string;
+  /** Mint against this verb's own correct binding. */
+  readonly mint: (options?: MintConfirmTokenOptions) => string;
+  /** Mint against a binding in a different workspace. */
+  readonly mintForeignWorkspace: () => string;
+  /** Run the full gate against this verb's own correct binding. */
+  readonly gate: (token: string, nowSeconds?: number) => StagedConfirmGate;
+  /** Run the gate against a binding with ONE bound field changed. */
+  readonly gateTampered: (token: string) => StagedConfirmGate;
+  /** Verify WITHOUT burning — the pure half. */
+  readonly verifyOnly: (token: string) => boolean;
+  /** What `gateTampered` changed, for the assertion message. */
   readonly tamperedField: string;
 }
 
-const PROPOSAL_ROW: VerbRow = {
-  label: "proposeFact",
-  verb: PROPOSAL_STAGED_VERB as StagedVerb<never>,
-  binding: () => ({
+const PROPOSAL_ROW: VerbRow = (() => {
+  const verb = PROPOSAL_STAGED_VERB;
+  const binding: ProposalConfirmBinding = {
     workspaceId: "ws-1",
     claim: { subject: "Ana", predicate: "is the DRI for", object: "billing" },
-  }),
-  tampered: () => ({
-    workspaceId: "ws-1",
-    claim: { subject: "Ana", predicate: "is the DRI for", object: "payroll" },
-  }),
-  tamperedField: "the claim's object — what would be asserted",
-};
+  };
+  const tampered: ProposalConfirmBinding = {
+    ...binding,
+    claim: { ...binding.claim, object: "payroll" },
+  };
+  return {
+    label: "proposeFact",
+    typ: verb.kind.typ,
+    ttlEnvVar: verb.kind.ttlEnvVar,
+    mint: (options) => mintStagedConfirmToken(verb, binding, options),
+    mintForeignWorkspace: () =>
+      mintStagedConfirmToken(verb, { ...binding, workspaceId: "ws-other" }),
+    gate: (token, nowSeconds) =>
+      nowSeconds === undefined
+        ? verifyAndBurnStagedConfirm(verb, token, binding)
+        : verifyAndBurnStagedConfirm(verb, token, binding, nowSeconds),
+    gateTampered: (token) => verifyAndBurnStagedConfirm(verb, token, tampered),
+    verifyOnly: (token) => verifyStagedConfirmToken(verb, token, binding).ok,
+    tamperedField: "the claim's object — what would be asserted",
+  };
+})();
 
-const CORRECTION_ROW: VerbRow = {
-  label: "correct_fact",
-  verb: CORRECTION_STAGED_VERB as StagedVerb<never>,
-  binding: () => ({
+const CORRECTION_ROW: VerbRow = (() => {
+  const verb = CORRECTION_STAGED_VERB;
+  const binding: CorrectionConfirmBinding = {
     workspaceId: "ws-1",
     factId: "fact-1",
-    verb: "supersede" as const,
+    verb: "supersede",
     payload: { replacement: { object: "Bo" } },
-  }),
-  tampered: () => ({
-    workspaceId: "ws-1",
-    factId: "fact-1",
-    verb: "supersede" as const,
+  };
+  const tampered: CorrectionConfirmBinding = {
+    ...binding,
     payload: { replacement: { object: "Cy" } },
-  }),
-  tamperedField: "the replacement value — what the fact would become",
-};
+  };
+  return {
+    label: "correct_fact",
+    typ: verb.kind.typ,
+    ttlEnvVar: verb.kind.ttlEnvVar,
+    mint: (options) => mintStagedConfirmToken(verb, binding, options),
+    mintForeignWorkspace: () =>
+      mintStagedConfirmToken(verb, { ...binding, workspaceId: "ws-other" }),
+    gate: (token, nowSeconds) =>
+      nowSeconds === undefined
+        ? verifyAndBurnStagedConfirm(verb, token, binding)
+        : verifyAndBurnStagedConfirm(verb, token, binding, nowSeconds),
+    gateTampered: (token) => verifyAndBurnStagedConfirm(verb, token, tampered),
+    verifyOnly: (token) => verifyStagedConfirmToken(verb, token, binding).ok,
+    tamperedField: "the replacement value — what the fact would become",
+  };
+})();
 
+/**
+ * The registered staged verbs.
+ *
+ * ⚠️ **A third staged verb goes here, and nowhere else.** If adding it needs a
+ * new `it(...)` below rather than a new row, the gate grew a per-verb branch and
+ * the refactor has been undone. `registry.test.ts` pins the confirm-capable
+ * delta as an exact set, so the verb has to be named there too — that is the
+ * other half of the same guard.
+ */
 const STAGED_VERBS: readonly VerbRow[] = [PROPOSAL_ROW, CORRECTION_ROW];
-
-/** Mint against a row's own binding, typed through the row's erased verb. */
-function mint(row: VerbRow, binding: unknown = row.binding(), options = {}): string {
-  return mintStagedConfirmToken(row.verb, binding as never, options);
-}
-
-function gate(row: VerbRow, token: string, binding: unknown = row.binding(), now?: number) {
-  return now === undefined
-    ? verifyAndBurnStagedConfirm(row.verb, token, binding as never)
-    : verifyAndBurnStagedConfirm(row.verb, token, binding as never, now);
-}
 
 describe("the staged-write gate — every registered verb", () => {
   it("registers each verb under a DISTINCT typ, so no token is spendable at another gate", () => {
-    // Not a loop: the whole point is the set, and a duplicate `typ` would make
-    // one verb's confirmation spendable on another's write.
-    const typs = STAGED_VERBS.map((r) => r.verb.kind.typ);
+    // Asserted as a set rather than in the per-verb loop: the property is about
+    // the collection, and a duplicate `typ` would make one verb's confirmation
+    // spendable on another's write.
+    const typs = STAGED_VERBS.map((r) => r.typ);
     expect(new Set(typs).size).toBe(typs.length);
     // Distinct TTL vars too — an operator tuning one gate's window must not
     // silently move the other's.
-    const envVars = STAGED_VERBS.map((r) => r.verb.kind.ttlEnvVar);
+    const envVars = STAGED_VERBS.map((r) => r.ttlEnvVar);
     expect(new Set(envVars).size).toBe(envVars.length);
   });
 
   for (const row of STAGED_VERBS) {
     describe(row.label, () => {
       it("admits a correctly-bound token exactly once", () => {
-        expect(gate(row, mint(row))).toEqual({ ok: true });
+        expect(row.gate(row.mint())).toEqual({ ok: true });
       });
 
       it("⭐ refuses the SECOND presentation of one token — the nonce is single-use", () => {
-        const token = mint(row);
-        expect(gate(row, token)).toEqual({ ok: true });
+        const token = row.mint();
+        expect(row.gate(token)).toEqual({ ok: true });
         expect(
-          gate(row, token),
+          row.gate(token),
           "a replayed confirm was admitted — a looping agent could re-fire one human confirmation",
         ).toEqual({ ok: false, failure: "replayed" });
       });
@@ -175,27 +218,26 @@ describe("the staged-write gate — every registered verb", () => {
         // refuses or throws. That is the interesting case: the nonce must stay
         // spent, or one confirmation could be re-fired against many claims or
         // many target states — a graph probe.
-        const token = mint(row);
-        expect(gate(row, token)).toEqual({ ok: true });
+        const token = row.mint();
+        expect(row.gate(token)).toEqual({ ok: true });
         // …the verb refused. Nothing hands the nonce back.
-        expect(gate(row, token)).toEqual({ ok: false, failure: "replayed" });
+        expect(row.gate(token)).toEqual({ ok: false, failure: "replayed" });
       });
 
       it("⭐ rejects a payload edited after staging, without burning anything", () => {
-        const token = mint(row);
+        const token = row.mint();
         expect(
-          gate(row, token, row.tampered()),
+          row.gateTampered(token),
           `a token survived a tamper of ${row.tamperedField}`,
         ).toEqual({ ok: false, failure: "invalid", reason: "binding-mismatch" });
         // The tampered attempt must not have spent the nonce: an attacker who
         // could burn a pending confirmation by POSTing a mangled copy of it
         // would have a denial-of-service on every staged write.
-        expect(gate(row, token)).toEqual({ ok: true });
+        expect(row.gate(token)).toEqual({ ok: true });
       });
 
       it("rejects a token minted for another workspace", () => {
-        const token = mint(row, { ...(row.binding() as object), workspaceId: "ws-other" });
-        expect(gate(row, token)).toEqual({
+        expect(row.gate(row.mintForeignWorkspace())).toEqual({
           ok: false,
           failure: "invalid",
           reason: "binding-mismatch",
@@ -203,8 +245,8 @@ describe("the staged-write gate — every registered verb", () => {
       });
 
       it("rejects a missing and a malformed token under the one neutral arm", () => {
-        expect(gate(row, "")).toEqual({ ok: false, failure: "invalid", reason: "missing" });
-        expect(gate(row, "not-a-token")).toEqual({
+        expect(row.gate("")).toEqual({ ok: false, failure: "invalid", reason: "missing" });
+        expect(row.gate("not-a-token")).toEqual({
           ok: false,
           failure: "invalid",
           reason: "malformed",
@@ -212,15 +254,15 @@ describe("the staged-write gate — every registered verb", () => {
       });
 
       it("rejects an expired token, and does not burn it", () => {
-        const token = mint(row, row.binding(), { nowSeconds: 1_000, ttlSeconds: 60 });
-        expect(gate(row, token, row.binding(), 2_000)).toEqual({
+        const token = row.mint({ nowSeconds: 1_000, ttlSeconds: 60 });
+        expect(row.gate(token, 2_000)).toEqual({
           ok: false,
           failure: "invalid",
           reason: "expired",
         });
         // Still inside its window it is admitted — proving the rejection above
         // was the clock and not a burn the expired attempt performed.
-        expect(gate(row, token, row.binding(), 1_059)).toEqual({ ok: true });
+        expect(row.gate(token, 1_059)).toEqual({ ok: true });
       });
 
       it("⭐ separates a missing signing key from an invalid token — a 500, never the neutral 400", () => {
@@ -229,8 +271,8 @@ describe("the staged-write gate — every registered verb", () => {
         // bad when the server was, and hide a broken deployment behind a 400.
         clearKeyEnv();
         try {
-          expect(gate(row, "a.b.c")).toEqual({ ok: false, failure: "unverifiable" });
-          expect(() => mint(row)).toThrow(/no signing key configured/);
+          expect(row.gate("a.b.c")).toEqual({ ok: false, failure: "unverifiable" });
+          expect(() => row.mint()).toThrow(/no signing key configured/);
         } finally {
           process.env.BETTER_AUTH_SECRET = SECRET;
           _resetEncryptionKeyCache();
@@ -245,11 +287,11 @@ describe("the staged-write gate — every registered verb", () => {
     // shared crypto core is exactly the change that would make forgetting it
     // plausible.
     for (const minter of STAGED_VERBS) {
-      const token = mint(minter);
+      const token = minter.mint();
       for (const presenter of STAGED_VERBS) {
         if (presenter === minter) continue;
         expect(
-          gate(presenter, token),
+          presenter.gate(token),
           `a ${minter.label} confirmation was spendable at the ${presenter.label} gate`,
         ).toEqual({ ok: false, failure: "invalid", reason: "malformed" });
       }
@@ -264,11 +306,11 @@ describe("the staged-write gate — every registered verb", () => {
     // so the purity is not quietly lost.
     for (const row of STAGED_VERBS) {
       _resetConfirmNonces();
-      const token = mint(row);
-      expect(verifyStagedConfirmToken(row.verb, token, row.binding() as never).ok).toBe(true);
-      expect(verifyStagedConfirmToken(row.verb, token, row.binding() as never).ok).toBe(true);
+      const token = row.mint();
+      expect(row.verifyOnly(token)).toBe(true);
+      expect(row.verifyOnly(token)).toBe(true);
       // …and the nonce is still there to be spent.
-      expect(gate(row, token)).toEqual({ ok: true });
+      expect(row.gate(token)).toEqual({ ok: true });
     }
   });
 });

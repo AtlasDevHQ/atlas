@@ -55,7 +55,7 @@ import {
 } from "@useatlas/schemas";
 import { ErrorSchema } from "./shared-schemas";
 import { correctionNotFoundBody, refusalStatus } from "./shared-correction";
-import { runStagedConfirm } from "./staged-confirm";
+import { runStagedConfirm } from "./shared-staged-confirm";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("brain-corrections");

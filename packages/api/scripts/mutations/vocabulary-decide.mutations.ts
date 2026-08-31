@@ -83,8 +83,15 @@ const EXTRACT = "src/lib/brain/extract.ts";
  * have moved between staging and confirming. The confirm endpoint loads it live,
  * so that is where the anchors are — the row's SUBJECT is unchanged (a chat-path
  * consumer reverting to the empty vocabulary), only its address moved.
+ *
+ * #5571 moved it again, for the same kind of reason: both confirm routes ran the
+ * same ladder, so the ladder became one function and the load moved into it. The
+ * row's subject is STILL unchanged, and the anchor is now stronger — one edit
+ * here degrades the proposal confirm path as well as the correction one, where
+ * before `brain-proposals.ts` carried an identical unanchored copy. The killing
+ * column is unchanged (`brain-corrections.test.ts` drives this ladder).
  */
-const CONFIRM_ROUTE = "src/api/routes/brain-corrections.ts";
+const CONFIRM_ROUTE = "src/api/routes/shared-staged-confirm.ts";
 const ADMIN_ROUTE = "src/api/routes/admin-brain-facts.ts";
 
 /** `findProposalByPair`'s WHERE — 0190's unordered-pair identity, asked in SQL. */
@@ -117,14 +124,8 @@ const EXTRACT_IDENTITY_IMPORT = {
 
 const CONFIRM_ROUTE_IDENTITY_IMPORT = {
   file: CONFIRM_ROUTE,
-  oldString: `import {
-  VocabularyClosureError,
-  loadWorkspaceVocabulary,
-} from "@atlas/api/lib/brain/vocabulary";`,
-  newString: `import {
-  VocabularyClosureError,
-  loadWorkspaceVocabulary,
-} from "@atlas/api/lib/brain/vocabulary";
+  oldString: `import { VocabularyClosureError, loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";`,
+  newString: `import { VocabularyClosureError, loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";`,
 } as const;
 
@@ -737,8 +738,8 @@ be a fabricated measurement.
         CONFIRM_ROUTE_IDENTITY_IMPORT,
         {
           file: CONFIRM_ROUTE,
-          oldString: `          vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),`,
-          newString: `          vocabulary: identityVocabulary,`,
+          oldString: `    const vocabulary = await loadWorkspaceVocabulary(ctx.workspaceId);`,
+          newString: `    const vocabulary = identityVocabulary;`,
         },
       ],
       note: "The `loadWorkspaceVocabulary` import is deliberately LEFT in place: the tripwire first asserts each consumer still loads a vocabulary at all, and removing it would trip that backstop instead of the assertion this row is about. The behavioural coverage for this site is the `confirm-route` column beside it, which is why that suite is a column at all.",
@@ -817,8 +818,8 @@ be a fabricated measurement.
       edits: [
         {
           file: CONFIRM_ROUTE,
-          oldString: `          vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),`,
-          newString: `          vocabulary: ${INLINE_IDENTITY},`,
+          oldString: `    const vocabulary = await loadWorkspaceVocabulary(ctx.workspaceId);`,
+          newString: `    const vocabulary = ${INLINE_IDENTITY};`,
         },
       ],
       note: "NO import edit, and that is the whole point of the row: this is the revert a source-level tripwire cannot see. The `loadWorkspaceVocabulary` import survives (unused), so the tripwire's `includes` check still passes and only a test asserting the vocabulary the caller actually handed over can kill it.",

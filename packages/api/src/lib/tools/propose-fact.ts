@@ -64,6 +64,7 @@ import {
   resolveStagedActor,
 } from "@atlas/api/lib/brain/staged-write";
 import { withRequestId } from "@atlas/api/lib/tools/tool-message";
+import { stagedToolRefusal } from "@atlas/api/lib/tools/staged-tool";
 import { BrainProposalClaimSchema } from "@useatlas/schemas";
 
 const log = createLogger("propose-fact");
@@ -183,37 +184,20 @@ export const proposeFactTool = tool({
       order: "store-first",
     });
     if (!actor.ok) {
-      switch (actor.failure) {
-        case "store-unavailable":
-          return {
-            error: COPY.storeUnavailable,
-            reason: PROPOSE_FACT_TOOL_REASONS.noInternalDb,
-          };
-        case "no-workspace":
-          return { error: COPY.noWorkspace, reason: PROPOSE_FACT_TOOL_REASONS.noWorkspace };
-        case "reader-unresolved":
-          log.error(
-            { err: actor.message, workspaceId, requestId },
-            "proposeFact refused: actor identity could not be resolved",
-          );
-          return {
-            error: withRequestId(COPY.readerUnresolved, requestId),
-            reason: PROPOSE_FACT_TOOL_REASONS.readerUnresolved,
-          };
-        case "actor-failed":
-          log.error(
-            { err: actor.message, workspaceId, requestId },
-            "proposeFact could not resolve the actor for staging",
-          );
-          return {
-            error: withRequestId(COPY.actorFailed, requestId),
-            reason: PROPOSE_FACT_TOOL_REASONS.proposalFailed,
-          };
-        default: {
-          const unexpected: never = actor;
-          throw new Error(`Unhandled staged-actor failure: ${JSON.stringify(unexpected)}`);
-        }
-      }
+      return stagedToolRefusal({
+        verb: PROPOSAL_STAGED_VERB,
+        failure: actor,
+        reasons: {
+          storeUnavailable: PROPOSE_FACT_TOOL_REASONS.noInternalDb,
+          noWorkspace: PROPOSE_FACT_TOOL_REASONS.noWorkspace,
+          readerUnresolved: PROPOSE_FACT_TOOL_REASONS.readerUnresolved,
+          actorFailed: PROPOSE_FACT_TOOL_REASONS.proposalFailed,
+        },
+        toolName: "proposeFact",
+        log,
+        workspaceId,
+        requestId,
+      });
     }
     const { ctx } = actor;
 

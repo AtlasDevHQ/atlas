@@ -133,7 +133,7 @@ describe("correction confirm token — mint/verify", () => {
     // The client round-trips the staged JSON through the browser, and object key
     // order is not preserved by every path it takes. A binding that depended on
     // it would reject confirmations that changed nothing.
-    const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, 
+    const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB,
       binding({ payload: { reason: "r", replacement: { object: "Bo", validFrom: "2026-01-01T00:00:00.000Z" } } }),
     );
     const reordered = binding({
@@ -148,7 +148,7 @@ describe("correction confirm token — mint/verify", () => {
     // a `retract` staged with no reason could never be confirmed.
     const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, binding({ verb: "retract", payload: {} }));
     expect(
-      verifyStagedConfirmToken(CORRECTION_STAGED_VERB, 
+      verifyStagedConfirmToken(CORRECTION_STAGED_VERB,
         token,
         // Neither `reason` nor `replacement` supplied — both are exact optionals,
         // so the payload that omits them IS the empty object (#5522).

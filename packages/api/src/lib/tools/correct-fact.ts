@@ -74,6 +74,7 @@ import {
   resolveStagedActor,
 } from "@atlas/api/lib/brain/staged-write";
 import { withRequestId } from "@atlas/api/lib/tools/tool-message";
+import { stagedToolRefusal } from "@atlas/api/lib/tools/staged-tool";
 import {
   BRAIN_CORRECTION_OBJECT_MAX_CHARS,
   BRAIN_CORRECTION_REASON_MAX_CHARS,
@@ -210,37 +211,21 @@ export const correctFactTool = tool({
       order: "store-first",
     });
     if (!actor.ok) {
-      switch (actor.failure) {
-        case "store-unavailable":
-          return {
-            error: COPY.storeUnavailable,
-            reason: CORRECT_FACT_TOOL_REASONS.noInternalDb,
-          };
-        case "no-workspace":
-          return { error: COPY.noWorkspace, reason: CORRECT_FACT_TOOL_REASONS.noWorkspace };
-        case "reader-unresolved":
-          log.error(
-            { err: actor.message, workspaceId, requestId },
-            "correct_fact refused: actor identity could not be resolved",
-          );
-          return {
-            error: withRequestId(COPY.readerUnresolved, requestId),
-            reason: CORRECT_FACT_TOOL_REASONS.readerUnresolved,
-          };
-        case "actor-failed":
-          log.error(
-            { err: actor.message, workspaceId, factId: input.factId, verb: input.verb, requestId },
-            "correct_fact could not resolve the actor for staging",
-          );
-          return {
-            error: withRequestId(COPY.actorFailed, requestId),
-            reason: CORRECT_FACT_TOOL_REASONS.correctionFailed,
-          };
-        default: {
-          const unexpected: never = actor;
-          throw new Error(`Unhandled staged-actor failure: ${JSON.stringify(unexpected)}`);
-        }
-      }
+      return stagedToolRefusal({
+        verb: CORRECTION_STAGED_VERB,
+        failure: actor,
+        reasons: {
+          storeUnavailable: CORRECT_FACT_TOOL_REASONS.noInternalDb,
+          noWorkspace: CORRECT_FACT_TOOL_REASONS.noWorkspace,
+          readerUnresolved: CORRECT_FACT_TOOL_REASONS.readerUnresolved,
+          actorFailed: CORRECT_FACT_TOOL_REASONS.correctionFailed,
+        },
+        toolName: "correct_fact",
+        log,
+        workspaceId,
+        requestId,
+        logFields: { factId: input.factId, verb: input.verb },
+      });
     }
     const { ctx } = actor;
 

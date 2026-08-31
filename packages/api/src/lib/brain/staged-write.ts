@@ -23,7 +23,7 @@
  * `lib/`, so it holds no status codes and no `Response` (CLAUDE.md's layering
  * note; `api/routes/shared-correction.ts`'s header makes the same split for
  * correction refusals). The HTTP ladder that maps these tagged results onto
- * status codes and bodies is `api/routes/staged-confirm.ts`.
+ * status codes and bodies is `api/routes/shared-staged-confirm.ts`.
  *
  * Not here: the crypto. {@link import("@atlas/api/lib/confirm-token")} is the
  * one derivation of the HMAC scheme, the canonicalization, the binding check
@@ -211,19 +211,17 @@ export async function resolveStagedActor(
 ): Promise<StagedActorResolution> {
   const { workspaceId, user, requestId, order } = input;
 
-  const noStore = (): StagedActorResolution | null =>
-    hasInternalDB() ? null : { ok: false, failure: "store-unavailable" };
-  const noWorkspace = (): StagedActorResolution | null =>
-    workspaceId ? null : { ok: false, failure: "no-workspace" };
-
-  const checks = order === "store-first" ? [noStore, noWorkspace] : [noWorkspace, noStore];
-  for (const check of checks) {
-    const refusal = check();
-    if (refusal) return refusal;
+  // Two ordered guards rather than an array of predicates: the array read as
+  // configurable when there are exactly two orders and both are named above, and
+  // it hid `workspaceId`'s narrowing from the compiler, which then needed a
+  // provably-dead re-check to satisfy. `hasInternalDB()` is a pure env read, so
+  // it is asked once and the ORDER of the two answers is all that varies.
+  const storeMissing = !hasInternalDB();
+  if (order === "store-first" && storeMissing) {
+    return { ok: false, failure: "store-unavailable" };
   }
-  // Both checks passed, so `workspaceId` is set — narrowed for the compiler
-  // rather than asserted, since the loop above hides the guard from it.
   if (!workspaceId) return { ok: false, failure: "no-workspace" };
+  if (storeMissing) return { ok: false, failure: "store-unavailable" };
 
   try {
     const ctx = await resolveBrainReaderContext(getInternalDB(), {
@@ -234,6 +232,14 @@ export async function resolveStagedActor(
     });
     return { ok: true, ctx };
   } catch (err) {
+    // Not swallowed, and NOT the `intentionally ignored` case — that marker is
+    // for a catch that emits no signal at all (CLAUDE.md). The narrowed message
+    // is carried out on the tagged result, and every caller logs it before
+    // mapping the arm: `shared-staged-confirm.ts` on the confirm side,
+    // `propose-fact.ts` / `correct-fact.ts` on the staging side. Logging HERE
+    // too would double every actor failure in the log, and the second copy
+    // would be the one missing the caller's own fields (the factId and verb a
+    // correction needs to be findable).
     const message = err instanceof Error ? err.message : String(err);
     if (err instanceof BrainReaderIdentityError) {
       return { ok: false, failure: "reader-unresolved", message };
@@ -267,10 +273,12 @@ export function mintStagedConfirmToken<TBinding>(
  * Verify a staged-write token against the binding re-derived from THIS confirm
  * request. Pure — it does not touch the nonce store.
  *
- * Exported for the tests and for a caller that genuinely wants the two halves
- * apart. Production confirm paths call {@link verifyAndBurnStagedConfirm}
- * instead, because separating them is precisely the mistake this module exists
- * to make unavailable.
+ * This is the half that answers *"does this token bind this request?"*, and it
+ * is what the per-verb binding tests exercise: `staged-correct.test.ts` asks it
+ * WHICH field a tamper broke, a question the gate deliberately flattens into one
+ * neutral arm. Every production confirm path calls
+ * {@link verifyAndBurnStagedConfirm}, which is this plus the burn, in the one
+ * order.
  */
 export function verifyStagedConfirmToken<TBinding>(
   verb: StagedVerb<TBinding>,
@@ -281,7 +289,7 @@ export function verifyStagedConfirmToken<TBinding>(
   return verifyConfirmToken(verb.kind, token, verb.claims(expected), nowSeconds);
 }
 
-/** Why the gate refused. Each arm is a different HTTP answer — see `api/routes/staged-confirm.ts`. */
+/** Why the gate refused. Each arm is a different HTTP answer — see `api/routes/shared-staged-confirm.ts`. */
 export type StagedConfirmGate =
   | { readonly ok: true }
   /** No signing key: an operator misconfiguration, correlated and 500 — never the neutral 400. */

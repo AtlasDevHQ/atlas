@@ -409,7 +409,7 @@ describe("the confirm token gate", () => {
   });
 
   it("rejects an expired token", async () => {
-    const token = mintStagedConfirmToken(PROPOSAL_STAGED_VERB, 
+    const token = mintStagedConfirmToken(PROPOSAL_STAGED_VERB,
       { workspaceId: "ws-1", claim: CLAIM },
       { nowSeconds: Math.floor(Date.now() / 1000) - 7200 },
     );

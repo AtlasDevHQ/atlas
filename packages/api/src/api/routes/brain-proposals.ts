@@ -39,7 +39,7 @@ import { proposeFact, type ProposalOutcome } from "@atlas/api/lib/brain/proposal
 import { PROPOSAL_STAGED_VERB } from "@atlas/api/lib/brain/staged-propose";
 import { BrainProposalClaimSchema } from "@useatlas/schemas";
 import { ErrorSchema } from "./shared-schemas";
-import { runStagedConfirm } from "./staged-confirm";
+import { runStagedConfirm } from "./shared-staged-confirm";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("brain-proposals");

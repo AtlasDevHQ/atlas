@@ -4,7 +4,7 @@
 # Mutations the alias-decision suites catch
 
 Source: `src/lib/brain/vocabulary-decide.ts`, plus the four call sites that consume a
-`ClaimVocabulary` (`src/lib/brain/extract.ts`, `src/api/routes/brain-corrections.ts`, and both
+`ClaimVocabulary` (`src/lib/brain/extract.ts`, `src/api/routes/shared-staged-confirm.ts`, and both
 `correctFact` entry points in `src/api/routes/admin-brain-facts.ts`). Mutation list:
 `scripts/mutations/vocabulary-decide.mutations.ts`.
 

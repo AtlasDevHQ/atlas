@@ -236,6 +236,17 @@ export function verifyRestConfirmToken(
   return verifyConfirmToken(REST_CONFIRM_KIND, token, restClaims(expected), nowSeconds);
 }
 
+// ⚠️ **This gate is deliberately NOT a `StagedVerb`** (`lib/brain/staged-write.ts`),
+// and the reason is a real difference in the invariant rather than a refactor
+// that stopped short. The two brain gates burn the nonce on the ATTEMPT: verify,
+// burn, then run the verb, so a refused write still spends its confirmation and
+// one card cannot be re-fired against many targets. This gate burns LATER —
+// `rest-operations.ts` interposes the allowlist re-validation and the
+// write-only check between verification and the burn (all synchronous, so the
+// no-`await` property still holds), so a confirm rejected by the allowlist does
+// NOT spend its nonce. Folding this into `verifyAndBurnStagedConfirm` would
+// change that, which is a behaviour change and not a deduplication.
+//
 // `burnRestConfirmNonce`, `_resetRestConfirmNonces`, `MintRestConfirmTokenOptions`,
 // `RestConfirmTokenRejection` and `RestConfirmTokenVerification` were removed by
 // #5571. Each was a re-export of `lib/confirm-token.ts` under a `Rest`-prefixed

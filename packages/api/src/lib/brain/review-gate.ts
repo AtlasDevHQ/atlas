@@ -61,7 +61,13 @@
  * - **Not a transaction owner.** {@link approve} takes the caller's
  *   `ModeTxClient`, exactly as `promoteBrainFacts` does, so a scoped approve
  *   can still commit atomically with whatever else its caller is doing — which
- *   is the whole shape ADR-0043's wizard needs.
+ *   is the whole shape ADR-0043's wizard needs. ⚠️ **This is why `approve`
+ *   returns an `Effect` while its three siblings return a `Promise`**, and the
+ *   asymmetry is deliberate rather than unfinished: the read verbs own their
+ *   own query and can settle, whereas `approve` is a phase inside somebody
+ *   else's transaction and must compose with `runPublishPhases`. Flattening it
+ *   to a `Promise` would mean this module opening a transaction, which is the
+ *   one thing the bullet above says it must not do.
  * - **Not a route.** No wire contract moves here. `/api/v1/admin/publish` and
  *   `/api/v1/admin/brain-facts/*` call the same internals they called before.
  * - **Not an authority check.** Each internal keeps its own: `loadFactCandidates`
@@ -125,15 +131,26 @@ export interface ApprovePreview {
 /**
  * The two irreversible consequences of approving, disclosed before the act.
  *
- * Both loaders are reader-scoped and workspace-wide: they answer *"what would a
- * publish of this workspace's backlog do"*, which is the question the admin
- * console's publish modal asks. **They are not scoped by `factIds`, and that is
- * a stated limitation rather than an oversight** — the disclosure statements
- * (`willSupersedePairsSql`, `willWidenRowsSql`) build their own draft sets, so
- * narrowing them is a second place a scope would have to be spelled and kept in
- * agreement with the adapter's. A scoped preview is the ADR-0043 wizard's to
- * ask for when it needs one, at which point the scope belongs in those
- * statements beside their existing draft predicates, not layered here.
+ * Both loaders are reader-scoped. `factIds` narrows them to the drafts a scoped
+ * {@link approve} would offer; omitted, they answer *"what would a publish of
+ * this workspace's whole backlog do"* — the question the admin console's
+ * publish modal asks, unchanged.
+ *
+ * ⭐ **The scope has to reach here, not only `approve`.** A disclosure and the
+ * act it discloses must answer about the same rows: an ADR-0043 wizard
+ * confirming five keystone answers, shown every supersession and widening in
+ * the tenant, would be told about irreversible consequences its approve is not
+ * going to perform. That is the disagreement #4912 forbids, pointing the other
+ * way — over-disclosure rather than silence, but still a preview that does not
+ * describe the transaction.
+ *
+ * The narrowing binds the DRAFT side only. In the supersession preview `p` is
+ * the published rival being retired, which the reviewer never selected;
+ * filtering it would hide the row the disclosure exists to name.
+ *
+ * ⚠️ `[]` scopes to nothing here too, exactly as in {@link approve} — the two
+ * must read an empty selection the same way or the preview and the act
+ * disagree on the one input most likely to be miscomputed.
  *
  * Issued as one request from two statements, never one snapshot — the contract
  * `loadFactOversight` documents for its own.
@@ -144,10 +161,11 @@ export async function previewApprove(
   db: BrainCandidateReader,
   ctx: BrainPrincipalContext,
   requestId?: string,
+  factIds?: readonly string[],
 ): Promise<ApprovePreview> {
   const [willSupersede, willWiden] = await Promise.all([
-    loadSupersessionPreview(db, ctx, requestId),
-    loadWideningPreview(db, ctx, requestId),
+    loadSupersessionPreview(db, ctx, requestId, factIds),
+    loadWideningPreview(db, ctx, requestId, factIds),
   ]);
   return { willSupersede, willWiden };
 }

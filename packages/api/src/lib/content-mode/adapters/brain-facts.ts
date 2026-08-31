@@ -216,7 +216,29 @@ export function brainFactCurrentClause(alias: string): string {
  * So a LIMIT here would silently promote a prefix — the one outcome a review
  * gate must never produce.
  */
-export const DRAFT_FACTS_SQL = `
+export const DRAFT_FACTS_SQL = draftFactsSql();
+
+/**
+ * The draft read, with or without an id scope — **one projection, one set of
+ * predicates, one `ORDER BY`, one `FOR UPDATE`** (#5568).
+ *
+ * ⭐ **Built rather than written twice, and the reason is a specific silent
+ * failure.** The scoped arm was first a second literal that restated all seven
+ * columns and all three predicates. Adding a column here that
+ * `classifyFactForPromotion` reads would then have reached the unscoped arm
+ * only, and the scoped arm would have classified every fact against a row
+ * missing that column — a divergence no test could catch, because a test
+ * double answers both statements from the same fixture regardless of what each
+ * projects. Sharing the body makes the two statements differ by exactly the
+ * one line they are meant to differ by.
+ *
+ * `scopeParam` omitted yields the workspace-wide statement, byte for byte.
+ * `brain-facts-scoped-promotion.test.ts` pins both halves: the unscoped output
+ * against a literal, and the two statements differing by exactly the one
+ * predicate line.
+ */
+export function draftFactsSql(scopeParam?: number): string {
+  return `
   SELECT id::text AS id,
          subject,
          predicate,
@@ -227,10 +249,14 @@ export const DRAFT_FACTS_SQL = `
     FROM brain_facts
    WHERE workspace_id = $1
      AND status = 'draft'
-     AND invalidated_at IS NULL
+     AND invalidated_at IS NULL${
+       scopeParam === undefined ? "" : `
+     AND id = ANY($${scopeParam}::uuid[])`
+     }
    ORDER BY ingested_at
      FOR UPDATE
 `;
+}
 
 /**
  * {@link DRAFT_FACTS_SQL} narrowed to an explicit id list — the read half of
@@ -248,12 +274,13 @@ export const DRAFT_FACTS_SQL = `
  * widened, superseded and audited identically, the set of rows being the only
  * difference.
  *
- * A separate constant rather than a nullable `$2` on {@link DRAFT_FACTS_SQL},
- * deliberately: the unscoped publish phase must keep issuing the statement it
- * issues today, byte for byte, so nothing about the workspace-wide publish can
- * regress on a slice that exists for a different caller. `promoteBrainFacts`
- * picks between the two by whether a scope was passed, and passes no scope for
- * the content-mode registry.
+ * A separate CONSTANT rather than a nullable `$2` on one statement, but the
+ * same BODY ({@link draftFactsSql}): the unscoped publish phase must keep
+ * issuing the statement it issues today, byte for byte, so nothing about the
+ * workspace-wide publish can regress on a slice that exists for a different
+ * caller — while a column added to the projection has to reach both arms or
+ * neither. `promoteBrainFacts` picks between the two by whether a scope was
+ * passed, and passes no scope for the content-mode registry.
  *
  * ⚠️ **`FOR UPDATE` here locks only the named rows**, where the unscoped
  * statement locks the workspace's whole draft backlog. That is the correct
@@ -269,22 +296,7 @@ export const DRAFT_FACTS_SQL = `
  * enumerated — worse than the unscoped prefix, because nothing would be left in
  * the backlog to reveal it.
  */
-export const DRAFT_FACTS_SCOPED_SQL = `
-  SELECT id::text AS id,
-         subject,
-         predicate,
-         object,
-         source_episode_id::text AS source_episode_id,
-         provenance,
-         visible_to
-    FROM brain_facts
-   WHERE workspace_id = $1
-     AND status = 'draft'
-     AND invalidated_at IS NULL
-     AND id = ANY($2::uuid[])
-   ORDER BY ingested_at
-     FOR UPDATE
-`;
+export const DRAFT_FACTS_SCOPED_SQL = draftFactsSql(2);
 
 /**
  * Promote the classified-promotable subset, by explicit id.

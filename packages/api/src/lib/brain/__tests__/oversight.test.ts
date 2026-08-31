@@ -1409,3 +1409,112 @@ describe("loadWideningPreview (#5032)", () => {
     expect(sql).toContain("ep.ingested_at, ep.id");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// The id-scoped preview arm (#5568)
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * A reader that records the (sql, params) of every statement, so the scope can
+ * be asserted where it actually has to hold — on what was bound, not on what
+ * the loader returned.
+ */
+function recordingReader(options: ReaderOptions): {
+  db: BrainCandidateReader;
+  calls: { sql: string; params: readonly unknown[] }[];
+} {
+  const calls: { sql: string; params: readonly unknown[] }[] = [];
+  const inner = reader(options);
+  return {
+    db: {
+      query: async (sql: string, params?: unknown[]) => {
+        calls.push({ sql, params: params ?? [] });
+        return inner.query(sql, params);
+      },
+    },
+    calls,
+  };
+}
+
+describe("the scoped preview arm (#5568)", () => {
+  /**
+   * ⭐ Why the preview takes the scope at all, stated once here because it is
+   * the whole reason this block exists: a disclosure and the act it discloses
+   * must answer about the same rows. An ADR-0043 wizard confirming five
+   * keystone answers, shown every supersession and widening in the tenant,
+   * would be warned about irreversible consequences its approve is not going to
+   * perform — the disclosure/act disagreement #4912 forbids, pointing at
+   * over-disclosure rather than silence.
+   */
+  const SCOPE = ["fact-a", "fact-b"];
+
+  it("binds the scope to BOTH will-supersede statements, never one", async () => {
+    // `withheld` is total − scoped. Scoping only the reader-visible pairs would
+    // inflate it by every out-of-scope supersession in the workspace and report
+    // them as rows this reader may not see — a fabricated privacy story.
+    const { db, calls } = recordingReader({ willSupersedeTotal: 0, willSupersedePairs: [] });
+    await loadSupersessionPreview(db, ctx(), undefined, SCOPE);
+
+    const total = calls.find((c) => c.sql.includes("will_supersede_total"));
+    const pairs = calls.find((c) => c.sql.includes("scoped_total"));
+    expect(total?.sql).toContain("AND d.id = ANY($2::uuid[])");
+    expect(total?.params).toEqual([WS, SCOPE]);
+    expect(pairs?.sql).toContain("AND d.id = ANY(");
+    expect(pairs?.params.at(-1)).toEqual(SCOPE);
+  });
+
+  it("scopes the DRAFT side only — the published rival is what the disclosure names", async () => {
+    // `p` is the fact being retired. The reviewer never selected it, and
+    // filtering it would hide the row this preview exists to show them.
+    const { db, calls } = recordingReader({ willSupersedeTotal: 0, willSupersedePairs: [] });
+    await loadSupersessionPreview(db, ctx(), undefined, SCOPE);
+
+    const pairs = calls.find((c) => c.sql.includes("scoped_total"));
+    expect(pairs?.sql).not.toContain("p.id = ANY(");
+  });
+
+  it("binds the scope to the widening preview's draft CTE", async () => {
+    const { db, calls } = recordingReader({ willWidenRows: [] });
+    await loadWideningPreview(db, ctx(), undefined, SCOPE);
+
+    const widen = calls.find((c) => c.sql.includes("evidence_grant"));
+    expect(widen?.sql).toContain("AND f.id = ANY(");
+    expect(widen?.params.at(-1)).toEqual(SCOPE);
+  });
+
+  it("leaves every statement unscoped when no scope is passed", async () => {
+    // The workspace-wide publish modal's question, unchanged. `collision-sql-pinned.test.ts`
+    // pins the exact bytes; this pins that the loaders still reach them.
+    const supersede = recordingReader({ willSupersedeTotal: 0, willSupersedePairs: [] });
+    await loadSupersessionPreview(supersede.db, ctx());
+    for (const call of supersede.calls) expect(call.sql).not.toContain("ANY($");
+
+    const widen = recordingReader({ willWidenRows: [] });
+    await loadWideningPreview(widen.db, ctx());
+    for (const call of widen.calls) expect(call.sql).not.toContain("ANY($");
+  });
+
+  it("treats an EMPTY scope as nothing, not as unscoped", async () => {
+    // ⚠️ The footgun, and it has to be read the same way here as in
+    // `promoteBrainFacts`: if the preview read `[]` as "the whole workspace"
+    // while the approve read it as "no rows", the two would disagree on the one
+    // input most likely to be miscomputed — a reviewer who ticked no boxes.
+    const supersede = recordingReader({ willSupersedeTotal: 0, willSupersedePairs: [] });
+    await loadSupersessionPreview(supersede.db, ctx(), undefined, []);
+    const total = supersede.calls.find((c) => c.sql.includes("will_supersede_total"));
+    expect(total?.sql).toContain("AND d.id = ANY($2::uuid[])");
+    expect(total?.params).toEqual([WS, []]);
+
+    const widen = recordingReader({ willWidenRows: [] });
+    await loadWideningPreview(widen.db, ctx(), undefined, []);
+    const row = widen.calls.find((c) => c.sql.includes("evidence_grant"));
+    expect(row?.sql).toContain("AND f.id = ANY(");
+    expect(row?.params.at(-1)).toEqual([]);
+  });
+
+  it("deduplicates a repeated id rather than binding it twice", async () => {
+    const { db, calls } = recordingReader({ willWidenRows: [] });
+    await loadWideningPreview(db, ctx(), undefined, ["fact-a", "fact-a"]);
+    expect(calls.find((c) => c.sql.includes("evidence_grant"))?.params.at(-1)).toEqual(["fact-a"]);
+  });
+});

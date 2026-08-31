@@ -314,6 +314,55 @@ describe("scoped promotion — the policy is the unscoped one, filtered (#5568)"
     });
   });
 
+  describe("the two draft statements share one body (#5568)", () => {
+    /**
+     * The unscoped statement, pinned as a literal.
+     *
+     * ⚠️ Deliberately hand-written rather than derived from `draftFactsSql()`,
+     * which would make the assertion `x === x`. This is the byte-equivalence
+     * promise the carve-out rests on — the workspace-wide publish phase issues
+     * the statement it issued before the scope existed — so it has to be
+     * checkable against something that does not move when the builder does.
+     */
+    const PINNED_UNSCOPED = `
+  SELECT id::text AS id,
+         subject,
+         predicate,
+         object,
+         source_episode_id::text AS source_episode_id,
+         provenance,
+         visible_to
+    FROM brain_facts
+   WHERE workspace_id = $1
+     AND status = 'draft'
+     AND invalidated_at IS NULL
+   ORDER BY ingested_at
+     FOR UPDATE
+`;
+
+    it("leaves the unscoped statement byte-identical to what publish issued before", () => {
+      expect(DRAFT_FACTS_SQL).toBe(PINNED_UNSCOPED);
+    });
+
+    it("differs by exactly the one scope predicate, and nothing else", () => {
+      // ⭐ The assertion the shared builder exists for. When the two statements
+      // were separate literals, adding a column to the projection reached the
+      // unscoped arm only — and the scoped arm would then classify every fact
+      // against a row missing it. No behavioural test can catch that: a
+      // transaction double answers both statements from the same fixture rows
+      // regardless of what each one projects. So the guarantee has to be made
+      // about the STATEMENTS, here.
+      const unscoped = DRAFT_FACTS_SQL.split("\n");
+      const scoped = DRAFT_FACTS_SCOPED_SQL.split("\n");
+      const added = scoped.filter((line) => !unscoped.includes(line));
+      const removed = unscoped.filter((line) => !scoped.includes(line));
+
+      expect(added).toEqual(["     AND id = ANY($2::uuid[])"]);
+      expect(removed).toEqual([]);
+      expect(scoped.length).toBe(unscoped.length + 1);
+    });
+  });
+
   describe("the empty scope", () => {
     it("approves NOTHING, and is not a spelling of unscoped", async () => {
       // ⚠️ The footgun this parameter is most likely to be misused into: a

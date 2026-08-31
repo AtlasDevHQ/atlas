@@ -108,17 +108,21 @@ import { resolveBrainReaderContext } from "@atlas/api/lib/brain/reader-context";
 import {
   CANDIDATE_PAGE_MAX,
   loadFactCandidateSummary,
-  loadFactCandidates,
 } from "@atlas/api/lib/brain/candidates";
 import {
   RETIRABLE_PAGE_MAX,
   loadRetirableObservations,
 } from "@atlas/api/lib/brain/retirable";
 import { correctFact, type CorrectionOutcome } from "@atlas/api/lib/brain/correction";
+// The review gate's own verbs (#5568). This route is the gate's HTTP face, so
+// it speaks the gate's vocabulary: `queued` is the review queue, `reject` is
+// the negative verb, `previewApprove` is what approving would do. Each still
+// runs the same internal it always did — the facade owns no SQL — but a reader
+// arriving at `lib/brain/review-gate.ts` now finds every consumer of the
+// concept, rather than four modules that happen to be called from one router.
+import { previewApprove, queued, reject } from "@atlas/api/lib/brain/review-gate";
 import {
   loadFactOversight,
-  loadSupersessionPreview,
-  loadWideningPreview,
 } from "@atlas/api/lib/brain/oversight";
 import { loadGateAnalytics } from "@atlas/api/lib/brain/gate-export";
 // Both caps come from the sweep module, including `TENSION_EDGE_CAP`, which it
@@ -673,7 +677,7 @@ adminBrainFacts.openapi(listRoute, async (c) => {
       const searchTerm = url.searchParams.get("q")?.slice(0, MAX_SEARCH_CHARS);
       const page = yield* Effect.tryPromise({
         try: () =>
-          loadFactCandidates(getInternalDB(), {
+          queued(getInternalDB(), {
             ctx,
             status: rawStatus ?? "draft",
             provisionalOnly: url.searchParams.get("provisional") === "true",
@@ -765,17 +769,31 @@ adminBrainFacts.openapi(oversightRoute, async (c) => {
           // inside the counts loader so the counts aggregate keeps its
           // numbers-only contract and its own tests.
           const db = getInternalDB();
-          const [counts, willSupersede, willWiden, gateAnalytics] = await Promise.all([
+          // ⚠️ Bound whole, then read below — NOT destructured in place as
+          // `[counts, { willSupersede, willWiden }, gateAnalytics]`. That form
+          // typechecks in isolation and blows the inference budget of this
+          // router's handler union: it surfaced as a TS2322 in
+          // `admin-cache.ts`, a file nothing here imports. Two extra lines
+          // against a type error that names the wrong file.
+          const [counts, approvePreview, gateAnalytics] = await Promise.all([
             loadFactOversight(db, ctx, requestId),
-            loadSupersessionPreview(db, ctx, requestId),
-            loadWideningPreview(db, ctx, requestId),
+            // Unscoped: this panel is the WORKSPACE's publish modal, so the
+            // question is "what would publishing the whole backlog do". The
+            // `factIds` arm exists for a caller approving a named set (#5568);
+            // passing none here is what keeps this surface's numbers unchanged.
+            previewApprove(db, ctx, requestId),
             // The gate-decision counts (#5335). Reader-scoped like the two
             // previews above and unlike the workspace buckets, so this number
             // can legitimately be smaller than an operator's unscoped export
             // of the same workspace — see `lib/brain/gate-export.ts`.
             loadGateAnalytics(db, ctx, requestId),
           ]);
-          return { ...counts, willSupersede, willWiden, gateAnalytics };
+          return {
+            ...counts,
+            willSupersede: approvePreview.willSupersede,
+            willWiden: approvePreview.willWiden,
+            gateAnalytics,
+          };
         },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
@@ -825,10 +843,9 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
       // lives on the `/correct` call site below, which is where it is read.
       const outcome = yield* Effect.tryPromise({
         try: async () =>
-          correctFact({
+          reject({
             ctx,
             factId,
-            verb: "retract",
             // #5496 — this route IS the human's explicit act: an admin clicked
             // Retract in the admin brain UI, with no agent between the intent
             // and the request. It is deliberately NOT routed through the chat

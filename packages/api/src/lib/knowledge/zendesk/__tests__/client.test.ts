@@ -18,13 +18,24 @@ import { ConnectorRateLimitError } from "@atlas/api/lib/knowledge/connectors";
 
 const BASE = "https://acme.zendesk.com";
 
+/**
+ * A Zendesk translation payload as the API may actually return it — any field
+ * may be missing.
+ *
+ * Loose-optional (`| undefined`) deliberately: `tr()` below spreads the
+ * overrides OVER its defaults, so `tr({ html_url: undefined })` is how a test
+ * says "this translation arrived WITHOUT an html_url". An exact optional cannot
+ * express that — the key would have to be omitted, which the spread reads as
+ * "no override" and silently hands back the default, turning the malformed-input
+ * tests into duplicates of the happy path (#5522).
+ */
 interface FixtureTranslation {
-  locale?: string;
-  title?: string;
-  body?: string;
-  draft?: boolean;
-  updated_at?: string;
-  html_url?: string;
+  locale?: string | undefined;
+  title?: string | undefined;
+  body?: string | undefined;
+  draft?: boolean | undefined;
+  updated_at?: string | undefined;
+  html_url?: string | undefined;
 }
 interface FixtureArticle {
   id?: number;
@@ -233,7 +244,7 @@ describe("fetchAll (reconciliation)", () => {
           id: 2,
           draft: false,
           updated_at: "2026-07-02T00:00:00Z",
-          translations: [tr({ updated_at: "2026-07-02T00:00:00Z" }), tr({})],
+          translations: [tr({ updated_at: "2026-07-02T00:00:00Z" }), tr({ locale: undefined })],
         },
       ],
     });
@@ -245,7 +256,7 @@ describe("fetchAll (reconciliation)", () => {
   it("builds a fallback URL for a translation missing html_url", async () => {
     const { c } = client({
       articles: [
-        { id: 3, draft: false, updated_at: "2026-07-01T00:00:00Z", translations: [tr({})] },
+        { id: 3, draft: false, updated_at: "2026-07-01T00:00:00Z", translations: [tr({ html_url: undefined })] },
       ],
     });
     const changes = await c.fetchAll();

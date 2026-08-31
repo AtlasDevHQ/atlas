@@ -110,6 +110,12 @@ function makeLog() {
   return { log: { error: record("error"), warn: record("warn"), info: record("info") }, calls };
 }
 
+/**
+ * ⚠️ `secretFieldsSchema` is supplied by default here, so a test about the
+ * SCHEMA-LESS path cannot express itself by passing `undefined` — the
+ * production param is an exact optional and the spread would read the key as
+ * "no override" anyway. Use `withoutSecretSchema()` below (#5522).
+ */
 function baseParams(overrides: Partial<Parameters<typeof persistFormInstall>[0]> = {}) {
   const { log } = makeLog();
   return {
@@ -122,6 +128,19 @@ function baseParams(overrides: Partial<Parameters<typeof persistFormInstall>[0]>
     newId: () => "candidate-1",
     ...overrides,
   };
+}
+
+/**
+ * `baseParams()` with the secret schema genuinely ABSENT — Twenty's `{}` stub.
+ * Destructured off rather than set to `undefined`: `secretFieldsSchema` is an
+ * exact optional on `PersistFormInstallParams`, so "no schema" is a missing key,
+ * and an override that merely sets it to `undefined` would not compile (#5522).
+ */
+function withoutSecretSchema(
+  overrides: Partial<Parameters<typeof persistFormInstall>[0]> = {},
+): Parameters<typeof persistFormInstall>[0] {
+  const { secretFieldsSchema: _noSchema, ...rest } = baseParams(overrides);
+  return rest;
 }
 
 beforeEach(() => {
@@ -201,7 +220,7 @@ describe("assertSaasEncryptionKeyset / spine keyset gate", () => {
     const { log, calls } = makeLog();
     await expect(
       persistFormInstall(
-        baseParams({ log, config: {}, plaintextSecretLabel: "api_key" }),
+        withoutSecretSchema({ log, config: {}, plaintextSecretLabel: "api_key" }),
       ),
     ).rejects.toThrow(/Encryption keyset unavailable/);
     expect(calls.some((c) => c.msg.includes("plaintext api_key"))).toBe(true);
@@ -256,7 +275,7 @@ describe("persistFormInstall — selective-field encryption", () => {
 
   it("persists config as-is when no secret schema is given (Twenty's {} stub)", async () => {
     await persistFormInstall(
-      baseParams({ config: {}, plaintextSecretLabel: "api_key" }),
+      withoutSecretSchema({ config: {}, plaintextSecretLabel: "api_key" }),
     );
     const [, params] = mockInternalQuery.mock.calls[0];
     expect(JSON.parse((params as unknown[])[3] as string)).toEqual({});

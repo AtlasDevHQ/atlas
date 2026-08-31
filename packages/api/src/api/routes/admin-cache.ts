@@ -482,7 +482,16 @@ adminCache.openapi(deleteCacheEntryRoute, async (c) => runHandler(c, "delete cac
     }, 404);
   }
   log.info({ requestId, userId: authResult.user?.id, orgId, key: key.slice(0, 12) }, "Cache entry deleted via admin API");
-  return c.json({ ok: true, deleted: true }, 200);
+  // `as const` on both flags, and it is load-bearing rather than decorative.
+  // The route declares this response as the LITERALS `{ ok: true, deleted:
+  // true }`, while a bare object literal infers `boolean` unless hono's
+  // generic contextual typing narrows it — and that narrowing is the first
+  // thing to degrade when this router's handler-union inference gets
+  // expensive. It degraded for real: an unrelated change two files away
+  // (#5568) tipped it, and the diagnostic surfaced HERE, naming a file the
+  // change never touched. Pinning the literals makes the assignment correct on
+  // its own terms, so it no longer depends on inference succeeding elsewhere.
+  return c.json({ ok: true as const, deleted: true as const }, 200);
 }));
 
 export { adminCache };

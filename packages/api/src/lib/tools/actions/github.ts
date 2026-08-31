@@ -40,6 +40,7 @@ import type { AtlasAction } from "@atlas/api/lib/action-types";
 import { buildActionRequest, handleAction } from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getGitHubInstallationToken } from "@atlas/api/lib/github/installation-token";
+import { describeHttpFailure, withVendorDeadline } from "@atlas/api/lib/vendor-http";
 import { resolveCredentialsFor } from "./credentials/resolver";
 import { GITHUB_TARGET, type ActionCredentialsOf } from "./credentials/targets";
 
@@ -53,17 +54,6 @@ const GITHUB_API_BASE = "https://api.github.com";
  * turn. (No egress guard here, deliberately: the host is the fixed
  * `GITHUB_API_BASE`, not a tenant-typed URL.) */
 const GITHUB_TIMEOUT_MS = 15_000;
-
-/** Duck-typed abort check — `DOMException` does not subclass `Error` on
- * every runtime. Same shape as the Linear and Jira actions'; a shared home
- * is ADR-0045's deferred `lib/vendor-http` extraction. */
-function isAbortError(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { name?: unknown }).name === "AbortError"
-  );
-}
 
 /**
  * `owner/repo`, validated before it is interpolated into an API path. GitHub
@@ -209,13 +199,12 @@ export async function executeGitHubIssueCreate(
     ...(params.labels?.length ? { labels: params.labels } : {}),
   };
 
-  const abort = new AbortController();
-  const deadline = setTimeout(() => abort.abort(), GITHUB_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetch(url, {
+  // The deadline covers the fetch, not the body reads below — the same scope
+  // this call has always had.
+  const sent = await withVendorDeadline(GITHUB_TIMEOUT_MS, (signal) =>
+    fetch(url, {
       method: "POST",
-      signal: abort.signal,
+      signal,
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
@@ -223,37 +212,23 @@ export async function executeGitHubIssueCreate(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
-    });
-  } catch (err) {
-    if (isAbortError(err)) {
-      log.error({ repo, timeoutMs: GITHUB_TIMEOUT_MS }, "GitHub API request timed out");
-      throw new Error(
-        `GitHub did not respond within ${GITHUB_TIMEOUT_MS / 1000}s. The issue was not created — retry in a moment.`,
-      );
-    }
-    throw err;
-  } finally {
-    clearTimeout(deadline);
+    }),
+  );
+  if (!sent.ok) {
+    log.error({ repo, timeoutMs: GITHUB_TIMEOUT_MS }, "GitHub API request timed out");
+    throw new Error(
+      `GitHub did not respond within ${GITHUB_TIMEOUT_MS / 1000}s. The issue was not created — retry in a moment.`,
+    );
   }
+  const response = sent.value;
 
   if (!response.ok) {
-    let detail: string;
-    try {
-      detail = describeGitHubError(await response.json(), response.status);
-    } catch {
-      // intentionally ignored: JSON parse failed, fall through to text()
-      let rawText = "";
-      try {
-        rawText = await response.text();
-      } catch {
-        // intentionally ignored: body may already be consumed
-      }
-      detail = rawText
-        ? `HTTP ${response.status}: ${rawText.slice(0, 200)}`
-        : `HTTP ${response.status}`;
-    }
-    log.error({ status: response.status, repo, detail }, "GitHub API request failed");
-    throw new Error(`GitHub API error: ${detail}`);
+    const failure = await describeHttpFailure(response, describeGitHubError);
+    log.error(
+      { status: failure.status, repo, detail: failure.detail },
+      "GitHub API request failed",
+    );
+    throw new Error(`GitHub API error: ${failure.detail}`);
   }
 
   let data: { number?: number; html_url?: string };

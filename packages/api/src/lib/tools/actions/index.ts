@@ -16,7 +16,6 @@ export {
   defineActionExecutor,
   getActionExecutorForType,
   isActionTypeExecutable,
-  UnregisteredActionTypeError,
   redispatchActionAsUser,
   _resetActionStore,
   type ActionExecutor,

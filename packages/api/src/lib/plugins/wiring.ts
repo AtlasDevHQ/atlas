@@ -17,6 +17,11 @@ import {
   defineActionExecutor,
   getActionExecutorForType,
 } from "@atlas/api/lib/tools/actions/handler";
+// The dependency-free manifest, deliberately — see its header. Importing the
+// action modules here to ask which types they own would defeat the point of
+// the check, and would drag them into the boot graph ahead of the router that
+// is supposed to load them.
+import { isBuiltinActionType } from "@atlas/api/lib/tools/actions/manifest";
 
 const log = createLogger("plugins:wiring");
 
@@ -229,6 +234,58 @@ export async function wireDatasourcePlugins(
 }
 
 /**
+ * Register one plugin action's executor, refusing the collisions that would
+ * make it ambiguous whose code runs for an approved row (#5570).
+ *
+ * Two refusals, both at error level and both leaving the incumbent in place:
+ *
+ * **A built-in's type.** `plugins/jira` already declares `jira:create` and
+ * `plugins/email` declares `email:send` — the same types the built-in modules
+ * own. An executor decides which system a payload is sent to and which
+ * workspace's credentials open it, so letting an installed plugin take
+ * `email:send` would hand it every approved email's recipients, subject and
+ * body for the requester's workspace. The check reads the static manifest, not
+ * the live registry, so the answer does not depend on whether wiring happened
+ * to run before or after the action modules loaded.
+ *
+ * **Another plugin's type.** First wiring wins. Arbitrary, but deterministic
+ * and stated, which "last wins" was not.
+ *
+ * Overriding a built-in is a coherent thing to want and this is not a claim
+ * that it should never exist — it needs its own design (an explicit operator
+ * opt-in, at minimum), and shipping it as a silent side effect of installing a
+ * plugin is not that design.
+ */
+function registerPluginExecutor(
+  pluginId: string,
+  action: AtlasAction,
+  executor: NonNullable<AtlasAction["executor"]>,
+): void {
+  if (isBuiltinActionType(action.actionType)) {
+    log.error(
+      { pluginId, action: action.name, actionType: action.actionType },
+      "Action plugin executor REFUSED — a built-in action module owns this action type. The built-in continues to execute approved rows of this type; the plugin's tool is still wired. Give the plugin action its own action type.",
+    );
+    return;
+  }
+
+  const incumbent = getActionExecutorForType(action.actionType);
+  if (incumbent) {
+    log.error(
+      { pluginId, action: action.name, actionType: action.actionType },
+      "Action plugin executor REFUSED — another plugin already registered an executor for this action type. The first registration continues to execute approved rows of this type.",
+    );
+    return;
+  }
+
+  defineActionExecutor(action.actionType, executor);
+  log.info(
+    { pluginId, action: action.name, actionType: action.actionType },
+    "Action plugin executor registered",
+  );
+}
+
+/**
  * For each healthy action plugin, register each PluginAction as an AtlasTool
  * in the ToolRegistry — and, when it declares one, its executor in the
  * action-type registry.
@@ -267,28 +324,23 @@ export async function wireActionPlugins(
         registry.register(action);
 
         if (action.executor) {
-          // Last registration wins in the registry, so say so when it
-          // displaces something. Two plugins claiming one action type, or a
-          // plugin claiming a built-in's, is a real configuration to be able
-          // to see in a log — and it is legitimate (it is how an operator
-          // overrides a built-in), so it is not an error.
-          const displaced = getActionExecutorForType(action.actionType) !== undefined;
-          defineActionExecutor(action.actionType, action.executor);
-          log.info(
-            { pluginId: plugin.id, action: action.name, actionType: action.actionType, displaced },
-            displaced
-              ? "Action plugin executor registered — REPLACED an existing executor for this action type"
-              : "Action plugin executor registered",
+          registerPluginExecutor(plugin.id, action, action.executor);
+        } else if (action.defaultApproval !== "auto") {
+          // An action that PENDS and declares no executor is a dead end: the
+          // approval will report `approved_not_executed` and re-dispatch will
+          // answer 503, forever. `warn`, not `debug` — debug is below the
+          // default level on every deploy, so the author would get no signal
+          // at all until an admin hit the wall.
+          log.warn(
+            { pluginId: plugin.id, action: action.name, actionType: action.actionType, defaultApproval: action.defaultApproval },
+            "Action plugin declares no executor but its action pends for approval — approvals for this action type can never execute or be re-dispatched. Declare `executor` on the action (see the plugin authoring guide).",
           );
         } else {
-          // Not a failure: an action that executes inline in its own tool and
-          // never pends has nothing to register. Logged at debug because the
-          // consequence only bites if it DOES pend — an approval would then
-          // report `approved_not_executed`, and this line is where that trail
-          // starts.
+          // Genuinely fine: an auto-approval action executes inline in its own
+          // tool and never reaches the deferred path.
           log.debug(
             { pluginId: plugin.id, action: action.name, actionType: action.actionType },
-            "Action plugin declares no executor — approvals for this action type cannot be executed or re-dispatched",
+            "Action plugin declares no executor — auto-approval action, executes inline",
           );
         }
 

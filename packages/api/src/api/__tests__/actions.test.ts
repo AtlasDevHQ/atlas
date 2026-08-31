@@ -88,7 +88,19 @@ const mockRollbackAction = mock((): Promise<ActionLogEntry | null> =>
   Promise.resolve(null),
 );
 
+// Spread the REAL handler and override only the verbs this suite scripts.
+//
+// ⚠️ Required, not tidiness (`.claude/rules/testing.md`: mock ALL exports).
+// `routes/actions.ts` imports the action barrel for its registration side
+// effect (#5570), and that barrel does `export { buildActionRequest, ... }
+// from "./handler"` — so a factory listing only the seven verbs makes every
+// other re-export a missing binding and the whole router fails to load with
+// `SyntaxError: Export named 'buildActionRequest' not found`. Spreading keeps
+// the surface complete as the module grows.
+const realHandler = await import("@atlas/api/lib/tools/actions/handler");
+
 void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
+  ...realHandler,
   listPendingActions: mockListPendingActions,
   getAction: mockGetAction,
   approveActionAsUser: mockApproveActionAsUser,

@@ -33,6 +33,22 @@ import { ACTION_STATUSES, type ActionStatus } from "@atlas/api/lib/action-types"
 import { canApprove } from "@atlas/api/lib/auth/permissions";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
+// Imported for its SIDE EFFECT: loading the action barrel runs each built-in
+// module's top-level `defineActionExecutor` call (#5570), so this process can
+// execute any approved row from the moment this router exists.
+//
+// ⚠️ Load-bearing, and easy to mistake for a stray import. Nothing else pulls
+// these modules in eagerly — `buildRegistry({ includeActions: true })` reaches
+// them through a lazy `await import("./actions")` that only runs inside a chat
+// turn. Without this line a process that restarted and received an approve
+// BEFORE serving an action-enabled turn would find an empty registry and
+// strand the row at `approved`: the exact failure the type-keyed registry
+// replaced, reintroduced as a load-order accident. The router that serves
+// approve / deny / re-dispatch is where the guarantee belongs, so no mount
+// site has to remember it — and this file is itself imported only when
+// `ATLAS_ACTIONS_ENABLED` is set, so a deploy without actions pays nothing.
+// `actions-executor-boot.test.ts` fails if this line goes.
+import "@atlas/api/lib/tools/actions/index";
 
 const log = createLogger("actions");
 
@@ -709,10 +725,6 @@ actions.openapi(
 );
 
 // ---------------------------------------------------------------------------
-// POST /:id/rollback — rollback an executed action
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // POST /:id/redispatch — run an approved action that never executed (#5570)
 // ---------------------------------------------------------------------------
 
@@ -783,6 +795,12 @@ actions.openapi(redispatchActionRoute, async (c) => {
           // not a new kind of target.
           targetType: "approval",
           targetId: id,
+          // Recorded like `admin-approval.ts` records it for approve/deny. It
+          // matters more here than there: this is the verb that fires a real
+          // side effect against someone else's workspace, potentially hours
+          // after the approval, so "which client set it in motion" is exactly
+          // what an auditor reconstructing the event reaches for.
+          ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
           metadata: {
             actionType: outcome.entry.action_type,
             // The workspace the action FIRED AGAINST (ADR-0046), which is not
@@ -828,6 +846,10 @@ actions.openapi(redispatchActionRoute, async (c) => {
     return c.json(outcome.entry, 200);
   }), { label: "re-dispatch action" });
 });
+
+// ---------------------------------------------------------------------------
+// POST /:id/rollback — rollback an executed action
+// ---------------------------------------------------------------------------
 
 actions.openapi(rollbackActionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {

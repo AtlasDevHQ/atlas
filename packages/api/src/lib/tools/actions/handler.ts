@@ -95,10 +95,19 @@ export type ActionExecutor = (
  * approver got a 200 whose entry status quietly said nothing ran.
  *
  * Type-keyed entries are populated at MODULE LOAD, so every instance holds the
- * same set from boot and can execute any approved row by reconstructing the
- * call from the row itself — see {@link bindExecutorToRow}. Nothing about an
- * individual request is cached anywhere, so there is no per-process state left
- * for a restart to lose.
+ * same set and can execute any approved row by reconstructing the call from
+ * the row itself — see {@link bindExecutorToRow}. Nothing about an individual
+ * request is cached anywhere, so there is no per-process state left for a
+ * restart to lose.
+ *
+ * ⚠️ "At module load" is only a durability guarantee if something LOADS the
+ * modules. Nothing did, at first: `buildRegistry({ includeActions: true })`
+ * reaches them through a lazy import that runs inside a chat turn, so a fresh
+ * process taking an approve before serving one would have found this Map
+ * empty — the old bug, rebuilt out of load order. `api/routes/actions.ts`
+ * therefore imports the action barrel for its side effect, and
+ * `actions-executor-boot.test.ts` fails if that import goes. A plugin type is
+ * registered by `wireActionPlugins` instead, at wiring.
  */
 const executorRegistry = new Map<string, ActionExecutor>();
 
@@ -113,9 +122,12 @@ const executorRegistry = new Map<string, ActionExecutor>();
  * ACTION's workspace (ADR-0046) and credential resolution happens inside the
  * executor, at execution time.
  *
- * Last registration wins, so a plugin declaring an action type a built-in
- * module already owns replaces it. That is deliberate (it is how an operator
- * overrides a built-in), and `wireActionPlugins` logs the replacement.
+ * Last registration wins at THIS level — the Map is a Map. That is not a
+ * policy, and it must not be read as one: whether a plugin may take a type a
+ * built-in owns is decided one layer up, by `wireActionPlugins`, which refuses
+ * the collision and logs it at error level rather than letting an installed
+ * plugin quietly inherit every approved `email:send`. Keep new callers to the
+ * same discipline: check before you claim a type you do not own.
  */
 export function defineActionExecutor(actionType: string, executor: ActionExecutor): void {
   executorRegistry.set(actionType, executor);
@@ -140,12 +152,17 @@ export function isActionTypeExecutable(actionType: string): boolean {
  * (`approved_not_executed` / `unregistered_type`), because there the row must
  * survive to be re-dispatched by an instance that has the type loaded.
  */
-export class UnregisteredActionTypeError extends Error {
+class UnregisteredActionTypeError extends Error {
   constructor(readonly actionType: string) {
+    // ⚠️ In the auto path this message is persisted to `action_log.error` and
+    // returned to the AGENT, so it reaches a chat user. It therefore says what
+    // happened and stops: the remediation ("actions enabled on this deploy?",
+    // "is the plugin wired?") is deploy posture, and belongs in the log line
+    // at the throw site, not in an answer to someone who asked a question
+    // about their data.
     super(
-      `No executor is registered for action type "${actionType}" on this instance. ` +
-        "The action's module did not load — check that actions are enabled on this deploy, " +
-        "and that any plugin declaring this type is healthy and wired.",
+      `This deployment cannot perform "${actionType}" actions right now. ` +
+        "Nothing was sent. Contact an administrator if you expected this to work.",
     );
     this.name = "UnregisteredActionTypeError";
   }
@@ -443,7 +460,15 @@ export async function handleAction(
     const startMs = Date.now();
     try {
       const invoke = bindExecutorToRow(entry);
-      if (!invoke) throw new UnregisteredActionTypeError(request.actionType);
+      if (!invoke) {
+        // The operator half of the story — the user-facing half is the error's
+        // own message, deliberately narrower. See the class.
+        log.error(
+          { actionId: request.id, actionType: request.actionType },
+          "Auto-approved action cannot execute — no executor is registered for its type on this instance. The action's module did not load: check that actions are enabled on this deploy, and that any plugin declaring this type is healthy and wired.",
+        );
+        throw new UnregisteredActionTypeError(request.actionType);
+      }
       const result = await executeWithTimeout(invoke, actionConfig.timeout);
       const latencyMs = Date.now() - startMs;
 
@@ -898,8 +923,10 @@ export type RedispatchActionOutcome =
  * requested, so there is no workspace-wide stranded-row listing today. An
  * admin reaches someone else's stranded action by id. A backlog surface
  * belongs beside the triage backlog's `GET /` if the residual window ever
- * proves wide enough to need one — it should not, since the registry is now
- * populated at boot on every instance.
+ * proves wide enough to need one — it should not, since `api/routes/actions.ts`
+ * imports the built-in action modules for their registration side effect, so
+ * every process serving these verbs holds every built-in type from the moment
+ * the router exists.
  *
  * ## The CAS, and why it claims `executed_at`
  *
@@ -1266,7 +1293,7 @@ export async function rollbackAction(
  */
 export function _resetActionStore(): void {
   memoryStore.clear();
-  executorRegistry.clear();
+  _resetActionExecutors();
   rollbackMethodRegistry.clear();
 }
 

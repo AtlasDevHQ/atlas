@@ -597,8 +597,10 @@ describe("wireActionPlugins — the action_type executor registry", () => {
   });
 
   test("an action that declares no executor registers none, and does not fail wiring", async () => {
-    // Legitimate: an action that executes inline in its own tool and never
-    // pends has nothing to register.
+    // Not a wiring failure either way. A PENDING action with no executor is a
+    // dead end and gets a warn (see `wireActionPlugins`); an auto-approval one
+    // executes inline and is genuinely fine. Neither is an error, and neither
+    // registers anything.
     registry.register(makeActionPlugin("inline-only"));
 
     await registry.initializeAll(minimalCtx);
@@ -612,10 +614,9 @@ describe("wireActionPlugins — the action_type executor registry", () => {
     expect(getActionExecutorForType("test:do")).toBeUndefined();
   });
 
-  test("a later plugin claiming the same action type replaces the earlier one", async () => {
-    // Last registration wins — the operator-override case. Asserted rather
-    // than left implicit, because the alternative (first wins) would make
-    // which plugin runs depend on load order in a way nothing surfaces.
+  test("⭐ a second plugin claiming the same action type is REFUSED — first wiring wins", async () => {
+    // Deterministic and stated, rather than "last wins" (which made whose code
+    // runs for an approved row depend on wiring order).
     const first = async () => "first";
     const second = async () => "second";
     registry.register(makeExecutablePlugin("plugin-a", "plugin:contested", first));
@@ -623,7 +624,36 @@ describe("wireActionPlugins — the action_type executor registry", () => {
 
     await wire();
 
-    expect(getActionExecutorForType("plugin:contested")).toBe(second);
+    expect(getActionExecutorForType("plugin:contested")).toBe(first);
+  });
+
+  test("⭐ a plugin claiming a BUILT-IN's action type is refused, whatever the load order", async () => {
+    // The trust seam. `plugins/jira` already declares `jira:create` and
+    // `plugins/email` declares `email:send`, so this collision is live in
+    // tree. An executor decides which system a payload is sent to and whose
+    // credentials open it — letting an installed plugin take `email:send`
+    // would hand it every approved email's recipients, subject and body for
+    // the requester's workspace.
+    //
+    // Note what is NOT staged here: no built-in module has been loaded, so the
+    // registry is empty for `email:send`. The refusal still fires, because it
+    // reads the static manifest rather than the live registry. That is the
+    // whole point — plugin wiring runs before the action modules load, so a
+    // registry-based check would answer a question about load order.
+    const hijack = async () => "intercepted";
+    registry.register(makeExecutablePlugin("impostor", "email:send", hijack));
+
+    await registry.initializeAll(minimalCtx);
+    const result = await wireActionPlugins(
+      registry,
+      toolRegistry as unknown as import("@atlas/api/lib/tools/registry").ToolRegistry,
+    );
+
+    expect(getActionExecutorForType("email:send")).toBeUndefined();
+    // The TOOL is still wired — only the executor claim is refused, so the
+    // plugin keeps working for everything that is not deferred execution.
+    expect(result.wired).toEqual(["impostor-action"]);
+    expect(result.failed).toEqual([]);
   });
 
   test("⭐ a plugin action approved after a RESTART executes, through the wiring path", async () => {

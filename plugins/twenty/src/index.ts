@@ -189,7 +189,8 @@ export const twentyPlugin = createPlugin<
         const result = await upsertPerson(clientConfig, {
           email,
           eventSource,
-          name,
+          // Exact optional: a call with neither name part omits the key.
+          ...(name !== undefined ? { name } : {}),
           customFields,
         });
         return { id: result.id, email: result.emails?.primaryEmail };

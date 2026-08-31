@@ -877,7 +877,23 @@ authed.openapi(previewTaskRoute, async (c) => {
       metadata: { taskId: id, dryRun: true },
     });
 
-    return c.json(preview, 200);
+    // Each channel block is optional on the preview, and Hono's `c.json()`
+    // rejects an optional-bearing payload under `exactOptionalPropertyTypes` —
+    // `JSONRespondReturn` widens the slot back to `T | undefined`, which is not
+    // a `JSONValue`. Project each onto `| null`, the convention this repo
+    // already uses at the same seam (`admin-openapi-datasources.ts`): a preview
+    // for one channel now says "no email block" instead of omitting the key
+    // (#5522).
+    return c.json(
+      {
+        channel: preview.channel,
+        email: preview.email ?? null,
+        slack: preview.slack ?? null,
+        webhook: preview.webhook ?? null,
+        fallbackMessage: preview.fallbackMessage ?? null,
+      },
+      200,
+    );
   }), { label: "generate delivery preview" });
 });
 

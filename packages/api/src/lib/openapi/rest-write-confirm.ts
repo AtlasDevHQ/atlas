@@ -112,9 +112,14 @@ export type RestParamScalar = string | number | boolean;
 export interface RestWriteConfirmRequest {
   readonly datasourceId: string;
   readonly operationId: string;
-  readonly pathParams?: Record<string, RestParamScalar>;
-  readonly query?: Record<string, RestParamScalar | ReadonlyArray<RestParamScalar>>;
-  readonly header?: Record<string, RestParamScalar>;
+  // The three parameter buckets are loose-optional (`| undefined`): this is the
+  // REST input contract the banner POSTs verbatim, so it arrives Zod-parsed
+  // with `T | undefined` in every optional slot, and `confirmRequestToParams`
+  // below reads each through a truthiness guard before it can reach the
+  // request (#5522).
+  readonly pathParams?: Record<string, RestParamScalar> | undefined;
+  readonly query?: Record<string, RestParamScalar | ReadonlyArray<RestParamScalar>> | undefined;
+  readonly header?: Record<string, RestParamScalar> | undefined;
   /** JSON request body for the write. */
   readonly body?: unknown;
   /**

@@ -211,7 +211,17 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
     // entity's YAML + profile). `now` defaults to the real clock; the anchor
     // rides every turn, so re-anchoring mid-conversation re-scopes the next block.
     const { buildBriefingBlock } = await import("@atlas/api/lib/semantic/expert/briefing-inputs");
-    const briefing = await buildBriefingBlock(orgId, undefined, anchor);
+    // `anchor` is Zod-parsed, so its own optional `group` arrives as
+    // `string | undefined` while the briefing's anchor union declares it exact.
+    // Rebuild the entity / column arms so an anchor without a group omits the
+    // key (#5522).
+    const briefingAnchor =
+      anchor === undefined || anchor.kind === "group"
+        ? anchor
+        : anchor.kind === "entity"
+          ? { kind: "entity" as const, entity: anchor.entity, ...(anchor.group !== undefined ? { group: anchor.group } : {}) }
+          : { kind: "column" as const, entity: anchor.entity, column: anchor.column, ...(anchor.group !== undefined ? { group: anchor.group } : {}) };
+    const briefing = await buildBriefingBlock(orgId, undefined, briefingAnchor);
 
     // #4508 — stamp the agent origin so origin-scoped approval rules (#2072)
     // fire for the expert agent's `executeSQL`. The interactive improve chat is

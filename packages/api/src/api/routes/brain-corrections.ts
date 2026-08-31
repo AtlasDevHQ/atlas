@@ -347,14 +347,16 @@ export function createBrainCorrectionsRoute() {
           factId: input.factId,
           verb: input.verb,
           ...(input.reason !== undefined ? { reason: input.reason } : {}),
-          replacement: input.replacement
+          ...(input.replacement
             ? {
-                object: input.replacement.object,
-                validFrom: input.replacement.validFrom
-                  ? new Date(input.replacement.validFrom)
-                  : null,
+                replacement: {
+                  object: input.replacement.object,
+                  validFrom: input.replacement.validFrom
+                    ? new Date(input.replacement.validFrom)
+                    : null,
+                },
               }
-            : undefined,
+            : {}),
           // #5496 — a human clicked Confirm and the server verified a
           // single-use, workspace-bound token before this line ran. That is the
           // strongest intent evidence the system can produce, and the audit row

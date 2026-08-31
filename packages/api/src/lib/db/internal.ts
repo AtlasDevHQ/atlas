@@ -3312,7 +3312,8 @@ export async function setWorkspaceRegion(
     [orgId],
   );
   if (existing.length === 0) return { assigned: false };
-  return { assigned: false, existing: existing[0].region ?? undefined };
+  const existingRegion = existing[0].region;
+    return { assigned: false, ...(existingRegion != null ? { existing: existingRegion } : {}) };
 }
 
 /**

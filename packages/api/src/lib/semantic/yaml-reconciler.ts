@@ -56,7 +56,10 @@ export function reconcileEntityYaml(
   for (const dim of rawDims) {
     if (typeof dim?.name === "string" && removedNames.has(dim.name)) continue;
     if (typeof dim?.name === "string" && typeOverrides.has(dim.name)) {
-      kept.push({ ...dim, type: typeOverrides.get(dim.name) });
+      // Read once into a local: the conditional-spread idiom evaluates its
+        // subject twice, and this one is a Map lookup (#5522).
+        const overrideType = typeOverrides.get(dim.name);
+        kept.push({ ...dim, ...(overrideType !== undefined ? { type: overrideType } : {}) });
     } else {
       kept.push(dim);
     }

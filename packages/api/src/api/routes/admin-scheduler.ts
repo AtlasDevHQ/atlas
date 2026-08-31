@@ -18,6 +18,7 @@ import {
   BYOT_CATALOG_REFRESH_ACTOR,
 } from "@atlas/api/lib/scheduler/byot-catalog-refresh";
 import type { ByotRefreshCycleResult } from "@useatlas/types";
+import type { WithLooseOptionals } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requirePermission } from "./admin-router";
 
@@ -52,7 +53,12 @@ const TriggerResultSchema = z.object({
   skippedEeUnavailable: z.number().int().nonnegative(),
   skippedMalformedBundle: z.number().int().nonnegative(),
   error: z.string().optional(),
-}) satisfies z.ZodType<ByotRefreshCycleResult>;
+  // `WithLooseOptionals`, per the stage-1 precedent: Zod's `.optional()` infers
+  // `error?: string | undefined`, which under `exactOptionalPropertyTypes` is no
+  // longer the exact `error?: string` the result type declares. Widening only
+  // the OPTIONAL properties keeps every drift this `satisfies` exists to catch
+  // (#5522).
+}) satisfies z.ZodType<WithLooseOptionals<ByotRefreshCycleResult>>;
 
 // ---------------------------------------------------------------------------
 // Routes

@@ -1373,7 +1373,17 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.python ? { python: config.python } : {}),
     ...(config.session ? { session: config.session } : {}),
     ...(config.semanticIndex ? { semanticIndex: config.semanticIndex } : {}),
-    ...(config.pool ? { pool: config.pool } : {}),
+    // Rebuilt rather than passed through: `pool.perOrg` is optional on the Zod
+    // output as `T | undefined`, while `ResolvedConfig` declares it exact, so
+    // the nested slot has to be spread on presence too (#5522).
+    ...(config.pool
+      ? {
+          pool: {
+            ...config.pool,
+            ...(config.pool.perOrg !== undefined ? { perOrg: config.pool.perOrg } : {}),
+          },
+        }
+      : {}),
     ...(config.starterPrompts ? { starterPrompts: config.starterPrompts } : {}),
     ...(config.enterprise ? { enterprise: config.enterprise } : {}),
     ...(config.residency ? { residency: config.residency } : {}),

@@ -2872,7 +2872,18 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
         ({ value: platformValue, source: platformSource } = resolvePlatformTier(def));
       }
 
-      return { ...def, requiresRestart, saasImmutable, currentValue, source, platformValue, platformSource };
+      return {
+        ...def,
+        requiresRestart,
+        // Spread on presence: `saasImmutable` is an exact optional, and a key
+        // that is not SaaS-immutable must be absent rather than hold
+        // `undefined` (#5522).
+        ...(saasImmutable !== undefined ? { saasImmutable } : {}),
+        currentValue,
+        source,
+        platformValue,
+        platformSource,
+      };
     });
 }
 

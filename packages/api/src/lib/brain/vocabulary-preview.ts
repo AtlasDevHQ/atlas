@@ -1441,14 +1441,15 @@ async function planCounterfactual(
         // rather than a batch scope. `vocabulary-preview-pg.test.ts` asserts
         // this statement and the delta agree on a real corpus, so the reuse is
         // CHECKED rather than claimed.
-        armingTotalOverride:
-          request.kind === "cardinality-flip"
-            ? {
+        ...(request.kind === "cardinality-flip"
+          ? {
+              armingTotalOverride: {
                 sql: cardinalityHeldBackCountSql("d.predicate_key = $2"),
                 params: [canonicalKey],
                 column: "held_back",
-              }
-            : undefined,
+              },
+            }
+          : {}),
       };
     }
   }

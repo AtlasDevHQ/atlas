@@ -126,7 +126,9 @@ if (config.plugins?.length) {
   pluginWiring = {
     plugins: config.plugins as unknown as PluginWiringConfig["plugins"],
     context: pluginContext,
-    app: app as unknown as PluginWiringConfig["app"],
+    // Spread on presence: `app` is an exact optional on `PluginWiringConfig`,
+    // so a wiring built without one must omit the key (#5522).
+    ...(app !== undefined ? { app: app as unknown as NonNullable<PluginWiringConfig["app"]> } : {}),
     toolRegistry: pluginToolRegistry,
     // Plugin schema migrations — run by the wired layer BEFORE initialize() so
     // plugins can use their tables. #3681 — migrations are isolated per plugin:

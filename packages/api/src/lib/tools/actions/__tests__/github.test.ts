@@ -65,7 +65,6 @@ void mock.module("@atlas/api/lib/github/installation-token", () => ({
 const {
   executeGitHubIssueCreate,
   createGitHubIssue,
-  toGitHubCredentials,
   normalizeAppPrivateKey,
 } = await import("@atlas/api/lib/tools/actions/github");
 
@@ -215,45 +214,6 @@ describe("normalizeAppPrivateKey", () => {
       // input would put it in the log and in action_log.error.
       expect(message).not.toContain("sUpErS3cret");
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// toGitHubCredentials — narrowing
-// ---------------------------------------------------------------------------
-
-describe("toGitHubCredentials", () => {
-  it("rejects a partial set and names only the missing KEYS", () => {
-    try {
-      toGitHubCredentials({
-        GITHUB_ACTION_APP_ID: "111111",
-        GITHUB_ACTION_PRIVATE_KEY: PKCS8_KEY,
-      });
-      expect.unreachable("a partial credential set must not narrow");
-    } catch (err) {
-      const message = (err as Error).message;
-      expect(message).toContain("GITHUB_ACTION_INSTALLATION_ID");
-      expect(message).not.toContain("BEGIN PRIVATE KEY");
-      expect(message).not.toContain("111111");
-    }
-  });
-
-  it("carries the optional default repo through when set, and omits it when not", () => {
-    expect(
-      toGitHubCredentials({
-        GITHUB_ACTION_APP_ID: "1",
-        GITHUB_ACTION_INSTALLATION_ID: "2",
-        GITHUB_ACTION_PRIVATE_KEY: "k",
-        GITHUB_ACTION_DEFAULT_REPO: "acme/platform",
-      }).GITHUB_ACTION_DEFAULT_REPO,
-    ).toBe("acme/platform");
-    expect(
-      toGitHubCredentials({
-        GITHUB_ACTION_APP_ID: "1",
-        GITHUB_ACTION_INSTALLATION_ID: "2",
-        GITHUB_ACTION_PRIVATE_KEY: "k",
-      }).GITHUB_ACTION_DEFAULT_REPO,
-    ).toBeUndefined();
   });
 });
 

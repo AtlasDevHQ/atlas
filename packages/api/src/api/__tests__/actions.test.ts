@@ -50,13 +50,26 @@ const mockListPendingActions = mock((): Promise<ActionLogEntry[]> =>
 const mockGetAction = mock((): Promise<ActionLogEntry | null> =>
   Promise.resolve(null),
 );
-const mockApproveAction = mock((): Promise<ActionLogEntry | null> =>
-  Promise.resolve(null),
+// The resolution verbs own authorization + CAS + executor lookup since the
+// ADR-0046 cleanup pass — the route keeps only HTTP mapping, so these mocks
+// script OUTCOMES. The verb-level composition (approverId propagation,
+// executor fallback, org scoping) is pinned in
+// lib/tools/actions/__tests__/resolve-as-user.test.ts.
+type ApproveOutcome =
+  | { kind: "not_found" }
+  | { kind: "forbidden"; reason: "role" | "self_approval" }
+  | { kind: "conflict" }
+  | { kind: "approved"; entry: ActionLogEntry }
+  | { kind: "approved_not_executed"; entry: ActionLogEntry };
+type DenyOutcome =
+  | Exclude<ApproveOutcome, { kind: "approved" } | { kind: "approved_not_executed" }>
+  | { kind: "denied"; entry: ActionLogEntry };
+const mockApproveActionAsUser = mock((): Promise<ApproveOutcome> =>
+  Promise.resolve({ kind: "conflict" }),
 );
-const mockDenyAction = mock((): Promise<ActionLogEntry | null> =>
-  Promise.resolve(null),
+const mockDenyActionAsUser = mock((): Promise<DenyOutcome> =>
+  Promise.resolve({ kind: "conflict" }),
 );
-const mockGetActionExecutor = mock((): undefined => undefined);
 const mockGetActionConfig = mock(
   (): { approval: ActionApprovalMode; timeout?: number; maxPerConversation?: number } => ({
     approval: "manual",
@@ -69,10 +82,9 @@ const mockRollbackAction = mock((): Promise<ActionLogEntry | null> =>
 void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   listPendingActions: mockListPendingActions,
   getAction: mockGetAction,
-  approveAction: mockApproveAction,
-  denyAction: mockDenyAction,
+  approveActionAsUser: mockApproveActionAsUser,
+  denyActionAsUser: mockDenyActionAsUser,
   rollbackAction: mockRollbackAction,
-  getActionExecutor: mockGetActionExecutor,
   getActionConfig: mockGetActionConfig,
 }));
 
@@ -236,12 +248,10 @@ describe("actions routes", () => {
     mockListPendingActions.mockResolvedValue([]);
     mockGetAction.mockReset();
     mockGetAction.mockResolvedValue(null);
-    mockApproveAction.mockReset();
-    mockApproveAction.mockResolvedValue(null);
-    mockDenyAction.mockReset();
-    mockDenyAction.mockResolvedValue(null);
-    mockGetActionExecutor.mockReset();
-    mockGetActionExecutor.mockReturnValue(undefined);
+    mockApproveActionAsUser.mockReset();
+    mockApproveActionAsUser.mockResolvedValue({ kind: "conflict" });
+    mockDenyActionAsUser.mockReset();
+    mockDenyActionAsUser.mockResolvedValue({ kind: "conflict" });
     mockGetActionConfig.mockReset();
     mockGetActionConfig.mockReturnValue({ approval: "manual" });
     mockRollbackAction.mockReset();
@@ -471,14 +481,12 @@ describe("actions routes", () => {
 
   describe("POST /api/v1/actions/:id/approve", () => {
     it("returns 200 on successful approval", async () => {
-      const action = makeAction();
       const approvedAction = makeAction({
         status: "approved",
         resolved_at: "2024-06-01T01:00:00Z",
         approved_by: "u1",
       });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockApproveAction.mockResolvedValueOnce(approvedAction);
+      mockApproveActionAsUser.mockResolvedValueOnce({ kind: "approved", entry: approvedAction });
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
@@ -493,9 +501,7 @@ describe("actions routes", () => {
     });
 
     it("returns 409 when action already resolved", async () => {
-      const action = makeAction({ status: "approved" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockApproveAction.mockResolvedValueOnce(null);
+      mockApproveActionAsUser.mockResolvedValueOnce({ kind: "conflict" });
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
@@ -520,7 +526,7 @@ describe("actions routes", () => {
     });
 
     it("returns 404 when action not found", async () => {
-      mockGetAction.mockResolvedValueOnce(null);
+      mockApproveActionAsUser.mockResolvedValueOnce({ kind: "not_found" });
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
@@ -544,11 +550,9 @@ describe("actions routes", () => {
       expect(response.status).toBe(404);
     });
 
-    it("passes approverId from auth user", async () => {
-      const action = makeAction();
+    it("passes the acting user and their org to the verb", async () => {
       const approvedAction = makeAction({ status: "approved", approved_by: "u1" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockApproveAction.mockResolvedValueOnce(approvedAction);
+      mockApproveActionAsUser.mockResolvedValueOnce({ kind: "approved", entry: approvedAction });
 
       await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
@@ -556,32 +560,35 @@ describe("actions routes", () => {
         }),
       );
 
-      expect(mockApproveAction).toHaveBeenCalledTimes(1);
-      const call = mockApproveAction.mock.calls[0] as unknown as [string, string, unknown];
+      expect(mockApproveActionAsUser).toHaveBeenCalledTimes(1);
+      const call = mockApproveActionAsUser.mock.calls[0] as unknown as [
+        string,
+        { user?: { id?: string }; orgId?: string | null },
+      ];
       expect(call[0]).toBe(VALID_ID);
-      expect(call[1]).toBe("u1");
+      expect(call[1].user?.id).toBe("u1");
+      expect(call[1].orgId).toBe("org-u1");
     });
 
-    it("looks up executor via getActionExecutor with action ID", async () => {
-      const action = makeAction({ action_type: "send_email" });
-      const approvedAction = makeAction({ status: "approved" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockGetActionExecutor.mockReturnValueOnce(undefined);
-      mockApproveAction.mockResolvedValueOnce(approvedAction);
+    it("maps approved_not_executed to the same 200 wire shape — the entry's status carries the truth", async () => {
+      // The tagged kind exists so no CALLER conflates the silent-drop state
+      // with success in code; on the wire the entry's own status ("approved",
+      // never advanced) is the disclosure, unchanged from before the verbs.
+      const stranded = makeAction({ status: "approved", approved_by: "u1" });
+      mockApproveActionAsUser.mockResolvedValueOnce({ kind: "approved_not_executed", entry: stranded });
 
-      await app.fetch(
+      const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
           method: "POST",
         }),
       );
-
-      expect(mockGetActionExecutor).toHaveBeenCalledWith(VALID_ID);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.status).toBe("approved");
     });
 
     it("returns 403 for admin-only action when approver is the requester", async () => {
-      const action = makeAction({ requested_by: "u1", action_type: "admin:action" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockGetActionConfig.mockReturnValueOnce({ approval: "admin-only" });
+      mockApproveActionAsUser.mockResolvedValueOnce({ kind: "forbidden", reason: "self_approval" });
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
@@ -592,6 +599,20 @@ describe("actions routes", () => {
 
       const body = (await response.json()) as Record<string, unknown>;
       expect(body.error).toBe("forbidden");
+      expect(body.message).toContain("cannot be approved by the requester");
+    });
+
+    it("returns 403 with the role message for a role refusal", async () => {
+      mockApproveActionAsUser.mockResolvedValueOnce({ kind: "forbidden", reason: "role" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(403);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.message).toContain("Insufficient role to approve");
     });
   });
 
@@ -601,14 +622,12 @@ describe("actions routes", () => {
 
   describe("POST /api/v1/actions/:id/deny", () => {
     it("returns 200 on successful denial", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
       const deniedAction = makeAction({
         status: "denied",
         resolved_at: "2024-06-01T01:00:00Z",
         approved_by: "u1",
       });
-      mockDenyAction.mockResolvedValueOnce(deniedAction);
+      mockDenyActionAsUser.mockResolvedValueOnce({ kind: "denied", entry: deniedAction });
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
@@ -622,7 +641,7 @@ describe("actions routes", () => {
     });
 
     it("returns 404 when action not found", async () => {
-      mockGetAction.mockResolvedValueOnce(null);
+      mockDenyActionAsUser.mockResolvedValueOnce({ kind: "not_found" });
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
@@ -636,9 +655,7 @@ describe("actions routes", () => {
     });
 
     it("returns 409 when action already resolved", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      mockDenyAction.mockResolvedValueOnce(null);
+      mockDenyActionAsUser.mockResolvedValueOnce({ kind: "conflict" });
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
@@ -674,13 +691,11 @@ describe("actions routes", () => {
     });
 
     it("accepts reason in body", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
       const deniedAction = makeAction({
         status: "denied",
         error: "Not appropriate",
       });
-      mockDenyAction.mockResolvedValueOnce(deniedAction);
+      mockDenyActionAsUser.mockResolvedValueOnce({ kind: "denied", entry: deniedAction });
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
@@ -691,18 +706,32 @@ describe("actions routes", () => {
       );
       expect(response.status).toBe(200);
 
-      expect(mockDenyAction).toHaveBeenCalledTimes(1);
-      const call = mockDenyAction.mock.calls[0] as unknown as [string, string, string | undefined];
+      expect(mockDenyActionAsUser).toHaveBeenCalledTimes(1);
+      const call = mockDenyActionAsUser.mock.calls[0] as unknown as [
+        string,
+        { user?: { id?: string }; orgId?: string | null },
+        string | undefined,
+      ];
       expect(call[0]).toBe(VALID_ID);
-      expect(call[1]).toBe("u1");
+      expect(call[1].user?.id).toBe("u1");
       expect(call[2]).toBe("Not appropriate");
     });
 
+    it("a malformed JSON body answers 400 before the verb runs — route validation, unchanged by the verb refactor", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "not json {",
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(mockDenyActionAsUser).not.toHaveBeenCalled();
+    });
+
     it("works without a body (reason is optional)", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
       const deniedAction = makeAction({ status: "denied" });
-      mockDenyAction.mockResolvedValueOnce(deniedAction);
+      mockDenyActionAsUser.mockResolvedValueOnce({ kind: "denied", entry: deniedAction });
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
@@ -711,15 +740,13 @@ describe("actions routes", () => {
       );
       expect(response.status).toBe(200);
 
-      const call = mockDenyAction.mock.calls[0] as unknown as [string, string, string | undefined];
+      const call = mockDenyActionAsUser.mock.calls[0] as unknown as [string, unknown, string | undefined];
       expect(call[2]).toBeUndefined();
     });
 
     it("passes denierId from auth user", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
       const deniedAction = makeAction({ status: "denied", approved_by: "u1" });
-      mockDenyAction.mockResolvedValueOnce(deniedAction);
+      mockDenyActionAsUser.mockResolvedValueOnce({ kind: "denied", entry: deniedAction });
 
       await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
@@ -727,15 +754,13 @@ describe("actions routes", () => {
         }),
       );
 
-      const call = mockDenyAction.mock.calls[0] as unknown as [string, string, string | undefined];
+      const call = mockDenyActionAsUser.mock.calls[0] as unknown as [string, { user?: { id?: string } }];
       expect(call[0]).toBe(VALID_ID);
-      expect(call[1]).toBe("u1");
+      expect(call[1].user?.id).toBe("u1");
     });
 
     it("returns 403 for admin-only action when denier is the requester", async () => {
-      const action = makeAction({ requested_by: "u1", action_type: "admin:action" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockGetActionConfig.mockReturnValueOnce({ approval: "admin-only" });
+      mockDenyActionAsUser.mockResolvedValueOnce({ kind: "forbidden", reason: "self_approval" });
 
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
@@ -1171,34 +1196,31 @@ describe("actions routes", () => {
       expect(call[1]).toBe("org-u1");
     });
 
-    it("POST /:id/approve forwards orgId to getAction and approveAction", async () => {
-      mockGetAction.mockResolvedValueOnce(makeAction({ requested_by: "other-user" }));
-      mockApproveAction.mockResolvedValueOnce(makeAction({ status: "executed" }));
+    it("POST /:id/approve forwards orgId to the verb", async () => {
+      mockApproveActionAsUser.mockResolvedValueOnce({
+        kind: "approved",
+        entry: makeAction({ status: "executed" }),
+      });
 
       await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
           method: "POST",
         }),
       );
-      const getCall = mockGetAction.mock.calls[0] as unknown as [string, string | undefined];
-      expect(getCall[1]).toBe("org-u1");
-      const approveCall = mockApproveAction.mock.calls[0] as unknown as [string, string, unknown, string | undefined];
-      expect(approveCall[3]).toBe("org-u1");
+      const call = mockApproveActionAsUser.mock.calls[0] as unknown as [string, { orgId?: string | null }];
+      expect(call[1].orgId).toBe("org-u1");
     });
 
-    it("POST /:id/deny forwards orgId to getAction and denyAction", async () => {
-      mockGetAction.mockResolvedValueOnce(makeAction({ requested_by: "other-user" }));
-      mockDenyAction.mockResolvedValueOnce(makeAction({ status: "denied" }));
+    it("POST /:id/deny forwards orgId to the verb", async () => {
+      mockDenyActionAsUser.mockResolvedValueOnce({ kind: "denied", entry: makeAction({ status: "denied" }) });
 
       await app.fetch(
         new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
           method: "POST",
         }),
       );
-      const getCall = mockGetAction.mock.calls[0] as unknown as [string, string | undefined];
-      expect(getCall[1]).toBe("org-u1");
-      const denyCall = mockDenyAction.mock.calls[0] as unknown as [string, string, string | undefined, string | undefined];
-      expect(denyCall[3]).toBe("org-u1");
+      const denyCall = mockDenyActionAsUser.mock.calls[0] as unknown as [string, { orgId?: string | null }];
+      expect(denyCall[1].orgId).toBe("org-u1");
     });
 
     it("POST /:id/rollback forwards orgId to getAction and rollbackAction", async () => {

@@ -356,3 +356,128 @@ describe("the SQL verbs", () => {
     expect(REQUEUE_TRIAGED_SQL.trimEnd()).toMatch(/\)$/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 4. The Triager seam — the adapter socket stage 1 mounts into
+// ---------------------------------------------------------------------------
+
+// Dynamic import, matching the rest of the file: a static `import` hoists
+// above the `mock.module("@atlas/api/lib/db/internal", …)` call at the top.
+const { composeTriagers, deterministicTriager } = await import("@atlas/api/lib/brain/triage");
+import type { Triager } from "@atlas/api/lib/brain/triage";
+
+describe("the Triager seam — deps.triage", () => {
+  test("injecting deterministicTriager explicitly is the default, verbatim", async () => {
+    drainServes([episode("ep-junk", "+1"), episode("ep-real", "prod uses us-east-1")]);
+    const extract = mock(async () => [] as FactCandidate[]);
+
+    const { result } = await runCycle({
+      extract,
+      triageEnabled: () => true,
+      triage: deterministicTriager,
+    });
+
+    expect(marked).toEqual([{ episodeId: "ep-junk", rule: "known_ack" }]);
+    expect(result.skipped.triaged).toBe(1);
+    expect(result.triage.matched["known_ack"]).toBe(1);
+  });
+
+  test("⭐ a stage-1 verdict is marked and counted under its own reason id — outside the stage-0 union", async () => {
+    drainServes([episode("ep-noise", "circling back on the thing from before")]);
+    const extract = mock(async () => [] as FactCandidate[]);
+    const classifier: Triager = () => ({ stage: 1, reason: "model_low_signal", confidence: 0.97 });
+
+    const { result } = await runCycle({ extract, triageEnabled: () => true, triage: classifier });
+
+    expect(extract).not.toHaveBeenCalled();
+    expect(marked).toEqual([{ episodeId: "ep-noise", rule: "model_low_signal" }]);
+    // The tally is string-keyed on purpose: stage-1 reasons join dynamically,
+    // beside the pre-seeded stage-0 counters (still present, still zero).
+    expect(result.triage.matched["model_low_signal"]).toBe(1);
+    expect(result.triage.matched["known_ack"]).toBe(0);
+    expect(result.skipped.triaged).toBe(1);
+  });
+
+  test("⭐ a throwing adapter fails OPEN — the episode reaches the model, nothing is marked", async () => {
+    // The plausible fault is a stage-1 classifier's transport. A fault must
+    // cost one cheap model call, never a silent drop.
+    drainServes([episode("ep-1", "the contract renews in March")]);
+    const extract = mock(async () => [] as FactCandidate[]);
+    const broken: Triager = () => {
+      throw new Error("classifier transport down");
+    };
+
+    const { result } = await runCycle({ extract, triageEnabled: () => true, triage: broken });
+
+    expect(extract).toHaveBeenCalledTimes(1);
+    expect(marked).toEqual([]);
+    expect(result.skipped.triaged).toBe(0);
+    expect(result.triage.evaluated).toBe(1);
+  });
+
+  test("a verdict with an empty reason fails OPEN — unstorable means unmarkable means not dropped", async () => {
+    drainServes([episode("ep-1", "the contract renews in March")]);
+    const extract = mock(async () => [] as FactCandidate[]);
+    const malformed: Triager = () => ({ stage: 1, reason: "   " });
+
+    const { result } = await runCycle({ extract, triageEnabled: () => true, triage: malformed });
+
+    expect(extract).toHaveBeenCalledTimes(1);
+    expect(marked).toEqual([]);
+    expect(result.skipped.triaged).toBe(0);
+  });
+
+  test("runtime contract violations fail OPEN too — undefined verdicts and non-string reasons never abort the tick", async () => {
+    // TypeScript cannot see across an injected adapter at runtime. An adapter
+    // returning `undefined` (not `null`) or a non-string reason must cost one
+    // model call like every other fault — not a thrown `.trim()` that aborts
+    // the whole tick, which would be strictly worse than the single dropped
+    // claim the module protects against.
+    drainServes([episode("ep-1", "prod uses us-east-1"), episode("ep-2", "the contract renews in March")]);
+    const extract = mock(async () => [] as FactCandidate[]);
+    let call = 0;
+    const violating = (() => {
+      call++;
+      return call === 1 ? undefined : { stage: 1, reason: 42 };
+    }) as unknown as Triager;
+
+    const { result } = await runCycle({ extract, triageEnabled: () => true, triage: violating });
+
+    expect(extract).toHaveBeenCalledTimes(2);
+    expect(marked).toEqual([]);
+    expect(result.skipped.triaged).toBe(0);
+    expect(result.triage.evaluated).toBe(2);
+    expect(result.status).toBe("success");
+  });
+
+  test("⭐ composed stage-0 + stage-1: the deterministic floor decides first, the classifier only sees what it passed", async () => {
+    const classifierSaw: string[] = [];
+    const classifier: Triager = (ep) => {
+      classifierSaw.push(ep.id);
+      return ep.id === "ep-noise" ? { stage: 1, reason: "model_low_signal" } : null;
+    };
+    drainServes([
+      episode("ep-junk", "+1"),
+      episode("ep-noise", "circling back on the thing"),
+      episode("ep-real", "prod uses us-east-1"),
+    ]);
+    const extract = mock(async () => [] as FactCandidate[]);
+
+    const { result } = await runCycle({
+      extract,
+      triageEnabled: () => true,
+      triage: composeTriagers(deterministicTriager, classifier),
+    });
+
+    // "+1" was caught by the floor, so the classifier never saw it.
+    expect(classifierSaw).toEqual(["ep-noise", "ep-real"]);
+    expect(marked).toEqual([
+      { episodeId: "ep-junk", rule: "known_ack" },
+      { episodeId: "ep-noise", rule: "model_low_signal" },
+    ]);
+    expect(result.extracted).toBe(1);
+    expect(result.skipped.triaged).toBe(2);
+    expect(result.triage.matched["known_ack"]).toBe(1);
+    expect(result.triage.matched["model_low_signal"]).toBe(1);
+  });
+});

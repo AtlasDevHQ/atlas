@@ -42,27 +42,22 @@ const resolverCalls: Array<{ target: string; workspaceId: string | null | undefi
 /**
  * Partial mock of the credential resolver, deliberately: `linear.ts` is the
  * only module in this file's reachable graph that imports from it (the handler
- * is mocked above), and it imports exactly these two symbols — so the "Export
+ * is mocked above), and it imports exactly this one symbol — so the "Export
  * named 'X' not found" failure mode cannot fire. The ladder itself is the
  * resolver suite's subject; here the only question is whether the action calls
  * it with the ACTION's workspace and stays out of `process.env`.
  */
 void mock.module("@atlas/api/lib/tools/actions/credentials/resolver", () => ({
-  resolveActionCredentials: async (
-    target: string,
-    options: { workspaceId: string | null | undefined },
+  resolveCredentialsFor: async (
+    spec: { target: string },
+    ctx: { workspaceId: string | null },
   ) => {
-    resolverCalls.push({ target, workspaceId: options.workspaceId });
-    return {
-      target,
-      values: { LINEAR_API_KEY: "lin_api_tenant-key" },
-      resolvedFrom: "workspace" as const,
-    };
+    resolverCalls.push({ target: spec.target, workspaceId: ctx.workspaceId });
+    return { LINEAR_API_KEY: "lin_api_tenant-key" };
   },
-  resolveActionDeployMode: () => "saas" as const,
 }));
 
-const { executeLinearCreate, createLinearTicket, toLinearCredentials } = await import(
+const { executeLinearCreate, createLinearTicket } = await import(
   "@atlas/api/lib/tools/actions/linear"
 );
 
@@ -394,29 +389,8 @@ describe("executeLinearCreate", () => {
     ).rejects.toThrow("response could not be parsed");
   });
 
-  it("toLinearCredentials rejects a partial set and names only the missing KEY", () => {
-    try {
-      toLinearCredentials({ LINEAR_DEFAULT_TEAM_KEY: "ENG" });
-      expect(true).toBe(false); // should not reach here
-    } catch (err) {
-      const message = (err as Error).message;
-      expect(message).toContain("LINEAR_API_KEY");
-      // Names, never values — the message must not echo a credential.
-      expect(message).not.toContain("ENG");
-    }
-  });
 
-  it("toLinearCredentials keeps the optional default team when present", () => {
-    expect(
-      toLinearCredentials({ LINEAR_API_KEY: "k", LINEAR_DEFAULT_TEAM_KEY: "ENG" }),
-    ).toEqual({ LINEAR_API_KEY: "k", LINEAR_DEFAULT_TEAM_KEY: "ENG" });
-  });
 
-  it("toLinearCredentials drops an empty optional default rather than storing a blank", () => {
-    expect(toLinearCredentials({ LINEAR_API_KEY: "k", LINEAR_DEFAULT_TEAM_KEY: "" })).toEqual({
-      LINEAR_API_KEY: "k",
-    });
-  });
 });
 
 // ---------------------------------------------------------------------------

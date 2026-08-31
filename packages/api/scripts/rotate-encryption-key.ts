@@ -52,7 +52,7 @@ import {
   type OpaqueSecret,
 } from "@atlas/api/lib/db/secret-encryption";
 import {
-  INTEGRATION_TABLES,
+  ROTATED_COLUMN_TABLES,
   type IntegrationTable,
 } from "@atlas/api/lib/db/integration-tables";
 import { parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
@@ -112,11 +112,13 @@ interface JsonbSelectiveFieldTarget {
 type RotateTarget = ColumnTarget | JsonbSelectiveFieldTarget;
 
 const ROTATION_TABLES: readonly RotateTarget[] = [
-  { kind: "column", table: "workspace_model_config", pk: "id", encrypted: "api_key_encrypted", keyVersionColumn: "api_key_key_version" },
-  // Derive from F-41's INTEGRATION_TABLES so adding a new integration
-  // in one place covers rotation, audit, and any future column-walking
-  // tooling — matches the "single source of truth" convention.
-  ...INTEGRATION_TABLES.map((t) => ({ kind: "column" as const, ...t })),
+  // Every column-oriented target derives from the registry —
+  // INTEGRATION_TABLES plus STANDALONE_ROTATION_TABLES
+  // (workspace_model_config lived as a hand-written duplicate right here
+  // until the registry's completeness tripwire made that visible). One
+  // entry in `db/integration-tables.ts` covers rotation, audit, and any
+  // future column-walking tooling.
+  ...ROTATED_COLUMN_TABLES.map((t) => ({ kind: "column" as const, ...t })),
   // 0096 / #2744 — datasource credentials live inside this JSONB column
   // post-cutover. Coverage is generic via `plugin_catalog.config_schema`:
   // every future plugin install that flags a field `secret: true` is

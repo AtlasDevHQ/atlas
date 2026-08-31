@@ -116,7 +116,7 @@ export interface ActionTargetSpec {
  * credential from the Jira *query* plugin's OAuth bundle in
  * `integration_credentials` — see ADR-0046 on why the two do not share a row.
  */
-const JIRA_TARGET: ActionTargetSpec = {
+export const JIRA_TARGET = {
   target: "jira",
   label: "Jira",
   fields: [
@@ -149,7 +149,7 @@ const JIRA_TARGET: ActionTargetSpec = {
       required: false,
     },
   ],
-};
+} as const satisfies ActionTargetSpec;
 
 /**
  * Salesforce — a record-creation target on a Connected App the TENANT owns
@@ -173,7 +173,7 @@ const JIRA_TARGET: ActionTargetSpec = {
  * `SALESFORCE_ACTION_DEFAULT_OBJECT` is optional: the agent may name an object
  * per call, and the stored default is only consulted when it doesn't.
  */
-const SALESFORCE_TARGET: ActionTargetSpec = {
+export const SALESFORCE_TARGET = {
   target: "salesforce",
   label: "Salesforce",
   fields: [
@@ -206,7 +206,7 @@ const SALESFORCE_TARGET: ActionTargetSpec = {
       required: false,
     },
   ],
-};
+} as const satisfies ActionTargetSpec;
 
 /**
  * Linear — the first target added on the seam rather than with it (#5554).
@@ -231,7 +231,7 @@ const SALESFORCE_TARGET: ActionTargetSpec = {
  * optional for the same reason `JIRA_DEFAULT_PROJECT` is — the agent may name
  * a team per call, and the stored default is consulted only when it doesn't.
  */
-const LINEAR_TARGET: ActionTargetSpec = {
+export const LINEAR_TARGET = {
   target: "linear",
   label: "Linear",
   fields: [
@@ -250,7 +250,7 @@ const LINEAR_TARGET: ActionTargetSpec = {
       required: false,
     },
   ],
-};
+} as const satisfies ActionTargetSpec;
 
 /**
  * GitHub — a GitHub App the TENANT owns and installs on their own repos
@@ -276,7 +276,7 @@ const LINEAR_TARGET: ActionTargetSpec = {
  * `GITHUB_ACTION_DEFAULT_REPO` is optional: the agent may name a repo per
  * call, and the stored default is only consulted when it doesn't.
  */
-const GITHUB_TARGET: ActionTargetSpec = {
+export const GITHUB_TARGET = {
   target: "github",
   label: "GitHub",
   fields: [
@@ -310,7 +310,7 @@ const GITHUB_TARGET: ActionTargetSpec = {
       required: false,
     },
   ],
-};
+} as const satisfies ActionTargetSpec;
 
 /**
  * Every action target managed by the workspace credential surface.
@@ -323,14 +323,39 @@ const GITHUB_TARGET: ActionTargetSpec = {
  * strongest evidence the seam holds: all #3765 asked of them was this list and
  * the tool-name copy in `registry.ts`, and that is exactly where they met.
  */
-export const ACTION_TARGETS: readonly ActionTargetSpec[] = [
+// `as const satisfies`, not an `ActionTargetSpec[]` annotation: the
+// annotation would widen the entries and make `ActionCredentialsOf` over an
+// element of this array degrade to `{}` (every Extract against a widened
+// `required: boolean` is `never`). Consumers that want the general shape
+// still get it — each literal member assigns to ActionTargetSpec.
+export const ACTION_TARGETS = [
   JIRA_TARGET,
   GITHUB_TARGET,
   LINEAR_TARGET,
   SALESFORCE_TARGET,
-];
+] as const satisfies readonly ActionTargetSpec[];
 
 /** Look up a managed action target by slug. `undefined` if unmanaged. */
 export function getActionTarget(target: string): ActionTargetSpec | undefined {
   return ACTION_TARGETS.find((t) => t.target === target);
 }
+
+/**
+ * The credential set an action executes with, DERIVED from its target spec:
+ * every `required: true` field's `envVar` becomes a required string key,
+ * every optional field an optional one. The specs above are declared
+ * `as const satisfies ActionTargetSpec` exactly so this derivation sees
+ * literal names and flags.
+ *
+ * This is the type the per-target `XCredentials` interfaces used to
+ * hand-transcribe, four times, each with a narrowing function whose failure
+ * arm was unreachable by the resolver's all-or-nothing rule. The registry
+ * already declares which fields are required; transcribing that declaration
+ * into a second vocabulary was where the two could drift. Now
+ * `resolveCredentialsFor` (`./resolver.ts`) returns this shape directly.
+ */
+export type ActionCredentialsOf<T extends ActionTargetSpec> = {
+  readonly [K in Extract<T["fields"][number], { required: true }>["envVar"]]: string;
+} & {
+  readonly [K in Extract<T["fields"][number], { required: false }>["envVar"]]?: string;
+};

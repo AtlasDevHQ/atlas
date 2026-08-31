@@ -26,7 +26,7 @@ void mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
-const { executeJiraCreate, createJiraTicket, textToADF, toJiraCredentials } = await import(
+const { executeJiraCreate, createJiraTicket, textToADF } = await import(
   "@atlas/api/lib/tools/actions/jira"
 );
 
@@ -342,18 +342,6 @@ describe("executeJiraCreate", () => {
     expect(body.fields.labels).toBeUndefined();
   });
 
-  it("toJiraCredentials rejects a partial set and names only the missing KEYS", () => {
-    try {
-      toJiraCredentials({ JIRA_BASE_URL: "https://test.atlassian.net", JIRA_API_TOKEN: "tok-123" });
-      expect(true).toBe(false); // should not reach here
-    } catch (err) {
-      const message = (err as Error).message;
-      expect(message).toContain("JIRA_EMAIL");
-      // Names, never values — the message must not echo a credential.
-      expect(message).not.toContain("tok-123");
-      expect(message).not.toContain("test.atlassian.net");
-    }
-  });
 
   it("throws when success response is not valid JSON", async () => {
 
@@ -447,5 +435,69 @@ describe("createJiraTicket — tool execute", () => {
     const request = lastHandleActionCall!.request as Record<string, unknown>;
     expect(request.target).toBe("EXPLICIT");
     expect((request.payload as Record<string, unknown>).project).toBe("EXPLICIT");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The defence pair every vendor client needs: egress guard + timeout
+// ---------------------------------------------------------------------------
+
+describe("executeJiraCreate — base-URL guard and timeout", () => {
+  it("⭐ refuses an internal base URL before Basic auth leaves the process", async () => {
+    // JIRA_BASE_URL is typed by a WORKSPACE admin — a tenant on SaaS — and
+    // the request carries `Authorization: Basic <email:token>` to whatever
+    // host it names. The Salesforce action independently reasoned its way to
+    // this guard; until this landed, Jira (the older sibling from before the
+    // ADR-0046 port) never got it retrofitted.
+    for (const host of ["https://localhost", "https://127.0.0.1", "https://169.254.169.254"]) {
+      capturedFetchUrl = "";
+      await expect(
+        executeJiraCreate(
+          { summary: "Test", description: "Desc", project: "PROJ" },
+          creds({ JIRA_BASE_URL: host }),
+        ),
+      ).rejects.toThrow(/reachable public Jira host/);
+      // Never reached the network, and the refusal names no internal detail.
+      expect(capturedFetchUrl).toBe("");
+    }
+  });
+
+  it("refuses a non-https base URL", async () => {
+    capturedFetchUrl = "";
+    await expect(
+      executeJiraCreate(
+        { summary: "Test", description: "Desc", project: "PROJ" },
+        creds({ JIRA_BASE_URL: "http://tenant.atlassian.net" }),
+      ),
+    ).rejects.toThrow(/must use https/);
+    expect(capturedFetchUrl).toBe("");
+  });
+
+  it("refuses a malformed base URL with actionable copy", async () => {
+    await expect(
+      executeJiraCreate(
+        { summary: "Test", description: "Desc", project: "PROJ" },
+        creds({ JIRA_BASE_URL: "not a url" }),
+      ),
+    ).rejects.toThrow(/not a valid URL/);
+  });
+
+  it("⭐ classifies an aborted call as a timeout, not an upstream failure", async () => {
+    // The abort rejects with a DOMException named AbortError — duck-typed in
+    // the module because DOMException does not subclass Error on every
+    // runtime. Without the bound, `executeWithTimeout(fn, undefined)` on a
+    // default deployment returns fn() unguarded and a hung Jira host hangs
+    // the agent turn.
+    globalThis.fetch = (async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ): Promise<Response> => {
+      // Simulate the runtime's abort rejection without waiting 15s.
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }) as typeof globalThis.fetch;
+
+    await expect(
+      executeJiraCreate({ summary: "Test", description: "Desc", project: "PROJ" }, creds()),
+    ).rejects.toThrow(/did not respond within/);
   });
 });

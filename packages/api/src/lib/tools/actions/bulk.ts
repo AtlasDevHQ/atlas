@@ -3,17 +3,25 @@
  *
  * Org scope: rows belonging to a different org surface as `notFound`, never
  * `forbidden` — cross-org identifiers must not leak existence or type.
+ *
+ * Each id resolves through `approveActionAsUser` / `denyActionAsUser`, the
+ * same authorized verbs the single-action endpoints use, so the two surfaces
+ * cannot diverge on authorization. This module used to carry its own
+ * `preClassify` copy of that preamble — and it HAD diverged: the bulk lookup
+ * fetched actions unscoped and re-applied the org filter by hand, the exact
+ * omission the handler's `@security` note on `orgScopeClause` warns about.
+ * Folding authorization into the verb also closed the TOCTOU window between
+ * classification and the CAS that the old two-step needed a defense-in-depth
+ * note for: there is no separate classification step left to race.
  */
 
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
-import { canApprove } from "@atlas/api/lib/auth/permissions";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
-  approveAction,
-  denyAction,
-  getAction,
-  getActionConfig,
-  getActionExecutor,
+  approveActionAsUser,
+  denyActionAsUser,
+  type ApproveActionOutcome,
+  type DenyActionOutcome,
 } from "./handler";
 
 const log = createLogger("action-bulk");
@@ -35,8 +43,8 @@ export interface BulkActionError {
 
 /**
  * `updated` + `notFound` + `forbidden` + `errors.map(e => e.id)` partition every
- * requested id exactly once. Invariant holds by construction because
- * `preClassify` dedups inputs and each id takes exactly one branch.
+ * requested id exactly once. Invariant holds by construction: ids are deduped
+ * up front and every resolution outcome kind maps to exactly one bucket.
  */
 export interface BulkActionsResult {
   updated: string[];
@@ -61,162 +69,86 @@ export interface BulkDenyInput {
   readonly requestId?: string;
 }
 
-type PreClassification = {
-  eligible: string[];
-  notFound: string[];
-  forbidden: string[];
-  /** Errors captured during pre-classification (getAction throws). */
-  errors: BulkActionError[];
-};
-
-/**
- * Resolve each id into one of eligible / notFound / forbidden / errors.
- * Eligible = exists in the caller's org, caller has the right role, and
- * (for admin-only actions) caller is not the requester.
- *
- * Dedup is applied up front so the partition invariant holds by construction
- * even when callers pass duplicate ids.
- */
-async function preClassify(
-  ids: readonly string[],
-  user: AtlasUser | undefined,
-  orgId: string | null,
-  requestId: string | undefined,
-): Promise<PreClassification> {
-  const uniqueIds: string[] = [];
+/** Dedup while preserving first-seen order, so the partition invariant holds
+ * even when callers pass duplicate ids. */
+function dedupe(ids: readonly string[]): string[] {
+  const unique: string[] = [];
   const seen = new Set<string>();
   for (const id of ids) {
     if (!seen.has(id)) {
       seen.add(id);
-      uniqueIds.push(id);
+      unique.push(id);
     }
   }
+  return unique;
+}
 
-  const eligible: string[] = [];
-  const notFound: string[] = [];
-  const forbidden: string[] = [];
-  const errors: BulkActionError[] = [];
+/**
+ * The one loop both bulk verbs run: dedupe, resolve per id through the
+ * injected verb, bucket every outcome, and convert a thrown error into the
+ * generic client-safe entry (the raw message can carry schema names, so it
+ * goes only to the log). The two exported functions differ only in which
+ * resolution verb they close over — the same relationship the single-action
+ * routes have.
+ */
+async function runBulkResolution(
+  input: { ids: readonly string[]; user: AtlasUser | undefined; orgId: string | null; requestId?: string },
+  verb: "approve" | "deny",
+  resolve: (id: string) => Promise<ApproveActionOutcome | DenyActionOutcome>,
+): Promise<BulkActionsResult> {
+  const { ids, user, orgId, requestId } = input;
+  const result: BulkActionsResult = { updated: [], notFound: [], forbidden: [], errors: [] };
 
-  for (const id of uniqueIds) {
-    let action;
+  for (const id of dedupe(ids)) {
     try {
-      action = await getAction(id);
+      const outcome = await resolve(id);
+      switch (outcome.kind) {
+        case "not_found":
+          result.notFound.push(id);
+          break;
+        case "forbidden":
+          result.forbidden.push(id);
+          break;
+        case "conflict":
+          log.warn(
+            { actionId: id, orgId, userId: user?.id, requestId },
+            "Bulk resolution lost CAS race — action already resolved",
+          );
+          result.errors.push({ id, error: "Action has already been resolved." });
+          break;
+        case "approved":
+        case "approved_not_executed":
+        case "denied":
+          // `approved_not_executed` still counts as updated on the wire (the
+          // row IS approved; the entry's status says nothing ran) — the verb
+          // logs it at error level, and the distinct kind exists so this
+          // mapping is a visible decision rather than a conflation.
+          result.updated.push(id);
+          break;
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error(
         { err: message, actionId: id, orgId, userId: user?.id, requestId },
-        "Bulk preClassify failed to read action",
+        `Bulk ${verb} threw for action`,
       );
-      errors.push({ id, error: GENERIC_RESOLVE_ERROR });
-      continue;
+      result.errors.push({ id, error: GENERIC_RESOLVE_ERROR });
     }
-    if (!action) {
-      notFound.push(id);
-      continue;
-    }
-    // Missing / null org_id disables the filter — matches the single-action
-    // endpoints' behavior for rows written before org-stamping existed.
-    if (orgId && typeof action.org_id === "string" && action.org_id !== orgId) {
-      notFound.push(id);
-      continue;
-    }
-
-    const cfg = getActionConfig(action.action_type);
-    if (!canApprove(user, cfg.approval, cfg.requiredRole)) {
-      forbidden.push(id);
-      continue;
-    }
-    if (cfg.approval === "admin-only" && user?.id === action.requested_by) {
-      forbidden.push(id);
-      continue;
-    }
-    eligible.push(id);
   }
 
-  return { eligible, notFound, forbidden, errors };
+  return result;
 }
 
 export async function bulkApproveActions(
   input: BulkApproveInput,
 ): Promise<BulkActionsResult> {
-  const { ids, user, orgId, requestId } = input;
-  const approverId = user?.id ?? "anonymous";
-
-  const { eligible, notFound, forbidden, errors: preErrors } = await preClassify(
-    ids,
-    user,
-    orgId,
-    requestId,
-  );
-
-  const updated: string[] = [];
-  const errors: BulkActionError[] = [...preErrors];
-
-  for (const id of eligible) {
-    try {
-      const executor = getActionExecutor(id);
-      // Pass orgId to the CAS so the UPDATE carries the same org-scope guard
-      // as preClassify — defense in depth against TOCTOU between the two steps.
-      const result = await approveAction(id, approverId, executor, orgId);
-      if (result === null) {
-        log.warn(
-          { actionId: id, orgId, userId: user?.id, requestId },
-          "Bulk approve lost CAS race — action already resolved",
-        );
-        errors.push({ id, error: "Action has already been resolved." });
-      } else {
-        updated.push(id);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.error(
-        { err: message, actionId: id, orgId, userId: user?.id, requestId },
-        "Bulk approve threw for action",
-      );
-      errors.push({ id, error: GENERIC_RESOLVE_ERROR });
-    }
-  }
-
-  return { updated, notFound, forbidden, errors };
+  const { user, orgId } = input;
+  return runBulkResolution(input, "approve", (id) => approveActionAsUser(id, { user, orgId }));
 }
 
 export async function bulkDenyActions(
   input: BulkDenyInput,
 ): Promise<BulkActionsResult> {
-  const { ids, user, orgId, reason, requestId } = input;
-  const denierId = user?.id ?? "anonymous";
-
-  const { eligible, notFound, forbidden, errors: preErrors } = await preClassify(
-    ids,
-    user,
-    orgId,
-    requestId,
-  );
-
-  const updated: string[] = [];
-  const errors: BulkActionError[] = [...preErrors];
-
-  for (const id of eligible) {
-    try {
-      const result = await denyAction(id, denierId, reason, orgId);
-      if (result === null) {
-        log.warn(
-          { actionId: id, orgId, userId: user?.id, requestId },
-          "Bulk deny lost CAS race — action already resolved",
-        );
-        errors.push({ id, error: "Action has already been resolved." });
-      } else {
-        updated.push(id);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.error(
-        { err: message, actionId: id, orgId, userId: user?.id, requestId },
-        "Bulk deny threw for action",
-      );
-      errors.push({ id, error: GENERIC_RESOLVE_ERROR });
-    }
-  }
-
-  return { updated, notFound, forbidden, errors };
+  const { user, orgId, reason } = input;
+  return runBulkResolution(input, "deny", (id) => denyActionAsUser(id, { user, orgId }, reason));
 }

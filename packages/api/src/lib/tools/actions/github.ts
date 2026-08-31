@@ -37,17 +37,33 @@ import { createPrivateKey } from "node:crypto";
 import { tool } from "ai";
 import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
-import { buildActionRequest, handleAction, type ActionExecutionContext } from "./handler";
+import { buildActionRequest, handleAction } from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getGitHubInstallationToken } from "@atlas/api/lib/github/installation-token";
-import {
-  resolveActionCredentials,
-  resolveActionDeployMode,
-} from "./credentials/resolver";
+import { resolveCredentialsFor } from "./credentials/resolver";
+import { GITHUB_TARGET, type ActionCredentialsOf } from "./credentials/targets";
 
 const log = createLogger("action:github");
 
 const GITHUB_API_BASE = "https://api.github.com";
+
+/** Outer budget for the issue-create call — the same bound the Linear and
+ * Jira actions use. `executeWithTimeout(fn, undefined)` is unguarded on a
+ * default deployment, so without this a hung GitHub call hangs the agent
+ * turn. (No egress guard here, deliberately: the host is the fixed
+ * `GITHUB_API_BASE`, not a tenant-typed URL.) */
+const GITHUB_TIMEOUT_MS = 15_000;
+
+/** Duck-typed abort check — `DOMException` does not subclass `Error` on
+ * every runtime. Same shape as the Linear and Jira actions'; a shared home
+ * is ADR-0045's deferred `lib/vendor-http` extraction. */
+function isAbortError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { name?: unknown }).name === "AbortError"
+  );
+}
 
 /**
  * `owner/repo`, validated before it is interpolated into an API path. GitHub
@@ -62,19 +78,12 @@ const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 // ---------------------------------------------------------------------------
 
 /**
- * The credential set `executeGitHubIssueCreate` needs, keyed by the env-var
- * names declared in the GitHub {@link ActionTargetSpec}. The resolver
- * guarantees every REQUIRED field is present and non-empty before this is
- * built, which is why the three required values are non-optional here — a
- * missing one is a resolver bug, not a runtime branch this re-checks.
+ * The credential set the GitHub action executes with — DERIVED from its
+ * target spec, so the required/optional split has exactly one author (the
+ * registry). Resolution goes through `resolveCredentialsFor(GITHUB_TARGET, …)`,
+ * whose all-or-nothing guarantee is what makes every required key present.
  */
-export interface GitHubCredentials {
-  readonly GITHUB_ACTION_APP_ID: string;
-  readonly GITHUB_ACTION_INSTALLATION_ID: string;
-  readonly GITHUB_ACTION_PRIVATE_KEY: string;
-  /** Optional in the spec — the agent may name a repo per call instead. */
-  readonly GITHUB_ACTION_DEFAULT_REPO?: string;
-}
+export type GitHubCredentials = ActionCredentialsOf<typeof GITHUB_TARGET>;
 
 /**
  * Coerce a stored App private key into the PKCS#8 PEM the JWT signer wants.
@@ -121,55 +130,6 @@ export function normalizeAppPrivateKey(raw: string): string {
         "including its BEGIN and END lines, under Admin → Action Credentials → GitHub.",
     );
   }
-}
-
-/**
- * Narrow a resolved credential map to the GitHub shape. Throws rather than
- * returning a partial: the resolver's all-or-nothing rule means a set that
- * reaches here is complete, so a gap is corruption between the two.
- */
-export function toGitHubCredentials(
-  values: Readonly<Record<string, string>>,
-): GitHubCredentials {
-  const appId = values.GITHUB_ACTION_APP_ID;
-  const installationId = values.GITHUB_ACTION_INSTALLATION_ID;
-  const privateKey = values.GITHUB_ACTION_PRIVATE_KEY;
-  if (!appId || !installationId || !privateKey) {
-    // No values in the message — only the NAMES of what is missing.
-    const missing = [
-      !appId && "GITHUB_ACTION_APP_ID",
-      !installationId && "GITHUB_ACTION_INSTALLATION_ID",
-      !privateKey && "GITHUB_ACTION_PRIVATE_KEY",
-    ].filter((v): v is string => typeof v === "string");
-    log.error({ missing }, "Resolved GitHub credentials are incomplete");
-    throw new Error(`Missing GitHub credentials: ${missing.join(", ")}.`);
-  }
-  return {
-    GITHUB_ACTION_APP_ID: appId,
-    GITHUB_ACTION_INSTALLATION_ID: installationId,
-    GITHUB_ACTION_PRIVATE_KEY: privateKey,
-    ...(values.GITHUB_ACTION_DEFAULT_REPO
-      ? { GITHUB_ACTION_DEFAULT_REPO: values.GITHUB_ACTION_DEFAULT_REPO }
-      : {}),
-  };
-}
-
-/**
- * Resolve the GitHub credentials for an action execution context, then narrow
- * them. The single place this action path crosses into the credential seam.
- */
-export async function resolveGitHubCredentials(
-  ctx: ActionExecutionContext,
-): Promise<GitHubCredentials> {
-  const resolved = await resolveActionCredentials("github", {
-    workspaceId: ctx.workspaceId,
-    deployMode: resolveActionDeployMode(),
-  });
-  log.info(
-    { workspaceId: ctx.workspaceId, resolvedFrom: resolved.resolvedFrom },
-    "Resolved GitHub action credentials",
-  );
-  return toGitHubCredentials(resolved.values);
 }
 
 // ---------------------------------------------------------------------------
@@ -249,16 +209,32 @@ export async function executeGitHubIssueCreate(
     ...(params.labels?.length ? { labels: params.labels } : {}),
   };
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  const abort = new AbortController();
+  const deadline = setTimeout(() => abort.abort(), GITHUB_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      signal: abort.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (isAbortError(err)) {
+      log.error({ repo, timeoutMs: GITHUB_TIMEOUT_MS }, "GitHub API request timed out");
+      throw new Error(
+        `GitHub did not respond within ${GITHUB_TIMEOUT_MS / 1000}s. The issue was not created — retry in a moment.`,
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(deadline);
+  }
 
   if (!response.ok) {
     let detail: string;
@@ -323,14 +299,10 @@ export const createGitHubIssue: AtlasAction = {
   actionType: "github:create_issue",
   reversible: true,
   defaultApproval: "manual",
-  // Empty by construction, same as `createJiraTicket` and `sendEmailReport`.
-  // `requiredCredentials` is checked by `ToolRegistry.validateActionCredentials()`
-  // against the GLOBAL `process.env`, a question with no meaningful answer for a
-  // per-workspace target: on SaaS there is no global rung at all, and on
-  // self-hosted the env rung is one of two, so a workspace that configured
-  // GitHub from Admin would still be reported "missing credentials".
-  // Configuration status is per-workspace and lives on the Admin surface
-  // (`getActionTargetStatus`).
+  // Vestigial (ADR-0046): credentials are per-workspace, so the global-env
+  // question this field used to answer has no subject — status lives on the
+  // Admin surface (`getActionTargetStatus`). Kept because the published
+  // action shape and `isAction` still carry the field.
   requiredCredentials: [],
 
   tool: tool({
@@ -371,7 +343,7 @@ export const createGitHubIssue: AtlasAction = {
       return handleAction(request, async (payload, ctx) => {
         // Resolved from the ACTION's workspace, not the approver's — a
         // manual-approval action executes inside the approver's request.
-        const credentials = await resolveGitHubCredentials(ctx);
+        const credentials = await resolveCredentialsFor(GITHUB_TARGET, ctx);
         const result = await executeGitHubIssueCreate(
           payload as unknown as GitHubIssueCreateParams,
           credentials,

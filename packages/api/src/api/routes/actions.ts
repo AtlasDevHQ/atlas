@@ -16,11 +16,10 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import {
   getAction,
-  approveAction,
-  denyAction,
+  approveActionAsUser,
+  denyActionAsUser,
   rollbackAction,
   listPendingActions,
-  getActionExecutor,
   getActionConfig,
 } from "@atlas/api/lib/tools/actions/handler";
 import {
@@ -441,6 +440,38 @@ actions.openapi(getActionRoute, async (c) => {
   }), { label: "retrieve action" });
 });
 
+/**
+ * One HTTP mapping for the three refusal kinds both resolution verbs share
+ * — the same body shapes and statuses the pre-refactor handlers produced,
+ * with only the verb word ("approve"/"deny") varying. Success arms stay in
+ * each handler; they are the two routes' genuinely different halves.
+ */
+function refusalResponse(
+  c: Parameters<Parameters<typeof actions.openapi>[1]>[0],
+  refusal: import("@atlas/api/lib/tools/actions/handler").ActionResolutionRefusal,
+  verb: "approve" | "deny",
+  requestId: string,
+) {
+  switch (refusal.kind) {
+    case "not_found":
+      return c.json({ error: "not_found", message: "Action not found." }, 404);
+    case "forbidden":
+      return c.json(
+        {
+          error: "forbidden",
+          message:
+            refusal.reason === "self_approval"
+              ? `admin-only actions cannot be ${verb === "approve" ? "approved" : "denied"} by the requester`
+              : `Insufficient role to ${verb} this action.`,
+          requestId,
+        },
+        403,
+      );
+    case "conflict":
+      return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // POST /:id/approve — approve a pending action
 // ---------------------------------------------------------------------------
@@ -459,34 +490,20 @@ actions.openapi(approveActionRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
     }
 
-    const approverId = user?.id ?? "anonymous";
     const orgId = user?.activeOrganizationId;
 
-    // Look up action and executor — scoped to caller's active org so cross-org
-    // access surfaces as 404 rather than 403 (don't leak existence).
-    const action = yield* Effect.promise(() => getAction(id, orgId));
-    if (!action) {
-      return c.json({ error: "not_found", message: "Action not found." }, 404);
+    // Authorization (org-scoped lookup so cross-org surfaces as 404, role
+    // check, self-approval separation), the CAS and the executor lookup all
+    // live behind `approveActionAsUser` — this handler keeps only the
+    // HTTP mapping.
+    const outcome = yield* Effect.promise(() => approveActionAsUser(id, { user, orgId }));
+    if (outcome.kind === "approved" || outcome.kind === "approved_not_executed") {
+      // Same wire shape for both: the entry's own status says whether it
+      // ran. The split kind exists so no CALLER can conflate them; the
+      // not-executed arm is logged at error level by the verb.
+      return c.json(outcome.entry, 200);
     }
-
-    const cfg = getActionConfig(action.action_type);
-
-    if (!canApprove(user, cfg.approval, cfg.requiredRole)) {
-      return c.json({ error: "forbidden", message: "Insufficient role to approve this action.", requestId }, 403);
-    }
-
-    // Enforce admin-only separation of duties: requester cannot approve their own admin-only action
-    if (cfg.approval === "admin-only" && user?.id === action.requested_by) {
-      return c.json({ error: "forbidden", message: "admin-only actions cannot be approved by the requester", requestId }, 403);
-    }
-
-    const executor = getActionExecutor(id);
-
-    const approveResult = yield* Effect.promise(() => approveAction(id, approverId, executor, orgId));
-    if (!approveResult) {
-      return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
-    }
-    return c.json(approveResult, 200);
+    return refusalResponse(c, outcome, "approve", requestId);
   }), { label: "approve action" });
 });
 
@@ -510,28 +527,12 @@ actions.openapi(
         return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
       }
 
-      const denierId = user?.id ?? "anonymous";
       const orgId = user?.activeOrganizationId;
 
-      // Look up action for permission enforcement — org-scoped (cross-org → 404).
-      const action = yield* Effect.promise(() => getAction(id, orgId));
-      if (!action) {
-        return c.json({ error: "not_found", message: "Action not found." }, 404);
-      }
-
-      const cfg = getActionConfig(action.action_type);
-
-      // Deny requires the same minimum role as approve — consistent permission model for all action operations.
-      if (!canApprove(user, cfg.approval, cfg.requiredRole)) {
-        return c.json({ error: "forbidden", message: "Insufficient role to deny this action.", requestId }, 403);
-      }
-
-      // Enforce admin-only separation of duties: requester cannot deny their own admin-only action
-      if (cfg.approval === "admin-only" && user?.id === action.requested_by) {
-        return c.json({ error: "forbidden", message: "admin-only actions cannot be denied by the requester", requestId }, 403);
-      }
-
-      // Body is optional — extract reason if provided
+      // Body is optional — extract reason if provided. (A malformed JSON body
+      // never reaches this handler: the route schema's validation answers 400
+      // first, in this and every prior version — so refusal statuses need no
+      // special ordering here.)
       let reason: string | undefined;
       const contentType = c.req.header("content-type") ?? "";
       if (contentType.includes("application/json")) {
@@ -550,11 +551,11 @@ actions.openapi(
         }
       }
 
-      const denyResult = yield* Effect.promise(() => denyAction(id, denierId, reason, orgId));
-      if (!denyResult) {
-        return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
+      const outcome = yield* Effect.promise(() => denyActionAsUser(id, { user, orgId }, reason));
+      if (outcome.kind === "denied") {
+        return c.json(outcome.entry, 200);
       }
-      return c.json(denyResult, 200);
+      return refusalResponse(c, outcome, "deny", requestId);
     }), { label: "deny action" });
   },
   (result, c) => {

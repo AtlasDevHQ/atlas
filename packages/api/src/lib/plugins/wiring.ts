@@ -8,7 +8,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import type { PluginRegistry, PluginLike } from "./registry";
 import type { ConnectionRegistry } from "@atlas/api/lib/db/connection";
-import type { ToolRegistry, AtlasTool } from "@atlas/api/lib/tools/registry";
+import type { ToolRegistry, AtlasTool, AtlasAction } from "@atlas/api/lib/tools/registry";
 
 const log = createLogger("plugins:wiring");
 
@@ -38,16 +38,15 @@ interface DatasourceShape {
   dialect?: string;
 }
 
+// The plugin's `actions` array IS the AtlasAction shape — this used to
+// restate all seven fields as an anonymous third spelling of the same record
+// (beside `AtlasAction` and the plugin SDK's published type), which is two
+// chances to drift for zero checking: `hasActions` only ever verifies
+// Array.isArray, so the field-level claim is a typed assertion either way.
+// Making it `AtlasAction` names the contract and lets `registry.register`
+// accept the entries with no cast.
 interface ActionShape {
-  actions: ReadonlyArray<{
-    name: string;
-    description: string;
-    tool: unknown;
-    actionType: string;
-    reversible: boolean;
-    defaultApproval: string;
-    requiredCredentials: string[];
-  }>;
+  actions: ReadonlyArray<AtlasAction>;
 }
 
 interface InteractionShape {
@@ -241,7 +240,7 @@ export async function wireActionPlugins(
     }
     for (const action of plugin.actions) {
       try {
-        registry.register(action as unknown as AtlasTool);
+        registry.register(action);
         wired.push(action.name);
         log.info({ pluginId: plugin.id, action: action.name }, "Action plugin tool wired");
       } catch (err) {

@@ -139,9 +139,10 @@ import {
   type BatchPhaseDeps,
 } from "@atlas/api/lib/brain/extract-batch";
 import {
+  deterministicTriager,
   emptyTriageMatchCounts,
-  triageEpisodeBody,
-  type TriageRuleId,
+  type TriageableEpisode,
+  type Triager,
 } from "@atlas/api/lib/brain/triage";
 import {
   BRAIN_EXTRACTION_PRODUCER,
@@ -749,9 +750,15 @@ export interface BrainTriageTally {
    * direction of a mistake that is otherwise free.
    */
   evaluated: number;
-  /** Episodes routed out, by rule — a `Record` so a new rule is a compile
-   * error here, not a miscount. Its sum is what `skipped.triaged` reports. */
-  matched: Record<TriageRuleId, number>;
+  /**
+   * Episodes routed out, by stored reason id. String-keyed since the
+   * {@link Triager} seam landed: a stage-1 adapter's reasons are deliberately
+   * outside `TriageRuleId`, and they join this record dynamically. Stage-0
+   * exhaustiveness is still compile-checked — `emptyTriageMatchCounts()`
+   * seeds every deterministic rule, so a new rule cannot silently land in no
+   * counter. Its sum is what `skipped.triaged` reports.
+   */
+  matched: Record<string, number>;
 }
 
 export interface BrainExtractionCycleResult {
@@ -872,6 +879,16 @@ export interface BrainExtractionDeps {
   readonly batchEnabled?: () => boolean;
   /** Defaults to {@link isBrainExtractionTriageEnabled} (#5336). */
   readonly triageEnabled?: () => boolean;
+  /**
+   * The triage adapter the gate consults when it is on (#5336). Defaults to
+   * `deterministicTriager` — the stage-0 rules in `lib/brain/triage.ts`,
+   * verbatim. Stage 1 (milestone #98's distilled classifier) mounts here as
+   * `composeTriagers(deterministicTriager, <classifier>)`, so the swap never
+   * touches this fiber. Injectable for the same reason `extract` is: a unit
+   * test of the gate's routing/marking/counting must be able to script
+   * verdicts without a model.
+   */
+  readonly triage?: Triager;
   /** Defaults to the real Anthropic client in `extract-batch.ts` (#5352). */
   readonly batchClient?: BatchClient;
   /** Defaults to the internal-DB ledger in `extract-batch.ts` (#5352). */
@@ -928,6 +945,7 @@ export function runBrainExtractionCycle(
   const resolveEntity = deps.resolveEntity ?? entityStoreResolver();
   const batchEnabled = deps.batchEnabled ?? isBrainExtractionBatchEnabled;
   const triageEnabled = deps.triageEnabled ?? isBrainExtractionTriageEnabled;
+  const triager = deps.triage ?? deterministicTriager;
   const batchClient = deps.batchClient ?? DEFAULT_BATCH_CLIENT;
   const batchLedger = deps.batchLedger ?? DEFAULT_BATCH_LEDGER;
   const proposeAliases =
@@ -1191,7 +1209,7 @@ export function runBrainExtractionCycle(
         // must never be submitted and paid for either. With the gate off,
         // `kept === fresh` and no query runs — the cycle is byte-identical to
         // the pre-triage one, which `extract-triage.test.ts` pins.
-        const kept = triageEnabled() ? await triageFreshEpisodes(fresh, triageTally) : fresh;
+        const kept = triageEnabled() ? await triageFreshEpisodes(fresh, triageTally, triager) : fresh;
 
         const submitted = batchEnabled()
           ? await submitBatchPhase(kept, phaseDeps, batchTally)
@@ -1297,13 +1315,20 @@ function isQuarantined(entry: QuarantineEntry | undefined, now: Date): boolean {
 }
 
 /**
- * Run the stage-0 triage gate over one tick's freshly-drained episodes
- * (#5336): mark and drop the ones a deterministic rule catches, return the
- * ones that go on to the model. The RULES live in `lib/brain/triage.ts` — one
- * place, per the issue — and this function only applies the verdict.
+ * Run the triage gate over one tick's freshly-drained episodes (#5336): ask
+ * the injected {@link Triager} about each, mark and drop the ones it routes
+ * out, return the ones that go on to the model. The DECIDING lives behind the
+ * adapter — `deterministicTriager` (the stage-0 rules in
+ * `lib/brain/triage.ts`, one place per the issue) by default, with stage 1
+ * composing behind it — and this function only applies the verdict:
+ * routing, marking, counting, and nothing else.
  *
- * Three decisions, each biased the cheap direction (a false drop is the
+ * Decisions, each biased the cheap direction (a false drop is the
  * expensive one):
+ *
+ *   - **No adapter fault may route an episode out.** A throwing triager and a
+ *     verdict with an unstorable (empty) reason both log and pass the episode
+ *     through — one cheap model call, versus a silently dropped claim.
  *
  *   - **Body-less and whitespace-only episodes pass untouched.** They belong
  *     to the `no_body` skip in {@link extractEpisode}, which is a different
@@ -1325,6 +1350,7 @@ function isQuarantined(entry: QuarantineEntry | undefined, now: Date): boolean {
 async function triageFreshEpisodes(
   fresh: readonly EpisodeRow[],
   tally: BrainTriageTally,
+  triager: Triager,
 ): Promise<readonly EpisodeRow[]> {
   const kept: EpisodeRow[] = [];
   // Serial on purpose, not an overlooked `Promise.all`: the whole cycle is
@@ -1339,21 +1365,58 @@ async function triageFreshEpisodes(
       continue;
     }
     tally.evaluated++;
-    const rule = triageEpisodeBody(row.body);
-    if (rule === null) {
+    // Every fault below resolves the same direction the module is biased:
+    // the episode goes to the model. A throwing adapter (a stage-1
+    // classifier's transport, most plausibly) and a malformed verdict both
+    // cost one cheap model call; a dropped claim would be the expensive kind
+    // of wrong, so no adapter fault is allowed to route an episode out.
+    // The spread narrows honestly: the guard above proved `body` non-null, and
+    // rebuilding the object is what carries that proof into the intersection
+    // type without a cast. ≤ BATCH_SIZE shallow copies per tick.
+    const episode: TriageableEpisode = { ...row, body: row.body };
+    let verdict: Awaited<ReturnType<Triager>>;
+    try {
+      verdict = await triager(episode);
+    } catch (err) {
+      log.warn(
+        { workspaceId: row.workspace_id, episodeId: row.id, err: errorMessage(err) },
+        "brain extraction: the triage adapter threw — letting the episode through to the model rather than dropping it on a fault",
+      );
+      kept.push(row);
+      continue;
+    }
+    // `== null` (not `===`): an adapter that returns `undefined` instead of
+    // `null` is violating the Triager contract, but the violation must fail
+    // OPEN like every other adapter fault — the strict check would make the
+    // next line throw and abort the whole tick.
+    if (verdict == null) {
+      kept.push(row);
+      continue;
+    }
+    // Same defence for the reason field: a non-string (a runtime contract
+    // violation TypeScript cannot see across an injected adapter) must not
+    // escape this function's fail-open posture by throwing on `.trim()`.
+    const reason = typeof verdict.reason === "string" ? verdict.reason.trim() : "";
+    if (reason === "") {
+      // A verdict with no storable reason cannot be marked, and an unmarked
+      // drop is the silent loss the mark exists to prevent.
+      log.warn(
+        { workspaceId: row.workspace_id, episodeId: row.id, stage: verdict.stage },
+        "brain extraction: a triage verdict carried no storable reason id — letting the episode through to the model; fix the adapter",
+      );
       kept.push(row);
       continue;
     }
     try {
-      await internalQuery(MARK_TRIAGED_SQL, [row.id, row.workspace_id, rule]);
-      tally.matched[rule]++;
+      await internalQuery(MARK_TRIAGED_SQL, [row.id, row.workspace_id, reason]);
+      tally.matched[reason] = (tally.matched[reason] ?? 0) + 1;
     } catch (err) {
       // The mark could not be recorded, so the verdict is not allowed to act:
       // an unmarked drop would be exactly the silent, uncounted loss the mark
       // exists to prevent. The episode goes to the model instead, and the
       // next tick re-selects and re-tries the mark.
       log.warn(
-        { workspaceId: row.workspace_id, episodeId: row.id, rule, err: errorMessage(err) },
+        { workspaceId: row.workspace_id, episodeId: row.id, reason, stage: verdict.stage, err: errorMessage(err) },
         "brain extraction: could not record a stage-0 triage verdict — letting the episode through to the model rather than dropping it uncounted; the next tick retries the mark",
       );
       kept.push(row);

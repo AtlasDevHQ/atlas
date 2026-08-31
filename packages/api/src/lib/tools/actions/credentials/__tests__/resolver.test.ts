@@ -554,3 +554,81 @@ describe("resolveActionDeployMode", () => {
     expect(["saas", "self-hosted"]).toContain(resolveActionDeployMode());
   });
 });
+
+// ---------------------------------------------------------------------------
+// resolveCredentialsFor — the typed seam every action module crosses (#3766)
+// ---------------------------------------------------------------------------
+
+// Dynamic imports, matching the file's top half: static `import` statements
+// hoist above the `mock.module` calls, so they would evaluate `../resolver`'s
+// graph unmocked — the exact ordering the harness above exists to control.
+const { resolveCredentialsFor } = await import("../resolver");
+const { ACTION_TARGETS, JIRA_TARGET } = await import("../targets");
+
+describe("resolveCredentialsFor — property over every registered target", () => {
+  // These two replace the four per-target `toXCredentials` suites: the
+  // narrowing they tested is now derived from the spec, so the property to
+  // pin is the resolver's guarantee itself, for EVERY target — including
+  // target #6 the day it is added.
+  it("every target: a complete self-hosted env resolves with every declared field", async () => {
+    for (const spec of ACTION_TARGETS) {
+      const env: NodeJS.ProcessEnv = {};
+      for (const field of spec.fields) env[field.envVar] = `value-for-${field.envVar}`;
+      const credentials = await resolveCredentialsFor(spec, { workspaceId: null }, {
+        deployMode: "self-hosted",
+        env,
+      });
+      for (const field of spec.fields) {
+        expect((credentials as Record<string, string>)[field.envVar]).toBe(
+          `value-for-${field.envVar}`,
+        );
+      }
+    }
+  });
+
+  it("every target: an env missing ONE required field refuses to resolve, naming keys and never values", async () => {
+    for (const spec of ACTION_TARGETS) {
+      const required = spec.fields.filter((f) => f.required);
+      for (const omitted of required) {
+        const env: NodeJS.ProcessEnv = {};
+        for (const field of spec.fields) {
+          if (field.envVar !== omitted.envVar) env[field.envVar] = `value-for-${field.envVar}`;
+        }
+        try {
+          await resolveCredentialsFor(spec, { workspaceId: null }, {
+            deployMode: "self-hosted",
+            env,
+          });
+          throw new Error(`resolveCredentialsFor(${spec.target}) resolved without ${omitted.envVar}`);
+        } catch (err) {
+          expect(err).toBeInstanceOf(ActionCredentialError);
+          const message = (err as Error).message;
+          // The unconfigured message names required env vars, never values.
+          expect(message).not.toContain("value-for-");
+        }
+      }
+    }
+  });
+
+  it("a PARTIAL workspace row still refuses through this seam (the all-or-nothing rule holds)", async () => {
+    mockRead.mockResolvedValue({ JIRA_BASE_URL: "https://tenant.atlassian.net" });
+    await expect(
+      resolveCredentialsFor(JIRA_TARGET, { workspaceId: WS }, {
+        deployMode: "self-hosted",
+        env: OPERATOR_ENV,
+      }),
+    ).rejects.toThrow(/incomplete/);
+  });
+
+  it("the resolved record is the derived shape — required keys typed present", async () => {
+    mockRead.mockResolvedValue(TENANT_ROW);
+    const credentials = await resolveCredentialsFor(JIRA_TARGET, { workspaceId: WS }, {
+      deployMode: "saas",
+    });
+    // Compile-time: these reads are non-optional string properties.
+    const baseUrl: string = credentials.JIRA_BASE_URL;
+    const optionalProject: string | undefined = credentials.JIRA_DEFAULT_PROJECT;
+    expect(baseUrl).toBe("https://tenant.atlassian.net");
+    expect(optionalProject).toBeUndefined();
+  });
+});

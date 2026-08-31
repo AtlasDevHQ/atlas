@@ -1,512 +1,267 @@
 /**
- * Integration tests for action permissions.
+ * The action permission matrix — roles × approval modes × approve/deny.
  *
- * Tests the interaction between the permission system and the action handler/routes:
- * - Role-based gating on approve/deny endpoints
- * - Simple-key ATLAS_API_KEY_ROLE override
- * - BYOT JWT role claim extraction
- * - Config requiredRole field
- * - Viewer cannot approve any actions
- * - Analyst can approve manual, blocked from admin-only
- * - Admin can approve all
+ * This suite moved DOWN one layer when authorization moved out of the HTTP
+ * routes into `approveActionAsUser` / `denyActionAsUser`
+ * (`src/lib/tools/actions/handler.ts`). It used to drive the matrix through
+ * the Hono app with the handler `mock.module`d, which the refactor made
+ * vacuous — the routes no longer call `canApprove` themselves, and Bun's
+ * mock.module cannot intercept the handler's module-internal calls anyway.
+ * Route-level HTTP mapping (403/404/409 wire shapes) is
+ * `src/api/__tests__/actions.test.ts`'s job; the verb↔route composition and
+ * the full outcome vocabulary (conflict, approved_not_executed,
+ * self_approval) are pinned in
+ * `src/lib/tools/actions/__tests__/resolve-as-user.test.ts`. What THIS file
+ * keeps is the matrix's subject, unchanged: the REAL `canApprove` against
+ * real config resolution —
+ * - member / admin / owner on manual and admin-only, both verbs
+ * - simple-key default role (no explicit role ⇒ admin)
+ * - per-action `requiredRole` config override
+ * - no-auth mode (user undefined) can resolve nothing
+ * - the same matrix across all three auth modes
  *
- * Uses mock.module() to isolate from real auth and DB.
+ * NOTE: "admin-only" is a legacy name — it requires the OWNER role
+ * (`APPROVAL_MODE_MIN_ROLE` in `src/lib/auth/permissions.ts`).
+ *
+ * Memory-only path, on resolve-as-user.test.ts's pattern: delete
+ * DATABASE_URL + reset the pg pool so the in-memory store is exercised.
+ * No mock.module.
  */
 
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
-  describe,
-  it,
-  expect,
-  beforeEach,
-  afterEach,
-  mock,
-  type Mock,
-} from "bun:test";
-import type { AuthResult, AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
-import type { ActionLogEntry, ActionApprovalMode } from "@atlas/api/lib/action-types";
+  approveActionAsUser,
+  denyActionAsUser,
+  buildActionRequest,
+  handleAction,
+  getAction,
+  _resetActionStore,
+} from "../actions/handler";
+import { _resetConfig, _setConfigForTest, type ResolvedConfig, type ActionsConfig } from "@atlas/api/lib/config";
+import { withRequestContext } from "@atlas/api/lib/logger";
+import { _resetPool } from "@atlas/api/lib/db/internal";
+import { createAtlasUser } from "@atlas/api/lib/auth/types";
+import type { AtlasRole } from "@atlas/api/lib/auth/types";
+import type { ActionApprovalMode } from "@atlas/api/lib/action-types";
 
-// --- Mocks ---
+const origDbUrl = process.env.DATABASE_URL;
 
-// Track which user the mock auth returns — tests change this
-let currentUser: AtlasUser | undefined = {
-  id: "u1",
-  label: "test@test.com",
-  mode: "simple-key",
-  role: "admin",
-};
+const MANUAL = "test:manual";
+const ADMIN_ONLY = "test:admin-only";
 
-const mockAuthenticateRequest: Mock<
-  (req: Request) => Promise<AuthResult>
-> = mock(() =>
-  Promise.resolve(
-    currentUser
-      ? {
-          authenticated: true as const,
-          mode: currentUser.mode,
-          user: currentUser,
-        }
-      : {
-          authenticated: true as const,
-          mode: "none" as const,
-          user: undefined,
-        },
-  ),
-);
+function setActions(actions: ActionsConfig): void {
+  _setConfigForTest({
+    datasources: {},
+    tools: [],
+    auth: "none",
+    semanticLayer: "./semantic",
+    maxTotalConnections: 20,
+    actions,
+    source: "env",
+  } as ResolvedConfig);
+}
 
-const mockCheckRateLimit: Mock<
-  (key: string) => { allowed: boolean; retryAfterMs?: number }
-> = mock(() => ({ allowed: true }));
+/** The two approval modes the matrix runs against, as per-action config. */
+function setStandardActions(): void {
+  setActions({
+    [MANUAL]: { approval: "manual" },
+    [ADMIN_ONLY]: { approval: "admin-only" },
+  });
+}
 
-const mockGetClientIP: Mock<(req: Request) => string | null> = mock(
-  () => null,
-);
+beforeEach(() => {
+  delete process.env.DATABASE_URL;
+  delete process.env.ATLAS_ACTIONS_ENABLED;
+  delete process.env.ATLAS_ACTION_APPROVAL;
+  _resetPool(null);
+  _resetActionStore();
+  _resetConfig();
+  setStandardActions();
+});
 
-void mock.module("@atlas/api/lib/auth/middleware", () => ({
-  authenticateRequest: mockAuthenticateRequest,
-  checkRateLimit: mockCheckRateLimit,
-  getClientIP: mockGetClientIP,
-}));
+afterEach(() => {
+  if (origDbUrl) process.env.DATABASE_URL = origDbUrl;
+  else delete process.env.DATABASE_URL;
+  _resetPool(null);
+  _resetActionStore();
+  _resetConfig();
+});
 
-// --- Action handler mocks ---
+// Requested by a user distinct from every approver below, so the
+// separation-of-duties arm (covered in resolve-as-user.test.ts) never trips.
+const REQUESTER = "requester-1";
 
-const mockListPendingActions = mock((): Promise<ActionLogEntry[]> =>
-  Promise.resolve([]),
-);
-const mockGetAction = mock((): Promise<ActionLogEntry | null> =>
-  Promise.resolve(null),
-);
-const mockApproveAction = mock((): Promise<ActionLogEntry | null> =>
-  Promise.resolve(null),
-);
-const mockDenyAction = mock((): Promise<ActionLogEntry | null> =>
-  Promise.resolve(null),
-);
-const mockGetActionExecutor = mock((): undefined => undefined);
-const mockRollbackAction = mock((): Promise<ActionLogEntry | null> =>
-  Promise.resolve(null),
-);
+const managedMember = createAtlasUser("member-1", "managed", "member@test.com", { role: "member" });
+const simpleKeyAdmin = createAtlasUser("admin-1", "simple-key", "admin@test.com", { role: "admin" });
+const byotAdmin = createAtlasUser("byot-admin-1", "byot", "byot-admin@test.com", { role: "admin" });
+const managedOwner = createAtlasUser("owner-1", "managed", "owner@test.com", { role: "owner" });
+// No explicit role — exercises the simple-key auth-mode default (admin).
+const simpleKeyDefault = createAtlasUser("sk-default-1", "simple-key", "sk-default@test.com");
 
-let currentActionConfig: { approval: ActionApprovalMode; requiredRole?: AtlasRole } = {
-  approval: "manual",
-};
-
-const mockGetActionConfig = mock(
-  () => currentActionConfig,
-);
-
-void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
-  listPendingActions: mockListPendingActions,
-  getAction: mockGetAction,
-  approveAction: mockApproveAction,
-  denyAction: mockDenyAction,
-  rollbackAction: mockRollbackAction,
-  getActionExecutor: mockGetActionExecutor,
-  getActionConfig: mockGetActionConfig,
-}));
-
-// Mock other modules required by the Hono app
-
-void mock.module("@atlas/api/lib/agent", () => ({
-  runAgent: mock(() =>
-    Promise.resolve({
-      toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
-      text: Promise.resolve("answer"),
-      steps: Promise.resolve([]),
-      totalUsage: Promise.resolve({ inputTokens: 0, outputTokens: 0 }),
-    }),
-  ),
-}));
-
-void mock.module("@atlas/api/lib/conversations", () => ({
-  listConversations: mock(() => Promise.resolve({ conversations: [], total: 0 })),
-  getConversation: mock(() => Promise.resolve(null)),
-  deleteConversation: mock(() => Promise.resolve(false)),
-  createConversation: mock(() => Promise.resolve(null)),
-  addMessage: mock(() => {}),
-  persistAssistantSteps: mock(() => {}),
-  // F-77 step-cap helpers — chat.ts imports both via @atlas/api/lib/conversations.
-  reserveConversationBudget: mock(() => Promise.resolve({ status: 'ok' as const, totalStepsBefore: 0 })),
-  settleConversationSteps: mock(() => {}),
-  generateTitle: mock(() => "Test title"),
-  starConversation: async () => false,
-  shareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  unshareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  getShareStatus: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  cleanupExpiredShares: mock(() => Promise.resolve(0)),
-  getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  resolveGroupForConnection: mock(() => Promise.resolve(null)),
-  verifyGroupBelongsToOrg: mock(() => Promise.resolve("ok")),
-  // #4351 — the single conversation-scope write path. No-op success by
-  // default; tests that exercise a picker toggle override locally.
-  updateConversationScope: mock(() => Promise.resolve({ ok: true as const })),
-}));
-
-void mock.module("@atlas/api/lib/semantic", () => ({
-  getOrgWhitelistedTables: () => new Set(),
-  loadOrgWhitelist: async () => new Map(),
-  invalidateOrgWhitelist: () => {},
-  getOrgSemanticIndex: async () => "",
-  invalidateOrgSemanticIndex: () => {},
-  _resetOrgWhitelists: () => {},
-  _resetOrgSemanticIndexes: () => {},
-  getWhitelistedTables: () => new Set(),
-  _resetWhitelists: () => {},
-}));
-
-void mock.module("@atlas/api/lib/tools/explore", () => ({
-  getExploreBackendType: () => "just-bash",
-  getActiveSandboxPluginId: () => null,
-}));
-
-void mock.module("@atlas/api/lib/auth/detect", () => ({
-  detectAuthMode: () => "none",
-  resetAuthModeCache: () => {},
-}));
-
-void mock.module("@atlas/api/lib/startup", () => ({
-  validateEnvironment: mock(() => Promise.resolve([])),
-  getStartupWarnings: () => [],
-}));
-
-// Enable actions route before importing the app
-// Module-top env setup — must be set before the dynamic imports below
-// (the imported modules read env at module-load time). `??=` keeps the
-// assignment hoisted; cross-file leakage under `bun test --parallel`
-// (1.5.4 #2797) is bounded — the first file to load wins, no sibling
-// overwrites. Files that need to restore env do so in their own
-// afterAll; the `??=` here is the module-load contract, not teardown.
-process.env.ATLAS_ACTIONS_ENABLED ??= "true";
-
-// Import after mocks
-const { app } = await import("../../../api/index");
-
-const VALID_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-
-function makeAction(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
-  return {
-    id: VALID_ID,
-    requested_at: "2024-06-01T00:00:00Z",
-    resolved_at: null,
-    executed_at: null,
-    requested_by: "other-user", // Default: different user than the approver
-    approved_by: null,
-    auth_mode: "simple-key",
-    action_type: "test:action",
-    target: "test-target",
+async function seedPending(actionType: string, requestedBy: string): Promise<string> {
+  const req = buildActionRequest({
+    actionType,
+    target: `target-${Math.random()}`,
     summary: "Test action",
-    payload: { key: "value" },
-    status: "pending",
-    result: null,
-    error: null,
-    rollback_info: null,
-    conversation_id: null,
-    request_id: null,
-    org_id: null,
-    ...overrides,
-  };
-}
-
-function setUser(mode: "simple-key" | "managed" | "byot", role?: AtlasRole) {
-  currentUser = {
-    id: "u1",
-    label: `${mode}-user`,
-    mode,
-    ...(role ? { role } : {}),
-  };
-  mockAuthenticateRequest.mockImplementation(() =>
-    Promise.resolve({
-      authenticated: true as const,
-      mode: currentUser!.mode,
-      user: currentUser!,
-    }),
-  );
-}
-
-function setNoUser() {
-  currentUser = undefined;
-  mockAuthenticateRequest.mockImplementation(() =>
-    Promise.resolve({
-      authenticated: true as const,
-      mode: "none" as const,
-      user: undefined,
-    }),
-  );
-}
-
-describe("action permissions integration", () => {
-  const origDatabaseUrl = process.env.DATABASE_URL;
-
-  beforeEach(() => {
-    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
-    currentActionConfig = { approval: "manual" };
-
-    mockCheckRateLimit.mockReset();
-    mockCheckRateLimit.mockReturnValue({ allowed: true });
-    mockGetClientIP.mockReset();
-    mockGetClientIP.mockReturnValue(null);
-    mockListPendingActions.mockReset();
-    mockListPendingActions.mockResolvedValue([]);
-    mockGetAction.mockReset();
-    mockGetAction.mockResolvedValue(null);
-    mockApproveAction.mockReset();
-    mockApproveAction.mockResolvedValue(null);
-    mockDenyAction.mockReset();
-    mockDenyAction.mockResolvedValue(null);
-    mockGetActionExecutor.mockReset();
-    mockGetActionExecutor.mockReturnValue(undefined);
-    mockGetActionConfig.mockReset();
-    mockGetActionConfig.mockImplementation(() => currentActionConfig);
+    payload: {},
+    reversible: false,
   });
+  await withRequestContext(
+    { requestId: "req-seed", user: { id: requestedBy, label: `${requestedBy}@test.com`, mode: "simple-key" } },
+    () => handleAction(req, async () => "done"),
+  );
+  return req.id;
+}
 
-  afterEach(() => {
-    if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
-    else delete process.env.DATABASE_URL;
-  });
-
+describe("action permission matrix — the real canApprove through the resolution verbs", () => {
   // -------------------------------------------------------------------------
-  // Viewer cannot approve any actions
+  // Member cannot resolve anything
   // -------------------------------------------------------------------------
 
   describe("member role", () => {
-    beforeEach(() => {
-      setUser("managed", "member");
-    });
-
     it("cannot approve manual actions", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "manual" };
+      const id = await seedPending(MANUAL, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(403);
-      const body = (await response.json()) as Record<string, unknown>;
-      expect(body.error).toBe("forbidden");
-      expect(body.message).toContain("Insufficient role");
+      const outcome = await approveActionAsUser(id, { user: managedMember, orgId: null });
+
+      expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
+      // Refused before any state changed.
+      expect((await getAction(id))?.status).toBe("pending");
     });
 
     it("cannot approve admin-only actions", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "admin-only" };
+      const id = await seedPending(ADMIN_ONLY, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(403);
+      const outcome = await approveActionAsUser(id, { user: managedMember, orgId: null });
+
+      expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
+      expect((await getAction(id))?.status).toBe("pending");
     });
 
     it("cannot deny manual actions", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "manual" };
+      const id = await seedPending(MANUAL, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(403);
+      const outcome = await denyActionAsUser(id, { user: managedMember, orgId: null });
+
+      expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
+      expect((await getAction(id))?.status).toBe("pending");
     });
 
     it("cannot deny admin-only actions", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "admin-only" };
+      const id = await seedPending(ADMIN_ONLY, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(403);
+      const outcome = await denyActionAsUser(id, { user: managedMember, orgId: null });
+
+      expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
+      expect((await getAction(id))?.status).toBe("pending");
     });
   });
 
   // -------------------------------------------------------------------------
-  // Admin can approve manual, blocked from admin-only (owner-only)
+  // Admin can resolve manual, blocked from admin-only (owner-only)
   // -------------------------------------------------------------------------
 
-  describe("admin role (approval)", () => {
-    beforeEach(() => {
-      setUser("simple-key", "admin");
-    });
-
+  describe("admin role (simple-key)", () => {
     it("can approve manual actions", async () => {
-      const action = makeAction();
-      const approved = makeAction({ status: "approved", approved_by: "u1" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockApproveAction.mockResolvedValueOnce(approved);
-      currentActionConfig = { approval: "manual" };
+      const id = await seedPending(MANUAL, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(200);
+      const outcome = await approveActionAsUser(id, { user: simpleKeyAdmin, orgId: null });
+
+      expect(outcome.kind).toBe("approved");
+      if (outcome.kind !== "approved") throw new Error("unreachable");
+      expect(outcome.entry.approved_by).toBe(simpleKeyAdmin.id);
     });
 
     it("cannot approve admin-only actions", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "admin-only" };
+      const id = await seedPending(ADMIN_ONLY, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(403);
-      const body = (await response.json()) as Record<string, unknown>;
-      expect(body.error).toBe("forbidden");
+      const outcome = await approveActionAsUser(id, { user: simpleKeyAdmin, orgId: null });
+
+      expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
     });
 
     it("can deny manual actions", async () => {
-      const action = makeAction();
-      const denied = makeAction({ status: "denied", approved_by: "u1" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockDenyAction.mockResolvedValueOnce(denied);
-      currentActionConfig = { approval: "manual" };
+      const id = await seedPending(MANUAL, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(200);
+      const outcome = await denyActionAsUser(id, { user: simpleKeyAdmin, orgId: null });
+
+      expect(outcome.kind).toBe("denied");
+      if (outcome.kind !== "denied") throw new Error("unreachable");
+      expect(outcome.entry.status).toBe("denied");
     });
 
     it("cannot deny admin-only actions", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "admin-only" };
+      const id = await seedPending(ADMIN_ONLY, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(403);
+      const outcome = await denyActionAsUser(id, { user: simpleKeyAdmin, orgId: null });
+
+      expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
     });
   });
 
-  // -------------------------------------------------------------------------
-  // Admin can approve all actions
-  // -------------------------------------------------------------------------
-
-  describe("admin role", () => {
-    beforeEach(() => {
-      setUser("byot", "admin");
-    });
-
+  describe("admin role (byot)", () => {
     it("can approve manual actions", async () => {
-      const action = makeAction();
-      const approved = makeAction({ status: "approved", approved_by: "u1" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockApproveAction.mockResolvedValueOnce(approved);
-      currentActionConfig = { approval: "manual" };
+      const id = await seedPending(MANUAL, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(200);
+      const outcome = await approveActionAsUser(id, { user: byotAdmin, orgId: null });
+
+      expect(outcome.kind).toBe("approved");
     });
 
     it("cannot approve admin-only (owner-only) actions", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "admin-only" };
+      const id = await seedPending(ADMIN_ONLY, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(403);
+      const outcome = await approveActionAsUser(id, { user: byotAdmin, orgId: null });
+
+      expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
     });
   });
 
   // -------------------------------------------------------------------------
-  // Owner role — full permissions including admin-only
+  // Owner — full permissions including admin-only
   // -------------------------------------------------------------------------
 
   describe("owner role", () => {
-    beforeEach(() => {
-      setUser("managed", "owner");
-    });
-
     it("can approve admin-only actions", async () => {
-      const action = makeAction();
-      const approved = makeAction({ status: "approved", approved_by: "u1" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockApproveAction.mockResolvedValueOnce(approved);
-      currentActionConfig = { approval: "admin-only" };
+      const id = await seedPending(ADMIN_ONLY, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(200);
+      const outcome = await approveActionAsUser(id, { user: managedOwner, orgId: null });
+
+      expect(outcome.kind).toBe("approved");
+      if (outcome.kind !== "approved") throw new Error("unreachable");
+      expect(outcome.entry.approved_by).toBe(managedOwner.id);
     });
 
     it("can deny admin-only actions", async () => {
-      const action = makeAction();
-      const denied = makeAction({ status: "denied", approved_by: "u1" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockDenyAction.mockResolvedValueOnce(denied);
-      currentActionConfig = { approval: "admin-only" };
+      const id = await seedPending(ADMIN_ONLY, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(200);
+      const outcome = await denyActionAsUser(id, { user: managedOwner, orgId: null });
+
+      expect(outcome.kind).toBe("denied");
+      if (outcome.kind !== "denied") throw new Error("unreachable");
+      expect(outcome.entry.status).toBe("denied");
     });
   });
 
   // -------------------------------------------------------------------------
-  // Simple-key mode defaults
+  // Simple-key mode defaults — no explicit role ⇒ admin
   // -------------------------------------------------------------------------
 
   describe("simple-key default role", () => {
     it("defaults to admin — can approve manual", async () => {
-      setUser("simple-key"); // no explicit role — defaults to admin
-      const action = makeAction();
-      const approved = makeAction({ status: "approved", approved_by: "u1" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockApproveAction.mockResolvedValueOnce(approved);
-      currentActionConfig = { approval: "manual" };
+      const id = await seedPending(MANUAL, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(200);
+      const outcome = await approveActionAsUser(id, { user: simpleKeyDefault, orgId: null });
+
+      expect(outcome.kind).toBe("approved");
     });
 
     it("defaults to admin — blocked from admin-only (owner-only)", async () => {
-      setUser("simple-key"); // no explicit role — defaults to admin
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "admin-only" };
+      const id = await seedPending(ADMIN_ONLY, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(403);
+      const outcome = await approveActionAsUser(id, { user: simpleKeyDefault, orgId: null });
+
+      expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
     });
   });
 
@@ -516,90 +271,64 @@ describe("action permissions integration", () => {
 
   describe("per-action requiredRole override", () => {
     it("requiredRole=owner blocks admin on manual action", async () => {
-      setUser("simple-key", "admin");
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "manual", requiredRole: "owner" };
+      setActions({ [MANUAL]: { approval: "manual", requiredRole: "owner" } });
+      const id = await seedPending(MANUAL, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(403);
+      const outcome = await approveActionAsUser(id, { user: simpleKeyAdmin, orgId: null });
+
+      expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
+      expect((await getAction(id))?.status).toBe("pending");
     });
 
     it("requiredRole=admin allows admin on manual action", async () => {
-      setUser("byot", "admin");
-      const action = makeAction();
-      const approved = makeAction({ status: "approved", approved_by: "u1" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockApproveAction.mockResolvedValueOnce(approved);
-      currentActionConfig = { approval: "manual", requiredRole: "admin" };
+      setActions({ [MANUAL]: { approval: "manual", requiredRole: "admin" } });
+      const id = await seedPending(MANUAL, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(200);
+      const outcome = await approveActionAsUser(id, { user: byotAdmin, orgId: null });
+
+      expect(outcome.kind).toBe("approved");
     });
 
     it("requiredRole=member allows member on manual action", async () => {
-      setUser("managed", "member");
-      const action = makeAction();
-      const approved = makeAction({ status: "approved", approved_by: "u1" });
-      mockGetAction.mockResolvedValueOnce(action);
-      mockApproveAction.mockResolvedValueOnce(approved);
-      currentActionConfig = { approval: "manual", requiredRole: "member" };
+      setActions({ [MANUAL]: { approval: "manual", requiredRole: "member" } });
+      const id = await seedPending(MANUAL, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(200);
+      const outcome = await approveActionAsUser(id, { user: managedMember, orgId: null });
+
+      expect(outcome.kind).toBe("approved");
     });
   });
 
   // -------------------------------------------------------------------------
-  // No-auth mode (none)
+  // No-auth mode — user is undefined, actions require identity
   // -------------------------------------------------------------------------
 
   describe("no-auth mode (user is undefined)", () => {
-    beforeEach(() => {
-      setNoUser();
-    });
-
     it("cannot approve manual actions", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "manual" };
+      const id = await seedPending(MANUAL, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(403);
+      const outcome = await approveActionAsUser(id, { user: undefined, orgId: null });
+
+      expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
+      expect((await getAction(id))?.status).toBe("pending");
     });
 
     it("cannot deny manual actions", async () => {
-      const action = makeAction();
-      mockGetAction.mockResolvedValueOnce(action);
-      currentActionConfig = { approval: "manual" };
+      const id = await seedPending(MANUAL, REQUESTER);
 
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/actions/${VALID_ID}/deny`, {
-          method: "POST",
-        }),
-      );
-      expect(response.status).toBe(403);
+      const outcome = await denyActionAsUser(id, { user: undefined, orgId: null });
+
+      expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
+      expect((await getAction(id))?.status).toBe("pending");
     });
   });
 
   // -------------------------------------------------------------------------
-  // Auth mode x role x approval mode matrix (all 3 auth modes)
+  // Auth mode × role × approval mode matrix (all 3 auth modes)
+  //
+  // Role decides, auth mode does not (with an explicit role set, the mode's
+  // default-role fallback never engages) — the matrix pins that the outcome
+  // is identical across simple-key / managed / byot.
   // -------------------------------------------------------------------------
 
   describe("cross-auth-mode matrix", () => {
@@ -607,41 +336,33 @@ describe("action permissions integration", () => {
     const scenarios: Array<{
       role: AtlasRole;
       approval: ActionApprovalMode;
-      expectStatus: 200 | 403;
+      allowed: boolean;
     }> = [
       // member: blocked from manual and admin-only
-      { role: "member", approval: "manual", expectStatus: 403 },
-      { role: "member", approval: "admin-only", expectStatus: 403 },
+      { role: "member", approval: "manual", allowed: false },
+      { role: "member", approval: "admin-only", allowed: false },
       // admin: can approve manual, blocked from admin-only (owner-only)
-      { role: "admin", approval: "manual", expectStatus: 200 },
-      { role: "admin", approval: "admin-only", expectStatus: 403 },
+      { role: "admin", approval: "manual", allowed: true },
+      { role: "admin", approval: "admin-only", allowed: false },
       // owner: can approve all
-      { role: "owner", approval: "manual", expectStatus: 200 },
-      { role: "owner", approval: "admin-only", expectStatus: 200 },
+      { role: "owner", approval: "manual", allowed: true },
+      { role: "owner", approval: "admin-only", allowed: true },
     ];
 
     for (const mode of modes) {
-      for (const { role, approval, expectStatus } of scenarios) {
-        it(`${mode}/${role} + ${approval} => ${expectStatus}`, async () => {
-          setUser(mode, role);
-          const action = makeAction();
+      for (const { role, approval, allowed } of scenarios) {
+        it(`${mode}/${role} + ${approval} => ${allowed ? "approved" : "forbidden(role)"}`, async () => {
+          const user = createAtlasUser(`${mode}-${role}`, mode, `${mode}-${role}@test.com`, { role });
+          const actionType = approval === "admin-only" ? ADMIN_ONLY : MANUAL;
+          const id = await seedPending(actionType, REQUESTER);
 
-          if (expectStatus === 200) {
-            const approved = makeAction({ status: "approved", approved_by: "u1" });
-            mockGetAction.mockResolvedValueOnce(action);
-            mockApproveAction.mockResolvedValueOnce(approved);
+          const outcome = await approveActionAsUser(id, { user, orgId: null });
+
+          if (allowed) {
+            expect(outcome.kind).toBe("approved");
           } else {
-            mockGetAction.mockResolvedValueOnce(action);
+            expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
           }
-
-          currentActionConfig = { approval };
-
-          const response = await app.fetch(
-            new Request(`http://localhost/api/v1/actions/${VALID_ID}/approve`, {
-              method: "POST",
-            }),
-          );
-          expect(response.status).toBe(expectStatus);
         });
       }
     }

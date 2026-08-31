@@ -41,16 +41,20 @@
  * per-rule re-queue cannot name it, so retiring a rule with a live backlog
  * means re-queueing it first.
  *
- * ## ⚠️ The stage-1 seam (#5336, out of scope here)
+ * ## ⚠️ The stage-1 seam (#5336) — an ADAPTER, not an edit
  *
- * Stage 1 — the ML classifier over a labeled corpus — slots in at exactly ONE
- * place: inside {@link triageEpisodeBody}, AFTER the deterministic rules have
- * declined to match. A body stage 0 catches never reaches the classifier, so
- * the deterministic layer stays the explainable floor; stage 1 may only route
- * MORE episodes out, and its verdicts get their own reason id so an admin can
- * tell the two stages apart in the counts. Nothing else in the pipeline needs
- * to change: the marking, the counters and the re-queue verb are
- * stage-agnostic.
+ * The extraction fiber consumes triage through the {@link Triager} dependency
+ * (`BrainExtractionDeps.triage`), whose default is {@link deterministicTriager}
+ * — the rules below, verbatim. Stage 1 — the ML classifier over a labeled
+ * corpus (milestone #98) — is a SECOND adapter composed BEHIND the
+ * deterministic one via {@link composeTriagers}: a body stage 0 catches never
+ * reaches the classifier, so the deterministic layer stays the explainable
+ * floor; stage 1 may only route MORE episodes out, and its verdicts carry
+ * `stage: 1` and their own reason id so an admin can tell the two stages apart
+ * in the counts. Nothing else in the pipeline changes: the marking, the
+ * counters and the re-queue verb are stage-agnostic (`triage_reason` is a
+ * plain text column, and `isKnownTriageRule` already narrates unknown ids on
+ * the backlog surface instead of choking on them).
  *
  * ## Why body-shape rules only
  *
@@ -61,10 +65,15 @@
  * its majority. Deliberately deferred, not forgotten.
  */
 
+import type { EpisodeRow } from "./extract-contract";
+
 /**
  * The closed vocabulary of stage-0 reason ids. A new rule joins this list
- * first — `Record<TriageRuleId, number>` counters elsewhere then refuse to
- * compile until every tally site knows about it.
+ * first — {@link emptyTriageMatchCounts} then refuses to compile until the
+ * seeded counter record knows about it. (The live tally itself is
+ * string-keyed since the Triager seam landed, because stage-1 reasons are
+ * deliberately outside this union — the seeding is where stage-0
+ * exhaustiveness stays compile-checked.)
  */
 export const TRIAGE_RULE_IDS = ["below_min_length", "pure_reaction", "known_ack"] as const;
 
@@ -269,11 +278,84 @@ export function triageEpisodeBody(body: string): TriageRuleId | null {
   for (const rule of TRIAGE_RULES) {
     if (rule.matches(trimmed, normalized)) return rule.id;
   }
-  // ⚠️ THE STAGE-1 SEAM (#5336): the ML classifier, when its corpus is ready,
-  // runs HERE — on bodies the deterministic rules passed — and returns its own
-  // reason id rather than reusing one of stage 0's, so the two stages stay
-  // separately countable on the oversight surface.
+  // ⚠️ Stage 1 does NOT run here. The seam is the {@link Triager} adapter the
+  // extraction fiber injects — see the module header. This function stays the
+  // pure, synchronous stage-0 floor.
   return null;
+}
+
+/**
+ * An episode as a triager sees it: the drain's row shape with the body
+ * guaranteed present and non-whitespace. The extraction fiber owns that guard
+ * — body-less and whitespace-only episodes belong to its `no_body` skip and
+ * never reach a triager (two owners for one body class would make the
+ * counters disagree about what happened).
+ */
+export type TriageableEpisode = EpisodeRow & { readonly body: string };
+
+/**
+ * One triage decision about one episode.
+ *
+ * `reason` is stored verbatim as `brain_episodes.triage_reason`, so it must be
+ * stable, lowercase-snake-case, and OUTSIDE {@link TRIAGE_RULE_IDS} for any
+ * non-deterministic stage — the per-rule counters, the backlog surface and the
+ * per-rule re-queue all key on it, and reusing a stage-0 id would make two
+ * stages indistinguishable in every count.
+ *
+ * `confidence` is the adapter's own signal (a stage-1 classifier thresholds on
+ * it internally and returns `null` below its cutoff). The fiber records the
+ * verdict, not the confidence — there is no column for it — so the field
+ * exists for adapter-side logging and tests, and nothing downstream may grow
+ * a dependency on it without adding storage first.
+ */
+export interface TriageVerdict {
+  /** Which layer decided: 0 = deterministic rules, 1 = the learned classifier. */
+  readonly stage: 0 | 1;
+  /** The stored reason id (`triage_reason`). Non-empty; see above. */
+  readonly reason: string;
+  readonly confidence?: number;
+}
+
+/**
+ * The triage seam the extraction fiber injects (`BrainExtractionDeps.triage`).
+ * `null` means "reaches the model" — the answer for anything the adapter is
+ * not SURE about, because a false drop stays the expensive direction whoever
+ * is deciding. May be async: the deterministic default never is, but a
+ * stage-1 adapter batching against a local model will be.
+ */
+export type Triager = (
+  episode: TriageableEpisode,
+) => TriageVerdict | null | Promise<TriageVerdict | null>;
+
+/**
+ * The default adapter: {@link TRIAGE_RULES}, verbatim, as a {@link Triager}.
+ * Injecting this explicitly and injecting nothing are the same thing —
+ * `extract-triage.test.ts` pins that the gate-off cycle is byte-identical to
+ * the pre-triage one, and that pin survives stage 1 unchanged because it
+ * constrains the fiber, not the adapter.
+ */
+export const deterministicTriager: Triager = (episode) => {
+  const rule = triageEpisodeBody(episode.body);
+  return rule === null ? null : { stage: 0, reason: rule };
+};
+
+/**
+ * Compose triagers into one: evaluated in order, first verdict wins. This is
+ * how stage 1 mounts without demoting the deterministic floor:
+ *
+ *     composeTriagers(deterministicTriager, distilledModelTriager)
+ *
+ * A body the rules catch never reaches the classifier (the floor stays
+ * explainable and free), and the classifier may only route MORE episodes out.
+ */
+export function composeTriagers(...triagers: readonly Triager[]): Triager {
+  return async (episode) => {
+    for (const triager of triagers) {
+      const verdict = await triager(episode);
+      if (verdict !== null) return verdict;
+    }
+    return null;
+  };
 }
 
 /** A zeroed per-rule counter record — every rule present, so a new rule cannot

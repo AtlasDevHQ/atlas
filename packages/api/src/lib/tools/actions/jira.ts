@@ -20,14 +20,74 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
-import { buildActionRequest, handleAction, type ActionExecutionContext } from "./handler";
+import { buildActionRequest, handleAction } from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
-import {
-  resolveActionCredentials,
-  resolveActionDeployMode,
-} from "./credentials/resolver";
+import { assertBaseUrlAllowed, hostForLog } from "@atlas/api/lib/openapi/egress-guard";
+import { resolveCredentialsFor } from "./credentials/resolver";
+import { JIRA_TARGET, type ActionCredentialsOf } from "./credentials/targets";
 
 const log = createLogger("action:jira");
+
+/** Outer budget for the create call — the same bound the Linear action uses.
+ * Without it, `getActionConfig` leaves `timeout` undefined on a default
+ * deployment and `executeWithTimeout(fn, undefined)` returns `fn()`
+ * unguarded, so a hung Jira host would hang the agent turn with no bound. */
+const JIRA_TIMEOUT_MS = 15_000;
+
+/**
+ * An abort from the outer timeout. Duck-typed rather than `instanceof Error`:
+ * `AbortController` rejects with a `DOMException`, which does not subclass
+ * `Error` on every runtime, so an instanceof check would misreport a timeout
+ * as an upstream failure. (Same shape as the Linear action's — a third copy
+ * would justify reopening ADR-0045's deferred `lib/vendor-http` extraction,
+ * which is exactly where this belongs when that happens.)
+ */
+function isAbortError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { name?: unknown }).name === "AbortError"
+  );
+}
+
+/**
+ * Validate the tenant-typed base URL before any request carries the Basic
+ * auth header to it. `JIRA_BASE_URL` comes from the same
+ * `workspace_action_credentials` row as Salesforce's instance URL, typed by
+ * the same tenant admin — and the Salesforce action already reasoned its way
+ * to this guard (`normalizeInstanceUrl`): an unguarded value turns a
+ * settings form into an outbound probe of the deployment's own network,
+ * with a credential attached. The refusal message deliberately does not echo
+ * the guard's own wording — naming "blocked internal address" back to
+ * whoever typed the URL turns the form into a network scanner with a
+ * readout.
+ */
+function normalizeJiraBaseUrl(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "Jira base URL is not a valid URL");
+    throw new Error(
+      "The configured Jira base URL is not a valid URL. It should be your Jira site URL, e.g. https://acme.atlassian.net.",
+    );
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error(`The configured Jira base URL must use https (got "${parsed.protocol}").`);
+  }
+  try {
+    assertBaseUrlAllowed(parsed.origin);
+  } catch (err) {
+    log.error(
+      { host: hostForLog(parsed.origin), err: err instanceof Error ? err.message : String(err) },
+      "Jira base URL was refused by the egress guard",
+    );
+    throw new Error(
+      "The configured Jira base URL does not point at a reachable public Jira host. Use your Jira site URL, e.g. https://acme.atlassian.net.",
+    );
+  }
+  return parsed.origin + parsed.pathname.replace(/\/+$/, "");
+}
 
 // ---------------------------------------------------------------------------
 // ADF (Atlassian Document Format) helper
@@ -69,74 +129,18 @@ export interface JiraCreateResult {
 }
 
 /**
- * The credential set `executeJiraCreate` needs, keyed by the env-var names
- * declared in the Jira {@link ActionTargetSpec}. The resolver guarantees every
- * REQUIRED field is present and non-empty before this is built, which is why
- * the three required values are non-optional here — a missing one is a
- * resolver bug, not a runtime branch this function re-checks.
+ * The credential set `executeJiraCreate` needs — DERIVED from the Jira
+ * target spec, so the required/optional split has exactly one author (the
+ * registry). Resolution goes through `resolveCredentialsFor(JIRA_TARGET, …)`,
+ * whose all-or-nothing guarantee is what makes every required key present.
  */
-export interface JiraCredentials {
-  readonly JIRA_BASE_URL: string;
-  readonly JIRA_EMAIL: string;
-  readonly JIRA_API_TOKEN: string;
-  /** Optional in the spec — the agent may name a project per call instead. */
-  readonly JIRA_DEFAULT_PROJECT?: string;
-}
-
-/**
- * Narrow a resolved credential map to the Jira shape. Throws rather than
- * returning a partial: the resolver's all-or-nothing rule means a set that
- * reaches here is complete, so a gap is corruption between the two.
- */
-export function toJiraCredentials(
-  values: Readonly<Record<string, string>>,
-): JiraCredentials {
-  const baseUrl = values.JIRA_BASE_URL;
-  const email = values.JIRA_EMAIL;
-  const apiToken = values.JIRA_API_TOKEN;
-  if (!baseUrl || !email || !apiToken) {
-    // No values in the message — only the NAMES of what is missing.
-    const missing = [
-      !baseUrl && "JIRA_BASE_URL",
-      !email && "JIRA_EMAIL",
-      !apiToken && "JIRA_API_TOKEN",
-    ].filter((v): v is string => typeof v === "string");
-    log.error({ missing }, "Resolved Jira credentials are incomplete");
-    throw new Error(`Missing JIRA credentials: ${missing.join(", ")}.`);
-  }
-  return {
-    JIRA_BASE_URL: baseUrl,
-    JIRA_EMAIL: email,
-    JIRA_API_TOKEN: apiToken,
-    ...(values.JIRA_DEFAULT_PROJECT
-      ? { JIRA_DEFAULT_PROJECT: values.JIRA_DEFAULT_PROJECT }
-      : {}),
-  };
-}
-
-/**
- * Resolve the Jira credentials for an action execution context, then narrow
- * them. The single place the action path crosses into the credential seam.
- */
-export async function resolveJiraCredentials(
-  ctx: ActionExecutionContext,
-): Promise<JiraCredentials> {
-  const resolved = await resolveActionCredentials("jira", {
-    workspaceId: ctx.workspaceId,
-    deployMode: resolveActionDeployMode(),
-  });
-  log.info(
-    { workspaceId: ctx.workspaceId, resolvedFrom: resolved.resolvedFrom },
-    "Resolved Jira action credentials",
-  );
-  return toJiraCredentials(resolved.values);
-}
+export type JiraCredentials = ActionCredentialsOf<typeof JIRA_TARGET>;
 
 export async function executeJiraCreate(
   params: JiraCreateParams,
   credentials: JiraCredentials,
 ): Promise<JiraCreateResult> {
-  const baseUrl = credentials.JIRA_BASE_URL;
+  const baseUrl = normalizeJiraBaseUrl(credentials.JIRA_BASE_URL);
   const email = credentials.JIRA_EMAIL;
   const apiToken = credentials.JIRA_API_TOKEN;
 
@@ -149,7 +153,7 @@ export async function executeJiraCreate(
   }
 
   const auth = Buffer.from(`${email}:${apiToken}`).toString("base64");
-  const url = `${baseUrl.replace(/\/$/, "")}/rest/api/3/issue`;
+  const url = `${baseUrl}/rest/api/3/issue`;
 
   const body = {
     fields: {
@@ -161,15 +165,31 @@ export async function executeJiraCreate(
     },
   };
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  const abort = new AbortController();
+  const deadline = setTimeout(() => abort.abort(), JIRA_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      signal: abort.signal,
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (isAbortError(err)) {
+      log.error({ host: hostForLog(url), timeoutMs: JIRA_TIMEOUT_MS }, "JIRA API request timed out");
+      throw new Error(
+        `JIRA did not respond within ${JIRA_TIMEOUT_MS / 1000}s. The issue was not created — check the site is reachable and retry.`,
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(deadline);
+  }
 
   if (!response.ok) {
     let detail: string;
@@ -217,7 +237,7 @@ export async function executeJiraCreate(
 
   return {
     key: data.key,
-    url: `${baseUrl.replace(/\/$/, "")}/browse/${data.key}`,
+    url: `${baseUrl}/browse/${data.key}`,
   };
 }
 
@@ -238,14 +258,10 @@ export const createJiraTicket: AtlasAction = {
   actionType: "jira:create",
   reversible: true,
   defaultApproval: "manual",
-  // Empty since #3766, same as `sendEmailReport`. `requiredCredentials` is
-  // checked by `ToolRegistry.validateActionCredentials()` against the GLOBAL
-  // `process.env` — a question that no longer has a meaningful answer for this
-  // action. Jira credentials are per-workspace: on SaaS there is no global rung
-  // at all, and on self-hosted the env rung is one of two, so a workspace that
-  // configured Jira from Admin would still be reported "missing credentials".
-  // Configuration status is per-workspace and lives on the Admin surface
-  // (`getActionTargetStatus`), not in a process-wide startup warning.
+  // Vestigial (ADR-0046): credentials are per-workspace, so the global-env
+  // question this field used to answer has no subject — status lives on the
+  // Admin surface (`getActionTargetStatus`). Kept because the published
+  // action shape and `isAction` still carry the field.
   requiredCredentials: [],
 
   tool: tool({
@@ -288,7 +304,7 @@ export const createJiraTicket: AtlasAction = {
       return handleAction(request, async (payload, ctx) => {
         // Resolved from the ACTION's workspace, not the approver's — a
         // manual-approval action executes inside the approver's request.
-        const credentials = await resolveJiraCredentials(ctx);
+        const credentials = await resolveCredentialsFor(JIRA_TARGET, ctx);
         const result = await executeJiraCreate(
           payload as unknown as JiraCreateParams,
           credentials,

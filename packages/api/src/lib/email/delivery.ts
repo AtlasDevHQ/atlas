@@ -29,6 +29,7 @@ import type { DeployRegion } from "@useatlas/types";
 import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
 import { clampOutbound } from "@atlas/api/lib/staging/clamp";
+import { readFailureText, truncateFailureDetail } from "@atlas/api/lib/vendor-http";
 
 const log = createLogger("email-delivery");
 
@@ -889,8 +890,8 @@ async function deliverWebhook(message: EmailMessage, from: string): Promise<Deli
     }, { label: "webhook" });
 
     if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      const error = `Webhook returned ${resp.status}: ${text.slice(0, 200)}`;
+      const text = await readFailureText(resp);
+      const error = `Webhook returned ${resp.status}: ${truncateFailureDetail(text)}`;
       log.error({ to: message.to, status: resp.status }, "Webhook email delivery failed");
       return { success: false, provider: "webhook", error };
     }
@@ -922,9 +923,10 @@ async function deliverResend(message: EmailMessage, from: string, apiKey?: strin
     }, { label: "resend" });
 
     if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      const error = `Resend API returned ${resp.status}: ${text.slice(0, 200)}`;
-      log.error({ to: message.to, status: resp.status, body: text.slice(0, 200) }, "Resend delivery failed");
+      const text = await readFailureText(resp);
+      const bounded = truncateFailureDetail(text);
+      const error = `Resend API returned ${resp.status}: ${bounded}`;
+      log.error({ to: message.to, status: resp.status, body: bounded }, "Resend delivery failed");
       return { success: false, provider: "resend", error };
     }
 
@@ -951,9 +953,9 @@ async function deliverSendGrid(message: EmailMessage, from: string, apiKey: stri
       }),
     }, { label: "sendgrid" });
     if (!res.ok) {
-      const text = await res.text().catch(() => "");
+      const text = await readFailureText(res);
       log.error({ to: message.to, status: res.status }, "SendGrid delivery failed");
-      return { success: false, provider: "sendgrid", error: `SendGrid error (${res.status}): ${text.slice(0, 200)}` };
+      return { success: false, provider: "sendgrid", error: `SendGrid error (${res.status}): ${truncateFailureDetail(text)}` };
     }
     log.info({ to: message.to, subject: message.subject }, "Email sent via SendGrid");
     return { success: true, provider: "sendgrid" };
@@ -972,9 +974,9 @@ async function deliverPostmark(message: EmailMessage, from: string, serverToken:
       body: JSON.stringify({ From: from, To: message.to, Subject: message.subject, HtmlBody: message.html }),
     }, { label: "postmark" });
     if (!res.ok) {
-      const text = await res.text().catch(() => "");
+      const text = await readFailureText(res);
       log.error({ to: message.to, status: res.status }, "Postmark delivery failed");
-      return { success: false, provider: "postmark", error: `Postmark error (${res.status}): ${text.slice(0, 200)}` };
+      return { success: false, provider: "postmark", error: `Postmark error (${res.status}): ${truncateFailureDetail(text)}` };
     }
     log.info({ to: message.to, subject: message.subject }, "Email sent via Postmark");
     return { success: true, provider: "postmark" };

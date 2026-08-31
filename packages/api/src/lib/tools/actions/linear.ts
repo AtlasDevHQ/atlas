@@ -41,6 +41,7 @@ import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
 import { buildActionRequest, handleAction } from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
+import { describeFailureText, withVendorDeadline } from "@atlas/api/lib/vendor-http";
 import { resolveCredentialsFor } from "./credentials/resolver";
 import { LINEAR_TARGET, type ActionCredentialsOf } from "./credentials/targets";
 
@@ -96,20 +97,6 @@ interface LinearGraphQLResponse {
 }
 
 /**
- * An abort from the outer timeout. Duck-typed rather than `instanceof Error`:
- * `AbortController` rejects with a `DOMException`, which does not subclass
- * `Error` on every runtime, so an instanceof check would misreport a timeout
- * as an upstream failure.
- */
-function isAbortError(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { name?: unknown }).name === "AbortError"
-  );
-}
-
-/**
  * POST one GraphQL document and return the parsed envelope.
  *
  * No message built here interpolates the API key — it travels in the
@@ -142,16 +129,10 @@ async function linearGraphQL(
   });
 
   if (!response.ok) {
-    let rawText = "";
-    try {
-      rawText = await response.text();
-    } catch {
-      // intentionally ignored: the body of an already-failed response may be
-      // unreadable, and the status alone is enough to report.
-    }
-    const detail = rawText
-      ? `HTTP ${response.status}: ${rawText.slice(0, 200)}`
-      : `HTTP ${response.status}`;
+    // No structured extractor: a Linear failure at this level is transport-
+    // shaped (auth, rate limit, gateway), and its GraphQL-level errors are
+    // handled below off a 200.
+    const detail = await describeFailureText(response);
     log.error({ status: response.status, detail }, "Linear API request failed");
     throw new Error(
       response.status === 401 || response.status === 403
@@ -219,12 +200,12 @@ export async function executeLinearCreate(
   const apiKey = credentials.LINEAR_API_KEY;
   const teamKey = params.teamKey ?? credentials.LINEAR_DEFAULT_TEAM_KEY;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LINEAR_TIMEOUT_MS);
-  try {
+  // One budget across BOTH requests — the optional team lookup and the create
+  // share the signal, so the pair cannot outlast the bound between them.
+  const sent = await withVendorDeadline(LINEAR_TIMEOUT_MS, async (signal) => {
     // No team named anywhere → let Linear use the key owner's default team.
     const teamId = teamKey
-      ? await resolveTeamIdByKey(apiKey, teamKey, controller.signal)
+      ? await resolveTeamIdByKey(apiKey, teamKey, signal)
       : undefined;
 
     const input: Record<string, unknown> = {
@@ -244,7 +225,7 @@ export async function executeLinearCreate(
         }
       }`,
       { input },
-      controller.signal,
+      signal,
     );
 
     // Every one of the three is in the mutation's selection set, so a missing
@@ -270,18 +251,18 @@ export async function executeLinearCreate(
     }
 
     return { id, identifier, url };
-  } catch (err) {
-    if (isAbortError(err)) {
-      log.error({ timeoutMs: LINEAR_TIMEOUT_MS }, "Linear issueCreate timed out");
-      throw new Error(
-        `Linear API error: the request timed out after ${LINEAR_TIMEOUT_MS}ms. Retry, or check Linear's status.`,
-        { cause: err },
-      );
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
+  });
+
+  if (!sent.ok) {
+    log.error({ timeoutMs: LINEAR_TIMEOUT_MS }, "Linear issueCreate timed out");
+    throw new Error(
+      `Linear API error: the request timed out after ${LINEAR_TIMEOUT_MS}ms. Retry, or check Linear's status.`,
+      // The abort itself, kept as the cause: its identity is the evidence
+      // that this was OUR bound and not something Linear returned.
+      { cause: sent.failure.cause },
+    );
   }
+  return sent.value;
 }
 
 // ---------------------------------------------------------------------------

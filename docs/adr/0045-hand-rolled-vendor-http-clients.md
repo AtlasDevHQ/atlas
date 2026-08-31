@@ -29,3 +29,22 @@ Roughly ten near-identical files of pagination, error mapping, Retry-After parsi
 A new connector's client module opens with a header stating, in order: (1) the discriminated result contract and which error becomes `ConnectorRateLimitError`; (2) "Why not `<vendor SDK>`" — cite this ADR and state which of the four properties the SDK fights; (3) the token-handling posture (fetched per pass, held in closure, never module-cached — and why); (4) every vendor-supplied URL the module follows and the guard on it. `packages/api/src/lib/brain/ingest/outlook/api.ts` is the reference example — copy its header shape, not the last connector's code.
 
 See also: ADR-0030 (the engine/vendor split this pattern serves); #4975 (the decision record and the duplication inventory).
+
+## Amendment (2026-08-31, [#5569](https://github.com/AtlasDevHQ/atlas/issues/5569)): the deferral's trigger fired — `lib/vendor-http` exists, actions-scope
+
+The alternative above declined the `lib/vendor-http` extraction *for now*, on one stated condition: the duplication "has not yet produced a cross-connector bug that the shared trio above didn't catch." The 2026-08-31 architecture survey found that it had, twice, in the action clients:
+
+- **Timeout/abort** was present in the Linear action and absent in jira/github/salesforce — siblings written the same week. On a default deployment `executeWithTimeout(fn, undefined)` returns `fn()` unguarded, so a hung vendor host hung the agent turn.
+- **The egress guard on a tenant-typed base URL** was present in Salesforce (`normalizeInstanceUrl`) and absent in Jira, on the same class of value: a `workspace_action_credentials` row typed by a tenant admin, with Basic auth attached to whatever host it names. Two independent derivations of one check, one of them missing.
+
+[#5567](https://github.com/AtlasDevHQ/atlas/pull/5567) fixed both live instances directly, which left `isAbortError` as three verbatim marked copies. So the extraction is taken, at the scope the evidence supports:
+
+**`packages/api/src/lib/vendor-http` owns exactly four concerns** — the discriminated result shape; bounded failure-detail narrowing (one definition of the 200-character truncation, and one statement of what that bound is for and what it is not); timeout/abort (one `isAbortError`, one deadline wrapper); and host pinning through `openapi/egress-guard`, which is consumed and did not move. The **five action clients** consume it. The ~10 `lib/brain/ingest` connectors adopt **opportunistically when next touched, not in this arc** — migrating connectors still being written is the cost this ADR declined in the first place, and it is still declined.
+
+**This amendment refines; it does not reopen.** Everything above stays ratified, and three of this ADR's positions are named in the spine's own header as things it deliberately does not own, so that extending it into them is a visible act rather than a drift:
+
+- **Retries and backoff** stay with `withRateLimitBackoff` / `ConnectorRateLimitError` per ADR-0030. Backoff belongs to the engine precisely so no vendor owns a retry policy; a retry helper in the spine would be a second one.
+- **Token caching** stays a per-module security decision, on the fourth property above.
+- **Vendor SDKs** stay declined by default, runtime and types-only alike, on all five grounds.
+
+What changed is where four pieces of shared code live — not whether SDKs enter the tree, which is what this ADR decided. The rejected alternative's own framing holds: it "can be revisited later without reopening this decision." This is that revisit.

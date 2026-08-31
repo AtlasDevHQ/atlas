@@ -51,7 +51,8 @@ import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
 import { buildActionRequest, handleAction } from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
-import { assertBaseUrlAllowed, hostForLog } from "@atlas/api/lib/openapi/egress-guard";
+import { hostForLog } from "@atlas/api/lib/openapi/egress-guard";
+import { pinVendorHost } from "@atlas/api/lib/vendor-http";
 import { resolveCredentialsFor } from "./credentials/resolver";
 import { SALESFORCE_TARGET, type ActionCredentialsOf } from "./credentials/targets";
 
@@ -266,36 +267,22 @@ function validateRecordFields(fields: unknown): Record<string, string> {
  * the right one here — the async `assertSafeEgressTarget` hands back a pin the
  * caller must connect through, which `jsforce` gives us no way to honour.
  *
+ * The call shape — parse, require https, guard, normalize, and refuse with
+ * copy that is NOT the guard's own wording — is `lib/vendor-http`'s since
+ * #5569. This module and `jira.ts` were the two independent derivations of
+ * it, and only one of them had it. The Salesforce-shaped copy and the
+ * origin-only normalization are what stayed here, as arguments.
+ *
  * @param label how to name this URL in the operator-facing error.
  */
 function normalizeInstanceUrl(raw: string, label: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch (err) {
-    log.error({ err }, "Salesforce instance URL is not a valid URL");
-    throw new Error(
-      `${label} is not a valid URL. It should be your org's My Domain URL, e.g. https://acme.my.salesforce.com.`,
-    );
-  }
-  if (parsed.protocol !== "https:") {
-    throw new Error(`${label} must use https (got "${parsed.protocol}").`);
-  }
-  try {
-    assertBaseUrlAllowed(parsed.origin);
-  } catch (err) {
-    // The message is deliberately not the guard's: it names the host, and
-    // repeating "blocked internal address" back to whoever typed it turns the
-    // form into a network scanner with a readout.
-    log.error(
-      { host: hostForLog(parsed.origin), err: err instanceof Error ? err.message : String(err) },
-      "Salesforce instance URL was refused by the egress guard",
-    );
-    throw new Error(
-      `${label} does not point at a reachable public Salesforce host. Use your org's My Domain URL, e.g. https://acme.my.salesforce.com.`,
-    );
-  }
-  return parsed.origin;
+  return pinVendorHost(raw, {
+    log,
+    label,
+    subject: "Salesforce instance URL",
+    vendor: "Salesforce",
+    shouldBe: "your org's My Domain URL, e.g. https://acme.my.salesforce.com",
+  });
 }
 
 /**

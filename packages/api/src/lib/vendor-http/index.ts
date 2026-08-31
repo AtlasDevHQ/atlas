@@ -53,11 +53,30 @@
  *   client composes its own request; what it no longer composes is the
  *   classification of what came back.
  *
- * ── Who consumes it ──────────────────────────────────────────────────────
+ * ── Who consumes it, exactly ─────────────────────────────────────────────
  *
- * The five ACTION clients (`lib/tools/actions/{jira,github,linear,salesforce}.ts`
- * and the email delivery chain). The ~10 `lib/brain/ingest` connectors adopt
- * **opportunistically, when next touched** — they are not migrated in this
+ * Five migration sites, and they do NOT each take all four concerns:
+ *
+ * | Site | Takes |
+ * |---|---|
+ * | `lib/tools/actions/jira.ts` | deadline · narrowing · host pinning |
+ * | `lib/tools/actions/github.ts` | deadline · narrowing |
+ * | `lib/tools/actions/linear.ts` | deadline · narrowing (text path) |
+ * | `lib/tools/actions/salesforce.ts` | host pinning only |
+ * | `lib/email/delivery.ts` (×4 provider sites) | the truncation only |
+ *
+ * ⚠️ Two things that table is here to stop you assuming. **`salesforce.ts`
+ * has no deadline at all** — it drives `jsforce`, not `fetch`, so there is no
+ * signal to hand it; its token request and record POST are unbounded, exactly
+ * as before this extraction, and bounding them is a behaviour change that
+ * wants its own issue. And **`lib/tools/actions/email.ts` is untouched** — it
+ * delegates to the delivery chain and re-rolls nothing, so the fifth site is
+ * `lib/email/delivery.ts`, which is not itself an action client.
+ *
+ * The vendor connectors — `lib/knowledge/{confluence,freshdesk,front,gitbook,
+ * helpscout,intercom,notion,salesforce,support,zendesk}`, the ten ADR-0045
+ * enumerates, plus `lib/brain/ingest/{outlook,slack,zoom}` — adopt
+ * **opportunistically, when next touched**. They are not migrated in this
  * arc, because proving a seam by rewriting ten working files at once is the
  * cost ADR-0045 declined in the first place.
  */
@@ -79,4 +98,8 @@ export {
 
 export { isAbortError, withVendorDeadline } from "./deadline";
 
-export { pinVendorHost, type VendorHostPinOptions } from "./host-pinning";
+export {
+  pinVendorHost,
+  type VendorHostPinLogger,
+  type VendorHostPinOptions,
+} from "./host-pinning";

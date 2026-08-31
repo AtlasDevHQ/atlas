@@ -30,12 +30,23 @@
  * @see ../openapi/egress-guard.ts — the guard itself, unchanged.
  */
 
-import type { Logger } from "pino";
 import { assertBaseUrlAllowed, hostForLog } from "@atlas/api/lib/openapi/egress-guard";
+
+/**
+ * The one method this module calls on the caller's logger.
+ *
+ * Narrower than `pino.Logger` on purpose: a pino logger satisfies it
+ * structurally, so callers pass theirs unchanged, and a test can stand it up
+ * without an `any` cast. It also states the seam — this module logs refusals
+ * and nothing else.
+ */
+export interface VendorHostPinLogger {
+  error(payload: object, msg: string): void;
+}
 
 export interface VendorHostPinOptions {
   /** The caller's own logger, so a refusal keeps its `action:<vendor>` scope. */
-  readonly log: Logger;
+  readonly log: VendorHostPinLogger;
   /**
    * How the operator-facing error names this URL, as a sentence subject —
    * e.g. `"The configured Jira base URL"`.
@@ -71,6 +82,12 @@ export function pinVendorHost(raw: string, opts: VendorHostPinOptions): string {
   try {
     parsed = new URL(raw);
   } catch (err) {
+    // ⚠️ Narrowed to the message, which CONVERGES the two derivations rather
+    // than preserving both: Jira already narrowed here, Salesforce logged the
+    // raw `err` and so got pino's error serializer (`{ type, message, stack }`).
+    // The narrowed form is what CLAUDE.md requires, and a `new URL()` TypeError
+    // has no stack worth keeping — but it is a log-payload change, so it is
+    // called out rather than folded in silently. No error MESSAGE changed.
     opts.log.error(
       { err: err instanceof Error ? err.message : String(err) },
       `${opts.subject} is not a valid URL`,

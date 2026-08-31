@@ -9,10 +9,20 @@
  * The failure half is discriminated by `reason` because the two kinds are not
  * interchangeable to a caller: a `timeout` means the vendor was never heard
  * from and the write may or may not have landed, while an `http` failure is a
- * verdict the vendor actually returned. The five action clients rendered that
+ * verdict the vendor actually returned. The action clients rendered that
  * distinction as separately-worded throws per vendor — three verbatim copies
  * of the abort classification alone. They still throw (their public contract
  * is unchanged); what they no longer each own is the classification.
+ *
+ * ⚠️ **No consumer switches on `reason` today, and that is worth knowing
+ * before you build on it.** Each producer emits exactly one variant —
+ * `withVendorDeadline` only ever a `timeout`, `describeHttpFailure` only ever
+ * an `http` — and each call site throws at the seam rather than passing a
+ * failure onward, so what the migrated clients actually read is `.ok`,
+ * `.value`, `.cause`, `.status` and `.detail`. The discriminant earns its
+ * place when a caller holds BOTH, which is the ADR-0045 `{ ok } | ReadError`
+ * shape the deferred connector adoption needs. Until one does, `F` below is
+ * what makes the union pay for itself.
  *
  * @see ./index.ts — the spine's scope, and what it deliberately does NOT own.
  */
@@ -46,7 +56,9 @@ export type VendorFailure = VendorTimeoutFailure | VendorHttpFailure;
  * `F` narrows the failure half to what a particular producer can actually
  * emit, so a caller of {@link ../deadline.withVendorDeadline} reads
  * `failure.cause` without first re-proving that a deadline produced a
- * timeout. It defaults to the full union for anything holding both.
+ * timeout — `linear.ts` is the live case. It defaults to the full union,
+ * which is what a consumer holding both variants would take; nothing does
+ * yet.
  */
 export type VendorHttpResult<T, F extends VendorFailure = VendorFailure> =
   | { readonly ok: true; readonly value: T }

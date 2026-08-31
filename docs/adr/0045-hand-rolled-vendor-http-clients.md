@@ -39,7 +39,11 @@ The alternative above declined the `lib/vendor-http` extraction *for now*, on on
 
 [#5567](https://github.com/AtlasDevHQ/atlas/pull/5567) fixed both live instances directly, which left `isAbortError` as three verbatim marked copies. So the extraction is taken, at the scope the evidence supports:
 
-**`packages/api/src/lib/vendor-http` owns exactly four concerns** — the discriminated result shape; bounded failure-detail narrowing (one definition of the 200-character truncation, and one statement of what that bound is for and what it is not); timeout/abort (one `isAbortError`, one deadline wrapper); and host pinning through `openapi/egress-guard`, which is consumed and did not move. The **five action clients** consume it. The ~10 `lib/brain/ingest` connectors adopt **opportunistically when next touched, not in this arc** — migrating connectors still being written is the cost this ADR declined in the first place, and it is still declined.
+**`packages/api/src/lib/vendor-http` owns exactly four concerns** — the discriminated result shape; bounded failure-detail narrowing (one definition of the 200-character truncation, and one statement of what that bound is for and what it is not); timeout/abort (one `isAbortError`, one deadline wrapper); and host pinning through `openapi/egress-guard`, which is consumed and did not move.
+
+**Five migration sites, and they do not each take all four concerns** — `jira.ts` (deadline, narrowing, host pinning), `github.ts` (deadline, narrowing), `linear.ts` (deadline, narrowing), `salesforce.ts` (host pinning only — it drives `jsforce`, not `fetch`, so it has no deadline, before or after), and the four provider sites in `lib/email/delivery.ts` (the truncation only). `lib/tools/actions/email.ts` is untouched: it delegates to the delivery chain and re-rolls nothing.
+
+The vendor connectors adopt **opportunistically when next touched, not in this arc** — the ten this ADR enumerates live under `lib/knowledge/`, and `lib/brain/ingest/` holds three more. Migrating connectors still being written is the cost this ADR declined in the first place, and it is still declined.
 
 **This amendment refines; it does not reopen.** Everything above stays ratified, and three of this ADR's positions are named in the spine's own header as things it deliberately does not own, so that extending it into them is a visible act rather than a drift:
 

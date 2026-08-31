@@ -1,9 +1,11 @@
 /**
  * Concern 2 of 4 — bounded failure-detail narrowing.
  *
- * The `!response.ok → json → text → slice(0, 200)` block existed as three
- * verbatim copies across the action clients, plus the same truncation
- * open-coded at five more sites. This is its one definition.
+ * Before this module, `jira.ts` and `github.ts` each carried the full
+ * `!response.ok → json → text → slice(0, 200)` block verbatim, `linear.ts`
+ * carried the text-only half of it, and the 200-char truncation itself was
+ * open-coded at four more sites in `lib/email/delivery.ts` — plus others
+ * outside this arc's scope. This is its one definition.
  *
  * ── Why 200 characters, and what the bound is NOT ────────────────────────
  *
@@ -95,9 +97,11 @@ export async function describeHttpFailure(
   try {
     detail = describeBody(await response.json(), status);
   } catch {
-    // intentionally ignored: the structured read failed (unparseable body, or
-    // a shape the extractor could not walk); the text fallback is the whole
-    // reason this catch exists and it is what reports the failure.
+    // intentionally ignored: an unparseable body and a shape the extractor
+    // could not walk are the same condition here, and neither the error nor
+    // its message adds anything to the status this already carries. Nothing
+    // is logged — the caller logs the returned failure, once, with its own
+    // vendor context.
     detail = await describeFailureText(response);
   }
   return { reason: "http", status, detail };

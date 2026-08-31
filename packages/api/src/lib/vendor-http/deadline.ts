@@ -38,9 +38,15 @@ export function isAbortError(err: unknown): boolean {
  *
  * ⚠️ **Scope the callback to what you want bounded.** A caller that wraps only
  * the `fetch` leaves the body read unbounded; one that wraps the whole
- * exchange bounds both. Both are legitimate — the five action clients differ
- * on it today and the migration preserved each one's scope rather than
- * silently widening a deadline.
+ * exchange bounds both. Both are legitimate, and the migration preserved each
+ * caller's scope rather than silently widening a deadline: jira and github
+ * bound the fetch alone, linear bounds its team lookup and create together.
+ *
+ * Those THREE are every consumer. `salesforce.ts` drives `jsforce` rather
+ * than `fetch`, so there is no signal to hand it and its calls are unbounded
+ * — as they were before this extraction. Do not read this module's existence
+ * as a claim that every action client is bounded; bounding the jsforce path
+ * is a behaviour change and wants its own issue.
  *
  * The signal is handed to the callback rather than owned by it, so a caller
  * making several requests inside one budget (Linear's team lookup then its

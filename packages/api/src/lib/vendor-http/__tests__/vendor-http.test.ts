@@ -23,23 +23,31 @@ import {
   readFailureText,
   truncateFailureDetail,
   withVendorDeadline,
+  type VendorHostPinLogger,
 } from "@atlas/api/lib/vendor-http";
 
-/** A logger stub shaped like the `error` call `pinVendorHost` makes. */
-function loggerStub() {
+/**
+ * A logger stub, typed by the seam rather than cast to it.
+ *
+ * `VendorHostPinOptions.log` is `VendorHostPinLogger` — the one method the
+ * module calls — which a real pino logger satisfies structurally. That is why
+ * this needs no `any`: narrowing the option was the fix, not silencing the
+ * lint rule at the call site.
+ */
+function loggerStub(): {
+  calls: Array<{ payload: object; msg: string }>;
+  log: VendorHostPinLogger;
+} {
   const calls: Array<{ payload: object; msg: string }> = [];
-  const log = {
-    error: mock((payload: object, msg: string) => {
-      calls.push({ payload, msg });
-    }),
+  return {
+    calls,
+    log: {
+      error: mock((payload: object, msg: string) => {
+        calls.push({ payload, msg });
+      }),
+    },
   };
-  return { calls, log };
 }
-
-// eslint bypass not needed: the stub is structurally what pino.Logger provides
-// for the one method this module calls.
-// oxlint-disable-next-line @typescript-eslint/no-explicit-any
-const asLogger = (stub: ReturnType<typeof loggerStub>["log"]): any => stub;
 
 // ---------------------------------------------------------------------------
 // Concern 3 — timeout/abort
@@ -265,7 +273,7 @@ describe("pinVendorHost", () => {
     // request carries a credential to whatever host it names.
     for (const host of ["https://localhost", "https://127.0.0.1", "https://169.254.169.254"]) {
       const { log } = loggerStub();
-      expect(() => pinVendorHost(host, { ...JIRA_PIN, log: asLogger(log) })).toThrow(
+      expect(() => pinVendorHost(host, { ...JIRA_PIN, log: log })).toThrow(
         /reachable public Jira host/,
       );
     }
@@ -277,7 +285,7 @@ describe("pinVendorHost", () => {
     const { log } = loggerStub();
     let message = "";
     try {
-      pinVendorHost("https://169.254.169.254", { ...JIRA_PIN, log: asLogger(log) });
+      pinVendorHost("https://169.254.169.254", { ...JIRA_PIN, log: log });
     } catch (err) {
       message = err instanceof Error ? err.message : String(err);
     }
@@ -290,13 +298,13 @@ describe("pinVendorHost", () => {
   it("refuses a non-https URL, naming the scheme it got", () => {
     const { log } = loggerStub();
     expect(() =>
-      pinVendorHost("http://tenant.atlassian.net", { ...JIRA_PIN, log: asLogger(log) }),
+      pinVendorHost("http://tenant.atlassian.net", { ...JIRA_PIN, log: log }),
     ).toThrow('The configured Jira base URL must use https (got "http:").');
   });
 
   it("refuses a malformed URL with actionable copy", () => {
     const { log } = loggerStub();
-    expect(() => pinVendorHost("not a url", { ...JIRA_PIN, log: asLogger(log) })).toThrow(
+    expect(() => pinVendorHost("not a url", { ...JIRA_PIN, log: log })).toThrow(
       "The configured Jira base URL is not a valid URL. It should be your Jira site URL, e.g. https://acme.atlassian.net.",
     );
   });
@@ -304,7 +312,7 @@ describe("pinVendorHost", () => {
   it("logs the refusal against the caller's own logger, with the host hashed for correlation", () => {
     const { calls, log } = loggerStub();
     expect(() =>
-      pinVendorHost("https://127.0.0.1", { ...JIRA_PIN, log: asLogger(log) }),
+      pinVendorHost("https://127.0.0.1", { ...JIRA_PIN, log: log }),
     ).toThrow();
     expect(calls).toHaveLength(1);
     expect(calls[0]?.msg).toBe("Jira base URL was refused by the egress guard");
@@ -315,7 +323,7 @@ describe("pinVendorHost", () => {
     const { log } = loggerStub();
     expect(
       pinVendorHost("https://tenant.my.salesforce.com/", {
-        log: asLogger(log),
+        log: log,
         label: "The configured Salesforce instance URL",
         subject: "Salesforce instance URL",
         vendor: "Salesforce",
@@ -329,7 +337,7 @@ describe("pinVendorHost", () => {
     expect(
       pinVendorHost("https://acme.atlassian.net/jira//", {
         ...JIRA_PIN,
-        log: asLogger(log),
+        log: log,
         keepPath: true,
       }),
     ).toBe("https://acme.atlassian.net/jira");
@@ -343,13 +351,13 @@ describe("pinVendorHost", () => {
     let jira = "";
     let salesforce = "";
     try {
-      pinVendorHost("bad", { ...JIRA_PIN, log: asLogger(log) });
+      pinVendorHost("bad", { ...JIRA_PIN, log: log });
     } catch (err) {
       jira = err instanceof Error ? err.message : "";
     }
     try {
       pinVendorHost("bad", {
-        log: asLogger(log),
+        log: log,
         label: "The instance URL Salesforce returned",
         subject: "Salesforce instance URL",
         vendor: "Salesforce",

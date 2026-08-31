@@ -918,6 +918,27 @@ JIRA_DEFAULT_PROJECT=PROJ
 
 ## Linear Integration
 
+The approval-gated `createLinearTicket` action uses a static API-key credential; the catalog-driven Linear install path (backing the immediate `createLinearIssue` tool) uses OAuth or a pasted personal key. The two store their credentials separately and do not share a row.
+
+### Static API-key action
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LINEAR_API_KEY` | — | Linear personal API key. Generate under Linear → Settings → Security & access → Personal API keys. Issues are created as this user |
+| `LINEAR_DEFAULT_TEAM_KEY` | — | Default team key for issue creation (e.g. `ENG`). Can be overridden per-action; without one Linear uses the key owner's default team |
+
+Requires the <AudienceLink saas="/guides/actions">action framework</AudienceLink> to be enabled (`ATLAS_ACTIONS_ENABLED=true`).
+
+**Self-hosted only.** These are the environment rung of the per-workspace action-credential ladder, read only when the workspace has no credentials of its own. On SaaS the rung does not exist — a workspace admin sets Linear credentials with `PUT /api/v1/admin/action-credentials/linear`, and a workspace with no row gets an actionable error rather than the deployment's key. Source: `packages/api/src/lib/tools/actions/credentials/resolver.ts`.
+
+```bash
+# Linear credentials for the createLinearTicket action
+LINEAR_API_KEY=lin_api_your-key
+LINEAR_DEFAULT_TEAM_KEY=ENG
+```
+
+### OAuth install path
+
 Per-workspace Linear OAuth 2.0 install registered under `/api/v1/integrations/linear`. The `linear-apikey` form-install path (a workspace admin pastes a personal API key) is independent and needs no env vars. Source: `packages/api/src/lib/integrations/install/register.ts`.
 
 | Variable | Default | Description |

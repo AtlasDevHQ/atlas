@@ -585,13 +585,15 @@ const NEVER_DISOWN_A_VISIBLE_TOOL =
  * The warning for "the operator action tools did not load", authored by
  * {@link buildRegistry} and relayed by every surface that requested them.
  *
- * Names the tools by their registry names rather than "JIRA, GitHub and
- * email": `sendEmailReport` is gone, the core `sendEmail` is not, and the
- * model has to be able to tell them apart.
+ * Names the tools by their registry names rather than "JIRA, GitHub, Linear
+ * and email": `sendEmailReport` is gone, the core `sendEmail` is not, and the
+ * model has to be able to tell them apart. Same for `createLinearTicket`
+ * (#5554) against the core `createLinearIssue`, which SURVIVES this failure —
+ * naming the category would disown a tool still in the list.
  */
 export const ACTION_TOOLS_UNAVAILABLE_WARNING =
-  "The operator action tools (createJiraTicket, createGitHubIssue, sendEmailReport) failed to load and are " +
-  "unavailable for this session. " +
+  "The operator action tools (createJiraTicket, createGitHubIssue, createLinearTicket, " +
+  "sendEmailReport) failed to load and are unavailable for this session. " +
   NEVER_DISOWN_A_VISIBLE_TOOL;
 
 /**
@@ -611,7 +613,7 @@ export function registryBuildFailedWarning(): string {
   const lost: string[] = [];
   if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
     lost.push(
-      "the operator action tools (createJiraTicket, createGitHubIssue, sendEmailReport)",
+      "the operator action tools (createJiraTicket, createGitHubIssue, createLinearTicket, sendEmailReport)",
     );
   }
   if (isPythonToolRequested()) {
@@ -716,16 +718,18 @@ export async function buildRegistry(options?: {
 
   if (options?.includeActions) {
     try {
-      const { createJiraTicket, createGitHubIssue, sendEmailReport } = await import("./actions");
+      const { createJiraTicket, createGitHubIssue, createLinearTicket, sendEmailReport } =
+        await import("./actions");
       registry.register(createJiraTicket as unknown as AtlasTool);
       registry.register(createGitHubIssue as unknown as AtlasTool);
+      registry.register(createLinearTicket as unknown as AtlasTool);
       registry.register(sendEmailReport as unknown as AtlasTool);
     } catch (err) {
       const { createLogger } = await import("@atlas/api/lib/logger");
       const actionLog = createLogger("registry");
       actionLog.error(
         { err: err instanceof Error ? err : new Error(String(err)) },
-        "Failed to load action tools — JIRA, GitHub and email actions will be unavailable",
+        "Failed to load action tools — JIRA, GitHub, Linear and email actions will be unavailable",
       );
       warnings.push(ACTION_TOOLS_UNAVAILABLE_WARNING);
     }

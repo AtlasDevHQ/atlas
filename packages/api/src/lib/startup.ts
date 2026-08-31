@@ -781,7 +781,18 @@ async function checkActionFramework(errors: DiagnosticError[], authMode: string)
     const config = getConfig();
     const actionsConfig = config?.actions;
     if (actionsConfig) {
-      const highRiskActions = ["email:send", "jira:create", "salesforce:update", "salesforce:create"];
+      // `linear:create` joined on #5554 — same risk class as `jira:create`
+      // (an external write, `reversible: true`, `defaultApproval: "manual"`),
+      // so an operator who auto-approves it deserves the same warning. This
+      // list is the one per-action-type enumeration a new action target still
+      // has to be added to by hand.
+      const highRiskActions = [
+        "email:send",
+        "jira:create",
+        "linear:create",
+        "salesforce:update",
+        "salesforce:create",
+      ];
       for (const actionType of highRiskActions) {
         const perAction = actionsConfig[actionType] as { approval?: string } | undefined;
         if (perAction?.approval === "auto") {

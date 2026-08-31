@@ -5,9 +5,11 @@
  * This is the REUSABLE SEAM. Adding an action target to the workspace
  * credential surface is a one-entry addition here — the resolver, the store,
  * the Admin route and the health surface all iterate this registry and have
- * no per-target branches. That is what makes the remaining targets (Linear,
- * GitHub App, Salesforce) one-entry children of #3765 rather than four more
- * design passes.
+ * no per-target branches. That is what makes the remaining targets one-entry
+ * children of #3765 rather than four more design passes — GitHub (#5555) and
+ * Linear (#5554) tested the claim in parallel, neither knowing about the
+ * other, and each cost exactly one entry here plus its own
+ * credential-agnostic action module. Salesforce remains.
  *
  * Workspace tier, deliberately. This registry is the analogue of
  * `integrations/operator-credentials/platforms.ts` (`OperatorPlatformSpec`),
@@ -148,6 +150,50 @@ const JIRA_TARGET: ActionTargetSpec = {
 };
 
 /**
+ * Linear — the first target added on the seam rather than with it (#5554).
+ *
+ * Net-new, not a migration: no Linear action existed before this entry, so
+ * unlike Jira there is no pre-existing global whose NAME had to be preserved.
+ * `LINEAR_API_KEY` / `LINEAR_DEFAULT_TEAM_KEY` are chosen here and are read by
+ * the self-host env rung on those names.
+ *
+ * ⚠️ These are NOT the Linear *integration* install's credentials. The
+ * `createLinearIssue` tool (#2750) dispatches through a workspace's
+ * `catalog:linear` OAuth install or `catalog:linear-apikey` form install, both
+ * stored against a catalog row with their own lifecycle. This target is the
+ * ACTION path — approval-queued, audited, keyed `(workspace_id, "linear")` in
+ * `workspace_action_credentials`. ADR-0046 is explicit that the query plugin's
+ * bundle and the action's credentials do not share a row; the same split Jira
+ * already has, and the reason `linear-tool.ts` is untouched by this entry.
+ *
+ * Two fields, against Jira's four, because Linear's API needs less: the
+ * endpoint is a fixed GraphQL URL (no per-tenant base URL), and the key
+ * identifies the actor (no account email). `LINEAR_DEFAULT_TEAM_KEY` is
+ * optional for the same reason `JIRA_DEFAULT_PROJECT` is — the agent may name
+ * a team per call, and the stored default is consulted only when it doesn't.
+ */
+const LINEAR_TARGET: ActionTargetSpec = {
+  target: "linear",
+  label: "Linear",
+  fields: [
+    {
+      envVar: "LINEAR_API_KEY",
+      label: "API Key",
+      hint: "Linear personal API key (Linear → Settings → Security & access → Personal API keys). Issues are created as this user.",
+      secret: true,
+      required: true,
+    },
+    {
+      envVar: "LINEAR_DEFAULT_TEAM_KEY",
+      label: "Default Team Key",
+      hint: "Optional. Team key (e.g. ENG) used when the agent doesn't name one. Without it Linear picks the key owner's default team.",
+      secret: false,
+      required: false,
+    },
+  ],
+};
+
+/**
  * GitHub — a GitHub App the TENANT owns and installs on their own repos
  * (#5555). Net-new: unlike Jira this was never an env-reading action, so no
  * existing global is being preserved.
@@ -210,11 +256,18 @@ const GITHUB_TARGET: ActionTargetSpec = {
 /**
  * Every action target managed by the workspace credential surface.
  *
- * Pilot scope (#3766): Jira. GitHub joined in #5555. Linear and Salesforce are
- * one-entry additions here plus their action's port off `process.env` —
- * tracked as children of #3765.
+ * Pilot scope (#3766): Jira. GitHub (#5555) and Linear (#5554) then landed
+ * independently, each costing exactly what the seam promised — one entry here
+ * plus a credential-agnostic action module, with no branch added to the
+ * resolver, the store or the Admin route. Two targets arriving in parallel
+ * without either needing to know about the other is the strongest evidence the
+ * seam holds. Salesforce is the remaining child of #3765.
  */
-export const ACTION_TARGETS: readonly ActionTargetSpec[] = [JIRA_TARGET, GITHUB_TARGET];
+export const ACTION_TARGETS: readonly ActionTargetSpec[] = [
+  JIRA_TARGET,
+  GITHUB_TARGET,
+  LINEAR_TARGET,
+];
 
 /** Look up a managed action target by slug. `undefined` if unmanaged. */
 export function getActionTarget(target: string): ActionTargetSpec | undefined {

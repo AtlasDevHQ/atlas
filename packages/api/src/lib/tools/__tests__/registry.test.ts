@@ -9,6 +9,11 @@ const mockJiraTool = tool({
   inputSchema: z.object({ summary: z.string() }),
   execute: async ({ summary }) => summary,
 });
+const mockLinearTool = tool({
+  description: "Mock createLinearTicket tool",
+  inputSchema: z.object({ title: z.string() }),
+  execute: async ({ title }) => title,
+});
 const mockGitHubTool = tool({
   description: "Mock createGitHubIssue tool",
   inputSchema: z.object({ title: z.string() }),
@@ -29,6 +34,16 @@ void mock.module("@atlas/api/lib/tools/actions", () => ({
     reversible: true,
     defaultApproval: "manual",
     requiredCredentials: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"],
+  },
+  createLinearTicket: {
+    name: "createLinearTicket",
+    description: "### Create Linear Issue\nMock description",
+    tool: mockLinearTool,
+    actionType: "linear:create",
+    reversible: true,
+    defaultApproval: "manual",
+    // Empty, like the real action (#5554) — per-workspace credentials.
+    requiredCredentials: [],
   },
   createGitHubIssue: {
     name: "createGitHubIssue",
@@ -393,11 +408,18 @@ describe("buildRegistry", () => {
   it("with includeActions includes every action tool alongside core tools", async () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const names = Object.keys(registry.getAll()).sort();
+    // An EXACT set, deliberately: this is what catches a tool that joined the
+    // action block without being named anywhere a reader would look.
+    // `createLinearIssue` (core, install-backed, #2750) and
+    // `createLinearTicket` (action, approval-gated, #5554) both appear and are
+    // NOT a shadow pair — two names, two credential paths. See
+    // `lib/tools/actions/linear.ts`'s header.
     expect(names).toEqual([
       "createDashboard",
       "createGitHubIssue",
       "createJiraTicket",
       "createLinearIssue",
+      "createLinearTicket",
       "executeSQL",
       "explore",
       "searchAtlas",
@@ -485,7 +507,12 @@ describe("buildRegistry", () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const actions = registry.getActions();
     const actionTypes = actions.map((a) => a.actionType).sort();
-    expect(actionTypes).toEqual(["email:send", "github:create_issue", "jira:create"]);
+    expect(actionTypes).toEqual([
+      "email:send",
+      "github:create_issue",
+      "jira:create",
+      "linear:create",
+    ]);
   });
 
   it("core-only registry has no actions", async () => {

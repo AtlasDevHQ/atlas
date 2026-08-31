@@ -1415,7 +1415,10 @@ chat.openapi(chatRoute, async (c) => {
                 // keeps tracking the live default at prompt assembly: the
                 // workspace default #4303 when set, else the surface default).
                 answerStyle: effectiveAnswerStyle ?? null,
-                orgId: authResult.user?.activeOrganizationId,
+                // The callee's `orgId` is `?: string | null` and its SQL builder
+                // collapses null and absent identically, so `?? null` is exact
+                // here rather than a widening (#5522).
+                orgId: authResult.user?.activeOrganizationId ?? null,
               });
               if (created) {
                 conversationId = created.id;

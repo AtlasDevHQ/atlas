@@ -46,6 +46,9 @@ import { CHART_TYPES } from "@useatlas/types";
 import {
   dashboardParametersSchema,
   dashboardCreateCardInputSchema,
+  toDashboardCardAnnotations,
+  toDashboardChartConfig,
+  toDashboardKpiConfig,
   type DashboardCreateChartCardInputWire,
 } from "@useatlas/schemas";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
@@ -409,7 +412,11 @@ The tool EXECUTES each chart card once as it builds the dashboard and returns \`
         // AND that those params are declared as `date` — otherwise the
         // prior-period query is a no-op or can't be shifted, and the promised
         // delta silently vanishes.
-        const autoErr = validateAutoComparison(card.sql, card.chartConfig.kpi, parameters);
+        const autoErr = validateAutoComparison(
+          card.sql,
+          card.chartConfig.kpi ? toDashboardKpiConfig(card.chartConfig.kpi) : null,
+          parameters,
+        );
         if (autoErr) {
           placeholderErrors.push({ cardIndex: idx, cardTitle: card.title, error: autoErr });
         }
@@ -488,10 +495,10 @@ The tool EXECUTES each chart card once as it builds the dashboard and returns \`
             position,
             title: card.title,
             sql: card.sql,
-            chartConfig: card.chartConfig,
+            chartConfig: toDashboardChartConfig(card.chartConfig),
             content: null,
             // #3209 — carry dated event markers through to the draft snapshot.
-            annotations: card.annotations ?? [],
+            annotations: toDashboardCardAnnotations(card.annotations ?? []),
             connectionGroupId: conversationGroupId,
             layout: card.layout ?? null,
           };

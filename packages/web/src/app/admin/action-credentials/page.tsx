@@ -25,6 +25,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -382,30 +383,55 @@ function CredentialField({
         </Badge>
       </div>
 
-      <div className="relative">
-        <Input
+      {field.multiline ? (
+        /*
+          A multiline field (a PEM private key — targets.ts pins the attribute
+          secret-only) renders a textarea: forcing 1,700 characters of key
+          through `<input type=password>` is the paste-mangling hazard the
+          attribute exists to prevent (#5555). It is NOT masked, and that is a
+          decision rather than an omission: HTML has no masked textarea, and a
+          CSS `-webkit-text-security` mask renders plain text on Firefox — a
+          mask that sometimes lies is worse than none. The write-only contract
+          is the real protection: the server never echoes a stored value, so
+          the only bytes ever visible here are ones this admin just pasted
+          from their own clipboard.
+        */
+        <Textarea
           id={inputId}
-          type={field.secret && !show ? "password" : "text"}
-          className={cn("font-mono text-sm", field.secret && "pr-10")}
+          className="min-h-28 font-mono text-xs"
           placeholder={isCleared ? "Will be removed on save" : fieldPlaceholder(field)}
           value={isCleared ? "" : value}
           disabled={disabled || isCleared}
           autoComplete="off"
+          spellCheck={false}
           onChange={(e) => onDraftChange(setValue(draft, field.envVar, e.target.value))}
         />
-        {field.secret && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
-            aria-label={show ? `Hide ${field.label}` : `Show ${field.label}`}
-            onClick={() => setShow((prev) => !prev)}
-          >
-            {show ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-          </Button>
-        )}
-      </div>
+      ) : (
+        <div className="relative">
+          <Input
+            id={inputId}
+            type={field.secret && !show ? "password" : "text"}
+            className={cn("font-mono text-sm", field.secret && "pr-10")}
+            placeholder={isCleared ? "Will be removed on save" : fieldPlaceholder(field)}
+            value={isCleared ? "" : value}
+            disabled={disabled || isCleared}
+            autoComplete="off"
+            onChange={(e) => onDraftChange(setValue(draft, field.envVar, e.target.value))}
+          />
+          {field.secret && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
+              aria-label={show ? `Hide ${field.label}` : `Show ${field.label}`}
+              onClick={() => setShow((prev) => !prev)}
+            >
+              {show ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+            </Button>
+          )}
+        </div>
+      )}
 
       <p className="text-xs text-muted-foreground">
         {field.hint} Stored as <code className="font-mono">{field.envVar}</code>.

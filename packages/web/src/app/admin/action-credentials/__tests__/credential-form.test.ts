@@ -33,6 +33,7 @@ function field(over: Partial<FieldStatus> & { envVar: string }): FieldStatus {
     hint: "",
     secret: false,
     required: false,
+    multiline: false,
     present: false,
     source: "unset",
     ...over,
@@ -326,6 +327,21 @@ describe("ActionCredentialsResponseSchema", () => {
     });
 
     expect(parsed.targets[0]!.target).toBe("some-future-target");
+  });
+
+  test("carries multiline through — the attribute the form branches on for textareas", () => {
+    // #5561 added `multiline` to the API's field spec (the GitHub App PEM
+    // key) and this schema initially stripped it as an unknown key, leaving
+    // the PEM to render as a single-line input. Mirroring the route means
+    // mirroring ALL of it.
+    const parsed = ActionCredentialsResponseSchema.parse({
+      deployMode: "saas",
+      targets: [
+        { ...TARGET, fields: [field({ envVar: "X", secret: true, multiline: true })] },
+      ],
+    });
+
+    expect(parsed.targets[0]!.fields[0]!.multiline).toBe(true);
   });
 
   test("rejects an unknown field source rather than rendering a blank chip", () => {

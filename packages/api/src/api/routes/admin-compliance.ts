@@ -149,9 +149,11 @@ adminCompliance.openapi(updateRoute, async (c) => {
 
     const updated = yield* masking.updatePIIClassification(orgId!, id, {
       ...(body.category !== undefined ? { category: body.category } : {}),
-      maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
-      dismissed: body.dismissed,
-      reviewed: body.reviewed,
+      ...(body.maskingStrategy !== undefined
+        ? { maskingStrategy: body.maskingStrategy as MaskingStrategy }
+        : {}),
+      ...(body.dismissed !== undefined ? { dismissed: body.dismissed } : {}),
+      ...(body.reviewed !== undefined ? { reviewed: body.reviewed } : {}),
     });
     masking.invalidateClassificationCache(orgId!);
     // Metadata mirrors only the request-body fields that were actually set —

@@ -228,7 +228,10 @@ export const getRoleByName = (orgId: string, name: string): Effect.Effect<Custom
  */
 export const createRole = (
   orgId: string,
-  input: { name: string; description?: string; permissions: string[] },
+  // Loose-optional, matching `CreateRoleInput` in `lib/effect/services.ts`:
+  // this is a REST input contract fed by a Zod body, and `description` is read
+  // through an `!== undefined` guard below (#5522).
+  input: { name: string; description?: string | undefined; permissions: string[] },
 ): Effect.Effect<CustomRole, RoleError | EnterpriseError | Error> =>
   eeWrite("roles", "custom role management", Effect.gen(function* () {
     // Validate name
@@ -281,7 +284,8 @@ export const createRole = (
 export const updateRole = (
   orgId: string,
   roleId: string,
-  input: { description?: string; permissions?: string[] },
+  // Loose-optional, matching `UpdateRoleInput` — see `createRole` above.
+  input: { description?: string | undefined; permissions?: string[] | undefined },
 ): Effect.Effect<CustomRole, RoleError | EnterpriseError | Error> =>
   eeWrite("roles", "custom role management", Effect.gen(function* () {
     // Fetch existing

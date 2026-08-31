@@ -97,6 +97,7 @@
  * workspace-wide disclosure on a router whose every other read is reader-scoped.
  */
 
+import type { WithLooseOptionals } from "@useatlas/schemas";
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -1155,7 +1156,12 @@ adminBrainFacts.openapi(tensionForecastRoute, async (c) => {
       // so this is the schema's output type and never `undefined`.
       // `predicateSurface` is what stays optional: present asks the
       // counterfactual, absent asks about the workspace as it stands.
-      const body: BrainFactTensionForecastRequest = c.req.valid("json");
+      // `WithLooseOptionals` per the stage-1 precedent: Zod's `.optional()`
+      // infers `predicateSurface?: string | undefined`, which under
+      // `exactOptionalPropertyTypes` is no longer the exact optional the
+      // request type declares. Required fields stay exact, so this still
+      // catches a rename or a wrong type (#5522).
+      const body: WithLooseOptionals<BrainFactTensionForecastRequest> = c.req.valid("json");
       const surface = body.predicateSurface;
 
       const outcome = yield* Effect.tryPromise({

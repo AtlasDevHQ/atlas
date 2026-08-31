@@ -1969,10 +1969,13 @@ export interface BackupsManagerShape {
   /** False when EE backups aren't loaded — `platform-backups.ts` returns 404 `not_available` for config + history reads and run-now writes. */
   readonly available: boolean;
   readonly getBackupConfig: () => Effect.Effect<BackupConfigShape, Error>;
+  // Loose-optional: a REST input contract fed by a Zod-validated PATCH body,
+  // whose implementation reads each field through an `!== undefined` guard
+  // before adding its SET clause (#5522).
   readonly updateBackupConfig: (config: {
-    schedule?: string;
-    retentionDays?: number;
-    storagePath?: string;
+    schedule?: string | undefined;
+    retentionDays?: number | undefined;
+    storagePath?: string | undefined;
   }) => Effect.Effect<void, Error>;
   readonly createBackup: () => Effect.Effect<CreateBackupResult, Error>;
   readonly listBackups: (limit?: number) => Effect.Effect<BackupRowShape[], Error>;

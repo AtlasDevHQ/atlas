@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import {
   handleAction,
+  defineActionExecutor,
   buildActionRequest,
   getAction,
   _resetActionStore,
@@ -65,9 +66,12 @@ async function seedPending(actionType: string, requestedBy: string): Promise<str
     payload: {},
     reversible: false,
   });
+  // Registered by TYPE, as an action module does at load (#5570) — the seed's
+  // own process is irrelevant to whether a later approval can execute it.
+  defineActionExecutor(actionType, async () => "done");
   await withRequestContext(
     { requestId: "req-seed", user: { id: requestedBy, label: `${requestedBy}@test.com`, mode: "simple-key" } },
-    () => handleAction(req, async () => "done"),
+    () => handleAction(req),
   );
   return req.id;
 }

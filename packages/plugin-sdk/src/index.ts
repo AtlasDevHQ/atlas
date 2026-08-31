@@ -57,6 +57,7 @@ export type {
   AtlasContextPlugin,
   AtlasInteractionPlugin,
   PluginAction,
+  PluginActionExecutionContext,
   AtlasActionPlugin,
   PluginExecResult,
   PluginExploreBackend,

@@ -61,6 +61,12 @@ type ApproveOutcome =
   | { kind: "conflict" }
   | { kind: "approved"; entry: ActionLogEntry }
   | { kind: "approved_not_executed"; entry: ActionLogEntry };
+type RedispatchOutcome =
+  | { kind: "not_found" }
+  | { kind: "forbidden"; reason: "role" | "self_approval" }
+  | { kind: "conflict" }
+  | { kind: "unregistered_type"; entry: ActionLogEntry }
+  | { kind: "redispatched"; entry: ActionLogEntry };
 type DenyOutcome =
   | Exclude<ApproveOutcome, { kind: "approved" } | { kind: "approved_not_executed" }>
   | { kind: "denied"; entry: ActionLogEntry };
@@ -75,17 +81,53 @@ const mockGetActionConfig = mock(
     approval: "manual",
   }),
 );
+const mockRedispatchActionAsUser = mock((): Promise<RedispatchOutcome> =>
+  Promise.resolve({ kind: "conflict" }),
+);
 const mockRollbackAction = mock((): Promise<ActionLogEntry | null> =>
   Promise.resolve(null),
 );
 
+// Spread the REAL handler and override only the verbs this suite scripts.
+//
+// ⚠️ Required, not tidiness (`.claude/rules/testing.md`: mock ALL exports).
+// `routes/actions.ts` imports the action barrel for its registration side
+// effect (#5570), and that barrel does `export { buildActionRequest, ... }
+// from "./handler"` — so a factory listing only the seven verbs makes every
+// other re-export a missing binding and the whole router fails to load with
+// `SyntaxError: Export named 'buildActionRequest' not found`. Spreading keeps
+// the surface complete as the module grows.
+const realHandler = await import("@atlas/api/lib/tools/actions/handler");
+
 void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
+  ...realHandler,
   listPendingActions: mockListPendingActions,
   getAction: mockGetAction,
   approveActionAsUser: mockApproveActionAsUser,
   denyActionAsUser: mockDenyActionAsUser,
+  redispatchActionAsUser: mockRedispatchActionAsUser,
   rollbackAction: mockRollbackAction,
   getActionConfig: mockGetActionConfig,
+}));
+
+// --- Admin-action audit mock ---
+//
+// The BARREL, not `lib/audit/admin`: the route imports it that way, and these
+// tests set DATABASE_URL to satisfy `hasInternalDB()`, so a real
+// `logAdminActionAwait` would try to INSERT against a database that is not
+// there. `admin-brain-triage.test.ts` mocks the same seam for the same reason.
+const mockLogAdminActionAwait = mock((): Promise<void> => Promise.resolve());
+
+// Spread the real barrel rather than listing two keys: `mock.module` REPLACES
+// the module, and the admin app reaches this barrel for `logAdminAction`,
+// `ADMIN_ACTIONS` and more. A two-key factory made every one of those a
+// missing export — which is what the "mock ALL exports" rule in
+// `.claude/rules/testing.md` is about.
+const realAudit = await import("@atlas/api/lib/audit");
+
+void mock.module("@atlas/api/lib/audit", () => ({
+  ...realAudit,
+  logAdminActionAwait: mockLogAdminActionAwait,
 }));
 
 // --- Bulk module mocks ---
@@ -254,6 +296,10 @@ describe("actions routes", () => {
     mockDenyActionAsUser.mockResolvedValue({ kind: "conflict" });
     mockGetActionConfig.mockReset();
     mockGetActionConfig.mockReturnValue({ approval: "manual" });
+    mockRedispatchActionAsUser.mockReset();
+    mockRedispatchActionAsUser.mockResolvedValue({ kind: "conflict" });
+    mockLogAdminActionAwait.mockReset();
+    mockLogAdminActionAwait.mockResolvedValue(undefined);
     mockRollbackAction.mockReset();
     mockRollbackAction.mockResolvedValue(null);
     mockBulkApproveActions.mockReset();
@@ -794,6 +840,196 @@ describe("actions routes", () => {
   // -------------------------------------------------------------------------
   // POST /api/v1/actions/:id/rollback
   // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // POST /:id/redispatch (#5570)
+  // -------------------------------------------------------------------------
+
+  describe("POST /api/v1/actions/:id/redispatch", () => {
+    it("returns 200 with the executed entry", async () => {
+      const executed = makeAction({ status: "executed", approved_by: "u2" });
+      mockRedispatchActionAsUser.mockResolvedValueOnce({ kind: "redispatched", entry: executed });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/redispatch`, { method: "POST" }),
+      );
+
+      expect(response.status).toBe(200);
+      expect((await response.json() as Record<string, unknown>).status).toBe("executed");
+    });
+
+    it("passes the caller and their active workspace to the verb", async () => {
+      mockRedispatchActionAsUser.mockResolvedValueOnce({
+        kind: "redispatched",
+        entry: makeAction({ status: "executed" }),
+      });
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/redispatch`, { method: "POST" }),
+      );
+
+      const call = mockRedispatchActionAsUser.mock.calls[0] as unknown as [
+        string,
+        { user?: { id?: string }; orgId?: string | null },
+      ];
+      expect(call[0]).toBe(VALID_ID);
+      expect(call[1].user?.id).toBe("u1");
+      expect(call[1].orgId).toBe("org-u1");
+    });
+
+    it("⭐ audits the re-dispatch with the ACTION's workspace, not the caller's", async () => {
+      // The row's `org_id` is where the side effect landed (ADR-0046) and the
+      // caller's active org is where the decision was taken. Recording the
+      // former is the whole reason this audit row exists — the action log's
+      // own `executed` line names the ORIGINAL approver, so nothing else says
+      // who set it in motion, or against whom.
+      const executed = makeAction({ status: "executed", approved_by: "u2", org_id: "org-requester" });
+      mockRedispatchActionAsUser.mockResolvedValueOnce({ kind: "redispatched", entry: executed });
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/redispatch`, { method: "POST" }),
+      );
+
+      expect(mockLogAdminActionAwait).toHaveBeenCalledTimes(1);
+      const entry = (mockLogAdminActionAwait.mock.calls[0] as unknown as [
+        { actionType: string; targetId: string; metadata: Record<string, unknown>; status?: string },
+      ])[0];
+      expect(entry.actionType).toBe("approval.redispatch");
+      expect(entry.targetId).toBe(VALID_ID);
+      expect(entry.metadata.actionOrgId).toBe("org-requester");
+      expect(entry.metadata.originalApprover).toBe("u2");
+      expect(entry.metadata.resultStatus).toBe("executed");
+    });
+
+    it("audits a dispatch that RAN AND FAILED, marked as a failure", async () => {
+      // Still a re-dispatch that happened. Recording it is what stops the next
+      // admin repeating it, and `status: failure` is what makes it findable.
+      const failed = makeAction({ status: "failed", error: "target rejected it" });
+      mockRedispatchActionAsUser.mockResolvedValueOnce({ kind: "redispatched", entry: failed });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/redispatch`, { method: "POST" }),
+      );
+
+      expect(response.status).toBe(200);
+      const entry = (mockLogAdminActionAwait.mock.calls[0] as unknown as [
+        { status?: string; metadata: Record<string, unknown> },
+      ])[0];
+      expect(entry.status).toBe("failure");
+      expect(entry.metadata.resultStatus).toBe("failed");
+    });
+
+    it("⭐ returns 500 telling the caller NOT to retry when the audit write fails", async () => {
+      // The side effect already happened and a retry is refused as a conflict,
+      // so the one thing this response must not imply is "it didn't run".
+      mockRedispatchActionAsUser.mockResolvedValueOnce({
+        kind: "redispatched",
+        entry: makeAction({ status: "executed" }),
+      });
+      mockLogAdminActionAwait.mockRejectedValueOnce(new Error("audit table unreachable"));
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/redispatch`, { method: "POST" }),
+      );
+
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("audit_write_failed");
+      expect(String(body.message)).toContain("Do NOT retry");
+      expect(body.requestId).toBeDefined();
+    });
+
+    it("⭐ returns 503 — not 409 — when this instance cannot execute the type", async () => {
+      // Nothing is wrong with the request and the row is untouched; this
+      // DEPLOY cannot run it. A 409 would tell the caller the action had moved
+      // on, which is the opposite of true.
+      mockRedispatchActionAsUser.mockResolvedValueOnce({
+        kind: "unregistered_type",
+        entry: makeAction({ status: "approved", action_type: "webhook:post" }),
+      });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/redispatch`, { method: "POST" }),
+      );
+
+      expect(response.status).toBe(503);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("action_type_unavailable");
+      expect(String(body.message)).toContain("webhook:post");
+      // Nothing ran, so nothing to audit.
+      expect(mockLogAdminActionAwait).not.toHaveBeenCalled();
+    });
+
+    it("returns 409 when the action is not awaiting dispatch, and does NOT say \"already resolved\"", async () => {
+      // A re-dispatch conflict is not the approve/deny one: the row may be
+      // pending (never resolved at all), or claimed by a concurrent
+      // dispatcher. Reusing "already resolved" would send an admin looking for
+      // a resolution that has not happened.
+      mockRedispatchActionAsUser.mockResolvedValueOnce({ kind: "conflict" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/redispatch`, { method: "POST" }),
+      );
+
+      expect(response.status).toBe(409);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(String(body.message)).toContain("not awaiting dispatch");
+      expect(mockLogAdminActionAwait).not.toHaveBeenCalled();
+    });
+
+    it("returns 403 when the caller does not clear the approve bar", async () => {
+      mockRedispatchActionAsUser.mockResolvedValueOnce({ kind: "forbidden", reason: "role" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/redispatch`, { method: "POST" }),
+      );
+
+      expect(response.status).toBe(403);
+    });
+
+    it("returns 403 when the requester tries to re-dispatch their own admin-only action", async () => {
+      mockRedispatchActionAsUser.mockResolvedValueOnce({ kind: "forbidden", reason: "self_approval" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/redispatch`, { method: "POST" }),
+      );
+
+      expect(response.status).toBe(403);
+      // The verb in the message is this route's, not the approve route's.
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(String(body.message)).toContain("re-dispatched");
+    });
+
+    it("returns 404 for an unknown action", async () => {
+      mockRedispatchActionAsUser.mockResolvedValueOnce({ kind: "not_found" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/redispatch`, { method: "POST" }),
+      );
+
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 400 for a malformed id, without reaching the verb", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/not-a-uuid/redispatch", { method: "POST" }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(mockRedispatchActionAsUser).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 when no internal database is configured", async () => {
+      delete process.env.DATABASE_URL;
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/actions/${VALID_ID}/redispatch`, { method: "POST" }),
+      );
+
+      expect(response.status).toBe(404);
+      expect(mockRedispatchActionAsUser).not.toHaveBeenCalled();
+    });
+  });
 
   describe("POST /api/v1/actions/:id/rollback", () => {
     it("returns 200 on successful rollback", async () => {

@@ -9,6 +9,19 @@ import { createLogger } from "@atlas/api/lib/logger";
 import type { PluginRegistry, PluginLike } from "./registry";
 import type { ConnectionRegistry } from "@atlas/api/lib/db/connection";
 import type { ToolRegistry, AtlasTool, AtlasAction } from "@atlas/api/lib/tools/registry";
+// Statically imported, unlike the tool registry below it: that one is a
+// DEFAULT for an optional DI parameter and only needed when the caller omits
+// it, while the action-type registry is used on every wired action. Nothing in
+// the handler's graph reaches back here, so there is no cycle to defer around.
+import {
+  defineActionExecutor,
+  getActionExecutorForType,
+} from "@atlas/api/lib/tools/actions/handler";
+// The dependency-free manifest, deliberately — see its header. Importing the
+// action modules here to ask which types they own would defeat the point of
+// the check, and would drag them into the boot graph ahead of the router that
+// is supposed to load them.
+import { isBuiltinActionType } from "@atlas/api/lib/tools/actions/manifest";
 
 const log = createLogger("plugins:wiring");
 
@@ -221,8 +234,76 @@ export async function wireDatasourcePlugins(
 }
 
 /**
+ * Register one plugin action's executor, refusing the collisions that would
+ * make it ambiguous whose code runs for an approved row (#5570).
+ *
+ * Two refusals, both at error level and both leaving the incumbent in place:
+ *
+ * **A built-in's type.** `plugins/jira` already declares `jira:create` and
+ * `plugins/email` declares `email:send` — the same types the built-in modules
+ * own. An executor decides which system a payload is sent to and which
+ * workspace's credentials open it, so letting an installed plugin take
+ * `email:send` would hand it every approved email's recipients, subject and
+ * body for the requester's workspace. The check reads the static manifest, not
+ * the live registry, so the answer does not depend on whether wiring happened
+ * to run before or after the action modules loaded.
+ *
+ * **Another plugin's type.** First wiring wins. Arbitrary, but deterministic
+ * and stated, which "last wins" was not.
+ *
+ * Overriding a built-in is a coherent thing to want and this is not a claim
+ * that it should never exist — it needs its own design (an explicit operator
+ * opt-in, at minimum), and shipping it as a silent side effect of installing a
+ * plugin is not that design.
+ */
+function registerPluginExecutor(
+  pluginId: string,
+  action: AtlasAction,
+  executor: NonNullable<AtlasAction["executor"]>,
+): void {
+  if (isBuiltinActionType(action.actionType)) {
+    log.error(
+      { pluginId, action: action.name, actionType: action.actionType },
+      "Action plugin executor REFUSED — a built-in action module owns this action type. The built-in continues to execute approved rows of this type; the plugin's tool is still wired. Give the plugin action its own action type.",
+    );
+    return;
+  }
+
+  const incumbent = getActionExecutorForType(action.actionType);
+  if (incumbent) {
+    log.error(
+      { pluginId, action: action.name, actionType: action.actionType },
+      "Action plugin executor REFUSED — another plugin already registered an executor for this action type. The first registration continues to execute approved rows of this type.",
+    );
+    return;
+  }
+
+  defineActionExecutor(action.actionType, executor);
+  log.info(
+    { pluginId, action: action.name, actionType: action.actionType },
+    "Action plugin executor registered",
+  );
+}
+
+/**
  * For each healthy action plugin, register each PluginAction as an AtlasTool
- * in the ToolRegistry.
+ * in the ToolRegistry — and, when it declares one, its executor in the
+ * action-type registry.
+ *
+ * ## Why the executor is registered HERE (#5570)
+ *
+ * The five built-in action modules call `defineActionExecutor` themselves, at
+ * module load, beside the `AtlasAction` they belong to. A plugin cannot: it is
+ * loaded dynamically, it must not import `@atlas/api`, and there is no moment
+ * in its own lifecycle that corresponds to "the host's action registry is
+ * ready". Wiring is that moment, and it is already the point where the
+ * plugin's actions become visible to the rest of Atlas.
+ *
+ * The important property is that this is the SAME registry, not a parallel
+ * one. An approved `webhook:post` row is executable by any instance that
+ * wired the plugin, on exactly the terms a built-in `jira:create` row is —
+ * so the restart gap this issue closes closes for plugin actions too, rather
+ * than leaving them as the one path that still strands.
  */
 export async function wireActionPlugins(
   pluginRegistry: PluginRegistry,
@@ -241,6 +322,28 @@ export async function wireActionPlugins(
     for (const action of plugin.actions) {
       try {
         registry.register(action);
+
+        if (action.executor) {
+          registerPluginExecutor(plugin.id, action, action.executor);
+        } else if (action.defaultApproval !== "auto") {
+          // An action that PENDS and declares no executor is a dead end: the
+          // approval will report `approved_not_executed` and re-dispatch will
+          // answer 503, forever. `warn`, not `debug` — debug is below the
+          // default level on every deploy, so the author would get no signal
+          // at all until an admin hit the wall.
+          log.warn(
+            { pluginId: plugin.id, action: action.name, actionType: action.actionType, defaultApproval: action.defaultApproval },
+            "Action plugin declares no executor but its action pends for approval — approvals for this action type can never execute or be re-dispatched. Declare `executor` on the action (see the plugin authoring guide).",
+          );
+        } else {
+          // Genuinely fine: an auto-approval action executes inline in its own
+          // tool and never reaches the deferred path.
+          log.debug(
+            { pluginId: plugin.id, action: action.name, actionType: action.actionType },
+            "Action plugin declares no executor — auto-approval action, executes inline",
+          );
+        }
+
         wired.push(action.name);
         log.info({ pluginId: plugin.id, action: action.name }, "Action plugin tool wired");
       } catch (err) {

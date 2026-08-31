@@ -49,7 +49,12 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
-import { buildActionRequest, handleAction } from "./handler";
+import {
+  buildActionRequest,
+  handleAction,
+  defineActionExecutor,
+  type ActionExecutor,
+} from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hostForLog } from "@atlas/api/lib/openapi/egress-guard";
 import { pinVendorHost } from "@atlas/api/lib/vendor-http";
@@ -420,10 +425,44 @@ Use createSalesforceRecord to file a record in Salesforce from the analysis find
 - Include the fields the object requires, or Salesforce will reject the record
 - The record will require approval before it is created`;
 
+/**
+ * The one place this module's action type is spelled — the `AtlasAction`
+ * below, the request it builds, and the executor registration all read it,
+ * so the registry key provably matches the rows this module writes (#5570).
+ */
+const SALESFORCE_CREATE_ACTION_TYPE = "salesforce:create";
+
+/**
+ * How `salesforce:create` executes — a pure function of the persisted row's payload and
+ * execution context, registered by TYPE at module load so ANY instance can run
+ * an approved `salesforce:create` row, including one it never took the request for.
+ */
+const executeSalesforceCreateAction: ActionExecutor = async (payload, ctx) => {
+  // Resolved from the ACTION's workspace, not the approver's — a
+  // manual-approval action executes inside the approver's request.
+  const credentials = await resolveCredentialsFor(SALESFORCE_TARGET, ctx);
+  const result = await executeSalesforceCreate(
+    payload as unknown as SalesforceCreateParams,
+    credentials,
+  );
+  return {
+    ...result,
+    // Best-effort rollback metadata, exactly as `createJiraTicket`
+    // records it: whether a delete succeeds depends on the org's sharing
+    // rules and the run-as user's permissions, so it is NOT guaranteed.
+    rollbackInfo: {
+      method: "delete",
+      params: { object: result.object, recordId: result.id },
+    },
+  };
+};
+
+defineActionExecutor(SALESFORCE_CREATE_ACTION_TYPE, executeSalesforceCreateAction);
+
 export const createSalesforceRecord: AtlasAction = {
   name: "createSalesforceRecord",
   description: CREATE_SALESFORCE_DESCRIPTION,
-  actionType: "salesforce:create",
+  actionType: SALESFORCE_CREATE_ACTION_TYPE,
   reversible: true,
   defaultApproval: "manual",
   // Vestigial (ADR-0046): credentials are per-workspace, so the global-env
@@ -452,7 +491,7 @@ export const createSalesforceRecord: AtlasAction = {
       log.info({ object, fieldCount: Object.keys(fields).length }, "createSalesforceRecord invoked");
 
       const request = buildActionRequest({
-        actionType: "salesforce:create",
+        actionType: SALESFORCE_CREATE_ACTION_TYPE,
         // No env read here: the default object lives in the workspace's
         // credential row and is resolved at EXECUTION time, so a change
         // between request and approval is picked up. When the agent names no
@@ -463,25 +502,7 @@ export const createSalesforceRecord: AtlasAction = {
         reversible: true,
       });
 
-      return handleAction(request, async (payload, ctx) => {
-        // Resolved from the ACTION's workspace, not the approver's — a
-        // manual-approval action executes inside the approver's request.
-        const credentials = await resolveCredentialsFor(SALESFORCE_TARGET, ctx);
-        const result = await executeSalesforceCreate(
-          payload as unknown as SalesforceCreateParams,
-          credentials,
-        );
-        return {
-          ...result,
-          // Best-effort rollback metadata, exactly as `createJiraTicket`
-          // records it: whether a delete succeeds depends on the org's sharing
-          // rules and the run-as user's permissions, so it is NOT guaranteed.
-          rollbackInfo: {
-            method: "delete",
-            params: { object: result.object, recordId: result.id },
-          },
-        };
-      });
+      return handleAction(request);
     },
   }),
 };

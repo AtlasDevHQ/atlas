@@ -4,16 +4,29 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 // Mock handler module so we don't hit real DB / auth
 // ---------------------------------------------------------------------------
 
-let lastHandleActionCall: { request: unknown; executeFn: unknown } | null = null;
+let lastHandleActionCall: { request: unknown } | null = null;
+/**
+ * What the module registered at load, by action type (#5570).
+ *
+ * `handleAction` no longer takes an executor — the module declares one for its
+ * TYPE when it is imported, so this map is where that call lands under the
+ * mock. Capturing it is not optional bookkeeping: the top-level
+ * `defineActionExecutor` call runs at import, so a mock without this key makes
+ * the module under test throw before a single test runs.
+ */
+const registeredExecutors = new Map<string, unknown>();
 
 void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   buildActionRequest: (params: Record<string, unknown>) => ({
     id: "test-action-id",
     ...params,
   }),
-  handleAction: async (request: unknown, executeFn: unknown) => {
-    lastHandleActionCall = { request, executeFn };
+  handleAction: async (request: unknown) => {
+    lastHandleActionCall = { request };
     return { status: "pending", actionId: "test-action-id", summary: "test" };
+  },
+  defineActionExecutor: (actionType: string, executor: unknown) => {
+    registeredExecutors.set(actionType, executor);
   },
 }));
 
@@ -310,5 +323,17 @@ describe("sendEmailReport — schema validation", () => {
         body: "<p>Hi</p>",
       });
     }).toThrow();
+  });
+});
+
+describe("executor registration (#5570)", () => {
+  it("registers an executor under its own actionType at module load", () => {
+    // The property that makes an approval durable: the key is the TYPE the
+    // `AtlasAction` declares and the rows carry, so any instance can execute
+    // an approved row by looking it up. Reading `sendEmailReport.actionType`
+    // rather than re-typing the literal is what keeps this a check on the
+    // module's agreement with itself.
+    expect(sendEmailReport.actionType).toBe("email:send");
+    expect(registeredExecutors.get(sendEmailReport.actionType)).toBeTypeOf("function");
   });
 });

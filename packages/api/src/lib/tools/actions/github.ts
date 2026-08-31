@@ -37,7 +37,12 @@ import { createPrivateKey } from "node:crypto";
 import { tool } from "ai";
 import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
-import { buildActionRequest, handleAction } from "./handler";
+import {
+  buildActionRequest,
+  handleAction,
+  defineActionExecutor,
+  type ActionExecutor,
+} from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getGitHubInstallationToken } from "@atlas/api/lib/github/installation-token";
 import { describeHttpFailure, withVendorDeadline } from "@atlas/api/lib/vendor-http";
@@ -268,10 +273,47 @@ Use createGitHubIssue to open a GitHub issue based on the analysis findings:
 - Optionally specify a repository as owner/repo, and labels
 - The issue will require approval before creation`;
 
+/**
+ * The one place this module's action type is spelled — the `AtlasAction`
+ * below, the request it builds, and the executor registration all read it,
+ * so the registry key provably matches the rows this module writes (#5570).
+ */
+const GITHUB_ISSUE_ACTION_TYPE = "github:create_issue";
+
+/**
+ * How `github:create_issue` executes — a pure function of the persisted row's payload and
+ * execution context, registered by TYPE at module load so ANY instance can run
+ * an approved `github:create_issue` row, including one it never took the request for.
+ */
+const executeGitHubIssueCreateAction: ActionExecutor = async (payload, ctx) => {
+  // Resolved from the ACTION's workspace, not the approver's — a
+  // manual-approval action executes inside the approver's request.
+  const credentials = await resolveCredentialsFor(GITHUB_TARGET, ctx);
+  const result = await executeGitHubIssueCreate(
+    payload as unknown as GitHubIssueCreateParams,
+    credentials,
+  );
+  return {
+    ...result,
+    // Recorded for a human, not dispatched: `registerRollbackMethod`
+    // handlers take only `params` and no ActionExecutionContext, so a
+    // handler here could not resolve the workspace's credentials to
+    // close the issue with. Same position `createJiraTicket` is in with
+    // its `transition` method — the metadata is what an operator needs
+    // to undo this by hand, and nothing auto-closes.
+    rollbackInfo: {
+      method: "github-close-issue",
+      params: { repo: result.repo, issueNumber: result.number },
+    },
+  };
+};
+
+defineActionExecutor(GITHUB_ISSUE_ACTION_TYPE, executeGitHubIssueCreateAction);
+
 export const createGitHubIssue: AtlasAction = {
   name: "createGitHubIssue",
   description: CREATE_GITHUB_ISSUE_DESCRIPTION,
-  actionType: "github:create_issue",
+  actionType: GITHUB_ISSUE_ACTION_TYPE,
   reversible: true,
   defaultApproval: "manual",
   // Vestigial (ADR-0046): credentials are per-workspace, so the global-env
@@ -304,7 +346,7 @@ export const createGitHubIssue: AtlasAction = {
       log.info({ title, repo }, "createGitHubIssue invoked");
 
       const request = buildActionRequest({
-        actionType: "github:create_issue",
+        actionType: GITHUB_ISSUE_ACTION_TYPE,
         // No env read here: the default repository lives in the workspace's
         // credential row and resolves at EXECUTION time, so a rotation between
         // request and approval is picked up. When the agent names no repo, the
@@ -315,28 +357,7 @@ export const createGitHubIssue: AtlasAction = {
         reversible: true,
       });
 
-      return handleAction(request, async (payload, ctx) => {
-        // Resolved from the ACTION's workspace, not the approver's — a
-        // manual-approval action executes inside the approver's request.
-        const credentials = await resolveCredentialsFor(GITHUB_TARGET, ctx);
-        const result = await executeGitHubIssueCreate(
-          payload as unknown as GitHubIssueCreateParams,
-          credentials,
-        );
-        return {
-          ...result,
-          // Recorded for a human, not dispatched: `registerRollbackMethod`
-          // handlers take only `params` and no ActionExecutionContext, so a
-          // handler here could not resolve the workspace's credentials to
-          // close the issue with. Same position `createJiraTicket` is in with
-          // its `transition` method — the metadata is what an operator needs
-          // to undo this by hand, and nothing auto-closes.
-          rollbackInfo: {
-            method: "github-close-issue",
-            params: { repo: result.repo, issueNumber: result.number },
-          },
-        };
-      });
+      return handleAction(request);
     },
   }),
 };

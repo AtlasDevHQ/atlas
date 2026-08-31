@@ -9,7 +9,12 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
-import { buildActionRequest, handleAction } from "./handler";
+import {
+  buildActionRequest,
+  handleAction,
+  defineActionExecutor,
+  type ActionExecutor,
+} from "./handler";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { checkRecipientsAllowed } from "@atlas/api/lib/email/recipient-gate";
 
@@ -65,10 +70,31 @@ Use sendEmailReport to email analysis results to stakeholders:
 - Format the body as HTML for rich formatting
 - Emails require admin approval before sending`;
 
+/**
+ * The one place this module's action type is spelled — the `AtlasAction`
+ * below, the request it builds, and the executor registration all read it,
+ * so the registry key provably matches the rows this module writes (#5570).
+ */
+const EMAIL_SEND_ACTION_TYPE = "email:send";
+
+/**
+ * How `email:send` executes — a pure function of the persisted row's payload and
+ * execution context, registered by TYPE at module load so ANY instance can run
+ * an approved `email:send` row, including one it never took the request for.
+ */
+const executeEmailSendAction: ActionExecutor = async (payload) => {
+  const result = await executeEmailSend(
+    payload as unknown as EmailSendParams,
+  );
+  return result;
+};
+
+defineActionExecutor(EMAIL_SEND_ACTION_TYPE, executeEmailSendAction);
+
 export const sendEmailReport: AtlasAction = {
   name: "sendEmailReport",
   description: SEND_EMAIL_DESCRIPTION,
-  actionType: "email:send",
+  actionType: EMAIL_SEND_ACTION_TYPE,
   reversible: false,
   defaultApproval: "admin-only",
   requiredCredentials: [],
@@ -116,19 +142,14 @@ export const sendEmailReport: AtlasAction = {
       }
 
       const request = buildActionRequest({
-        actionType: "email:send",
+        actionType: EMAIL_SEND_ACTION_TYPE,
         target: recipients.join(", "),
         summary: `Send email: "${subject}" to ${recipients.join(", ")}`,
         payload: { to: recipients, subject, body },
         reversible: false,
       });
 
-      return handleAction(request, async (payload) => {
-        const result = await executeEmailSend(
-          payload as unknown as EmailSendParams,
-        );
-        return result;
-      });
+      return handleAction(request);
     },
   }),
 };

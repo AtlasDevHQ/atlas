@@ -5,7 +5,8 @@
  * - handleAction: persist request → check approval mode → auto-execute or pend
  * - approveAction / denyAction: CAS via PostgreSQL WHERE status = 'pending' RETURNING *; in-memory path uses non-atomic check-then-update
  * - getAction / listPendingActions: read-only queries
- * - registerActionExecutor / getActionExecutor: deferred execution registry
+ * - defineActionExecutor / getActionExecutorForType: the action_type-keyed executor registry
+ * - redispatchActionAsUser: the admin verb that runs an approved-but-stranded row
  * - getActionConfig: resolve per-action config from atlas.config.ts / defaults
  */
 
@@ -74,18 +75,117 @@ export interface ActionExecutionContext {
   readonly workspaceId: string | null;
 }
 
-type ActionExecutor = (
+/**
+ * How ONE ACTION TYPE executes. Registered at module load (#5570), never per
+ * request — see {@link defineActionExecutor}.
+ */
+export type ActionExecutor = (
   payload: Record<string, unknown>,
   ctx: ActionExecutionContext,
 ) => Promise<unknown>;
+
+/**
+ * `action_type` → how that type executes.
+ *
+ * ⚠️ Keyed by TYPE, and that is the whole point (#5570). Until this change the
+ * key was the action ID and the value was a closure `handleAction` stashed at
+ * REQUEST time, which made the registry a per-process cache of in-flight
+ * requests: approve after a restart, or on any other instance, and the lookup
+ * missed. The row had already left `pending`, so nothing retried it — the
+ * approver got a 200 whose entry status quietly said nothing ran.
+ *
+ * Type-keyed entries are populated at MODULE LOAD, so every instance holds the
+ * same set and can execute any approved row by reconstructing the call from
+ * the row itself — see {@link bindExecutorToRow}. Nothing about an individual
+ * request is cached anywhere, so there is no per-process state left for a
+ * restart to lose.
+ *
+ * ⚠️ "At module load" is only a durability guarantee if something LOADS the
+ * modules. Nothing did, at first: `buildRegistry({ includeActions: true })`
+ * reaches them through a lazy import that runs inside a chat turn, so a fresh
+ * process taking an approve before serving one would have found this Map
+ * empty — the old bug, rebuilt out of load order. `api/routes/actions.ts`
+ * therefore imports the action barrel for its side effect, and
+ * `actions-executor-boot.test.ts` fails if that import goes. A plugin type is
+ * registered by `wireActionPlugins` instead, at wiring.
+ */
 const executorRegistry = new Map<string, ActionExecutor>();
 
-export function registerActionExecutor(actionId: string, fn: ActionExecutor): void {
-  executorRegistry.set(actionId, fn);
+/**
+ * Declare how an action type executes. Call this at MODULE LOAD, beside the
+ * `AtlasAction` it belongs to — never inside a request.
+ *
+ * The executor must be a pure function of `(payload, ctx)`: everything it
+ * needs comes from the persisted row, because that is all a re-dispatching
+ * instance has. In particular it must NOT close over the requesting user, the
+ * ambient request context, or a resolved credential — `ctx.workspaceId` is the
+ * ACTION's workspace (ADR-0046) and credential resolution happens inside the
+ * executor, at execution time.
+ *
+ * Last registration wins at THIS level — the Map is a Map. That is not a
+ * policy, and it must not be read as one: whether a plugin may take a type a
+ * built-in owns is decided one layer up, by `wireActionPlugins`, which refuses
+ * the collision and logs it at error level rather than letting an installed
+ * plugin quietly inherit every approved `email:send`. Keep new callers to the
+ * same discipline: check before you claim a type you do not own.
+ */
+export function defineActionExecutor(actionType: string, executor: ActionExecutor): void {
+  executorRegistry.set(actionType, executor);
 }
 
-export function getActionExecutor(actionId: string): ActionExecutor | undefined {
-  return executorRegistry.get(actionId);
+/** How `actionType` executes on THIS instance, or undefined if nothing registered it. */
+export function getActionExecutorForType(actionType: string): ActionExecutor | undefined {
+  return executorRegistry.get(actionType);
+}
+
+/** Does this instance know how to execute `actionType`? */
+export function isActionTypeExecutable(actionType: string): boolean {
+  return executorRegistry.has(actionType);
+}
+
+/**
+ * Thrown when an action's type has no executor on THIS instance.
+ *
+ * Only the auto path throws it: there the caller is waiting, so the honest
+ * answer is a failed action with a message naming the type. The deferred paths
+ * do not throw — they return a typed outcome instead
+ * (`approved_not_executed` / `unregistered_type`), because there the row must
+ * survive to be re-dispatched by an instance that has the type loaded.
+ */
+class UnregisteredActionTypeError extends Error {
+  constructor(readonly actionType: string) {
+    // ⚠️ In the auto path this message is persisted to `action_log.error` and
+    // returned to the AGENT, so it reaches a chat user. It therefore says what
+    // happened and stops: the remediation ("actions enabled on this deploy?",
+    // "is the plugin wired?") is deploy posture, and belongs in the log line
+    // at the throw site, not in an answer to someone who asked a question
+    // about their data.
+    super(
+      `This deployment cannot perform "${actionType}" actions right now. ` +
+        "Nothing was sent. Contact an administrator if you expected this to work.",
+    );
+    this.name = "UnregisteredActionTypeError";
+  }
+}
+
+/**
+ * Reconstruct one action's execution from its PERSISTED ROW — the factory half
+ * of the registry, and the single place `action_log.org_id` becomes
+ * `ActionExecutionContext.workspaceId`.
+ *
+ * ⚠️ That mapping has exactly one author on purpose (ADR-0046). The row's
+ * `org_id` is the REQUESTER's workspace, stamped at request time; the approver
+ * — or, now, the re-dispatcher — may be sitting in a different one. Every
+ * execution path (auto, approve, re-dispatch) binds through here, so none of
+ * them can reach for the ambient context instead.
+ *
+ * Returns `undefined` when no executor is registered for the row's type, which
+ * is the one residual case `approved_not_executed` still names.
+ */
+function bindExecutorToRow(entry: ActionLogEntry): (() => Promise<unknown>) | undefined {
+  const executor = executorRegistry.get(entry.action_type);
+  if (!executor) return undefined;
+  return () => executor(entry.payload, { workspaceId: entry.org_id ?? null });
 }
 
 // ---------------------------------------------------------------------------
@@ -298,10 +398,19 @@ export interface HandleActionOptions {
 
 /**
  * Main entry point: persist pending action → check approval mode → if auto: execute immediately.
+ *
+ * ⚠️ Takes NO executor (#5570). How `request.actionType` executes is declared
+ * once at module load via {@link defineActionExecutor}, and both the inline
+ * auto path below and every later approval resolve through the same
+ * {@link bindExecutorToRow}. The parameter used to exist, and it was the
+ * durability bug's other half: a caller could pass a closure here and forget
+ * to register the type, which worked in auto mode and silently stranded every
+ * manual-approval row. With no parameter, forgetting to register is a failure
+ * on the FIRST invocation, loudly, rather than at approval time on a row
+ * nothing will retry.
  */
 export async function handleAction(
   request: ActionRequest,
-  executeFn: ActionExecutor,
   opts?: HandleActionOptions,
 ): Promise<ActionToolResult> {
   const ctx = getRequestContext();
@@ -342,20 +451,25 @@ export async function handleAction(
     ...(userId !== undefined ? { userId } : {}),
   });
 
-  // Register executor for deferred approval (keyed by actionId so each request gets its own executor)
-  registerActionExecutor(request.id, executeFn);
-
   // Resolve approval mode
   const actionConfig = getActionConfig(request.actionType);
 
   if (actionConfig.approval === "auto") {
-    // Execute immediately
+    // Execute immediately — through the same row binding a later approval or
+    // re-dispatch would use, so the auto path cannot drift from them.
     const startMs = Date.now();
     try {
-      const result = await executeWithTimeout(
-        () => executeFn(request.payload, { workspaceId: orgId }),
-        actionConfig.timeout,
-      );
+      const invoke = bindExecutorToRow(entry);
+      if (!invoke) {
+        // The operator half of the story — the user-facing half is the error's
+        // own message, deliberately narrower. See the class.
+        log.error(
+          { actionId: request.id, actionType: request.actionType },
+          "Auto-approved action cannot execute — no executor is registered for its type on this instance. The action's module did not load: check that actions are enabled on this deploy, and that any plugin declaring this type is healthy and wired.",
+        );
+        throw new UnregisteredActionTypeError(request.actionType);
+      }
+      const result = await executeWithTimeout(invoke, actionConfig.timeout);
       const latencyMs = Date.now() - startMs;
 
       const rbInfo = extractRollbackInfo(result);
@@ -416,7 +530,19 @@ export async function handleAction(
     }
   }
 
-  // Manual or admin-only: pend for approval
+  // Manual or admin-only: pend for approval.
+  //
+  // Deliberately NOT gated on the type being registered here. A row for an
+  // unregistered type is the one case `approved_not_executed` still names, and
+  // it is recoverable: the module may load on another instance, or on this one
+  // after actions are re-enabled, and the admin re-dispatch verb then runs it.
+  // Refusing to persist would turn a recoverable pend into a lost request.
+  if (!isActionTypeExecutable(request.actionType)) {
+    log.warn(
+      { actionId: request.id, actionType: request.actionType },
+      "Action pended for a type no executor is registered for on this instance — approval will report approved_not_executed until a deploy that has the type loaded re-dispatches it",
+    );
+  }
   return { status: "pending", actionId: request.id, summary: request.summary };
 }
 
@@ -431,18 +557,16 @@ export async function handleAction(
 async function executeApprovedAction(
   actionId: string,
   entry: ActionLogEntry,
-  executeFn: ActionExecutor,
+  invoke: () => Promise<unknown>,
   approverId: string,
 ): Promise<ActionLogEntry> {
   const { timeout } = getActionConfig(entry.action_type);
   const startMs = Date.now();
   try {
-    const result = await executeWithTimeout(
-      // The action's OWN workspace (stamped at request time), not the
-      // approver's — see `ActionExecutionContext` (#3766).
-      () => executeFn(entry.payload, { workspaceId: entry.org_id ?? null }),
-      timeout,
-    );
+    // `invoke` came from `bindExecutorToRow`, which is where the action's OWN
+    // workspace (stamped at request time) — not the approver's — became the
+    // execution context. See `ActionExecutionContext` (#3766) and ADR-0046.
+    const result = await executeWithTimeout(invoke, timeout);
     const latencyMs = Date.now() - startMs;
     const rbInfo = extractRollbackInfo(result);
 
@@ -510,11 +634,8 @@ async function executeApprovedAction(
 export async function approveAction(
   actionId: string,
   approverId: string,
-  executeFn?: ActionExecutor,
   orgId?: string | null,
 ): Promise<ActionLogEntry | null> {
-  const resolveFn = executeFn ?? getActionExecutor(actionId);
-
   // CAS in DB (atomic via WHERE status = 'pending' RETURNING *)
   if (hasInternalDB()) {
     const scope = orgScopeClause(3, orgId);
@@ -537,11 +658,15 @@ export async function approveAction(
       approverId,
     });
 
-    if (resolveFn) {
-      return executeApprovedAction(actionId, entry, resolveFn, approverId);
+    const invoke = bindExecutorToRow(entry);
+    if (invoke) {
+      return executeApprovedAction(actionId, entry, invoke, approverId);
     }
 
-    log.warn({ actionId, actionType: entry.action_type }, "Action approved but no executor available — will not execute");
+    log.warn(
+      { actionId, actionType: entry.action_type },
+      "Action approved but this instance has no executor registered for its type — will not execute. Re-dispatch from an instance that has the type loaded.",
+    );
     return entry;
   }
 
@@ -565,11 +690,15 @@ export async function approveAction(
     approverId,
   });
 
-  if (resolveFn) {
-    return executeApprovedAction(actionId, approved, resolveFn, approverId);
+  const invoke = bindExecutorToRow(approved);
+  if (invoke) {
+    return executeApprovedAction(actionId, approved, invoke, approverId);
   }
 
-  log.warn({ actionId, actionType: entry.action_type }, "Action approved but no executor available — will not execute");
+  log.warn(
+    { actionId, actionType: entry.action_type },
+    "Action approved but this instance has no executor registered for its type — will not execute. Re-dispatch from an instance that has the type loaded.",
+  );
   return approved;
 }
 
@@ -659,12 +788,20 @@ export type ApproveActionOutcome =
   | ActionResolutionRefusal
   | { readonly kind: "approved"; readonly entry: ActionLogEntry }
   /**
-   * The row is `approved` but NOTHING RAN: no executor was registered for
-   * this action id in this process. `executorRegistry` is an in-process Map,
-   * so this is what a restart or a multi-instance deploy looks like — and
-   * the row is no longer `pending`, so nothing will retry it. Callers must
-   * not report this as plain success; the split in the type is what makes
-   * forgetting that a compile error instead of a silent drop.
+   * The row is `approved` but NOTHING RAN, and since #5570 that means exactly
+   * one thing: this instance has no executor registered for the row's ACTION
+   * TYPE. The restart and multi-instance cases this arm used to cover are
+   * gone — the registry is type-keyed and populated at module load, so any
+   * instance can execute any approved row.
+   *
+   * What survives is the residual window where the type genuinely is not
+   * loaded here: actions disabled on this deploy, an action module that
+   * failed to import, or a plugin-declared type whose plugin is unhealthy.
+   * The row is no longer `pending`, so nothing will retry it on its own —
+   * but it IS recoverable now, through `redispatchActionAsUser` on an
+   * instance that has the type. Callers must not report this as plain
+   * success; the split in the type is what makes forgetting that a compile
+   * error instead of a silent drop.
    */
   | { readonly kind: "approved_not_executed"; readonly entry: ActionLogEntry };
 
@@ -714,7 +851,7 @@ export async function approveActionAsUser(
   const auth = await authorizeResolution(actionId, actor);
   if (auth.kind !== "authorized") return auth;
 
-  const entry = await approveAction(actionId, actor.user?.id ?? "anonymous", undefined, actor.orgId);
+  const entry = await approveAction(actionId, actor.user?.id ?? "anonymous", actor.orgId);
   if (entry === null) return { kind: "conflict" };
 
   // `executeApprovedAction` always advances the status past `approved`
@@ -723,7 +860,7 @@ export async function approveActionAsUser(
   if (entry.status === "approved") {
     log.error(
       { actionId, actionType: entry.action_type },
-      "Action approved but never executed — no executor registered in this process (restart or other instance?). The row has left 'pending', so nothing will retry it.",
+      "Action approved but never executed — no executor is registered for its ACTION TYPE on this instance (actions disabled here, or a plugin that declares the type is not wired). The row has left 'pending', so nothing will retry it on its own; an admin can re-dispatch it from an instance that has the type loaded.",
     );
     return { kind: "approved_not_executed", entry };
   }
@@ -742,6 +879,174 @@ export async function denyActionAsUser(
   const entry = await denyAction(actionId, actor.user?.id ?? "anonymous", reason, actor.orgId);
   if (entry === null) return { kind: "conflict" };
   return { kind: "denied", entry };
+}
+
+// ---------------------------------------------------------------------------
+// Re-dispatch — the human verb that clears a stranded approval (#5570)
+// ---------------------------------------------------------------------------
+
+/** Why a re-dispatch was refused, or what it did. */
+export type RedispatchActionOutcome =
+  | ActionResolutionRefusal
+  /**
+   * Nothing here can run it: no executor is registered for the row's action
+   * type on this instance. Returned BEFORE the claim, so the row is untouched
+   * and stays re-dispatchable from an instance that has the type loaded.
+   */
+  | { readonly kind: "unregistered_type"; readonly entry: ActionLogEntry }
+  /**
+   * It ran. `entry` carries the terminal status — `executed`, `failed` or
+   * `timed_out` — exactly as the approve path reports it.
+   */
+  | { readonly kind: "redispatched"; readonly entry: ActionLogEntry };
+
+/**
+ * Run an action that was approved but never executed.
+ *
+ * ## Why a human verb and NOT a boot sweep
+ *
+ * The obvious fix for stranded rows is to scan for `status = 'approved'` at
+ * startup and drain it. That is the wrong shape and the issue rules it out:
+ * an approval is a human decision about a side effect in someone else's
+ * system — a Jira ticket, an email, a Salesforce record — and it was made
+ * with a summary in front of a person at a particular moment. A sweep fires
+ * it hours later, after a deploy, with nobody watching, and the approver
+ * cannot know it happened. So the state stays stuck until a person looks at
+ * the row and says run it, on the triage re-queue's posture
+ * (`lib/brain/triage-requeue.ts`): a stranded row is VISIBLE — the approval
+ * that stranded it returned `approved_not_executed` and logged at error level,
+ * and the row sits at `approved` for anyone reading it — and clearing it is
+ * deliberate.
+ *
+ * ⚠️ Visible is not the same as ENUMERABLE, and this verb does not close that
+ * gap: `GET /api/v1/actions?status=approved` is scoped to the rows the caller
+ * requested, so there is no workspace-wide stranded-row listing today. An
+ * admin reaches someone else's stranded action by id. A backlog surface
+ * belongs beside the triage backlog's `GET /` if the residual window ever
+ * proves wide enough to need one — it should not, since `api/routes/actions.ts`
+ * imports the built-in action modules for their registration side effect, so
+ * every process serving these verbs holds every built-in type from the moment
+ * the router exists.
+ *
+ * ## The CAS, and why it claims `executed_at`
+ *
+ * Two admins clicking at once must not send the email twice, so the claim has
+ * to be atomic and it has to happen BEFORE execution. The predicate is
+ * `status = 'approved' AND executed_at IS NULL` — precisely "approved, and
+ * nothing has ever run for this row" — and the claim stamps `executed_at`.
+ * The loser of the race sees zero rows and gets `conflict`.
+ *
+ * No new status was added for the in-flight state, deliberately: `ActionStatus`
+ * is a closed vocabulary mirrored in `@useatlas/types` and rendered by every
+ * action surface, and the wire contracts here are meant to be unchanged.
+ *
+ * ⚠️ A crash BETWEEN the claim and the terminal update leaves the row
+ * `approved` with `executed_at` set, and this verb will then refuse it as a
+ * conflict — permanently. That is the safe answer, not an oversight: the
+ * process died mid-flight, so nobody can say whether the Jira ticket was
+ * created, and an automatic second attempt is the double-execution this CAS
+ * exists to prevent. An operator reads the target system and, if nothing
+ * landed, resolves the row by hand.
+ */
+export async function redispatchActionAsUser(
+  actionId: string,
+  actor: ActionResolutionActor,
+): Promise<RedispatchActionOutcome> {
+  // The SAME bar as approving, self-approval separation included. Re-dispatch
+  // is the execution half of an approval: for an admin-only action, letting
+  // the requester trigger the side effect would reopen exactly the separation
+  // of duties the approve path closes, one verb over.
+  const auth = await authorizeResolution(actionId, actor);
+  if (auth.kind !== "authorized") return auth;
+
+  if (auth.entry.status !== "approved") {
+    // Not stranded — pending (approve it), or already terminal. Reported as
+    // `conflict` for the same reason `approveAction` does: the caller asked to
+    // move a row out of a state it is not in.
+    return { kind: "conflict" };
+  }
+
+  // Checked BEFORE the claim. Claiming a row this instance cannot execute
+  // would strand it harder than it already is — `executed_at` would be set,
+  // so the CAS below would refuse every future attempt, including the one
+  // from the instance that does have the type.
+  if (!isActionTypeExecutable(auth.entry.action_type)) {
+    log.warn(
+      { actionId, actionType: auth.entry.action_type, approverId: actor.user?.id },
+      "Action re-dispatch declined — no executor registered for its type on this instance. The row is untouched and stays re-dispatchable.",
+    );
+    return { kind: "unregistered_type", entry: auth.entry };
+  }
+
+  const claimed = await claimApprovedAction(actionId, actor.orgId);
+  if (claimed === null) return { kind: "conflict" };
+
+  const invoke = bindExecutorToRow(claimed);
+  if (!invoke) {
+    // Unreachable in practice: `isActionTypeExecutable` said yes moments ago,
+    // and nothing unregisters a type at runtime. Handled rather than asserted
+    // because the row is now CLAIMED — swallowing this would leave it stuck at
+    // `approved` with a dispatch stamp and no explanation anywhere.
+    log.error(
+      { actionId, actionType: claimed.action_type },
+      "Action re-dispatch claimed the row and then found no executor — the registry changed mid-call. The row is claimed and will not re-dispatch again.",
+    );
+    return { kind: "unregistered_type", entry: claimed };
+  }
+
+  log.info(
+    { actionId, actionType: claimed.action_type, approverId: actor.user?.id, orgId: claimed.org_id },
+    "Action re-dispatch claimed — executing a previously stranded approval",
+  );
+
+  const entry = await executeApprovedAction(
+    actionId,
+    claimed,
+    invoke,
+    // The row's ORIGINAL approver, not the re-dispatcher: this audit line is
+    // about the action, whose approval decision has not changed. Who
+    // re-dispatched is recorded by the route's admin-action row.
+    claimed.approved_by ?? actor.user?.id ?? "anonymous",
+  );
+  return { kind: "redispatched", entry };
+}
+
+/**
+ * Atomically claim an `approved`-but-never-executed row for dispatch.
+ *
+ * Returns the claimed row, or `null` when the claim was lost — the row moved
+ * on, or another dispatcher got there first. See
+ * {@link redispatchActionAsUser} for why the claim is `executed_at`.
+ */
+async function claimApprovedAction(
+  actionId: string,
+  orgId?: string | null,
+): Promise<ActionLogEntry | null> {
+  if (hasInternalDB()) {
+    const scope = orgScopeClause(2, orgId);
+    const rows = await internalQuery(
+      `UPDATE action_log
+       SET executed_at = now()
+       WHERE id = $1 AND status = 'approved' AND executed_at IS NULL${scope.sql}
+       RETURNING *`,
+      [actionId, ...scope.params],
+    ) as unknown as ActionLogEntry[];
+    if (rows.length === 0) return null;
+    const entry = rows[0];
+    memoryStore.set(actionId, entry);
+    return entry;
+  }
+
+  // Memory-only fallback: check-then-set, non-atomic, exactly as
+  // `approveAction`'s memory path documents. Single-process by definition, so
+  // the race this guards against cannot arise here.
+  const entry = memoryStore.get(actionId);
+  if (!entry || entry.status !== "approved" || entry.executed_at !== null) return null;
+  if (!inMemoryOrgMatch(entry.org_id, orgId)) return null;
+
+  const claimedEntry: ActionLogEntry = { ...entry, executed_at: new Date().toISOString() };
+  memoryStore.set(actionId, claimedEntry);
+  return claimedEntry;
 }
 
 // ---------------------------------------------------------------------------
@@ -977,18 +1282,41 @@ export async function rollbackAction(
 // Test helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Test-only: back to a bare module — no rows, no executors, no rollback
+ * handlers.
+ *
+ * ⚠️ It clears the TYPE registry too, so a test file that imports an action
+ * module for its module-load `defineActionExecutor` call loses that
+ * registration on the first `beforeEach`. Register what the test needs after
+ * the reset; that is what the suites here do.
+ */
 export function _resetActionStore(): void {
   memoryStore.clear();
-  executorRegistry.clear();
+  _resetActionExecutors();
   rollbackMethodRegistry.clear();
 }
 
 /**
- * Test-only: drop the in-process executor for ONE action while keeping its
- * row — the exact state a restart or a sibling instance leaves behind, and
- * the state `approveActionAsUser`'s `approved_not_executed` arm exists to
- * name. `_resetActionStore` cannot stage it because it clears the row too.
+ * Test-only: unregister ONE action TYPE while keeping the rows that carry it.
+ *
+ * Post-#5570 this stages the only state `approveActionAsUser`'s
+ * `approved_not_executed` arm still names: an approved row whose type has no
+ * executor on this instance. `_resetActionStore` cannot stage it because it
+ * clears the rows too.
+ *
+ * ⚠️ It no longer stages a RESTART — that is the point of the change. A
+ * restart is now `_resetActionExecutors()` followed by re-registering, and the
+ * row still executes; `execution-context.test.ts` pins exactly that.
  */
-export function _dropActionExecutor(actionId: string): void {
-  executorRegistry.delete(actionId);
+export function _undefineActionExecutor(actionType: string): void {
+  executorRegistry.delete(actionType);
+}
+
+/**
+ * Test-only: drop every registered executor while keeping the rows — a
+ * process restart, before the action modules have re-registered.
+ */
+export function _resetActionExecutors(): void {
+  executorRegistry.clear();
 }

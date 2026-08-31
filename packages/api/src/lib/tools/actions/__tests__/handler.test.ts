@@ -11,12 +11,37 @@ import {
   extractRollbackInfo,
   registerRollbackMethod,
   getRollbackMethod,
+  defineActionExecutor,
+  getActionExecutorForType,
+  _resetActionExecutors,
+  _undefineActionExecutor,
   _resetActionStore,
   ActionTimeoutError,
+  type ActionExecutor,
 } from "../handler";
+import type { ActionRequest, ActionToolResult } from "@atlas/api/lib/action-types";
 import { loadConfig, _resetConfig } from "@atlas/api/lib/config";
 import { withRequestContext } from "@atlas/api/lib/logger";
 import { _resetPool } from "@atlas/api/lib/db/internal";
+
+/**
+ * Register how `request`'s TYPE executes, then run it — the two halves
+ * production does at module load and at request time respectively (#5570).
+ *
+ * `handleAction` takes no executor any more: the registry is keyed by
+ * `action_type` and populated when the action's module loads, so any instance
+ * can execute any approved row. These suites have no action module to load, so
+ * they stage the registration themselves, right where the old `executeFn`
+ * argument used to sit.
+ */
+function runAction(
+  request: ActionRequest,
+  executor: ActionExecutor,
+  opts?: { conversationId?: string },
+): Promise<ActionToolResult> {
+  defineActionExecutor(request.actionType, executor);
+  return handleAction(request, opts);
+}
 
 /**
  * Action handler tests — memory-only path (no DATABASE_URL).
@@ -92,7 +117,7 @@ describe("handleAction()", () => {
 
     const result = await withRequestContext(
       { requestId: "req-1", user: { id: "u1", label: "user@test.com", mode: "managed" } },
-      () => handleAction(request, async () => "done"),
+      () => runAction(request, async () => "done"),
     );
 
     expect(result.status).toBe("pending");
@@ -117,7 +142,7 @@ describe("handleAction()", () => {
 
     const result = await withRequestContext(
       { requestId: "req-2", user: { id: "u1", label: "user@test.com", mode: "managed" } },
-      () => handleAction(request, async (payload) => ({ sent: true, text: payload.text })),
+      () => runAction(request, async (payload) => ({ sent: true, text: payload.text })),
     );
 
     expect(result.status).toBe("auto_approved");
@@ -143,7 +168,7 @@ describe("handleAction()", () => {
     const result = await withRequestContext(
       { requestId: "req-3", user: { id: "u1", label: "user@test.com", mode: "managed" } },
       () =>
-        handleAction(request, async () => {
+        runAction(request, async () => {
           throw new Error("Slack API down");
         }),
     );
@@ -165,7 +190,7 @@ describe("handleAction()", () => {
 
     await withRequestContext(
       { requestId: "req-4", user: { id: "u2", label: "admin@test.com", mode: "simple-key" } },
-      () => handleAction(request, async () => "ok"),
+      () => runAction(request, async () => "ok"),
     );
 
     const stored = await getAction(request.id);
@@ -192,14 +217,11 @@ describe("approveAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-5" }, () =>
-      handleAction(request, async (payload) => ({ sent: true, text: payload.text })),
+      runAction(request, async (payload) => ({ sent: true, text: payload.text })),
     );
 
-    const result = await approveAction(
-      request.id,
-      "admin-1",
-      async (payload) => ({ sent: true, text: payload.text }),
-    );
+    defineActionExecutor(request.actionType, async (payload) => ({ sent: true, text: payload.text }));
+    const result = await approveAction(request.id, "admin-1");
 
     expect(result).not.toBeNull();
     expect(result!.status).toBe("executed");
@@ -218,15 +240,17 @@ describe("approveAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-6" }, () =>
-      handleAction(request, async () => "done"),
+      runAction(request, async () => "done"),
     );
 
     // First approval succeeds
-    const first = await approveAction(request.id, "admin-1", async () => "ok");
+    defineActionExecutor(request.actionType, async () => "ok");
+    const first = await approveAction(request.id, "admin-1");
     expect(first).not.toBeNull();
 
     // Second approval fails (CAS — status is no longer "pending")
-    const second = await approveAction(request.id, "admin-2", async () => "ok again");
+    defineActionExecutor(request.actionType, async () => "ok again");
+    const second = await approveAction(request.id, "admin-2");
     expect(second).toBeNull();
   });
 
@@ -240,55 +264,93 @@ describe("approveAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-7" }, () =>
-      handleAction(request, async () => "done"),
+      runAction(request, async () => "done"),
     );
 
-    const result = await approveAction(request.id, "admin-1", async () => {
+    defineActionExecutor(request.actionType, async () => {
       throw new Error("execution failed");
     });
+    const result = await approveAction(request.id, "admin-1");
 
     expect(result).not.toBeNull();
     expect(result!.status).toBe("failed");
     expect(result!.error).toBe("execution failed");
   });
 
-  it("approves without executing when no executeFn is provided and no registered executor", async () => {
+  it("executes with the type's registered executor — the caller supplies none", async () => {
+    // The post-#5570 contract: `approveAction` looks the executor up by the
+    // ROW's `action_type`, so a caller that never saw the request (a route
+    // handler, another instance) needs to pass nothing.
     const request = buildActionRequest({
-      actionType: "unregistered:action",
+      actionType: "registered:action",
+      target: "target",
+      summary: "Test",
+      payload: { n: 1 },
+      reversible: false,
+    });
+
+    await withRequestContext({ requestId: "req-8" }, () =>
+      runAction(request, async (payload) => ({ ran: true, n: payload.n })),
+    );
+
+    const result = await approveAction(request.id, "admin-1");
+    expect(result!.status).toBe("executed");
+    expect(result!.result).toEqual({ ran: true, n: 1 });
+  });
+
+  it("⭐ executes a row seeded before a RESTART — the gap #5570 closes", async () => {
+    // The whole point of the type-keyed registry. `_resetActionExecutors`
+    // drops every registration while leaving the rows, which is what a
+    // process restart (or an approval landing on an instance that never took
+    // the request) looks like from the handler's side. Under the old per-id
+    // Map the lookup missed here and the row was stranded at `approved`
+    // forever; under a type-keyed registry the action module re-registers at
+    // boot and the row executes normally.
+    const request = buildActionRequest({
+      actionType: "restart:action",
+      target: "target",
+      summary: "Survives a restart",
+      payload: { text: "hi" },
+      reversible: false,
+    });
+
+    await withRequestContext({ requestId: "req-8b" }, () =>
+      runAction(request, async () => "first process"),
+    );
+
+    _resetActionExecutors();
+    expect(getActionExecutorForType("restart:action")).toBeUndefined();
+
+    // Boot: the action's module loads and registers its type again.
+    defineActionExecutor("restart:action", async (payload) => ({ text: payload.text }));
+
+    const result = await approveAction(request.id, "admin-1");
+    expect(result!.status).toBe("executed");
+    expect(result!.result).toEqual({ text: "hi" });
+  });
+
+  it("approves WITHOUT executing when nothing registered the row's type", async () => {
+    // The residual window the `approved_not_executed` outcome still names:
+    // the row's type has no executor here at all (actions disabled on this
+    // deploy, a plugin that failed to wire). The CAS still lands, so the row
+    // leaves `pending` and sits at `approved` — recoverable only through the
+    // admin re-dispatch verb.
+    const request = buildActionRequest({
+      actionType: "no-executor:action",
       target: "target",
       summary: "Test",
       payload: {},
       reversible: false,
     });
 
-    // Reset the store so the executor registered by handleAction is cleared
-    await withRequestContext({ requestId: "req-8" }, () =>
-      handleAction(request, async () => "done"),
+    await withRequestContext({ requestId: "req-8c" }, () =>
+      runAction(request, async () => "done"),
     );
-    // Clear executor registry but keep memory store
-    _resetActionStore();
-    // Re-insert the pending entry manually via another handleAction
-    const request2 = buildActionRequest({
-      actionType: "no-executor:action",
-      target: "target",
-      summary: "Test 2",
-      payload: {},
-      reversible: false,
-    });
-    await withRequestContext({ requestId: "req-8b" }, () =>
-      handleAction(request2, async () => "done"),
-    );
-    // Clear only the executor registry
-    // Since _resetActionStore clears both, we need a different approach.
-    // Instead, approve with an explicit undefined executeFn and rely on
-    // the registered executor from handleAction.
-    // Let's test the simpler path: approve with explicit executeFn=undefined
-    // and getActionExecutor returns the one registered by handleAction.
-    // Actually the executor IS registered by handleAction for request2's actionType.
-    // So let's just test that approve with no executeFn uses the registered one.
-    const result = await approveAction(request2.id, "admin-1");
-    expect(result).not.toBeNull();
-    expect(result!.status).toBe("executed");
+    _undefineActionExecutor("no-executor:action");
+
+    const result = await approveAction(request.id, "admin-1");
+    expect(result!.status).toBe("approved");
+    expect(result!.executed_at).toBeNull();
   });
 });
 
@@ -307,7 +369,7 @@ describe("denyAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-9" }, () =>
-      handleAction(request, async () => "done"),
+      runAction(request, async () => "done"),
     );
 
     const result = await denyAction(request.id, "admin-1", "Not approved by policy");
@@ -329,7 +391,7 @@ describe("denyAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-10" }, () =>
-      handleAction(request, async () => "done"),
+      runAction(request, async () => "done"),
     );
 
     const result = await denyAction(request.id, "admin-1");
@@ -349,7 +411,7 @@ describe("denyAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-11" }, () =>
-      handleAction(request, async () => "done"),
+      runAction(request, async () => "done"),
     );
 
     // First denial succeeds
@@ -377,7 +439,7 @@ describe("getAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-12" }, () =>
-      handleAction(request, async () => "done"),
+      runAction(request, async () => "done"),
     );
 
     const action = await getAction(request.id);
@@ -415,8 +477,8 @@ describe("listPendingActions()", () => {
     });
 
     await withRequestContext({ requestId: "req-13" }, async () => {
-      await handleAction(r1, async () => "done");
-      await handleAction(r2, async () => "done");
+      await runAction(r1, async () => "done");
+      await runAction(r2, async () => "done");
     });
 
     const pending = await listPendingActions();
@@ -443,8 +505,8 @@ describe("listPendingActions()", () => {
     });
 
     await withRequestContext({ requestId: "req-14" }, async () => {
-      await handleAction(r1, async () => "done");
-      await handleAction(r2, async () => "done");
+      await runAction(r1, async () => "done");
+      await runAction(r2, async () => "done");
     });
 
     // Deny r1 so it has status "denied"
@@ -477,7 +539,7 @@ describe("listPendingActions()", () => {
         reversible: false,
       });
       await withRequestContext({ requestId: `req-limit-${i}` }, () =>
-        handleAction(r, async () => "done"),
+        runAction(r, async () => "done"),
       );
     }
 
@@ -572,7 +634,7 @@ describe("handleAction() — admin-only", () => {
 
     const result = await withRequestContext(
       { requestId: "req-admin-1", user: { id: "u1", label: "user@test.com", mode: "managed" } },
-      () => handleAction(request, async () => "done"),
+      () => runAction(request, async () => "done"),
     );
 
     expect(result.status).toBe("pending");
@@ -599,7 +661,7 @@ describe("handleAction() — conversationId", () => {
 
     await withRequestContext(
       { requestId: "req-conv-1", user: { id: "u1", label: "user@test.com", mode: "managed" } },
-      () => handleAction(request, async () => "done", { conversationId: "conv-abc-123" }),
+      () => runAction(request, async () => "done", { conversationId: "conv-abc-123" }),
     );
 
     const stored = await getAction(request.id);
@@ -618,7 +680,7 @@ describe("handleAction() — conversationId", () => {
 
     await withRequestContext(
       { requestId: "req-conv-2", user: { id: "u1", label: "user@test.com", mode: "managed" } },
-      () => handleAction(request, async () => "done"),
+      () => runAction(request, async () => "done"),
     );
 
     const stored = await getAction(request.id);
@@ -650,11 +712,11 @@ describe("listPendingActions() — userId filter", () => {
 
     await withRequestContext(
       { requestId: "req-u1", user: { id: "u1", label: "u1@test.com", mode: "managed" } },
-      () => handleAction(r1, async () => "done"),
+      () => runAction(r1, async () => "done"),
     );
     await withRequestContext(
       { requestId: "req-u2", user: { id: "u2", label: "u2@test.com", mode: "managed" } },
-      () => handleAction(r2, async () => "done"),
+      () => runAction(r2, async () => "done"),
     );
 
     const u1Actions = await listPendingActions({ userId: "u1" });
@@ -679,7 +741,7 @@ describe("listPendingActions() — userId filter", () => {
 
     await withRequestContext(
       { requestId: "req-other", user: { id: "other", label: "other@test.com", mode: "managed" } },
-      () => handleAction(r1, async () => "done"),
+      () => runAction(r1, async () => "done"),
     );
 
     const results = await listPendingActions({ userId: "nonexistent" });
@@ -723,7 +785,7 @@ describe("handleAction() — timeout enforcement", () => {
     const result = await withRequestContext(
       { requestId: "req-timeout-1", user: { id: "u1", label: "user@test.com", mode: "managed" } },
       () =>
-        handleAction(request, async () => {
+        runAction(request, async () => {
           await new Promise((resolve) => setTimeout(resolve, 200));
           return "should not reach";
         }),
@@ -759,7 +821,7 @@ describe("handleAction() — timeout enforcement", () => {
     const result = await withRequestContext(
       { requestId: "req-timeout-2", user: { id: "u1", label: "user@test.com", mode: "managed" } },
       () =>
-        handleAction(request, async () => ({ done: true })),
+        runAction(request, async () => ({ done: true })),
     );
 
     expect(result.status).toBe("auto_approved");
@@ -785,7 +847,7 @@ describe("handleAction() — timeout enforcement", () => {
     const result = await withRequestContext(
       { requestId: "req-timeout-3", user: { id: "u1", label: "user@test.com", mode: "managed" } },
       () =>
-        handleAction(request, async () => "completed"),
+        runAction(request, async () => "completed"),
     );
 
     expect(result.status).toBe("auto_approved");
@@ -811,13 +873,14 @@ describe("approveAction() — timeout enforcement", () => {
     });
 
     await withRequestContext({ requestId: "req-approve-timeout-1" }, () =>
-      handleAction(request, async () => "done"),
+      runAction(request, async () => "done"),
     );
 
-    const result = await approveAction(request.id, "admin-1", async () => {
+    defineActionExecutor(request.actionType, async () => {
       await new Promise((resolve) => setTimeout(resolve, 200));
       return "should not reach";
     });
+    const result = await approveAction(request.id, "admin-1");
 
     expect(result).not.toBeNull();
     expect(result!.status).toBe("timed_out");
@@ -949,15 +1012,16 @@ describe("rollbackAction()", () => {
 
     // Create pending action, then approve+execute with rollback info
     await withRequestContext({ requestId: "req-rb-1" }, () =>
-      handleAction(request, async () => ({
+      runAction(request, async () => ({
         key: "PROJ-1",
         rollbackInfo: { method: "transition", params: { issueKey: "PROJ-1" } },
       })),
     );
-    await approveAction(request.id, "admin-1", async () => ({
+    defineActionExecutor(request.actionType, async () => ({
       key: "PROJ-1",
       rollbackInfo: { method: "transition", params: { issueKey: "PROJ-1" } },
     }));
+    await approveAction(request.id, "admin-1");
 
     // Verify it's executed with rollback_info
     const beforeRollback = await getAction(request.id);
@@ -984,7 +1048,7 @@ describe("rollbackAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-rb-2" }, () =>
-      handleAction(request, async () => "done"),
+      runAction(request, async () => "done"),
     );
 
     const result = await rollbackAction(request.id, "admin-1");
@@ -1012,7 +1076,7 @@ describe("rollbackAction()", () => {
     await lc("/tmp/handler-test-nonexistent");
 
     await withRequestContext({ requestId: "req-rb-3" }, () =>
-      handleAction(request, async () => ({ success: true })),
+      runAction(request, async () => ({ success: true })),
     );
 
     const stored = await getAction(request.id);
@@ -1033,15 +1097,16 @@ describe("rollbackAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-rb-4" }, () =>
-      handleAction(request, async () => ({
+      runAction(request, async () => ({
         key: "PROJ-2",
         rollbackInfo: { method: "transition", params: { issueKey: "PROJ-2" } },
       })),
     );
-    await approveAction(request.id, "admin-1", async () => ({
+    defineActionExecutor(request.actionType, async () => ({
       key: "PROJ-2",
       rollbackInfo: { method: "transition", params: { issueKey: "PROJ-2" } },
     }));
+    await approveAction(request.id, "admin-1");
 
     const first = await rollbackAction(request.id, "admin-1");
     expect(first).not.toBeNull();
@@ -1068,15 +1133,16 @@ describe("rollbackAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-rb-5" }, () =>
-      handleAction(request, async () => ({
+      runAction(request, async () => ({
         ok: true,
         rollbackInfo: { method: "test:dispatch", params: { myKey: "myVal" } },
       })),
     );
-    await approveAction(request.id, "admin-1", async () => ({
+    defineActionExecutor(request.actionType, async () => ({
       ok: true,
       rollbackInfo: { method: "test:dispatch", params: { myKey: "myVal" } },
     }));
+    await approveAction(request.id, "admin-1");
 
     await rollbackAction(request.id, "admin-1");
     expect(handlerCalled).toBe(true);
@@ -1097,13 +1163,14 @@ describe("rollbackAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-rb-6" }, () =>
-      handleAction(request, async () => ({
+      runAction(request, async () => ({
         rollbackInfo: { method: "test:failing", params: {} },
       })),
     );
-    await approveAction(request.id, "admin-1", async () => ({
+    defineActionExecutor(request.actionType, async () => ({
       rollbackInfo: { method: "test:failing", params: {} },
     }));
+    await approveAction(request.id, "admin-1");
 
     const result = await rollbackAction(request.id, "admin-1");
     expect(result).not.toBeNull();
@@ -1121,13 +1188,14 @@ describe("rollbackAction()", () => {
     });
 
     await withRequestContext({ requestId: "req-rb-7" }, () =>
-      handleAction(request, async () => ({
+      runAction(request, async () => ({
         rollbackInfo: { method: "unregistered:method", params: { a: 1 } },
       })),
     );
-    await approveAction(request.id, "admin-1", async () => ({
+    defineActionExecutor(request.actionType, async () => ({
       rollbackInfo: { method: "unregistered:method", params: { a: 1 } },
     }));
+    await approveAction(request.id, "admin-1");
 
     const result = await rollbackAction(request.id, "admin-1");
     expect(result).not.toBeNull();
@@ -1164,7 +1232,7 @@ describe("cross-org scoping (F-12)", () => {
           activeOrganizationId: orgId,
         },
       },
-      () => handleAction(request, async () => "done"),
+      () => runAction(request, async () => "done"),
     );
     return request.id;
   }
@@ -1196,7 +1264,8 @@ describe("cross-org scoping (F-12)", () => {
 
   it("approveAction loses CAS for cross-org caller (returns null)", async () => {
     const id = await seedOrgScoped("test:xapprove", "org-A");
-    const result = await approveAction(id, "admin-1", async () => "ok", "org-B");
+    defineActionExecutor("test:xapprove", async () => "ok");
+    const result = await approveAction(id, "admin-1", "org-B");
     expect(result).toBeNull();
     // Row is still pending — the cross-org approve didn't touch it.
     const row = await getAction(id, "org-A");
@@ -1205,7 +1274,8 @@ describe("cross-org scoping (F-12)", () => {
 
   it("approveAction succeeds for same-org caller", async () => {
     const id = await seedOrgScoped("test:approve-ok", "org-A");
-    const result = await approveAction(id, "admin-1", async () => "ok", "org-A");
+    defineActionExecutor("test:approve-ok", async () => "ok");
+    const result = await approveAction(id, "admin-1", "org-A");
     expect(result).not.toBeNull();
     expect(result!.status).toBe("executed");
   });
@@ -1221,15 +1291,11 @@ describe("cross-org scoping (F-12)", () => {
   it("rollbackAction returns null for cross-org caller", async () => {
     const id = await seedOrgScoped("test:xrollback", "org-A");
     // Approve in-org so the action becomes executed with rollback info.
-    await approveAction(
-      id,
-      "admin-1",
-      async () => ({
-        key: "Z-1",
-        rollbackInfo: { method: "m", params: {} },
-      }),
-      "org-A",
-    );
+    defineActionExecutor("test:xrollback", async () => ({
+      key: "Z-1",
+      rollbackInfo: { method: "m", params: {} },
+    }));
+    await approveAction(id, "admin-1", "org-A");
 
     const xorg = await rollbackAction(id, "admin-1", "org-B");
     expect(xorg).toBeNull();

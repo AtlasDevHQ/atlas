@@ -20,7 +20,12 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
-import { buildActionRequest, handleAction } from "./handler";
+import {
+  buildActionRequest,
+  handleAction,
+  defineActionExecutor,
+  type ActionExecutor,
+} from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hostForLog } from "@atlas/api/lib/openapi/egress-guard";
 import {
@@ -220,10 +225,44 @@ Use createJiraTicket to create a new JIRA issue based on the analysis findings:
 - Optionally specify a project key and labels
 - The ticket will require approval before creation`;
 
+/**
+ * The one place this module's action type is spelled — the `AtlasAction`
+ * below, the request it builds, and the executor registration all read it,
+ * so the registry key provably matches the rows this module writes (#5570).
+ */
+const JIRA_CREATE_ACTION_TYPE = "jira:create";
+
+/**
+ * How `jira:create` executes — a pure function of the persisted row's payload and
+ * execution context, registered by TYPE at module load so ANY instance can run
+ * an approved `jira:create` row, including one it never took the request for.
+ */
+const executeJiraCreateAction: ActionExecutor = async (payload, ctx) => {
+  // Resolved from the ACTION's workspace, not the approver's — a
+  // manual-approval action executes inside the approver's request.
+  const credentials = await resolveCredentialsFor(JIRA_TARGET, ctx);
+  const result = await executeJiraCreate(
+    payload as unknown as JiraCreateParams,
+    credentials,
+  );
+  return {
+    ...result,
+    // Best-effort rollback metadata — transitioning to "Closed" depends on
+    // the JIRA workflow configuration and is NOT guaranteed to work in all
+    // JIRA instances or project configurations.
+    rollbackInfo: {
+      method: "transition",
+      params: { issueKey: result.key, targetStatus: "Closed" },
+    },
+  };
+};
+
+defineActionExecutor(JIRA_CREATE_ACTION_TYPE, executeJiraCreateAction);
+
 export const createJiraTicket: AtlasAction = {
   name: "createJiraTicket",
   description: CREATE_JIRA_DESCRIPTION,
-  actionType: "jira:create",
+  actionType: JIRA_CREATE_ACTION_TYPE,
   reversible: true,
   defaultApproval: "manual",
   // Vestigial (ADR-0046): credentials are per-workspace, so the global-env
@@ -258,7 +297,7 @@ export const createJiraTicket: AtlasAction = {
       log.info({ summary, project }, "createJiraTicket invoked");
 
       const request = buildActionRequest({
-        actionType: "jira:create",
+        actionType: JIRA_CREATE_ACTION_TYPE,
         // No env read here (#3766): the default project now lives in the
         // workspace's credential row and is resolved at EXECUTION time, so a
         // rotation between request and approval is picked up. When the agent
@@ -269,25 +308,7 @@ export const createJiraTicket: AtlasAction = {
         reversible: true,
       });
 
-      return handleAction(request, async (payload, ctx) => {
-        // Resolved from the ACTION's workspace, not the approver's — a
-        // manual-approval action executes inside the approver's request.
-        const credentials = await resolveCredentialsFor(JIRA_TARGET, ctx);
-        const result = await executeJiraCreate(
-          payload as unknown as JiraCreateParams,
-          credentials,
-        );
-        return {
-          ...result,
-          // Best-effort rollback metadata — transitioning to "Closed" depends on
-          // the JIRA workflow configuration and is NOT guaranteed to work in all
-          // JIRA instances or project configurations.
-          rollbackInfo: {
-            method: "transition",
-            params: { issueKey: result.key, targetStatus: "Closed" },
-          },
-        };
-      });
+      return handleAction(request);
     },
   }),
 };

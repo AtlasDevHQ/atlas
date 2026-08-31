@@ -212,8 +212,16 @@ mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   denyAction: mockDenyAction,
   getAction: mockGetAction,
   listPendingActions: mock(() => Promise.resolve([])),
-  registerActionExecutor: mock(() => {}),
-  getActionExecutor: mock(() => undefined),
+  // The action_type-keyed registry and the re-dispatch verb (#5570). Present
+  // because `mock.module` REPLACES the module and this suite loads the whole
+  // app: an omitted export is `undefined` at any call site that reaches it.
+  // (`lib/plugins/wiring.ts` imports the first two, though only ever through
+  // an `await import` of wiring itself — so this is about completeness per
+  // `.claude/rules/testing.md`, not about a static graph.)
+  defineActionExecutor: mock(() => {}),
+  getActionExecutorForType: mock(() => undefined),
+  isActionTypeExecutable: mock(() => false),
+  redispatchActionAsUser: mock(() => Promise.resolve({ kind: "conflict" as const })),
   getActionConfig: mock(() => ({ approval: "manual" as const })),
   buildActionRequest: mock(() => ({})),
   _resetActionStore: mock(() => {}),

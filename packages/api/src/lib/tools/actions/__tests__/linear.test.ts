@@ -14,16 +14,29 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 // Mock handler module so we don't hit real DB / auth
 // ---------------------------------------------------------------------------
 
-let lastHandleActionCall: { request: unknown; executeFn: unknown } | null = null;
+let lastHandleActionCall: { request: unknown } | null = null;
+/**
+ * What the module registered at load, by action type (#5570).
+ *
+ * `handleAction` no longer takes an executor — the module declares one for its
+ * TYPE when it is imported, so this map is where that call lands under the
+ * mock. Capturing it is not optional bookkeeping: the top-level
+ * `defineActionExecutor` call runs at import, so a mock without this key makes
+ * the module under test throw before a single test runs.
+ */
+const registeredExecutors = new Map<string, unknown>();
 
 void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   buildActionRequest: (params: Record<string, unknown>) => ({
     id: "test-action-id",
     ...params,
   }),
-  handleAction: async (request: unknown, executeFn: unknown) => {
-    lastHandleActionCall = { request, executeFn };
+  handleAction: async (request: unknown) => {
+    lastHandleActionCall = { request };
     return { status: "pending", actionId: "test-action-id", summary: "test" };
+  },
+  defineActionExecutor: (actionType: string, executor: unknown) => {
+    registeredExecutors.set(actionType, executor);
   },
 }));
 
@@ -449,11 +462,13 @@ describe("createLinearTicket — tool execute", () => {
       { toolCallId: "test-call-3", messages: [], abortSignal: undefined as unknown as AbortSignal },
     );
 
-    // `handleAction` is mocked, so drive the executor it was handed. This is
-    // the seam that matters: the executor takes the workspace from the
-    // execution CONTEXT, never from the ambient request — a manual-approval
-    // action runs inside the approver's request.
-    const execute = lastHandleActionCall!.executeFn as (
+    // Drive the executor the module REGISTERED for its action type (#5570) —
+    // which is the same function a re-dispatch on another instance would run,
+    // so this pins the real seam rather than a closure the tool happened to
+    // hand `handleAction`. What it pins: the executor takes the workspace from
+    // the execution CONTEXT, never from the ambient request — a
+    // manual-approval action runs inside the approver's request.
+    const execute = registeredExecutors.get(createLinearTicket.actionType) as (
       payload: Record<string, unknown>,
       ctx: { workspaceId: string | null },
     ) => Promise<Record<string, unknown>>;
@@ -470,5 +485,17 @@ describe("createLinearTicket — tool execute", () => {
       method: "archive",
       params: { issueId: "issue-uuid-1" },
     });
+  });
+});
+
+describe("executor registration (#5570)", () => {
+  it("registers an executor under its own actionType at module load", () => {
+    // The property that makes an approval durable: the key is the TYPE the
+    // `AtlasAction` declares and the rows carry, so any instance can execute
+    // an approved row by looking it up. Reading `createLinearTicket.actionType`
+    // rather than re-typing the literal is what keeps this a check on the
+    // module's agreement with itself.
+    expect(createLinearTicket.actionType).toBe("linear:create");
+    expect(registeredExecutors.get(createLinearTicket.actionType)).toBeTypeOf("function");
   });
 });

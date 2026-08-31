@@ -534,6 +534,24 @@ export const ADMIN_ACTIONS = {
   approval: {
     approve: "approval.approve",
     deny: "approval.deny",
+    /**
+     * An admin re-dispatched an action that was approved but never executed
+     * (#5570, `POST /api/v1/actions/{id}/redispatch`).
+     *
+     * Its own action type rather than a second `approval.approve` row, because
+     * the two answer different questions. `approve` records the DECISION to
+     * allow a side effect; this records that the side effect was set in motion
+     * later, by a different person, after the approver had looked away. An
+     * auditor reading a Jira ticket created hours after its approval has no
+     * other way to learn why — the action log's own `executed` line names the
+     * original approver, deliberately (the approval did not change), so the
+     * re-dispatcher appears nowhere else.
+     *
+     * Emitted on the terminal outcome, `failed` included: "an admin
+     * re-dispatched and it failed again" is exactly the row that stops a
+     * second admin from trying the same thing.
+     */
+    redispatch: "approval.redispatch",
     ruleCreate: "approval.rule_create",
     ruleUpdate: "approval.rule_update",
     ruleDelete: "approval.rule_delete",

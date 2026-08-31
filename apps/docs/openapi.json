@@ -18722,6 +18722,212 @@
         "operationId": "postActionsBulk"
       }
     },
+    "/api/v1/actions/{id}/redispatch": {
+      "post": {
+        "tags": [
+          "Actions"
+        ],
+        "summary": "Run an action that was approved but never executed",
+        "description": "Executes an action whose row is stuck at `approved` — the approval landed, but nothing ran. Since the executor registry is keyed by action type and populated at boot, the only way to reach that state is an instance that does not have the action's type loaded (actions disabled on this deploy, or a plugin declaring the type that is not wired). ⚠️ There is no workspace-wide listing of stranded rows on this router: `GET /?status=approved` is scoped to actions the CALLER requested, so an admin clearing someone else's stranded action reaches it by id — from the approval response that reported it, or from the `action_approved` / `approved_not_executed` error line in the logs. Requires the same permissions as approving, separation of duties included: re-dispatch IS the execution half of an approval, so for an admin-only action the requester cannot trigger it. ⚠️ This fires the real side effect — the ticket is created, the email is sent — against the workspace that REQUESTED the action, using that workspace's credentials, however long ago the approval was given. There is deliberately no automatic sweep of stranded rows: an approval is a human decision about someone else's system, and firing it hours later with nobody watching is the failure mode this verb exists to avoid. The dispatch is claimed atomically before it runs, so two admins re-dispatching the same action at once execute it once; the loser gets 409. ⚠️ An action that failed or timed out is NOT re-dispatchable — it already ran. This verb only moves rows that never ran at all.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "00000000-0000-0000-0000-000000000000"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The action was dispatched. The entry's own status carries the result — `executed`, or `failed` / `timed_out` if the dispatch ran and the target rejected it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid action ID format",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — insufficient permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Action not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The action is not awaiting dispatch — it is still pending, already ran, or another re-dispatch claimed it first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This instance cannot execute the action's type. The row is untouched and stays re-dispatchable from an instance that has the type loaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postActionsByIdRedispatch"
+      }
+    },
     "/api/v1/actions/{id}/rollback": {
       "post": {
         "tags": [

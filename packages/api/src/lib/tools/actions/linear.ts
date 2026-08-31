@@ -39,7 +39,12 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
-import { buildActionRequest, handleAction } from "./handler";
+import {
+  buildActionRequest,
+  handleAction,
+  defineActionExecutor,
+  type ActionExecutor,
+} from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
 import { describeFailureText, withVendorDeadline } from "@atlas/api/lib/vendor-http";
 import { resolveCredentialsFor } from "./credentials/resolver";
@@ -280,10 +285,45 @@ Use createLinearTicket to file a Linear issue from the analysis findings:
   the workspace's Linear integration install. Prefer this one when the issue
   should be reviewed before it is filed.`;
 
+/**
+ * The one place this module's action type is spelled — the `AtlasAction`
+ * below, the request it builds, and the executor registration all read it,
+ * so the registry key provably matches the rows this module writes (#5570).
+ */
+const LINEAR_CREATE_ACTION_TYPE = "linear:create";
+
+/**
+ * How `linear:create` executes — a pure function of the persisted row's payload and
+ * execution context, registered by TYPE at module load so ANY instance can run
+ * an approved `linear:create` row, including one it never took the request for.
+ */
+const executeLinearCreateAction: ActionExecutor = async (payload, ctx) => {
+  // Resolved from the ACTION's workspace, not the approver's — a
+  // manual-approval action executes inside the approver's request.
+  const credentials = await resolveCredentialsFor(LINEAR_TARGET, ctx);
+  const result = await executeLinearCreate(
+    payload as unknown as LinearCreateParams,
+    credentials,
+  );
+  return {
+    ...result,
+    // Best-effort rollback metadata, same standing as Jira's: no handler
+    // is registered for this method today, so `dispatchRollback` logs
+    // "no rollback handler" rather than archiving anything. Recorded so
+    // the undo has a target the moment one is wired.
+    rollbackInfo: {
+      method: "archive",
+      params: { issueId: result.id },
+    },
+  };
+};
+
+defineActionExecutor(LINEAR_CREATE_ACTION_TYPE, executeLinearCreateAction);
+
 export const createLinearTicket: AtlasAction = {
   name: "createLinearTicket",
   description: CREATE_LINEAR_TICKET_DESCRIPTION,
-  actionType: "linear:create",
+  actionType: LINEAR_CREATE_ACTION_TYPE,
   reversible: true,
   defaultApproval: "manual",
   // Vestigial (ADR-0046): credentials are per-workspace, so the global-env
@@ -328,7 +368,7 @@ export const createLinearTicket: AtlasAction = {
       log.info({ title, teamKey }, "createLinearTicket invoked");
 
       const request = buildActionRequest({
-        actionType: "linear:create",
+        actionType: LINEAR_CREATE_ACTION_TYPE,
         // The default team lives in the workspace's credential row and is
         // resolved at EXECUTION time, so a rotation between request and
         // approval is picked up. When the agent names no team, the approval
@@ -339,26 +379,7 @@ export const createLinearTicket: AtlasAction = {
         reversible: true,
       });
 
-      return handleAction(request, async (payload, ctx) => {
-        // Resolved from the ACTION's workspace, not the approver's — a
-        // manual-approval action executes inside the approver's request.
-        const credentials = await resolveCredentialsFor(LINEAR_TARGET, ctx);
-        const result = await executeLinearCreate(
-          payload as unknown as LinearCreateParams,
-          credentials,
-        );
-        return {
-          ...result,
-          // Best-effort rollback metadata, same standing as Jira's: no handler
-          // is registered for this method today, so `dispatchRollback` logs
-          // "no rollback handler" rather than archiving anything. Recorded so
-          // the undo has a target the moment one is wired.
-          rollbackInfo: {
-            method: "archive",
-            params: { issueId: result.id },
-          },
-        };
-      });
+      return handleAction(request);
     },
   }),
 };

@@ -195,7 +195,10 @@ function userAuth(
       mode: "managed",
       label: "user@test.dev",
       role: opts.role ?? "member",
-      activeOrganizationId: opts.orgId === null ? undefined : opts.orgId ?? "org-1",
+      // `orgId: null` in the fixture means "no active org", which under
+      // `exactOptionalPropertyTypes` is an ABSENT key, not one holding
+      // `undefined` (#5522).
+      ...(opts.orgId === null ? {} : { activeOrganizationId: opts.orgId ?? "org-1" }),
       ...(Object.keys(claims).length > 0 ? { claims } : {}),
     },
   };

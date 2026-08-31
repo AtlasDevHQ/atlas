@@ -1291,7 +1291,9 @@ describe("POST /install-form — F-04 SaaS-mode-none guard", () => {
       mode: "none",
       // Even with a user object present, mode=none under SaaS is a
       // misconfig — the route refuses without consulting it.
-      user: { id: "anon", role: "admin", activeOrganizationId: undefined },
+      // No active org — an ABSENT key under `exactOptionalPropertyTypes`, not
+      // one holding `undefined` (#5522).
+      user: { id: "anon", role: "admin" },
     });
   });
 
@@ -1321,7 +1323,9 @@ describe("POST /install-form — managed mode missing activeOrganizationId", () 
     authResultImpl = async () => ({
       authenticated: true,
       mode: "managed",
-      user: { id: "admin-1", role: "admin", activeOrganizationId: undefined },
+      // The arm under test IS "missing activeOrganizationId" — under
+      // `exactOptionalPropertyTypes` that is an ABSENT key (#5522).
+      user: { id: "admin-1", role: "admin" },
     });
   });
 

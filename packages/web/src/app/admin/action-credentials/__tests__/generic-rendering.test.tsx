@@ -65,6 +65,7 @@ const SYNTHETIC_TARGET = {
       hint: "Your Widgetron site URL.",
       secret: false,
       required: true,
+      multiline: false,
       present: false,
       source: "unset",
     },
@@ -74,6 +75,7 @@ const SYNTHETIC_TARGET = {
       hint: "Widgetron API token.",
       secret: true,
       required: true,
+      multiline: false,
       present: false,
       source: "unset",
     },
@@ -83,6 +85,19 @@ const SYNTHETIC_TARGET = {
       hint: "Used when the agent names none.",
       secret: false,
       required: false,
+      multiline: false,
+      present: false,
+      source: "unset",
+    },
+    // The #5555 shape: a PEM-form secret. `multiline: true` is what tells the
+    // form to render a textarea instead of a single-line password input.
+    {
+      envVar: "WIDGETRON_SIGNING_KEY",
+      label: "Signing Key",
+      hint: "PEM private key for Widgetron webhooks.",
+      secret: true,
+      required: false,
+      multiline: true,
       present: false,
       source: "unset",
     },
@@ -141,6 +156,15 @@ function input(envVar: string): HTMLInputElement {
   return el!;
 }
 
+/** The field's editable control, whatever the spec made it — input or textarea. */
+function control(envVar: string): HTMLInputElement | HTMLTextAreaElement {
+  const el = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+    `#cred-widgetron\\:${envVar}`,
+  );
+  expect(el).not.toBeNull();
+  return el!;
+}
+
 function findButton(label: string): HTMLButtonElement {
   const button = Array.from(document.querySelectorAll("button")).find(
     (b) => b.textContent?.trim() === label,
@@ -177,8 +201,45 @@ describe("/admin/action-credentials renders any ACTION_TARGETS entry (#5553)", (
       // The env-var name is shown so a self-host operator can map the field to
       // the variable that answers for it.
       expect(text).toContain(f.envVar);
-      expect(input(f.envVar)).not.toBeNull();
+      expect(control(f.envVar)).not.toBeNull();
     }
+  });
+
+  test("a multiline field renders a textarea; its single-line siblings stay inputs (#5555)", async () => {
+    mockApi({ deployMode: "saas", targets: [SYNTHETIC_TARGET] });
+
+    render(<ActionCredentialsPage />, { wrapper: Wrapper });
+
+    await waitFor(() => control("WIDGETRON_SIGNING_KEY"));
+    expect(control("WIDGETRON_SIGNING_KEY").tagName).toBe("TEXTAREA");
+    // The attribute is per-field, not per-target: the flat secret next to it
+    // keeps the masked single-line input.
+    expect(control("WIDGETRON_TOKEN").tagName).toBe("INPUT");
+    expect(input("WIDGETRON_TOKEN").type).toBe("password");
+    // Write-only holds for the textarea too — nothing prefilled.
+    expect(control("WIDGETRON_SIGNING_KEY").value).toBe("");
+  });
+
+  test("a pasted multi-line value reaches the PUT payload with its inner newlines intact", async () => {
+    const writes = mockApi({ deployMode: "saas", targets: [SYNTHETIC_TARGET] });
+    const pem = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY-----";
+
+    render(<ActionCredentialsPage />, { wrapper: Wrapper });
+
+    await waitFor(() => control("WIDGETRON_SIGNING_KEY"));
+    await act(async () => {
+      fireEvent.change(control("WIDGETRON_SIGNING_KEY"), { target: { value: `${pem}\n` } });
+    });
+    await act(async () => {
+      fireEvent.click(findButton("Save"));
+    });
+
+    await waitFor(() => {
+      if (writes.length === 0) throw new Error("no write yet");
+    });
+    // Inner newlines survive; only the edges are trimmed (the PUT contract
+    // trims what it sends, which for a PEM is the trailing newline).
+    expect(writes[0]!.body).toEqual({ fields: { WIDGETRON_SIGNING_KEY: pem } });
   });
 
   test("secret fields are masked and start empty; non-secret fields start empty too", async () => {

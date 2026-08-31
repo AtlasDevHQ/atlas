@@ -36,6 +36,7 @@ export const FieldStatusSchema = z.object({
   hint: z.string(),
   secret: z.boolean(),
   required: z.boolean(),
+  multiline: z.boolean(),
   present: z.boolean(),
   source: z.enum(FIELD_SOURCES),
 });

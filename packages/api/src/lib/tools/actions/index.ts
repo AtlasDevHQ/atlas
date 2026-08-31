@@ -67,10 +67,12 @@ export const ACTION_TOOLS: readonly AtlasAction[] = [
 export {
   resolveActionCredentials,
   getActionTargetStatus,
+  missingRequiredFor,
   ActionCredentialError,
   type ResolvedActionCredentials,
   type ActionCredentialSource,
   type ActionTargetStatus,
+  type ActionTargetState,
 } from "./credentials/resolver";
 export {
   ACTION_TARGETS,

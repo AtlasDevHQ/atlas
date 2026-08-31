@@ -2330,7 +2330,9 @@ export function createChatBridge(
           // Discriminated union; the `enabled: false` branch keeps the
           // listener at pre-#2655 behaviour.
           installGate: proactiveConfig.installGate,
-          refusalCopy: proactiveConfig.refusalCopy,
+          ...(proactiveConfig.refusalCopy !== undefined
+            ? { refusalCopy: proactiveConfig.refusalCopy }
+            : {}),
           ...(proactiveConfig.allowAnswerWhenEntitiesUnknown !== undefined
             ? { allowAnswerWhenEntitiesUnknown: proactiveConfig.allowAnswerWhenEntitiesUnknown }
             : {}),

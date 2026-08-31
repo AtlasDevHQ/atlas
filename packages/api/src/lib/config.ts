@@ -1385,7 +1385,16 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
         }
       : {}),
     ...(config.starterPrompts ? { starterPrompts: config.starterPrompts } : {}),
-    ...(config.enterprise ? { enterprise: config.enterprise } : {}),
+    // Rebuilt, not passed through: `licenseKey` is optional on the Zod output as
+    // `string | undefined`, while `ResolvedConfig` declares it exact (#5522).
+    ...(config.enterprise
+      ? {
+          enterprise: (({ licenseKey, ...restEnterprise }) => ({
+            ...restEnterprise,
+            ...(licenseKey !== undefined ? { licenseKey } : {}),
+          }))(config.enterprise),
+        }
+      : {}),
     ...(config.residency ? { residency: config.residency } : {}),
     ...(config.catalog && config.catalog.length > 0
       ? { catalog: config.catalog }

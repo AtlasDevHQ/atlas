@@ -2874,7 +2874,9 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
 
       return {
         ...def,
-        requiresRestart,
+        // Exact optional: a key that does not require a restart omits the hint
+        // rather than carrying `undefined` (#5522).
+        ...(requiresRestart !== undefined ? { requiresRestart } : {}),
         // Spread on presence: `saasImmutable` is an exact optional, and a key
         // that is not SaaS-immutable must be absent rather than hold
         // `undefined` (#5522).

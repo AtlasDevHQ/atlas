@@ -138,6 +138,27 @@ const mockJiraAction = {
   defaultApproval: "manual",
   requiredCredentials: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"],
 };
+const mockLinearAction = {
+  name: "createLinearTicket",
+  description: "### Create Linear Issue\nMock",
+  tool: { type: "function" },
+  actionType: "linear:create",
+  reversible: true,
+  defaultApproval: "manual",
+  // Empty, like the real action (#5554): Linear action credentials are
+  // per-workspace, so there is no global env set to validate against.
+  requiredCredentials: [] as string[],
+};
+const mockGitHubAction = {
+  name: "createGitHubIssue",
+  description: "### Create GitHub Issue\nMock",
+  tool: { type: "function" },
+  actionType: "github:create_issue",
+  reversible: true,
+  defaultApproval: "manual",
+  // Empty, like the real one — GitHub credentials are per-workspace (#5555).
+  requiredCredentials: [] as string[],
+};
 const mockEmailAction = {
   name: "sendEmailReport",
   description: "### Send Email Report\nMock",
@@ -147,9 +168,23 @@ const mockEmailAction = {
   defaultApproval: "admin-only",
   requiredCredentials: ["RESEND_API_KEY"],
 };
+// #5556 — per-workspace credentials, so `requiredCredentials` is empty (the
+// real action declares it empty for the same reason).
+const mockSalesforceAction = {
+  name: "createSalesforceRecord",
+  description: "### Create Salesforce Record\nMock",
+  tool: { type: "function" },
+  actionType: "salesforce:create",
+  reversible: true,
+  defaultApproval: "manual",
+  requiredCredentials: [],
+};
 void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: mockJiraAction,
+  createLinearTicket: mockLinearAction,
+  createGitHubIssue: mockGitHubAction,
   sendEmailReport: mockEmailAction,
+  createSalesforceRecord: mockSalesforceAction,
 }));
 
 const mockCreateConversation = mock((): Promise<{ id: string } | null> =>

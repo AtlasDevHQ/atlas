@@ -74,7 +74,9 @@ void mock.module("@atlas/api/lib/agent", () => ({
 }));
 
 const { executeAgentQuery } = await import("@atlas/api/lib/agent-query");
-const { buildHeadlessRegistry } = await import("@atlas/api/lib/tools/registry");
+const { buildHeadlessRegistry, ACTION_TOOLS_UNAVAILABLE_WARNING } = await import(
+  "@atlas/api/lib/tools/registry"
+);
 
 /** Run `fn` with the given env keys set/cleared, restoring them afterwards. */
 async function withEnv(
@@ -96,7 +98,17 @@ async function withEnv(
   }
 }
 
-const ACTION_WARNING = "The operator action tools (createJiraTicket, sendEmailReport) failed to load";
+/**
+ * The warning is asserted BY REFERENCE, not by an inlined copy. The file
+ * header already said that was the rule; a hand-typed copy lived here anyway
+ * and then drifted three times in one day, as GitHub (#5555), Linear (#5554)
+ * and Salesforce (#5556) each joined the set from a separate lane — every one
+ * of which conflicted on this very line. The relay is what this file proves —
+ * that the seam passes the registry's own warning through — so referencing the
+ * constant is the assertion, and the copy itself is `registry.test.ts`'s to
+ * pin.
+ */
+const ACTION_WARNING = ACTION_TOOLS_UNAVAILABLE_WARNING;
 
 describe("#4941 — headless surfaces relay a degraded tool load", () => {
   it("the headless seam surfaces buildRegistry's action-tool warning to its caller", async () => {

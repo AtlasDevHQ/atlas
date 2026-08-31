@@ -56,10 +56,190 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, getInternalDB } from "@atlas/api/lib/db/internal";
 import { BUNDLE_TABLE_DECISIONS } from "./bundle-scope";
-import { getCleanupDueMigrations } from "./migrate";
+import { getCleanupDueMigrations, REFUSAL_DISCLOSURE } from "./migrate";
+import type { PayloadCarryingRefusalSection } from "./migrate";
 import { getApiRegion } from "./misrouting";
 
 const log = createLogger("region-migration-cleanup");
+
+// ---------------------------------------------------------------------------
+// The delete-time refusal audit (#5112, extended to all three sections by #5557)
+// ---------------------------------------------------------------------------
+
+/**
+ * One refusal section's delete-time accounting: which two `region_migrations`
+ * columns hold it, and what the audit event and the warn call them.
+ *
+ * `sourceTable`, `decisions` and the payload column itself are NOT restated here —
+ * they come from `REFUSAL_DISCLOSURE`, which the pre-cutover disclosure in
+ * `migrate.ts` already reads. Those two surfaces describe the SAME loss seven days
+ * apart, so a second spelling of "which table held it" or "which column holds the
+ * last copy" is a pair that can disagree, and an operator reading both would get two
+ * different answers about where to look.
+ *
+ * `subject` IS local, and deliberately: the disclosure speaks before the fact
+ * ("curated alias edges" the target refused) while this speaks after it ("refused
+ * alias edges" whose rows are now gone). Same loss, different tense — sharing the
+ * phrase would make one of the two sentences read wrong.
+ */
+interface DeleteTimeRefusalSection {
+  /** The wire section, and the key into `REFUSAL_DISCLOSURE`. */
+  readonly section: PayloadCarryingRefusalSection;
+  /** What the warn calls the loss, phrased for the past tense. */
+  readonly subject: string;
+  /** `region_migrations` column holding the TRUE refused count (NULL = unknown). */
+  readonly countColumn: string;
+  /** Alias the derived SELECT gives this section's `jsonb_array_length`. */
+  readonly recordedColumn: string;
+  /** Audit-event/warn key for the count. */
+  readonly countKey: string;
+  /** Audit-event/warn key for how many payloads actually landed. */
+  readonly recordedKey: string;
+}
+
+/**
+ * ⚠️ THE AUDIT KEYS ARE PART OF THE SHIPPED SURFACE, not derived from the column
+ * names. `vocabularyEdgesRefused` and `vocabularyRefusalsRecorded` have been on this
+ * event since #5112 and an operator's saved log query matches on them, so they are
+ * written out rather than camel-cased from SQL at runtime — a naming helper would
+ * make renaming them look like a refactor.
+ */
+const DELETE_TIME_REFUSAL_SECTIONS = [
+  {
+    section: "brainVocabularyEdges",
+    subject: "refused alias edges",
+    countColumn: "vocabulary_edges_refused",
+    recordedColumn: "vocabulary_refusals_recorded",
+    countKey: "vocabularyEdgesRefused",
+    recordedKey: "vocabularyRefusalsRecorded",
+  },
+  {
+    section: "brainVocabularyProposals",
+    subject: "refused alias-proposal decisions",
+    countColumn: "vocabulary_proposals_refused",
+    recordedColumn: "vocabulary_proposal_refusals_recorded",
+    countKey: "vocabularyProposalsRefused",
+    recordedKey: "vocabularyProposalRefusalsRecorded",
+  },
+  {
+    section: "brainPredicateCardinalities",
+    subject: "refused predicate-cardinality decisions",
+    countColumn: "predicate_cardinalities_refused",
+    recordedColumn: "predicate_cardinality_refusals_recorded",
+    countKey: "predicateCardinalitiesRefused",
+    recordedKey: "predicateCardinalityRefusalsRecorded",
+  },
+] as const satisfies readonly DeleteTimeRefusalSection[];
+
+/**
+ * Completeness pin: every payload-carrying section has a delete-time reader.
+ *
+ * The state this issue (#5557) exists to fix is precisely the other side of it —
+ * #5533 shipped two payload columns whose only reader was the write that filled
+ * them, so an operator was warned about unexported edge refusals and told nothing
+ * about a refused vocabulary decision losing its last copy's context in the same
+ * sweep. That gap was invisible to the type system and survived as a follow-up
+ * issue; a fourth section now cannot repeat it silently.
+ *
+ * ⚠️ `as const satisfies` on the array above is what makes this able to go red — a
+ * `readonly DeleteTimeRefusalSection[]` annotation would widen `section` back to the
+ * full union and this check would be vacuously true.
+ */
+type UncoveredRefusalSection = Exclude<
+  PayloadCarryingRefusalSection,
+  (typeof DELETE_TIME_REFUSAL_SECTIONS)[number]["section"]
+>;
+const _everyPayloadSectionAudited: [UncoveredRefusalSection] extends [never] ? true : never = true;
+void _everyPayloadSectionAudited;
+
+/**
+ * The refusal COLUMN LIST of the eligibility re-check, derived from the table above.
+ *
+ * Not a SELECT — a comma-joined list of column expressions spliced into one, which is
+ * why it is not named for a statement it cannot be used as on its own.
+ *
+ * Derived rather than written out, because a section listed in the table but missing
+ * from the SELECT reads back `undefined` — which this module's `typeof === "number"`
+ * narrowing turns into "count unknown, nothing recorded", i.e. silence. That is the
+ * same silence the issue is about, reintroduced one layer down and with no symptom.
+ *
+ * Interpolation is safe by construction: every fragment is a literal from
+ * `DELETE_TIME_REFUSAL_SECTIONS`, and no caller-supplied value reaches this string.
+ * The migration id stays a bound `$1`.
+ *
+ * ⚠️ `COALESCE(jsonb_array_length(…), 0)` folds "column NULL" and "empty array"
+ * together on purpose — see `jsonbPayload` in `migrate.ts`. Both mean "no payload is
+ * recoverable from this row", which is one operator sentence, not two.
+ */
+const REFUSAL_AUDIT_COLUMNS = DELETE_TIME_REFUSAL_SECTIONS.flatMap((s) => [
+  s.countColumn,
+  `COALESCE(jsonb_array_length(${REFUSAL_DISCLOSURE[s.section].column}), 0) AS ${s.recordedColumn}`,
+]).join(",\n              ");
+
+/** One section's two numbers as read off the locked row. */
+interface SectionRefusalReading {
+  /**
+   * The target's true refused count, or `null` for UNKNOWN — a row written before
+   * the column's migration, or a source build that never asked. Kept as `null`
+   * rather than coerced to `0`, because `0` is a positive claim that nothing was
+   * refused and this column cannot make it for those rows.
+   */
+  readonly refused: number | null;
+  /** How many payloads are actually on this row. `0` IS a claim — see the SELECT. */
+  readonly recorded: number;
+}
+
+function readSectionRefusals(
+  row: Record<string, unknown>,
+  section: DeleteTimeRefusalSection,
+): SectionRefusalReading {
+  const refused = row[section.countColumn];
+  const recorded = row[section.recordedColumn];
+  return {
+    refused: typeof refused === "number" ? refused : null,
+    recorded: typeof recorded === "number" ? recorded : 0,
+  };
+}
+
+/**
+ * The three-state recovery sentence, per section (#5112's shape, generalized).
+ *
+ * ⚠️ THREE MESSAGES, because there are three states and only one of them can
+ * honestly say "re-author them from this row". Round 1 of #5112's review caught a
+ * single unconditional message that promised the payloads whether or not any had
+ * been recorded — the worst possible moment to be wrong, since it fires exactly when
+ * the originals stop existing. Generalizing it to three sections keeps that split
+ * per section rather than across their sum: a migration that recorded every edge
+ * payload and no cardinality payload is COMPLETE for one and EMPTY for the other,
+ * and a summed verdict would report "partial" and send the operator to a column that
+ * holds nothing for the section they are chasing.
+ */
+function refusalRecoverySentence(
+  section: DeleteTimeRefusalSection,
+  refused: number,
+  recorded: number,
+): string {
+  const column = `region_migrations.${REFUSAL_DISCLOSURE[section.section].column}`;
+  if (recorded === 0) {
+    return (
+      "NO recovery payload was recorded for this migration (the target region's build " +
+      "predated the payload contract, or every entry it sent was unreadable), so the " +
+      "target region's own log is the only surviving copy — search it for this " +
+      "workspace's refusal lines."
+    );
+  }
+  if (recorded < refused) {
+    return (
+      `Only ${recorded} of the ${refused} recovery payloads are on this migration's ` +
+      `${column} (platform-classified, so this sweep never touches it); the remainder ` +
+      "exist only in the target region's log."
+    );
+  }
+  return (
+    `The recovery payloads are all on this migration's ${column} (platform-classified, ` +
+    "so this sweep never touches it); re-author them there."
+  );
+}
 
 /**
  * Sweep cadence for the `region_migration_source_cleanup` fiber. Hourly is
@@ -498,45 +678,46 @@ export async function cleanupMigrationSourceData(migration: {
 
     // Re-check eligibility under a row lock — the loser of a concurrent
     // sweep (multi-instance deploy) sees the winner's stamp and skips.
-    // BOTH #5112 columns ride the SAME `FOR UPDATE` read — no extra query, and
+    // ALL SIX refusal columns ride the SAME `FOR UPDATE` read — no extra query, and
     // read under the lock that pins the verdict to the deletes. This sweep is the
-    // irreversible act: after it, the source's own `brain_vocabulary_edge` rows are
-    // gone and the payloads on this row are the last copy of those approved
-    // decisions. The audit event below is where that becomes visible at the moment
-    // it becomes true, rather than only in a phase-2 warn emitted seven days
-    // earlier.
+    // irreversible act: after it, the source's own `brain_vocabulary_edge`,
+    // `brain_vocabulary_proposal` and `brain_predicate_cardinality` rows are gone and
+    // the payloads on this row are the last copy of those human decisions. The audit
+    // event below is where that becomes visible at the moment it becomes true, rather
+    // than only in a phase-2 warn emitted seven days earlier.
     //
-    // ⚠️ `vocabulary_refusals` is read as a LENGTH, not as the array. The warn
-    // below tells an operator to go and re-author from that column, and round 1 of
-    // this PR's review caught it making that promise unconditionally — while the
-    // column is NULL for a target that predated #5112 (count answered, no payloads)
-    // and shorter than the count whenever the cap bit or an entry was screened out.
-    // A recovery instruction pointing at an empty column, emitted at the instant
-    // the originals become unrecoverable, is worse than no instruction.
+    // ⚠️ Each payload column is read as a LENGTH, not as the array. The warns below
+    // tell an operator to go and re-author from those columns, and round 1 of #5112's
+    // review caught the edge one making that promise unconditionally — while the
+    // column is NULL for a target that predated the payload contract (count answered,
+    // no payloads) and shorter than the count whenever the cap bit or an entry was
+    // screened out. A recovery instruction pointing at an empty column, emitted at the
+    // instant the originals become unrecoverable, is worse than no instruction.
     const rows = await client.query(
       `SELECT status,
               source_cleaned_at,
-              vocabulary_edges_refused,
-              COALESCE(jsonb_array_length(vocabulary_refusals), 0) AS vocabulary_refusals_recorded
+              ${REFUSAL_AUDIT_COLUMNS}
          FROM region_migrations WHERE id = $1 FOR UPDATE`,
       [migrationId],
     );
-    const row = rows.rows[0];
+    const row: Record<string, unknown> | undefined = rows.rows[0];
     if (!row || row.status !== "completed" || row.source_cleaned_at !== null) {
       await client.query("ROLLBACK");
       return { outcome: "already_resolved" };
     }
-    // NULL means UNKNOWN, not zero — a row written before migration 0204, or a
-    // migration whose source build never asked the target. Kept as `null` rather
-    // than coerced to `0`, because `0` is a positive claim that nothing was
-    // refused and this column cannot make it for those rows.
-    const vocabularyEdgesRefused: number | null =
-      typeof row.vocabulary_edges_refused === "number" ? row.vocabulary_edges_refused : null;
-    // `0` here IS a claim — `COALESCE(..., 0)` folds "column NULL" and "empty
-    // array" together deliberately, because both mean the same thing to the
-    // operator: no payload is recoverable from this row.
-    const vocabularyRefusalsRecorded: number =
-      typeof row.vocabulary_refusals_recorded === "number" ? row.vocabulary_refusals_recorded : 0;
+    const refusalReadings = DELETE_TIME_REFUSAL_SECTIONS.map((section) => ({
+      section,
+      ...readSectionRefusals(row, section),
+    }));
+    // Flat keys, not a nested object per section: this rides a log line, and a
+    // saved query for `vocabularyEdgesRefused` has matched a top-level key since
+    // #5112. Nesting the three would break every such query to buy grouping that
+    // the key names already carry.
+    const refusalAudit: Record<string, number | null> = {};
+    for (const reading of refusalReadings) {
+      refusalAudit[reading.section.countKey] = reading.refused;
+      refusalAudit[reading.section.recordedKey] = reading.recorded;
+    }
 
     // Cutover guard: never delete a workspace that is homed HERE. After a
     // normal cutover the source DB's organization row points at the target
@@ -616,46 +797,53 @@ export async function cleanupMigrationSourceData(migration: {
       sourceRegion,
       deletedRows,
       deletedByTable,
-      // #5112 — the counts travel with the deletion audit, because THIS is the
-      // event that made the loss permanent. `null` = unknown (pre-0204 row).
-      vocabularyEdgesRefused,
-      vocabularyRefusalsRecorded,
+      // #5112, all three sections since #5557 — the counts travel with the deletion
+      // audit, because THIS is the event that made the loss permanent. `null` =
+      // unknown (a row predating the section's column).
+      ...refusalAudit,
     });
     log.info(
-      { migrationId, workspaceId, sourceRegion, deletedRows, vocabularyEdgesRefused },
+      {
+        migrationId,
+        workspaceId,
+        sourceRegion,
+        deletedRows,
+        ...Object.fromEntries(
+          refusalReadings.map((r) => [r.section.countKey, r.refused] as const),
+        ),
+      },
       "Source-region data cleanup completed",
     );
-    // ⚠️ A SEPARATE `warn`, not a clause on the `info` above, and only when the
-    // number is non-zero (#5112). The line above is routine — it fires for every
-    // migration — and an operator who greps for it is looking at row counts. This
-    // one says an irreversible thing just happened to a human's approved decisions
-    // and points at where they can still be found, which from this instant on is
-    // the only remaining copy.
-    if (vocabularyEdgesRefused !== null && vocabularyEdgesRefused > 0) {
-      // ⚠️ THREE MESSAGES, because there are three states and only one of them can
-      // honestly say "re-author them from this row". Round 1 of this PR's review
-      // caught a single unconditional message that promised the payloads whether or
-      // not any had been recorded — the worst possible moment to be wrong, since it
-      // fires exactly when the originals stop existing.
-      const recovery =
-        vocabularyRefusalsRecorded === 0
-          ? "NO recovery payload was recorded for this migration (the target region's build " +
-            "predated the payload contract, or every entry it sent was unreadable), so the " +
-            "target region's own log is the only surviving copy — search it for this " +
-            "workspace's refusal lines."
-          : vocabularyRefusalsRecorded < vocabularyEdgesRefused
-            ? `Only ${vocabularyRefusalsRecorded} of the ${vocabularyEdgesRefused} recovery ` +
-              "payloads are on this migration's region_migrations.vocabulary_refusals " +
-              "(platform-classified, so this sweep never touches it); the remainder exist only " +
-              "in the target region's log."
-            : "The recovery payloads are all on this migration's " +
-              "region_migrations.vocabulary_refusals (platform-classified, so this sweep never " +
-              "touches it); re-author them there.";
+    // ⚠️ A SEPARATE `warn` PER SECTION, not a clause on the `info` above and not one
+    // line summing the three (#5112, #5557). The line above is routine — it fires for
+    // every migration — and an operator who greps for it is looking at row counts.
+    // These say an irreversible thing just happened to a human's decisions and point
+    // at where they can still be found, which from this instant on is the only
+    // remaining copy.
+    //
+    // Per section rather than merged, for the same reason `migrate.ts`'s pre-cutover
+    // disclosure is: the three losses come out of three DIFFERENT tables with three
+    // different recovery columns, and one line naming `brain_vocabulary_edge` while
+    // reporting a refused predicate-cardinality decision sends the operator to a table
+    // that does not hold it.
+    for (const { section, refused, recorded } of refusalReadings) {
+      // `null` is UNKNOWN and is not a reason to shout — there may be nothing to
+      // shout about. `0` is a claim that nothing was lost, and a disclosure that
+      // fires for every migration that lost nothing is alarm fatigue.
+      if (refused === null || refused <= 0) continue;
+      const { sourceTable, decisions } = REFUSAL_DISCLOSURE[section.section];
       log.warn(
-        { migrationId, workspaceId, sourceRegion, vocabularyEdgesRefused, vocabularyRefusalsRecorded },
-        "Source cleanup DELETED the brain_vocabulary_edge rows behind refused alias edges — that " +
-          "many approved human review decisions were never applied in the target region and " +
-          `their source rows are now gone. ${recovery}`,
+        {
+          migrationId,
+          workspaceId,
+          sourceRegion,
+          section: section.section,
+          [section.countKey]: refused,
+          [section.recordedKey]: recorded,
+        },
+        `Source cleanup DELETED the ${sourceTable} rows behind ${section.subject} — that ` +
+          `many ${decisions} were never applied in the target region and ` +
+          `their source rows are now gone. ${refusalRecoverySentence(section, refused, recorded)}`,
       );
     }
     return { outcome: "cleaned", deletedRows };

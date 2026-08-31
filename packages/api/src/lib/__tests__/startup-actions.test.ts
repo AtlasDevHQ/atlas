@@ -441,11 +441,32 @@ describe("action diagnostics — high-risk auto-approve warnings", () => {
     ).toBe(true);
   });
 
+  it("warns when linear:create is configured for auto-approve", async () => {
+    // #5554 — same risk class as `jira:create`: an external write, reversible
+    // only on paper, manual by default. A target added to `ACTION_TARGETS`
+    // without being added to `highRiskActions` would silently lose this
+    // warning while its Jira twin kept it.
+    mockConfig = {
+      actions: {
+        "linear:create": { approval: "auto" },
+      },
+    };
+
+    await validateEnvironment();
+    const warnings = getStartupWarnings();
+    expect(
+      warnings.some(
+        (w) => w.includes("linear:create") && w.includes("auto-approve"),
+      ),
+    ).toBe(true);
+  });
+
   it("warns for multiple high-risk actions configured for auto-approve", async () => {
     mockConfig = {
       actions: {
         "email:send": { approval: "auto" },
         "jira:create": { approval: "auto" },
+        "linear:create": { approval: "auto" },
         "salesforce:update": { approval: "auto" },
         "salesforce:create": { approval: "auto" },
       },
@@ -455,7 +476,7 @@ describe("action diagnostics — high-risk auto-approve warnings", () => {
     const warnings = getStartupWarnings();
     expect(
       warnings.filter((w) => w.includes("auto-approve")).length,
-    ).toBeGreaterThanOrEqual(4);
+    ).toBeGreaterThanOrEqual(5);
   });
 
   it("no auto-approve warning when high-risk action uses manual approval", async () => {

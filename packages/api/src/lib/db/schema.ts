@@ -2888,8 +2888,9 @@ export const crmOutbox = pgTable(
 // system (CLAUDE.md § Content Mode System carve-out). The payload IS a
 // bearer credential for the TTL window (a live reset link / OTP) — hence
 // encrypted at rest — but it holds no LONG-LIVED provider credential, so
-// there is nothing for F-47 rotation to re-key: it is NOT a member of
-// `INTEGRATION_TABLES`.
+// there is nothing for F-47 rotation to re-key. That skip is a declared
+// entry in `ENCRYPTED_OUTSIDE_ROTATION` (db/integration-tables.ts), where
+// the completeness tripwire checks it, not just this comment.
 // ---------------------------------------------------------------------------
 
 export const emailOutbox = pgTable(

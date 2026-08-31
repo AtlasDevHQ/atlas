@@ -11,6 +11,18 @@
  * Adding a new integration credential table is one entry here plus the
  * matching migration; both downstream scripts pick it up automatically.
  *
+ * ⚠️ The converse is enforced too: `__tests__/integration-tables.test.ts`
+ * enumerates the Drizzle schema and fails on any `*_encrypted` column
+ * that is classified nowhere in this module — an entry in
+ * `INTEGRATION_TABLES`, in `STANDALONE_ROTATION_TABLES`, or an explicit
+ * skip in `ENCRYPTED_OUTSIDE_ROTATION`. Until that tripwire landed this
+ * was the one table-lifecycle axis (vs purge / bundle / cleanup /
+ * residue-sweep) whose registry could silently under-count:
+ * `workspace_model_config` was rotated only via a hand-written duplicate
+ * entry inside the rotation script, and `email_outbox.payload`'s
+ * non-participation was recorded only as a schema comment. Both are
+ * declarations below now.
+ *
  * Pre-#1832 (F-41 soak) the same shape carried a `plaintext` column for
  * the now-deleted `backfill-integration-credentials.ts` script. The
  * column dropped along with the script — only the encrypted-column
@@ -104,3 +116,96 @@ export const INTEGRATION_TABLES: ReadonlyArray<IntegrationTable> = [
 export const NON_NULL_ENCRYPTED_TABLES: ReadonlyArray<IntegrationTable> = INTEGRATION_TABLES.filter(
   (t) => t.table !== "discord_installations",
 );
+
+/**
+ * F-47 column-rotation participants that are NOT integration credential
+ * tables, so they stay out of `INTEGRATION_TABLES` (and out of the F-42
+ * residue audit that iterates it) while still being re-keyed by the
+ * rotation script via `ROTATED_COLUMN_TABLES` below.
+ *
+ * `workspace_model_config` is the founding member, moved here from a
+ * hand-written duplicate inside `rotate-encryption-key.ts` (which the
+ * completeness tripwire could never see):
+ *   • It is a BYOT model key, not an integration credential, and it is
+ *     encrypted by the legacy `db/internal.ts` `encryptSecret`
+ *     (`URLSecret` brand) — the post-#2755 carve-out reserved for this
+ *     column and `sso_providers.config.clientSecret`. Both helpers emit
+ *     the same `enc:v<N>:` wire format, which is what makes the shared
+ *     column-walking rotation valid.
+ *   • It is deliberately absent from the F-42 residue audit: the legacy
+ *     helper passes plaintext through when no keyset is configured
+ *     (dev / self-hosted), so a ciphertext-shape assertion would
+ *     false-positive on legitimate rows. That absence is a decision,
+ *     recorded here rather than implied by omission.
+ */
+export const STANDALONE_ROTATION_TABLES: ReadonlyArray<IntegrationTable> = [
+  // Nullable column: provider='gateway' rows carry no BYOT key at all
+  // (chk_model_provider_key), so this could never join
+  // NON_NULL_ENCRYPTED_TABLES even if it were an integration table.
+  { table: "workspace_model_config", pk: "id", encrypted: "api_key_encrypted", keyVersionColumn: "api_key_key_version" },
+] as const;
+
+/**
+ * Every column-oriented F-47 rotation target — what the rotation
+ * script's `ROTATION_TABLES` derives its column entries from. One list,
+ * so a new encrypted column is a single entry in exactly one of the two
+ * arrays above and rotation coverage follows automatically.
+ */
+export const ROTATED_COLUMN_TABLES: ReadonlyArray<IntegrationTable> = [
+  ...STANDALONE_ROTATION_TABLES,
+  ...INTEGRATION_TABLES,
+];
+
+/**
+ * An at-rest-encrypted column that deliberately does NOT participate in
+ * F-47 column rotation. Absence from the rotation walk must be a
+ * declaration, not an omission — the completeness tripwire in
+ * `__tests__/integration-tables.test.ts` accepts a column only when it
+ * is classified either as a rotation participant or as an entry here.
+ */
+export interface EncryptedColumnSkip {
+  /** Logical table name. Must exist in the Drizzle schema (test-enforced). */
+  readonly table: string;
+  /** Column carrying `enc:v<N>:` ciphertext. */
+  readonly column: string;
+  /**
+   * How the ciphertext leaves an old key's coverage, since the rotation
+   * script never touches it:
+   *   • "manual" — an operator/admin action re-encrypts under the
+   *     active key (documented per entry).
+   *   • "expires" — rows are TTL-bounded; the old key only needs to
+   *     outlive the longest TTL in the keyset's decrypt list.
+   */
+  readonly rotation: "manual" | "expires";
+  /** Why the skip is correct. Load-bearing: shown to whoever the tripwire stops. */
+  readonly reason: string;
+}
+
+/**
+ * The declared skips. Keep each reason honest enough that a future
+ * reader can decide whether the grounds still hold.
+ */
+export const ENCRYPTED_OUTSIDE_ROTATION: ReadonlyArray<EncryptedColumnSkip> = [
+  {
+    table: "email_outbox",
+    column: "payload",
+    rotation: "expires",
+    reason:
+      "TTL'd transactional sends (live reset link / OTP for the delivery window). " +
+      "No long-lived credential exists to re-key: rows are dead-lettered past " +
+      "expires_at, so retiring a key only needs to wait out the longest TTL. " +
+      "Re-encrypting undelivered mail mid-flight would race the flusher's claim " +
+      "cycle for no security gain. See the email_outbox schema comment.",
+  },
+  {
+    table: "sso_providers",
+    column: "config",
+    rotation: "manual",
+    reason:
+      "clientSecret is encrypted inside a hand-rolled JSONB field, not the " +
+      "catalog-driven selective-field walker, so the column walker cannot reach " +
+      "it. Operators re-save OIDC configs via the admin UI to re-encrypt under " +
+      "the active key — the same gap the rotate-encryption-key.ts header " +
+      "documents, with an `oidc-jsonb` target kind as the future closure.",
+  },
+] as const;

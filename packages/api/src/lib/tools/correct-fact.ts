@@ -16,7 +16,10 @@
  * card, and that endpoint re-runs the WHOLE gate server-side rather than
  * trusting the staged payload. The decision and its reasoning are ADR-0036
  * §T9's 2026-08-27b amendment (#5485); the mechanism is
- * `lib/brain/correction-confirm.ts`, which mirrors the REST write gate (#3007).
+ * `lib/brain/staged-correct.ts` — this verb's
+ * {@link import("@atlas/api/lib/brain/staged-write").StagedVerb} descriptor —
+ * over the one gate in `lib/brain/staged-write.ts` (#5571), which mirrors the
+ * REST write gate (#3007).
  *
  * What this tool checks at staging is deliberately narrow: the deployment has a
  * brain, the session has a workspace, the actor resolves, and the actor holds
@@ -56,27 +59,27 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
-import { hasInternalDB, getInternalDB } from "@atlas/api/lib/db/internal";
-import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import {
   CORRECTION_VERBS,
   correctionAuthorityRefusal,
 } from "@atlas/api/lib/brain/correction";
 import {
   buildCorrectionSummary,
-  mintCorrectionConfirmToken,
+  CORRECTION_STAGED_VERB,
   type CorrectFactConfirmRequest,
   type CorrectionConfirmPayload,
-} from "@atlas/api/lib/brain/correction-confirm";
+} from "@atlas/api/lib/brain/staged-correct";
+import {
+  mintStagedConfirmToken,
+  resolveStagedActor,
+} from "@atlas/api/lib/brain/staged-write";
+import { withRequestId } from "@atlas/api/lib/tools/tool-message";
+import { stagedToolRefusal } from "@atlas/api/lib/tools/staged-tool";
 import {
   BRAIN_CORRECTION_OBJECT_MAX_CHARS,
   BRAIN_CORRECTION_REASON_MAX_CHARS,
 } from "@useatlas/schemas";
 import type { BrainCorrectionVerb } from "@useatlas/types";
-import {
-  BrainReaderIdentityError,
-  resolveBrainReaderContext,
-} from "@atlas/api/lib/brain/reader-context";
 
 const log = createLogger("correct-fact");
 
@@ -133,15 +136,13 @@ interface CorrectFactStaged {
   readonly confirm: CorrectFactConfirmRequest;
 }
 
-/** Append the request id so the user has something to quote. */
-function withRequestId(message: string, requestId: string | undefined): string {
-  return requestId ? `${message} (request ${requestId})` : message;
-}
-
-const READER_UNRESOLVED_MESSAGE =
-  "The correction was refused: your identity could not be resolved for this workspace, so the " +
-  "fact's visibility could not be checked safely. This is a configuration or session problem — " +
-  "report it; the fact was not changed.";
+/**
+ * This verb's degraded-path copy, both surfaces, in one place (#5571) — the
+ * same descriptor `POST /api/v1/brain-corrections/confirm` reads its ladder
+ * from. `withRequestId` and the reader-unresolved sentence used to be local
+ * copies here, in `propose-fact.ts` and in `search-brain.ts`.
+ */
+const COPY = CORRECTION_STAGED_VERB.copy.staging;
 
 export const correctFactTool = tool({
   description:
@@ -193,63 +194,40 @@ export const correctFactTool = tool({
     const requestId = reqCtx?.requestId;
     const workspaceId = reqCtx?.user?.activeOrganizationId;
 
-    if (!hasInternalDB()) {
-      return {
-        error:
-          "Fact correction is unavailable — this deployment has no internal database configured.",
-        reason: CORRECT_FACT_TOOL_REASONS.noInternalDb,
-      };
-    }
-    if (!workspaceId) {
-      return {
-        error:
-          "Fact correction is unavailable — no active workspace is bound to this session, so there is no brain to correct.",
-        reason: CORRECT_FACT_TOOL_REASONS.noWorkspace,
-      };
-    }
-
-    // Nothing below this line writes, so the old "the try covers only the code
-    // that runs before the correction commits" reasoning no longer has anything
-    // to protect — this whole path is pre-commit by construction now. The catch
-    // is kept for the one thing that can still fail here: resolving the actor.
-    let ctx: Awaited<ReturnType<typeof resolveBrainReaderContext>>;
-    try {
-      ctx = await resolveBrainReaderContext(getInternalDB(), {
-        workspaceId,
-        mode: detectAuthMode(),
-        user: reqCtx?.user,
-        ...(requestId !== undefined ? { requestId } : {}),
-      });
-    } catch (err) {
-      if (err instanceof BrainReaderIdentityError) {
-        log.error(
-          { err: err.message, workspaceId, requestId },
-          "correct_fact refused: actor identity could not be resolved",
-        );
-        return {
-          error: withRequestId(READER_UNRESOLVED_MESSAGE, requestId),
-          reason: CORRECT_FACT_TOOL_REASONS.readerUnresolved,
-        };
-      }
-      log.error(
-        {
-          err: err instanceof Error ? err.message : String(err),
-          workspaceId,
-          factId: input.factId,
-          verb: input.verb,
-          requestId,
+    // The shared staging preamble: this deployment has a brain, this session
+    // has a workspace, and this actor resolves. Nothing below writes, so the
+    // only thing that can fail here is resolving the actor; the reason CODES
+    // stay this tool's, and unlike `proposeFact` this one has a `refused` arm
+    // for the authority gate below.
+    //
+    // `store-first`, deliberately: a self-hosted deployment with no
+    // `DATABASE_URL` has neither a store nor a workspace, and "no internal
+    // database configured" is the sentence that names something an operator can
+    // fix. See `StagedPreambleOrder`.
+    const actor = await resolveStagedActor({
+      workspaceId,
+      user: reqCtx?.user,
+      requestId,
+      order: "store-first",
+    });
+    if (!actor.ok) {
+      return stagedToolRefusal({
+        verb: CORRECTION_STAGED_VERB,
+        failure: actor,
+        reasons: {
+          storeUnavailable: CORRECT_FACT_TOOL_REASONS.noInternalDb,
+          noWorkspace: CORRECT_FACT_TOOL_REASONS.noWorkspace,
+          readerUnresolved: CORRECT_FACT_TOOL_REASONS.readerUnresolved,
+          actorFailed: CORRECT_FACT_TOOL_REASONS.correctionFailed,
         },
-        "correct_fact could not resolve the actor for staging",
-      );
-      return {
-        error: withRequestId(
-          "The correction could not be prepared — nothing was changed. Retry once; if it persists, " +
-            "the brain store may be temporarily unavailable.",
-          requestId,
-        ),
-        reason: CORRECT_FACT_TOOL_REASONS.correctionFailed,
-      };
+        toolName: "correct_fact",
+        log,
+        workspaceId,
+        requestId,
+        logFields: { factId: input.factId, verb: input.verb },
+      });
     }
+    const { ctx } = actor;
 
     // Refuse an unauthorized correction here rather than staging a card whose
     // Confirm button would be refused. The SHARED predicate, not a copy — see
@@ -285,7 +263,7 @@ export const correctFactTool = tool({
     // server cannot later prove a human approved is worse than no correction.
     let token: string;
     try {
-      token = mintCorrectionConfirmToken({
+      token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, {
         // `ctx.workspaceId`, not the raw `workspaceId` off request context: the
         // confirm endpoint re-derives the binding from ITS resolved context, and
         // binding one of the two while verifying against the other is how a
@@ -307,12 +285,7 @@ export const correctFactTool = tool({
         "correct_fact could not mint a confirm token",
       );
       return {
-        error: withRequestId(
-          "This correction can't be staged for confirmation — the server is missing a signing key for " +
-            "confirmation tokens. Tell the user the correction can't be confirmed right now; do not claim " +
-            "it was applied. Nothing was changed.",
-          requestId,
-        ),
+        error: withRequestId(COPY.mintFailed, requestId),
         reason: CORRECT_FACT_TOOL_REASONS.correctionFailed,
       };
     }

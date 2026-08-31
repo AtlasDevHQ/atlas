@@ -35,23 +35,11 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { getInternalDB, hasInternalDB } from "@atlas/api/lib/db/internal";
-import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { proposeFact, type ProposalOutcome } from "@atlas/api/lib/brain/proposal";
-import {
-  burnProposalConfirmNonce,
-  verifyProposalConfirmToken,
-} from "@atlas/api/lib/brain/proposal-confirm";
-import {
-  BrainReaderIdentityError,
-  resolveBrainReaderContext,
-} from "@atlas/api/lib/brain/reader-context";
-import {
-  VocabularyClosureError,
-  loadWorkspaceVocabulary,
-} from "@atlas/api/lib/brain/vocabulary";
+import { PROPOSAL_STAGED_VERB } from "@atlas/api/lib/brain/staged-propose";
 import { BrainProposalClaimSchema } from "@useatlas/schemas";
 import { ErrorSchema } from "./shared-schemas";
+import { runStagedConfirm } from "./shared-staged-confirm";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("brain-proposals");
@@ -116,17 +104,6 @@ const ConfirmResponseSchema = z.discriminatedUnion("outcome", [
     evidenceAdded: z.boolean(),
   }),
 ]);
-
-/**
- * The one neutral rejection for every attacker-probeable token failure. The
- * specific reason is logged server-side and never returned: telling a caller
- * which check tripped is how a pipeline gets probed.
- */
-const TOKEN_INVALID_BODY = {
-  error: "confirm_token_invalid",
-  message:
-    "This confirmation is missing, invalid, expired, or already used. Ask Atlas to stage the proposal again.",
-} as const;
 
 const confirmRoute = createRoute({
   method: "post",
@@ -197,82 +174,10 @@ export function createBrainProposalsRoute() {
   route.openapi(
     confirmRoute,
     async (c) => {
-      const auth = c.get("authResult");
       const requestId = c.get("requestId");
-      const orgId = auth?.user?.activeOrganizationId;
-      if (!orgId) {
-        return c.json(
-          {
-            error: "no_workspace",
-            message: "No active workspace — select one before confirming a proposal.",
-          },
-          400,
-        );
-      }
-      if (!hasInternalDB()) {
-        return c.json(
-          {
-            error: "brain_unavailable",
-            message:
-              "Proposing a fact is unavailable — this deployment has no internal database configured.",
-            requestId,
-          },
-          503,
-        );
-      }
-
       const input = c.req.valid("json");
 
-      // Re-resolve the actor from THIS request rather than trusting anything
-      // staged. The proposal is attributed to this context and granted from it,
-      // so a session that has since lost its membership is refused here even
-      // though its token verifies.
-      let ctx: Awaited<ReturnType<typeof resolveBrainReaderContext>>;
-      try {
-        ctx = await resolveBrainReaderContext(getInternalDB(), {
-          workspaceId: orgId,
-          mode: detectAuthMode(),
-          user: auth?.user,
-          requestId,
-        });
-      } catch (err) {
-        if (err instanceof BrainReaderIdentityError) {
-          log.error(
-            { err: err.message, workspaceId: orgId, requestId },
-            "Proposal confirm refused: actor identity could not be resolved",
-          );
-          return c.json(
-            {
-              error: "reader_unresolved",
-              message:
-                "Your identity could not be resolved for this workspace, so the claim could not be " +
-                "attributed to anyone. This is a configuration or session problem — report it; nothing " +
-                "was recorded.",
-              requestId,
-            },
-            500,
-          );
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        log.error(
-          { err: message, workspaceId: orgId, requestId },
-          "Proposal confirm could not resolve the actor",
-        );
-        return c.json(
-          {
-            error: "internal_error",
-            message: "Couldn't verify who you are right now — nothing was recorded. Retry shortly.",
-            requestId,
-          },
-          500,
-        );
-      }
-
-      // The single-use confirm gate. Verify the token binds THIS re-resolved
-      // request before anything else: a missing, forged, expired, or
-      // workspace-/claim-mismatched token never reaches the verb. The nonce burn
-      // runs just before the write.
-      // Built ONCE and used for both the binding check and the write below, so
+      // Built ONCE and used for both the token binding and the write below, so
       // the claim the token is verified against is the same object the verb
       // records. Two constructions from the same `input` would be two places to
       // keep in agreement, and the direction that fails is silent: a field
@@ -285,143 +190,54 @@ export function createBrainProposalsRoute() {
         ...(input.validFrom !== undefined ? { validFrom: input.validFrom } : {}),
         ...(input.reason !== undefined ? { reason: input.reason } : {}),
       };
-      const verification = verifyProposalConfirmToken(input.token, {
-        workspaceId: ctx.workspaceId,
-        claim,
-        ...(input.session !== undefined ? { session: input.session } : {}),
-      });
-      if (!verification.ok) {
-        // `no-key` is a server/operator misconfiguration, not an
-        // attacker-probeable token failure — a correlated 500, not the neutral
-        // client 400. Near-unreachable in practice: mint fails loud on no-key,
-        // so a confirmable proposal cannot have been staged without a key —
-        // reachable only if the key is removed or rotated-to-empty between stage
-        // and confirm.
-        if (verification.reason === "no-key") {
-          log.error(
-            { workspaceId: ctx.workspaceId, requestId },
-            "Proposal confirm rejected: no signing key configured for confirm tokens (server misconfiguration)",
-          );
-          return c.json(
-            {
-              error: "confirm_token_unverifiable",
-              message:
-                "The server can't verify proposal confirmations right now — its confirm-token signing key " +
-                "isn't configured. This is a server configuration issue, not a problem with your request.",
-              requestId,
-            },
-            500,
-          );
-        }
-        log.warn(
-          { workspaceId: ctx.workspaceId, reason: verification.reason, requestId },
-          "Proposal confirm rejected: invalid confirm token",
-        );
-        return c.json(TOKEN_INVALID_BODY, 400);
-      }
 
-      // Burn the nonce — single-use. Synchronous, with no `await` between the
-      // verification above and here, so two concurrent replays of the same token
-      // cannot both reach the verb (the first burns it; the second is rejected).
-      // A looping agent re-posting its staged payload hits this too.
-      //
-      // ⚠️ This is also what stops a confirmed proposal being spent twice on the
-      // CORROBORATION path, where a second write is not a duplicate row but a
-      // second attestation — silent, and exactly the self-echo the distinct-
-      // source count exists to discount.
-      if (!burnProposalConfirmNonce(verification.nonce, verification.expSeconds)) {
-        log.warn(
-          { workspaceId: ctx.workspaceId, requestId },
-          "Proposal confirm rejected: confirm token already used (replay)",
-        );
-        return c.json(
-          {
-            error: "confirm_token_invalid",
-            message:
-              "This confirmation was already used. Ask Atlas to stage the proposal again if you need to repeat it.",
-          },
-          400,
-        );
-      }
-
-      // ── The write, through the one seam every producer enters by ───────────
-      let outcome: ProposalOutcome;
-      try {
-        outcome = await proposeFact({
-          ctx,
-          // #5486 — verified against the token above, so this is the session
-          // the human's card named at staging. `proposeFact` materializes its
-          // tier-3 episode lazily, inside the write transaction, after
-          // re-checking the conversation is this actor's own in this
-          // workspace; a ref that fails that check is an ordinary 400 refusal
-          // below, not a 500.
+      // The shared gate: degradation preamble → actor re-resolution → verify →
+      // burn → vocabulary → the verb. Everything this route still says below is
+      // what is genuinely a PROPOSAL's — the binding, the write, and how its
+      // two success arms project onto the wire.
+      const staged = await runStagedConfirm<
+        Parameters<typeof PROPOSAL_STAGED_VERB.claims>[0],
+        ProposalOutcome
+      >(c, {
+        verb: PROPOSAL_STAGED_VERB,
+        log,
+        token: input.token,
+        bind: (ctx) => ({
+          workspaceId: ctx.workspaceId,
+          claim,
           ...(input.session !== undefined ? { session: input.session } : {}),
-          claim: {
-            // The verified claim, with the ONE field the verb takes in another
-            // representation. `validFrom` travels as an ISO string through the
-            // gate because the token binds those bytes (`proposal-confirm.ts`);
-            // it becomes a `Date` here, past the gate, on its way in.
-            ...claim,
-            validFrom: claim.validFrom ? new Date(claim.validFrom) : null,
-          },
-          requestId,
-          // The workspace's real vocabulary. Loaded HERE rather than carried in
-          // the staged payload for the reason this whole endpoint exists: the
-          // staged payload is not trusted, and a vocabulary is workspace STATE
-          // that may have moved since staging. It is never degraded — the empty
-          // vocabulary would key the claim under a different identity function
-          // than ingest used.
-          vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),
-        });
-      } catch (err) {
-        if (err instanceof VocabularyClosureError) {
-          // Deterministic, workspace-scoped, and permanent until an operator
-          // recomputes the closure. Retrying cannot clear it, so the copy says
-          // so rather than inviting a loop.
-          log.error(
-            {
-              err: err.message,
-              workspaceId: ctx.workspaceId,
-              position: err.position,
-              norm: err.norm,
-              requestId,
+        }),
+        execute: (ctx, vocabulary) =>
+          proposeFact({
+            ctx,
+            // #5486 — verified against the token, so this is the session the
+            // human's card named at staging. `proposeFact` materializes its
+            // tier-3 episode lazily, inside the write transaction, after
+            // re-checking the conversation is this actor's own in this
+            // workspace; a ref that fails that check is an ordinary 400 refusal
+            // below, not a 500.
+            ...(input.session !== undefined ? { session: input.session } : {}),
+            claim: {
+              // The verified claim, with the ONE field the verb takes in another
+              // representation. `validFrom` travels as an ISO string through the
+              // gate because the token binds those bytes (`staged-propose.ts`);
+              // it becomes a `Date` here, past the gate, on its way in.
+              ...claim,
+              validFrom: claim.validFrom ? new Date(claim.validFrom) : null,
             },
-            "Proposal confirm refused: the workspace's alias vocabulary is half-rebuilt",
-          );
-          return c.json(
-            {
-              error: "vocabulary_incomplete",
-              message:
-                "This workspace's alias vocabulary is incomplete, so a new claim cannot be keyed the way " +
-                "ingest keys it — nothing was recorded. Retrying will not help: an operator has to " +
-                "recompute the vocabulary's closure first.",
-              requestId,
-            },
-            503,
-          );
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        log.error(
-          { err: message, workspaceId: ctx.workspaceId, requestId },
-          "Proposal confirm failed",
-        );
-        return c.json(
-          {
-            error: "internal_error",
-            message:
-              "The proposal failed before it could be recorded — nothing was changed. Retry once; if it " +
-              "persists, the brain store may be temporarily unavailable.",
             requestId,
-          },
-          500,
-        );
-      }
+            vocabulary,
+          }),
+      });
+      if (!staged.ok) return c.json(staged.refusal.body, staged.refusal.status);
+
+      const { ctx, outcome } = staged;
 
       if (outcome.kind === "refused") {
-        // The token was burned above and this proposal did not land. Deliberate,
-        // on `brain-corrections.ts`'s reasoning: the nonce is spent on the
-        // ATTEMPT, so a caller cannot re-fire one confirmation against many
-        // claims. The user re-states and the agent stages a fresh one.
+        // The token was burned by the gate and this proposal did not land.
+        // Deliberate, on `brain-corrections.ts`'s reasoning: the nonce is spent
+        // on the ATTEMPT, so a caller cannot re-fire one confirmation against
+        // many claims. The user re-states and the agent stages a fresh one.
         log.warn(
           { workspaceId: ctx.workspaceId, refusal: outcome.reason, requestId },
           "Proposal confirm refused by the machinery",

@@ -43,31 +43,19 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { getInternalDB, hasInternalDB } from "@atlas/api/lib/db/internal";
-import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import {
   CORRECTION_VERBS,
   correctFact,
   type CorrectionOutcome,
 } from "@atlas/api/lib/brain/correction";
-import {
-  burnCorrectionConfirmNonce,
-  verifyCorrectionConfirmToken,
-} from "@atlas/api/lib/brain/correction-confirm";
-import {
-  BrainReaderIdentityError,
-  resolveBrainReaderContext,
-} from "@atlas/api/lib/brain/reader-context";
-import {
-  VocabularyClosureError,
-  loadWorkspaceVocabulary,
-} from "@atlas/api/lib/brain/vocabulary";
+import { CORRECTION_STAGED_VERB } from "@atlas/api/lib/brain/staged-correct";
 import {
   BRAIN_CORRECTION_OBJECT_MAX_CHARS,
   BRAIN_CORRECTION_REASON_MAX_CHARS,
 } from "@useatlas/schemas";
 import { ErrorSchema } from "./shared-schemas";
 import { correctionNotFoundBody, refusalStatus } from "./shared-correction";
+import { runStagedConfirm } from "./shared-staged-confirm";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("brain-corrections");
@@ -118,17 +106,6 @@ const ConfirmResponseSchema = z.object({
   validTo: z.string().nullable(),
   flaggedForReReviewCount: z.number(),
 });
-
-/**
- * The one neutral rejection for every attacker-probeable token failure. The
- * specific reason is logged server-side and never returned: telling a caller
- * which check tripped is how a pipeline gets probed.
- */
-const TOKEN_INVALID_BODY = {
-  error: "confirm_token_invalid",
-  message:
-    "This confirmation is missing, invalid, expired, or already used. Ask Atlas to stage the correction again.",
-} as const;
 
 const confirmRoute = createRoute({
   method: "post",
@@ -189,240 +166,80 @@ export function createBrainCorrectionsRoute() {
   route.openapi(
     confirmRoute,
     async (c) => {
-      const auth = c.get("authResult");
       const requestId = c.get("requestId");
-      const orgId = auth?.user?.activeOrganizationId;
-      if (!orgId) {
-        return c.json(
-          {
-            error: "no_workspace",
-            message: "No active workspace — select one before confirming a correction.",
-          },
-          400,
-        );
-      }
-      if (!hasInternalDB()) {
-        return c.json(
-          {
-            error: "brain_unavailable",
-            message:
-              "Fact correction is unavailable — this deployment has no internal database configured.",
-            requestId,
-          },
-          503,
-        );
-      }
-
       const input = c.req.valid("json");
 
-      // Re-resolve the actor from THIS request rather than trusting anything
-      // staged. Every gate below reads this context, so a session that has since
-      // lost its role is refused here even though its token verifies.
-      let ctx: Awaited<ReturnType<typeof resolveBrainReaderContext>>;
-      try {
-        ctx = await resolveBrainReaderContext(getInternalDB(), {
-          workspaceId: orgId,
-          mode: detectAuthMode(),
-          user: auth?.user,
-          requestId,
-        });
-      } catch (err) {
-        if (err instanceof BrainReaderIdentityError) {
-          log.error(
-            { err: err.message, workspaceId: orgId, requestId },
-            "Correction confirm refused: actor identity could not be resolved",
-          );
-          return c.json(
-            {
-              error: "reader_unresolved",
-              message:
-                "Your identity could not be resolved for this workspace, so the fact's visibility could " +
-                "not be checked safely. This is a configuration or session problem — report it; the fact " +
-                "was not changed.",
-              requestId,
-            },
-            500,
-          );
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        log.error(
-          { err: message, workspaceId: orgId, factId: input.factId, requestId },
-          "Correction confirm could not resolve the actor",
-        );
-        return c.json(
-          {
-            error: "internal_error",
-            message: "Couldn't verify who you are right now — nothing was changed. Retry shortly.",
-            requestId,
-          },
-          500,
-        );
-      }
+      // Built ONCE and used for both the token binding and the correction below.
+      // Rebuilt rather than passed through: Zod types the nested `validFrom` as
+      // `string | undefined`, while `CorrectionConfirmPayload` declares it as an
+      // exact optional (#5522).
+      const payload = {
+        ...(input.reason !== undefined ? { reason: input.reason } : {}),
+        ...(input.replacement !== undefined
+          ? {
+              replacement: {
+                object: input.replacement.object,
+                ...(input.replacement.validFrom !== undefined
+                  ? { validFrom: input.replacement.validFrom }
+                  : {}),
+              },
+            }
+          : {}),
+      };
 
-      // The single-use confirm gate. Verify the token binds THIS re-resolved
-      // request before anything else: a missing, forged, expired, or
-      // workspace-/fact-/verb-/payload-mismatched token never reaches the verb.
-      // The nonce burn runs just before the correction.
-      const verification = verifyCorrectionConfirmToken(input.token, {
-        workspaceId: ctx.workspaceId,
-        factId: input.factId,
-        verb: input.verb,
-        payload: {
-          ...(input.reason !== undefined ? { reason: input.reason } : {}),
-          // Rebuilt rather than passed through: Zod types the nested
-          // `validFrom` as `string | undefined`, while `CorrectionConfirmPayload`
-          // declares it as an exact optional (#5522).
-          ...(input.replacement !== undefined
-            ? {
-                replacement: {
-                  object: input.replacement.object,
-                  ...(input.replacement.validFrom !== undefined
-                    ? { validFrom: input.replacement.validFrom }
-                    : {}),
-                },
-              }
-            : {}),
-        },
-      });
-      if (!verification.ok) {
-        // `no-key` is a server/operator misconfiguration (no signing key
-        // configured), not an attacker-probeable token failure — a correlated
-        // 500, not the neutral client 400. Near-unreachable in practice: mint
-        // fails loud on no-key, so a confirmable correction cannot have been
-        // staged without a key — reachable only if the key is removed or
-        // rotated-to-empty between stage and confirm.
-        if (verification.reason === "no-key") {
-          log.error(
-            { workspaceId: ctx.workspaceId, factId: input.factId, requestId },
-            "Correction confirm rejected: no signing key configured for confirm tokens (server misconfiguration)",
-          );
-          return c.json(
-            {
-              error: "confirm_token_unverifiable",
-              message:
-                "The server can't verify correction confirmations right now — its confirm-token signing key " +
-                "isn't configured. This is a server configuration issue, not a problem with your request.",
-              requestId,
-            },
-            500,
-          );
-        }
-        log.warn(
-          {
-            workspaceId: ctx.workspaceId,
-            factId: input.factId,
-            verb: input.verb,
-            reason: verification.reason,
-            requestId,
-          },
-          "Correction confirm rejected: invalid confirm token",
-        );
-        return c.json(TOKEN_INVALID_BODY, 400);
-      }
-
-      // Burn the nonce — single-use. Synchronous, with no `await` between the
-      // verification above and here, so two concurrent replays of the same token
-      // cannot both reach the verb (the first burns it; the second is rejected).
-      // A looping agent re-posting its staged payload hits this too.
-      if (!burnCorrectionConfirmNonce(verification.nonce, verification.expSeconds)) {
-        log.warn(
-          { workspaceId: ctx.workspaceId, factId: input.factId, verb: input.verb, requestId },
-          "Correction confirm rejected: confirm token already used (replay)",
-        );
-        return c.json(
-          {
-            error: "confirm_token_invalid",
-            message:
-              "This confirmation was already used. Ask Atlas to stage the correction again if you need to repeat it.",
-          },
-          400,
-        );
-      }
-
-      // ── The correction, gated exactly as the tool used to gate it ──────────
-      let outcome: CorrectionOutcome;
-      try {
-        outcome = await correctFact({
-          ctx,
+      // The shared gate: degradation preamble → actor re-resolution → verify →
+      // burn → vocabulary → the verb. What stays here is what is genuinely a
+      // CORRECTION's — the binding, the write, and a three-status outcome
+      // projection no other verb shares.
+      const staged = await runStagedConfirm<
+        Parameters<typeof CORRECTION_STAGED_VERB.claims>[0],
+        CorrectionOutcome
+      >(c, {
+        verb: CORRECTION_STAGED_VERB,
+        log,
+        logFields: { factId: input.factId, verb: input.verb },
+        token: input.token,
+        bind: (ctx) => ({
+          workspaceId: ctx.workspaceId,
           factId: input.factId,
           verb: input.verb,
-          ...(input.reason !== undefined ? { reason: input.reason } : {}),
-          ...(input.replacement
-            ? {
-                replacement: {
-                  object: input.replacement.object,
-                  validFrom: input.replacement.validFrom
-                    ? new Date(input.replacement.validFrom)
-                    : null,
-                },
-              }
-            : {}),
-          // #5496 — a human clicked Confirm and the server verified a
-          // single-use, workspace-bound token before this line ran. That is the
-          // strongest intent evidence the system can produce, and the audit row
-          // records it so a row written under this regime is distinguishable
-          // from one written before it existed.
-          intent: "confirmed",
-          requestId,
-          // The workspace's real vocabulary. Loaded HERE rather than carried in
-          // the staged payload for the reason this whole endpoint exists: the
-          // staged payload is not trusted, and a vocabulary is workspace STATE
-          // that may have moved since staging. It is never degraded — the empty
-          // vocabulary would key the replacement under a different identity
-          // function than ingest used.
-          vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),
-        });
-      } catch (err) {
-        if (err instanceof VocabularyClosureError) {
-          // Deterministic, workspace-scoped, and permanent until an operator
-          // recomputes the closure. Retrying cannot clear it, so the copy says
-          // so rather than inviting a loop.
-          log.error(
-            {
-              err: err.message,
-              workspaceId: ctx.workspaceId,
-              factId: input.factId,
-              verb: input.verb,
-              position: err.position,
-              norm: err.norm,
-              requestId,
-            },
-            "Correction confirm refused: the workspace's alias vocabulary is half-rebuilt",
-          );
-          return c.json(
-            {
-              error: "vocabulary_incomplete",
-              message:
-                "This workspace's alias vocabulary is incomplete, so a correction cannot be keyed the way " +
-                "ingest keys it — nothing was changed. Retrying will not help: an operator has to recompute " +
-                "the vocabulary's closure first.",
-              requestId,
-            },
-            503,
-          );
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        log.error(
-          { err: message, workspaceId: ctx.workspaceId, factId: input.factId, verb: input.verb, requestId },
-          "Correction confirm failed",
-        );
-        return c.json(
-          {
-            error: "internal_error",
-            message:
-              "The correction failed before it could be applied — nothing was changed. Retry once; if it " +
-              "persists, the brain store may be temporarily unavailable.",
+          payload,
+        }),
+        execute: (ctx, vocabulary) =>
+          correctFact({
+            ctx,
+            factId: input.factId,
+            verb: input.verb,
+            ...(input.reason !== undefined ? { reason: input.reason } : {}),
+            ...(input.replacement
+              ? {
+                  replacement: {
+                    object: input.replacement.object,
+                    validFrom: input.replacement.validFrom
+                      ? new Date(input.replacement.validFrom)
+                      : null,
+                  },
+                }
+              : {}),
+            // #5496 — a human clicked Confirm and the server verified a
+            // single-use, workspace-bound token before this line ran. That is the
+            // strongest intent evidence the system can produce, and the audit row
+            // records it so a row written under this regime is distinguishable
+            // from one written before it existed.
+            intent: "confirmed",
             requestId,
-          },
-          500,
-        );
-      }
+            vocabulary,
+          }),
+      });
+      if (!staged.ok) return c.json(staged.refusal.body, staged.refusal.status);
+
+      const { ctx, outcome } = staged;
 
       if (outcome.kind === "not-found") {
-        // The token was burned above and this correction did not land. That is
-        // deliberate: the nonce is spent on the ATTEMPT, so a caller cannot
-        // probe the graph by re-firing one confirmation against many states.
-        // The user re-asks and the agent stages a fresh one.
+        // The token was burned by the gate and this correction did not land.
+        // That is deliberate: the nonce is spent on the ATTEMPT, so a caller
+        // cannot probe the graph by re-firing one confirmation against many
+        // states. The user re-asks and the agent stages a fresh one.
         return c.json(correctionNotFoundBody(requestId), 404);
       }
       if (outcome.kind === "refused") {

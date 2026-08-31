@@ -2071,9 +2071,18 @@ describeIfPg("the alias decision seam (#5023)", () => {
     // nothing, because the vocabulary is workspace STATE that may have moved
     // between staging and confirming — so the confirm endpoint loads it live.
     // The consumer set is unchanged in size; only the file moved with the load.
+    //
+    // #5571 moved it AGAIN, one level up. Both confirm routes ran the same
+    // nine-rung ladder, so the ladder is now one function
+    // (`api/routes/shared-staged-confirm.ts`) and the load lives there — which
+    // makes this entry STRONGER than the one it replaces: it covers the
+    // proposal confirm route as well as the correction one, where before only
+    // the correction route was guarded and `brain-proposals.ts` had an
+    // identical, unguarded copy. The consumer set shrinks by one FILE and grows
+    // by one call site.
     const consumers = [
       "lib/brain/extract.ts",
-      "api/routes/brain-corrections.ts",
+      "api/routes/shared-staged-confirm.ts",
       "api/routes/admin-brain-facts.ts",
     ];
     const root = join(import.meta.dir, "..", "..", "..");

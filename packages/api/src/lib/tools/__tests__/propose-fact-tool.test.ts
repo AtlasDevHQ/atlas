@@ -334,20 +334,21 @@ describe("staging — the tool never writes", () => {
     // The binding covers it: the exact staged shape verifies, and the same
     // token with the session dropped or swapped does not — a tampered card
     // cannot detach the claim from the conversation the human saw.
-    const { verifyProposalConfirmToken } = await import("@atlas/api/lib/brain/proposal-confirm");
+    const { PROPOSAL_STAGED_VERB } = await import("@atlas/api/lib/brain/staged-propose");
+    const { verifyStagedConfirmToken } = await import("@atlas/api/lib/brain/staged-write");
     const claim = { subject: "Ana", predicate: "is the DRI for", object: "billing" };
-    const bound = verifyProposalConfirmToken(String(confirm.token), {
+    const bound = verifyStagedConfirmToken(PROPOSAL_STAGED_VERB, String(confirm.token), {
       workspaceId: "org-1",
       claim,
       session: { conversationId: "11111111-2222-4333-8444-555555555555" },
     });
     expect(bound.ok).toBe(true);
-    const dropped = verifyProposalConfirmToken(String(confirm.token), {
+    const dropped = verifyStagedConfirmToken(PROPOSAL_STAGED_VERB, String(confirm.token), {
       workspaceId: "org-1",
       claim,
     });
     expect(dropped.ok).toBe(false);
-    const swapped = verifyProposalConfirmToken(String(confirm.token), {
+    const swapped = verifyStagedConfirmToken(PROPOSAL_STAGED_VERB, String(confirm.token), {
       workspaceId: "org-1",
       claim,
       session: { conversationId: "99999999-2222-4333-8444-555555555555" },

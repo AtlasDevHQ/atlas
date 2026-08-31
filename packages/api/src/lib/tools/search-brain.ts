@@ -63,6 +63,7 @@
 import { tool } from "ai";
 import type { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { withRequestId } from "@atlas/api/lib/tools/tool-message";
 import { getInternalDB, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { rootCauseMessage } from "@atlas/api/lib/error-cause";
@@ -200,17 +201,6 @@ Use the searchAtlas tool for decisions, rationale, ownership, policy, and histor
 - To answer "what did we believe at <time>", pass \`asOf\` (ISO-8601, in the past): facts are then the versions valid AT that instant, including ones since superseded. A response carrying \`asOf\` is HISTORICAL — frame every fact in it as "as of <time>", never as current; a response without \`asOf\` is current belief. A retracted fact is never returned as a RESULT, under \`asOf\` or otherwise — the one place it still appears is a \`tensions\` counterpart, labelled by \`invalidatedAt\` as above
 - If the response carries \`unavailable\`, the Atlas could NOT be searched (e.g. no workspace is bound). Say so — do NOT report it as "nothing is known"
 - Read-only, and never the SQL whitelist, metrics, or glossary. For quantitative current state use \`executeSQL\`; for the on-disk semantic layer use \`explore\``;
-
-/**
- * Append the request id so the user has something to quote.
- *
- * These messages are the only thing standing between an incident and an
- * operator grepping blind — the server-side `log.error` is the only other
- * trace, and nothing correlates the two without this.
- */
-function withRequestId(message: string, requestId: string | undefined): string {
-  return requestId ? `${message} (request ${requestId})` : message;
-}
 
 /**
  * The normalizer's input contract — deliberately LOOSER than the schema.

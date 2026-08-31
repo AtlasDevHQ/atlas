@@ -30,11 +30,12 @@
  *   - {@link verifyRestConfirmToken} (confirm) re-derives that binding from the
  *     re-resolved request and rejects a missing / tampered / expired token, or
  *     one minted for a different workspace / datasource / operation / params.
- *   - {@link burnRestConfirmNonce} consumes the nonce so a replay of the same
- *     token is rejected — single-use.
+ *   - {@link import("../confirm-token").burnConfirmNonce} consumes the nonce so a
+ *     replay of the same token is rejected — single-use.
  *
  * Since #5496 the scheme itself is NOT written here: it lives in
- * `lib/confirm-token.ts`, which `lib/brain/correction-confirm.ts` shares. The
+ * `lib/confirm-token.ts`, which the two staged brain verbs share through
+ * `lib/brain/staged-write.ts`. The
  * three functions above are this gate's thin specialization of it (its `typ`
  * domain separator, its TTL env var, and the four things it binds). That is what
  * keeps the two gates one implementation rather than two copies of a security
@@ -45,14 +46,11 @@
  * `RestWriteConfirmRequest` (`packages/web/src/ui/lib/rest-operation-types.ts`).
  */
 import {
-  burnConfirmNonce,
   claimsHash,
   mintConfirmToken,
   verifyConfirmToken,
-  _resetConfirmNonces,
   type ConfirmClaims,
   type ConfirmTokenKind,
-  type ConfirmTokenRejection,
   type ConfirmTokenVerification,
   type MintConfirmTokenOptions,
 } from "@atlas/api/lib/confirm-token";
@@ -186,14 +184,6 @@ export interface RestConfirmBinding {
   readonly params: OperationParams;
 }
 
-export type MintRestConfirmTokenOptions = MintConfirmTokenOptions;
-
-/** Why a confirm token was refused. Machine-readable for server-side logging; the route maps every arm to one neutral 400. */
-export type RestConfirmTokenRejection = ConfirmTokenRejection;
-
-/** The result of {@link verifyRestConfirmToken}. On success it carries the nonce + exp the caller burns. */
-export type RestConfirmTokenVerification = ConfirmTokenVerification;
-
 /**
  * The signed claims for a REST confirm token. Short keys are the wire format
  * this gate has always used; `ph` binds the exact params by hash rather than
@@ -224,15 +214,15 @@ function restClaims(binding: RestConfirmBinding): ConfirmClaims {
  */
 export function mintRestConfirmToken(
   binding: RestConfirmBinding,
-  options: MintRestConfirmTokenOptions = {},
+  options: MintConfirmTokenOptions = {},
 ): string {
   return mintConfirmToken(REST_CONFIRM_KIND, restClaims(binding), options);
 }
 
 /**
  * Verify a confirm token against the binding re-derived from THIS confirm request.
- * Pure — it does not touch the single-use store (the caller {@link burnRestConfirmNonce}s
- * the returned nonce once the rest of validation passes). Returns a tagged result;
+ * Pure — it does not touch the single-use store (the caller burns
+ * the returned nonce with `burnConfirmNonce` once the rest of validation passes). Returns a tagged result;
  * the route maps every `ok: false` arm to one neutral 400 (never revealing which
  * check tripped — that would let an attacker probe the pipeline).
  *
@@ -242,25 +232,26 @@ export function verifyRestConfirmToken(
   token: string,
   expected: RestConfirmBinding,
   nowSeconds: number = Math.floor(Date.now() / 1000),
-): RestConfirmTokenVerification {
+): ConfirmTokenVerification {
   return verifyConfirmToken(REST_CONFIRM_KIND, token, restClaims(expected), nowSeconds);
 }
 
-/**
- * Atomically consume a confirm nonce. Returns `true` when it was newly burned
- * (caller may proceed to dispatch), `false` when it was already burned (a replay —
- * caller must reject). MUST be called synchronously with no intervening `await`
- * between token verification and dispatch, so concurrent replays of the same token
- * can't both pass before the nonce is recorded.
- */
-export const burnRestConfirmNonce = burnConfirmNonce;
-
-/**
- * Clear the burned-nonce store. For tests.
- *
- * The store is shared across every confirm gate (see `lib/confirm-token.ts`), so
- * this clears brain-correction nonces too. Harmless — a test that burned one
- * gate's nonce has no interest in another's, and one store is one eviction
- * policy instead of two that can drift.
- */
-export const _resetRestConfirmNonces = _resetConfirmNonces;
+// ⚠️ **This gate is deliberately NOT a `StagedVerb`** (`lib/brain/staged-write.ts`),
+// and the reason is a real difference in the invariant rather than a refactor
+// that stopped short. The two brain gates burn the nonce on the ATTEMPT: verify,
+// burn, then run the verb, so a refused write still spends its confirmation and
+// one card cannot be re-fired against many targets. This gate burns LATER —
+// `rest-operations.ts` interposes the allowlist re-validation and the
+// write-only check between verification and the burn (all synchronous, so the
+// no-`await` property still holds), so a confirm rejected by the allowlist does
+// NOT spend its nonce. Folding this into `verifyAndBurnStagedConfirm` would
+// change that, which is a behaviour change and not a deduplication.
+//
+// `burnRestConfirmNonce`, `_resetRestConfirmNonces`, `MintRestConfirmTokenOptions`,
+// `RestConfirmTokenRejection` and `RestConfirmTokenVerification` were removed by
+// #5571. Each was a re-export of `lib/confirm-token.ts` under a `Rest`-prefixed
+// name — a second vocabulary for a concept that has exactly one implementation,
+// which is how a reader ends up believing there are two nonce stores. The nonce
+// store IS shared across every gate, deliberately (one eviction policy rather
+// than N that drift), and callers now say so by importing `burnConfirmNonce` /
+// `_resetConfirmNonces` directly.

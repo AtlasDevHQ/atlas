@@ -181,7 +181,8 @@ void mock.module("@atlas/api/lib/brain/correction", () => ({
 // Import after mocks.
 const { Hono } = await import("hono");
 const { createBrainCorrectionsRoute } = await import("../brain-corrections");
-const { mintCorrectionConfirmToken } = await import("@atlas/api/lib/brain/correction-confirm");
+const { CORRECTION_STAGED_VERB } = await import("@atlas/api/lib/brain/staged-correct");
+const { mintStagedConfirmToken } = await import("@atlas/api/lib/brain/staged-write");
 const { _resetConfirmNonces } = await import("@atlas/api/lib/confirm-token");
 
 const FACT = "6f2c0000-0000-4000-8000-000000000000";
@@ -218,7 +219,7 @@ function stagedBody(
     ...(overrides.reason !== undefined ? { reason: overrides.reason } : {}),
     ...(overrides.replacement !== undefined ? { replacement: overrides.replacement } : {}),
   };
-  const token = mintCorrectionConfirmToken({ workspaceId: "ws-1", factId, verb, payload });
+  const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, { workspaceId: "ws-1", factId, verb, payload });
   return { factId, verb, ...payload, token };
 }
 
@@ -304,7 +305,7 @@ describe("POST /api/v1/brain-corrections/confirm", () => {
     });
 
     it("refuses a token minted for a different workspace", async () => {
-      const foreign = mintCorrectionConfirmToken({
+      const foreign = mintStagedConfirmToken(CORRECTION_STAGED_VERB, {
         workspaceId: "ws-evil",
         factId: FACT,
         verb: "retract",

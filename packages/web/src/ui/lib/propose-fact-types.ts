@@ -4,7 +4,7 @@
  *
  * A deliberate local mirror, not a `@useatlas/types` import, for the reason
  * `correct-fact-types.ts` and `rest-operation-types.ts` both state: the wire
- * shape is produced by `packages/api/src/lib/brain/proposal-confirm.ts`, but
+ * shape is produced by `packages/api/src/lib/brain/staged-propose.ts`, but
  * pulling a new VALUE export through `@useatlas/types` needs the
  * publish-then-bump dance, and a new value export trips Scaffold CI before it is
  * published. The shapes must stay in sync; promote the mirrors together when a

@@ -1,19 +1,23 @@
 /**
- * Shared contract for the `proposeFact` confirm-before-write flow (#5482,
- * implementing [ADR-0036 §T7]'s `proposeFact` verb under §T9's 2026-08-27b
- * entry-gate amendment).
+ * `proposeFact` as a {@link StagedVerb} — the wire contract, the binding, and
+ * the card summary for the net-new-claim gate (#5482, ADR-0036 §T7 under §T9's
+ * 2026-08-27b entry-gate amendment; reshaped into a descriptor by #5571).
  *
- * `proposeFact` asserts a NET-NEW claim — the thing the four correction verbs
- * structurally cannot do, since each of them presupposes an existing tier-2
- * fact. Like `correct_fact` since #5496 it **stages**: the tool returns a
+ * `correct_fact` cannot assert something Atlas does not already believe: all
+ * four of its verbs presuppose an existing tier-2 fact. This is the verb for the
+ * claim that is simply ABSENT. It **stages**: the tool returns a
  * `needs_confirmation` result carrying a {@link ProposeFactConfirmRequest}, the
- * chat surface renders a confirm card, and the proposal reaches
- * `reconcileFacts` at `POST /api/v1/brain-proposals/confirm` after the human
- * clicks — never silently in the agent loop.
+ * chat surface renders a confirm card, and the proposal reaches `reconcileFacts`
+ * at `POST /api/v1/brain-proposals/confirm` after the human clicks — never
+ * silently in the agent loop.
  *
  * This module is the single source of truth for that wire shape + the
  * human-facing summary, so the staging tool and the confirming endpoint cannot
- * drift.
+ * drift. What it no longer holds is the GATE: the sequencing that was written
+ * here and in the correction's own module as two near-identical thin wrappers over
+ * `confirm-token.ts` now lives once in `staged-write.ts`, and this file supplies
+ * only what is genuinely this verb's — its `typ`, its TTL var, what its token
+ * binds, and how its card reads.
  *
  * ## Why a proposal needs the gate at all, when its output is only a DRAFT
  *
@@ -32,19 +36,9 @@
  * `lib/brain/proposal.ts`, which is where the single entry point that makes
  * that structural lives.
  *
- * ## It mirrors the correction gate; it does not re-derive it
- *
- * `lib/brain/correction-confirm.ts` (#5496) is the shape, and both specialize
- * the ONE crypto implementation in `lib/confirm-token.ts` — differing only in
- * their `typ` domain separator, their TTL env var, and what they bind. The
- * three load-bearing properties are inherited rather than re-argued: token
- * binding, server-side re-validation at the confirm endpoint (which is NOT a
- * trusted fast-path), and the nonce burn that rejects a replay or a looping
- * agent.
- *
  * ## Why THIS card previews the claim, where the correction card refuses to
  *
- * `correction-confirm.ts` deliberately does not render the target claim's
+ * `staged-correct.ts` deliberately does not render the target claim's
  * subject/predicate/object: reading it takes an ACL-gated query, so previewing
  * it means a second visibility decision on the one surface whose whole job is
  * to be trustworthy.
@@ -58,35 +52,14 @@
  * a confidently wrong sentence in the agent's prose cannot get a differently
  * worded claim confirmed than the one described.
  */
-import {
-  burnConfirmNonce,
-  claimsHash,
-  mintConfirmToken,
-  verifyConfirmToken,
-  type ConfirmClaims,
-  type ConfirmTokenKind,
-  type ConfirmTokenRejection,
-  type ConfirmTokenVerification,
-  type MintConfirmTokenOptions,
-} from "@atlas/api/lib/confirm-token";
-
-/**
- * The proposal gate's token identity. `typ` is the domain separator carried in
- * the signed header: it is why a REST-write or brain-CORRECTION confirm token —
- * signed with the same keyset — cannot be presented here, and vice versa. A
- * correction token proves a human agreed to change an existing claim; it must
- * not be spendable on asserting a new one.
- */
-const PROPOSAL_CONFIRM_KIND: ConfirmTokenKind = {
-  typ: "AtlasBrainProposalConfirm",
-  ttlEnvVar: "ATLAS_BRAIN_PROPOSAL_CONFIRM_TTL_SECONDS",
-};
+import { claimsHash, type ConfirmClaims } from "@atlas/api/lib/confirm-token";
+import type { StagedVerb } from "@atlas/api/lib/brain/staged-write";
 
 /**
  * The proposed claim as it travels on the wire.
  *
  * `validFrom` is an ISO-8601 string here, not a `Date`, and that is load-bearing
- * for `correction-confirm.ts`'s reason exactly: the token binds a hash of THIS
+ * for `staged-correct.ts`'s reason exactly: the token binds a hash of THIS
  * shape, so mint and verify must canonicalize identical bytes. A `Date` would
  * serialize one way at staging and (after a JSON round-trip through the browser)
  * another at confirm, and the binding check would reject every proposal that
@@ -140,8 +113,8 @@ export interface ProposeFactConfirmRequest extends ProposalClaim {
   /**
    * Server-signed, single-use confirm token binding this exact staged claim to
    * `(workspace, canonical subject+predicate+object+validFrom+reason, nonce,
-   * exp)`. Minted by {@link mintProposalConfirmToken} at staging; required +
-   * verified + burned by the confirm endpoint. Opaque to the card.
+   * exp)`. Minted at staging; required + verified + burned by the confirm
+   * endpoint. Opaque to the card.
    */
   readonly token: string;
 }
@@ -160,14 +133,10 @@ export interface ProposalConfirmBinding {
   readonly session?: ProposalSessionWireRef;
 }
 
-export type MintProposalConfirmTokenOptions = MintConfirmTokenOptions;
-export type ProposalConfirmTokenRejection = ConfirmTokenRejection;
-export type ProposalConfirmTokenVerification = ConfirmTokenVerification;
-
 /**
  * The signed claims.
  *
- * ONE hash over the WHOLE claim, where `correctionClaims` binds `factId` and
+ * ONE hash over the WHOLE claim, where `staged-correct.ts` binds `factId` and
  * `verb` as readable claims beside its payload hash. Two reasons, and neither is
  * economy. A correction's substance is an id and an enum — short, non-secret,
  * and useful in a server log; a proposal's substance is up to three 2,000-char
@@ -214,47 +183,65 @@ function proposalClaims(binding: ProposalConfirmBinding): ConfirmClaims {
 }
 
 /**
- * Mint a single-use confirm token binding a staged proposal.
+ * The proposal gate.
  *
- * Throws when no signing key is configured — the human-in-the-loop gate must NOT
- * degrade silently to an unsigned (forgeable) token. The staging tool maps the
- * throw to a structured "can't stage this proposal" result, so the operator
- * gates the verb on real key material rather than discovering it after a forged
- * confirm.
+ * `typ` is the domain separator carried in the signed header: it is why a
+ * REST-write or brain-CORRECTION confirm token — signed with the same keyset —
+ * cannot be presented here, and vice versa. A correction token proves a human
+ * agreed to change an existing claim; it must not be spendable on asserting a
+ * new one.
  */
-export function mintProposalConfirmToken(
-  binding: ProposalConfirmBinding,
-  options: MintProposalConfirmTokenOptions = {},
-): string {
-  return mintConfirmToken(PROPOSAL_CONFIRM_KIND, proposalClaims(binding), options);
-}
-
-/**
- * Verify a confirm token against the binding re-derived from THIS confirm
- * request. Pure — the caller {@link burnProposalConfirmNonce}s the returned
- * nonce once the rest of validation passes. The route maps every `ok: false` arm
- * to one neutral 400 so an attacker cannot probe which check tripped.
- */
-export function verifyProposalConfirmToken(
-  token: string,
-  expected: ProposalConfirmBinding,
-  nowSeconds: number = Math.floor(Date.now() / 1000),
-): ProposalConfirmTokenVerification {
-  return verifyConfirmToken(PROPOSAL_CONFIRM_KIND, token, proposalClaims(expected), nowSeconds);
-}
-
-/**
- * Atomically consume a proposal confirm nonce. `true` = newly burned (proceed),
- * `false` = already burned (a replay — reject). MUST be called synchronously with
- * no intervening `await` between verification and the write, so two concurrent
- * replays cannot both pass.
- *
- * The nonce store is shared with every other confirm gate, which is safe and
- * deliberate: `mintConfirmToken` draws 16 random bytes per token, so a
- * collision across gates is not a reachable state, and one store means one
- * expiry sweep rather than a per-gate copy that rots.
- */
-export const burnProposalConfirmNonce = burnConfirmNonce;
+export const PROPOSAL_STAGED_VERB: StagedVerb<ProposalConfirmBinding> = {
+  name: "proposal",
+  kind: {
+    typ: "AtlasBrainProposalConfirm",
+    ttlEnvVar: "ATLAS_BRAIN_PROPOSAL_CONFIRM_TTL_SECONDS",
+  },
+  claims: proposalClaims,
+  copy: {
+    staging: {
+      storeUnavailable:
+        "Proposing a fact is unavailable — this deployment has no internal database configured.",
+      noWorkspace:
+        "Proposing a fact is unavailable — no active workspace is bound to this session, so there is no brain to add to.",
+      readerUnresolved:
+        "The proposal was refused: your identity could not be resolved for this workspace, so the claim " +
+        "could not be attributed to anyone. This is a configuration or session problem — report it; " +
+        "nothing was recorded.",
+      actorFailed:
+        "The proposal could not be prepared — nothing was recorded. Retry once; if it persists, " +
+        "the brain store may be temporarily unavailable.",
+      mintFailed:
+        "This claim can't be staged for confirmation — the server is missing a signing key for " +
+        "confirmation tokens. Tell the user the fact can't be recorded right now; do not claim " +
+        "it was recorded. Nothing was changed.",
+    },
+    confirm: {
+      noWorkspace: "No active workspace — select one before confirming a proposal.",
+      storeUnavailable:
+        "Proposing a fact is unavailable — this deployment has no internal database configured.",
+      readerUnresolved:
+        "Your identity could not be resolved for this workspace, so the claim could not be " +
+        "attributed to anyone. This is a configuration or session problem — report it; nothing " +
+        "was recorded.",
+      actorFailed: "Couldn't verify who you are right now — nothing was recorded. Retry shortly.",
+      tokenUnverifiable:
+        "The server can't verify proposal confirmations right now — its confirm-token signing key " +
+        "isn't configured. This is a server configuration issue, not a problem with your request.",
+      tokenInvalid:
+        "This confirmation is missing, invalid, expired, or already used. Ask Atlas to stage the proposal again.",
+      tokenReplayed:
+        "This confirmation was already used. Ask Atlas to stage the proposal again if you need to repeat it.",
+      vocabularyIncomplete:
+        "This workspace's alias vocabulary is incomplete, so a new claim cannot be keyed the way " +
+        "ingest keys it — nothing was recorded. Retrying will not help: an operator has to " +
+        "recompute the vocabulary's closure first.",
+      executeFailed:
+        "The proposal failed before it could be recorded — nothing was changed. Retry once; if it " +
+        "persists, the brain store may be temporarily unavailable.",
+    },
+  },
+};
 
 /**
  * A concise, factual one-line description of a staged proposal for the card

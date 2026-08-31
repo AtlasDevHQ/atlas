@@ -1,6 +1,7 @@
 /**
- * Shared contract for the brain-correction confirm-before-write flow (#5496,
- * implementing [ADR-0036 §T9]'s 2026-08-27b amendment decided in #5485).
+ * `correct_fact` as a {@link StagedVerb} — the wire contract, the binding, and
+ * the card summary for the correction gate (#5496, implementing [ADR-0036 §T9]'s
+ * 2026-08-27b amendment decided in #5485; reshaped into a descriptor by #5571).
  *
  * `correct_fact` used to fire inside the agent loop the moment the model called
  * it, gated only by the CALLING USER holding owner/admin — the human's intent
@@ -12,17 +13,13 @@
  *
  * This module is the single source of truth for that wire shape + the
  * human-facing summary, so the staging tool and the confirming endpoint cannot
- * drift.
+ * drift. The GATE itself is no longer here: the ordering and the ladder that
+ * this module and `staged-propose.ts` each wrapped separately now live once in
+ * `staged-write.ts` (#5571), and what remains is what is genuinely this verb's.
  *
- * ## It mirrors the REST write gate; it does not re-derive it
+ * ## The three load-bearing properties, inherited rather than re-argued
  *
- * `lib/openapi/rest-write-confirm.ts` (#3007) is the pattern. The crypto is not
- * copied — both gates specialize the ONE implementation in
- * `lib/confirm-token.ts`, differing only in their `typ` domain separator, their
- * TTL env var, and what they bind. The three load-bearing properties are
- * inherited rather than re-argued:
- *
- *   - **Token binding.** {@link mintCorrectionConfirmToken} signs
+ *   - **Token binding.** The token signs
  *     `(workspaceId, factId, verb, canonical reason+replacement, nonce, exp)`
  *     with the resolved encryption keyset (`ATLAS_ENCRYPTION_KEYS` →
  *     `ATLAS_ENCRYPTION_KEY` → `BETTER_AUTH_SECRET`) — no new signing secret.
@@ -34,7 +31,7 @@
  *     whether the correction is still allowed, and those are different questions
  *     (a role can be revoked, a fact can be retracted, between stage and confirm).
  *   - **Nonce burn.** A replay — or a looping agent re-posting the same staged
- *     payload — is rejected.
+ *     payload — is rejected. `staged-write.ts` is where that ordering now lives.
  *
  * ## Why the summary does not preview the fact's text
  *
@@ -52,29 +49,9 @@
  * the verb and target actually staged, derived server-side, so a confidently
  * wrong sentence cannot get a different write confirmed than the one described.
  */
-import {
-  burnConfirmNonce,
-  claimsHash,
-  mintConfirmToken,
-  verifyConfirmToken,
-  type ConfirmClaims,
-  type ConfirmTokenKind,
-  type ConfirmTokenRejection,
-  type ConfirmTokenVerification,
-  type MintConfirmTokenOptions,
-} from "@atlas/api/lib/confirm-token";
+import { claimsHash, type ConfirmClaims } from "@atlas/api/lib/confirm-token";
+import type { StagedVerb } from "@atlas/api/lib/brain/staged-write";
 import type { BrainCorrectionVerb } from "@useatlas/types";
-
-/**
- * The brain-correction gate's token identity. `typ` is the domain separator
- * carried in the signed header: it is why a REST write confirm token — signed
- * with the same keyset — cannot be presented at the correction confirm endpoint,
- * and vice versa.
- */
-const CORRECTION_CONFIRM_KIND: ConfirmTokenKind = {
-  typ: "AtlasBrainCorrectionConfirm",
-  ttlEnvVar: "ATLAS_BRAIN_CONFIRM_TTL_SECONDS",
-};
 
 /**
  * The correction's payload as it travels on the wire — `validFrom` is an
@@ -110,8 +87,8 @@ export interface CorrectFactConfirmRequest extends CorrectionConfirmPayload {
   /**
    * Server-signed, single-use confirm token binding this exact staged
    * correction to `(workspace, factId, verb, canonical reason+replacement,
-   * nonce, exp)`. Minted by {@link mintCorrectionConfirmToken} at staging;
-   * required + verified + burned by the confirm endpoint. Opaque to the card.
+   * nonce, exp)`. Minted at staging; required + verified + burned by the
+   * confirm endpoint. Opaque to the card.
    */
   readonly token: string;
 }
@@ -124,10 +101,6 @@ export interface CorrectionConfirmBinding {
   /** Bound via a canonical hash, so the token stays small and leaks nothing readable. */
   readonly payload: CorrectionConfirmPayload;
 }
-
-export type MintCorrectionConfirmTokenOptions = MintConfirmTokenOptions;
-export type CorrectionConfirmTokenRejection = ConfirmTokenRejection;
-export type CorrectionConfirmTokenVerification = ConfirmTokenVerification;
 
 /**
  * The signed claims. `ph` covers reason AND replacement together, so swapping a
@@ -166,42 +139,63 @@ function correctionClaims(binding: CorrectionConfirmBinding): ConfirmClaims {
 }
 
 /**
- * Mint a single-use confirm token binding a staged correction.
+ * The brain-correction gate.
  *
- * Throws when no signing key is configured — the human-in-the-loop gate must NOT
- * degrade silently to an unsigned (forgeable) token. The staging tool maps the
- * throw to a structured "can't stage this correction" result, so the operator
- * gates the verb on real key material rather than discovering it after a forged
- * confirm.
+ * `typ` is the domain separator carried in the signed header: it is why a
+ * REST write confirm token — signed with the same keyset — cannot be presented
+ * at the correction confirm endpoint, and vice versa.
  */
-export function mintCorrectionConfirmToken(
-  binding: CorrectionConfirmBinding,
-  options: MintCorrectionConfirmTokenOptions = {},
-): string {
-  return mintConfirmToken(CORRECTION_CONFIRM_KIND, correctionClaims(binding), options);
-}
-
-/**
- * Verify a confirm token against the binding re-derived from THIS confirm
- * request. Pure — the caller {@link burnCorrectionConfirmNonce}s the returned
- * nonce once the rest of validation passes. The route maps every `ok: false` arm
- * to one neutral 400 so an attacker cannot probe which check tripped.
- */
-export function verifyCorrectionConfirmToken(
-  token: string,
-  expected: CorrectionConfirmBinding,
-  nowSeconds: number = Math.floor(Date.now() / 1000),
-): CorrectionConfirmTokenVerification {
-  return verifyConfirmToken(CORRECTION_CONFIRM_KIND, token, correctionClaims(expected), nowSeconds);
-}
-
-/**
- * Atomically consume a correction confirm nonce. `true` = newly burned (proceed),
- * `false` = already burned (a replay — reject). MUST be called synchronously with
- * no intervening `await` between verification and the correction, so two
- * concurrent replays cannot both pass.
- */
-export const burnCorrectionConfirmNonce = burnConfirmNonce;
+export const CORRECTION_STAGED_VERB: StagedVerb<CorrectionConfirmBinding> = {
+  name: "correction",
+  kind: {
+    typ: "AtlasBrainCorrectionConfirm",
+    ttlEnvVar: "ATLAS_BRAIN_CONFIRM_TTL_SECONDS",
+  },
+  claims: correctionClaims,
+  copy: {
+    staging: {
+      storeUnavailable:
+        "Fact correction is unavailable — this deployment has no internal database configured.",
+      noWorkspace:
+        "Fact correction is unavailable — no active workspace is bound to this session, so there is no brain to correct.",
+      readerUnresolved:
+        "The correction was refused: your identity could not be resolved for this workspace, so the " +
+        "fact's visibility could not be checked safely. This is a configuration or session problem — " +
+        "report it; the fact was not changed.",
+      actorFailed:
+        "The correction could not be prepared — nothing was changed. Retry once; if it persists, " +
+        "the brain store may be temporarily unavailable.",
+      mintFailed:
+        "This correction can't be staged for confirmation — the server is missing a signing key for " +
+        "confirmation tokens. Tell the user the correction can't be confirmed right now; do not claim " +
+        "it was applied. Nothing was changed.",
+    },
+    confirm: {
+      noWorkspace: "No active workspace — select one before confirming a correction.",
+      storeUnavailable:
+        "Fact correction is unavailable — this deployment has no internal database configured.",
+      readerUnresolved:
+        "Your identity could not be resolved for this workspace, so the fact's visibility could " +
+        "not be checked safely. This is a configuration or session problem — report it; the fact " +
+        "was not changed.",
+      actorFailed: "Couldn't verify who you are right now — nothing was changed. Retry shortly.",
+      tokenUnverifiable:
+        "The server can't verify correction confirmations right now — its confirm-token signing key " +
+        "isn't configured. This is a server configuration issue, not a problem with your request.",
+      tokenInvalid:
+        "This confirmation is missing, invalid, expired, or already used. Ask Atlas to stage the correction again.",
+      tokenReplayed:
+        "This confirmation was already used. Ask Atlas to stage the correction again if you need to repeat it.",
+      vocabularyIncomplete:
+        "This workspace's alias vocabulary is incomplete, so a correction cannot be keyed the way " +
+        "ingest keys it — nothing was changed. Retrying will not help: an operator has to recompute " +
+        "the vocabulary's closure first.",
+      executeFailed:
+        "The correction failed before it could be applied — nothing was changed. Retry once; if it " +
+        "persists, the brain store may be temporarily unavailable.",
+    },
+  },
+};
 
 /**
  * A concise, factual one-line description of a staged correction for the card

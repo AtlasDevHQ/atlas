@@ -26,9 +26,11 @@
  * `ProposeFactConfirmRequest` and touches nothing. The write executes at
  * `POST /api/v1/brain-proposals/confirm`, after a human clicks Confirm on the
  * card, and that endpoint re-runs the gate server-side rather than trusting the
- * staged payload. The mechanism is `lib/brain/proposal-confirm.ts`, which
- * specializes the one confirm-token implementation in `lib/confirm-token.ts`
- * rather than copying it.
+ * staged payload. The mechanism is `lib/brain/staged-propose.ts` — this verb's
+ * {@link import("@atlas/api/lib/brain/staged-write").StagedVerb} descriptor —
+ * over the one gate in `lib/brain/staged-write.ts`, which in turn specializes
+ * the one confirm-token implementation in `lib/confirm-token.ts` rather than
+ * copying it.
  *
  * What this tool checks at staging is deliberately narrow: the deployment has a
  * brain, the session has a workspace, and the actor resolves. All three exist to
@@ -51,19 +53,19 @@
 
 import { tool } from "ai";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
-import { hasInternalDB, getInternalDB } from "@atlas/api/lib/db/internal";
-import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import {
   buildProposalSummary,
-  mintProposalConfirmToken,
+  PROPOSAL_STAGED_VERB,
   type ProposalClaim,
   type ProposeFactConfirmRequest,
-} from "@atlas/api/lib/brain/proposal-confirm";
-import { BrainProposalClaimSchema } from "@useatlas/schemas";
+} from "@atlas/api/lib/brain/staged-propose";
 import {
-  BrainReaderIdentityError,
-  resolveBrainReaderContext,
-} from "@atlas/api/lib/brain/reader-context";
+  mintStagedConfirmToken,
+  resolveStagedActor,
+} from "@atlas/api/lib/brain/staged-write";
+import { withRequestId } from "@atlas/api/lib/tools/tool-message";
+import { stagedToolRefusal } from "@atlas/api/lib/tools/staged-tool";
+import { BrainProposalClaimSchema } from "@useatlas/schemas";
 
 const log = createLogger("propose-fact");
 
@@ -124,15 +126,13 @@ interface ProposeFactStaged {
   readonly confirm: ProposeFactConfirmRequest;
 }
 
-/** Append the request id so the user has something to quote. */
-function withRequestId(message: string, requestId: string | undefined): string {
-  return requestId ? `${message} (request ${requestId})` : message;
-}
-
-const READER_UNRESOLVED_MESSAGE =
-  "The proposal was refused: your identity could not be resolved for this workspace, so the claim " +
-  "could not be attributed to anyone. This is a configuration or session problem — report it; " +
-  "nothing was recorded.";
+/**
+ * This verb's degraded-path copy, both surfaces, in one place (#5571) — the
+ * same descriptor `POST /api/v1/brain-proposals/confirm` reads its ladder from.
+ * `withRequestId` and the reader-unresolved sentence used to be local copies
+ * here, in `correct-fact.ts` and in `search-brain.ts`.
+ */
+const COPY = PROPOSAL_STAGED_VERB.copy.staging;
 
 export const proposeFactTool = tool({
   description:
@@ -166,60 +166,40 @@ export const proposeFactTool = tool({
     // the proposal takes the disclosed workspace grant, as before.
     const conversationId = reqCtx?.conversationId;
 
-    if (!hasInternalDB()) {
-      return {
-        error:
-          "Proposing a fact is unavailable — this deployment has no internal database configured.",
-        reason: PROPOSE_FACT_TOOL_REASONS.noInternalDb,
-      };
-    }
-    if (!workspaceId) {
-      return {
-        error:
-          "Proposing a fact is unavailable — no active workspace is bound to this session, so there is no brain to add to.",
-        reason: PROPOSE_FACT_TOOL_REASONS.noWorkspace,
-      };
-    }
-
-    // Nothing below this line writes — this whole path is pre-commit by
-    // construction. The catch covers the one thing that can still fail here:
-    // resolving the actor.
-    let ctx: Awaited<ReturnType<typeof resolveBrainReaderContext>>;
-    try {
-      ctx = await resolveBrainReaderContext(getInternalDB(), {
-        workspaceId,
-        mode: detectAuthMode(),
-        user: reqCtx?.user,
-        ...(requestId !== undefined ? { requestId } : {}),
-      });
-    } catch (err) {
-      if (err instanceof BrainReaderIdentityError) {
-        log.error(
-          { err: err.message, workspaceId, requestId },
-          "proposeFact refused: actor identity could not be resolved",
-        );
-        return {
-          error: withRequestId(READER_UNRESOLVED_MESSAGE, requestId),
-          reason: PROPOSE_FACT_TOOL_REASONS.readerUnresolved,
-        };
-      }
-      log.error(
-        {
-          err: err instanceof Error ? err.message : String(err),
-          workspaceId,
-          requestId,
+    // The shared staging preamble: this deployment has a brain, this session
+    // has a workspace, and this actor resolves. Nothing below writes — the
+    // whole path is pre-commit by construction — so the only thing that can
+    // fail here is resolving the actor, and the reason CODES below are what
+    // stays this tool's (there is no `refused` arm: staging a proposal runs no
+    // authority gate to be refused BY).
+    //
+    // `store-first`, deliberately: a self-hosted deployment with no
+    // `DATABASE_URL` has neither a store nor a workspace, and "no internal
+    // database configured" is the sentence that names something an operator can
+    // fix. See `StagedPreambleOrder`.
+    const actor = await resolveStagedActor({
+      workspaceId,
+      user: reqCtx?.user,
+      requestId,
+      order: "store-first",
+    });
+    if (!actor.ok) {
+      return stagedToolRefusal({
+        verb: PROPOSAL_STAGED_VERB,
+        failure: actor,
+        reasons: {
+          storeUnavailable: PROPOSE_FACT_TOOL_REASONS.noInternalDb,
+          noWorkspace: PROPOSE_FACT_TOOL_REASONS.noWorkspace,
+          readerUnresolved: PROPOSE_FACT_TOOL_REASONS.readerUnresolved,
+          actorFailed: PROPOSE_FACT_TOOL_REASONS.proposalFailed,
         },
-        "proposeFact could not resolve the actor for staging",
-      );
-      return {
-        error: withRequestId(
-          "The proposal could not be prepared — nothing was recorded. Retry once; if it persists, " +
-            "the brain store may be temporarily unavailable.",
-          requestId,
-        ),
-        reason: PROPOSE_FACT_TOOL_REASONS.proposalFailed,
-      };
+        toolName: "proposeFact",
+        log,
+        workspaceId,
+        requestId,
+      });
     }
+    const { ctx } = actor;
 
     const claim: ProposalClaim = {
       subject: input.subject,
@@ -235,7 +215,7 @@ export const proposeFactTool = tool({
     // stance the correction gate and `mintOAuthStateToken` take.
     let token: string;
     try {
-      token = mintProposalConfirmToken({
+      token = mintStagedConfirmToken(PROPOSAL_STAGED_VERB, {
         // `ctx.workspaceId`, not the raw `workspaceId` off request context: the
         // confirm endpoint re-derives the binding from ITS resolved context, and
         // binding one of the two while verifying against the other is how a
@@ -254,12 +234,7 @@ export const proposeFactTool = tool({
         "proposeFact could not mint a confirm token",
       );
       return {
-        error: withRequestId(
-          "This claim can't be staged for confirmation — the server is missing a signing key for " +
-            "confirmation tokens. Tell the user the fact can't be recorded right now; do not claim " +
-            "it was recorded. Nothing was changed.",
-          requestId,
-        ),
+        error: withRequestId(COPY.mintFailed, requestId),
         reason: PROPOSE_FACT_TOOL_REASONS.proposalFailed,
       };
     }

@@ -1,6 +1,7 @@
 /**
- * Unit tests for the brain-correction confirm token (#5496) — the gate that
- * makes "a human approved THIS correction" server-verifiable.
+ * Unit tests for the brain-correction staged verb (#5496; the descriptor is
+ * `staged-correct.ts` since #5571) — the gate that makes "a human approved THIS
+ * correction" server-verifiable.
  *
  * Three of the issue's acceptance criteria are decided here rather than at the
  * route, because they are properties of the token itself:
@@ -23,16 +24,18 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 
 import {
-  mintCorrectionConfirmToken,
-  verifyCorrectionConfirmToken,
-  burnCorrectionConfirmNonce,
+  CORRECTION_STAGED_VERB,
   type CorrectionConfirmBinding,
-} from "@atlas/api/lib/brain/correction-confirm";
+} from "@atlas/api/lib/brain/staged-correct";
+import {
+  mintStagedConfirmToken,
+  verifyStagedConfirmToken,
+} from "@atlas/api/lib/brain/staged-write";
 import {
   mintRestConfirmToken,
   verifyRestConfirmToken,
 } from "@atlas/api/lib/openapi/rest-write-confirm";
-import { _resetConfirmNonces } from "@atlas/api/lib/confirm-token";
+import { burnConfirmNonce, _resetConfirmNonces } from "@atlas/api/lib/confirm-token";
 import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
 
 const SECRET = "test-correction-confirm-signing-secret-not-a-real-key";
@@ -79,21 +82,21 @@ describe("correction confirm token — mint/verify", () => {
   afterAll(restoreKeyEnv);
 
   it("round-trips a token bound to the staged correction", () => {
-    const token = mintCorrectionConfirmToken(binding());
-    expect(verifyCorrectionConfirmToken(token, binding()).ok).toBe(true);
+    const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, binding());
+    expect(verifyStagedConfirmToken(CORRECTION_STAGED_VERB, token, binding()).ok).toBe(true);
   });
 
   it("signs with the existing keyset — no new secret is introduced", () => {
     // The acceptance criterion, made falsifiable: with the keyset env cleared,
     // mint must THROW rather than fall through to an unsigned token. If the gate
     // had its own secret, clearing these three would not affect it.
-    const token = mintCorrectionConfirmToken(binding());
+    const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, binding());
     clearKeyEnv();
     try {
-      expect(() => mintCorrectionConfirmToken(binding())).toThrow(/no signing key configured/);
+      expect(() => mintStagedConfirmToken(CORRECTION_STAGED_VERB, binding())).toThrow(/no signing key configured/);
       // …and a previously-minted token stops verifying, because there is no key
       // to verify it WITH — not because it was rejected on its merits.
-      expect(verifyCorrectionConfirmToken(token, binding())).toEqual({
+      expect(verifyStagedConfirmToken(CORRECTION_STAGED_VERB, token, binding())).toEqual({
         ok: false,
         reason: "no-key",
       });
@@ -118,8 +121,8 @@ describe("correction confirm token — mint/verify", () => {
 
   for (const [label, overrides] of tampers) {
     it(`refuses ${label} as a binding mismatch`, () => {
-      const token = mintCorrectionConfirmToken(binding());
-      expect(verifyCorrectionConfirmToken(token, binding(overrides))).toEqual({
+      const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, binding());
+      expect(verifyStagedConfirmToken(CORRECTION_STAGED_VERB, token, binding(overrides))).toEqual({
         ok: false,
         reason: "binding-mismatch",
       });
@@ -130,22 +133,22 @@ describe("correction confirm token — mint/verify", () => {
     // The client round-trips the staged JSON through the browser, and object key
     // order is not preserved by every path it takes. A binding that depended on
     // it would reject confirmations that changed nothing.
-    const token = mintCorrectionConfirmToken(
+    const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB,
       binding({ payload: { reason: "r", replacement: { object: "Bo", validFrom: "2026-01-01T00:00:00.000Z" } } }),
     );
     const reordered = binding({
       payload: { replacement: { validFrom: "2026-01-01T00:00:00.000Z", object: "Bo" }, reason: "r" },
     });
-    expect(verifyCorrectionConfirmToken(token, reordered).ok).toBe(true);
+    expect(verifyStagedConfirmToken(CORRECTION_STAGED_VERB, token, reordered).ok).toBe(true);
   });
 
   it("treats an absent optional field and an explicit `undefined` as the same correction", () => {
     // `JSON.stringify` drops `undefined` values, so a client that echoes the
     // staged payload back sends the absent form. Both must hash identically or
     // a `retract` staged with no reason could never be confirmed.
-    const token = mintCorrectionConfirmToken(binding({ verb: "retract", payload: {} }));
+    const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, binding({ verb: "retract", payload: {} }));
     expect(
-      verifyCorrectionConfirmToken(
+      verifyStagedConfirmToken(CORRECTION_STAGED_VERB,
         token,
         // Neither `reason` nor `replacement` supplied — both are exact optionals,
         // so the payload that omits them IS the empty object (#5522).
@@ -155,34 +158,34 @@ describe("correction confirm token — mint/verify", () => {
   });
 
   it("rejects a tampered signature", () => {
-    const token = mintCorrectionConfirmToken(binding());
+    const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, binding());
     const segs = token.split(".");
     // Tamper at the BYTE level — flipping the last base64url char can be a
     // no-op (the final char of a 32-byte sig carries unused low bits).
     const sig = Buffer.from(segs[2], "base64url");
     sig[0] ^= 0xff;
     segs[2] = sig.toString("base64url");
-    expect(verifyCorrectionConfirmToken(segs.join("."), binding())).toEqual({
+    expect(verifyStagedConfirmToken(CORRECTION_STAGED_VERB, segs.join("."), binding())).toEqual({
       ok: false,
       reason: "bad-signature",
     });
   });
 
   it("rejects a malformed token, and an empty one as missing", () => {
-    expect(verifyCorrectionConfirmToken("not-a-token", binding())).toEqual({
+    expect(verifyStagedConfirmToken(CORRECTION_STAGED_VERB, "not-a-token", binding())).toEqual({
       ok: false,
       reason: "malformed",
     });
-    expect(verifyCorrectionConfirmToken("", binding())).toEqual({ ok: false, reason: "missing" });
+    expect(verifyStagedConfirmToken(CORRECTION_STAGED_VERB, "", binding())).toEqual({ ok: false, reason: "missing" });
   });
 
   it("rejects an expired token, and accepts one just before expiry", () => {
-    const token = mintCorrectionConfirmToken(binding(), { nowSeconds: 1_000, ttlSeconds: 60 });
-    expect(verifyCorrectionConfirmToken(token, binding(), 2_000)).toEqual({
+    const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, binding(), { nowSeconds: 1_000, ttlSeconds: 60 });
+    expect(verifyStagedConfirmToken(CORRECTION_STAGED_VERB, token, binding(), 2_000)).toEqual({
       ok: false,
       reason: "expired",
     });
-    expect(verifyCorrectionConfirmToken(token, binding(), 1_059).ok).toBe(true);
+    expect(verifyStagedConfirmToken(CORRECTION_STAGED_VERB, token, binding(), 1_059).ok).toBe(true);
   });
 });
 
@@ -198,15 +201,15 @@ describe("correction confirm token — single-use", () => {
   it("burns once — a replay of the same token is refused", () => {
     // The acceptance criterion: "a replayed confirm is rejected. A looping agent
     // cannot re-fire." Both are the same mechanism.
-    const token = mintCorrectionConfirmToken(binding(), { nonce: "nonce-replay-1" });
-    const first = verifyCorrectionConfirmToken(token, binding());
+    const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, binding(), { nonce: "nonce-replay-1" });
+    const first = verifyStagedConfirmToken(CORRECTION_STAGED_VERB, token, binding());
     if (!first.ok) throw new Error(`expected a valid token, got ${first.reason}`);
 
-    expect(burnCorrectionConfirmNonce(first.nonce, first.expSeconds)).toBe(true);
+    expect(burnConfirmNonce(first.nonce, first.expSeconds)).toBe(true);
     // The token still VERIFIES — it is cryptographically fine. What stops the
     // second confirm is the burn, which is why the route must do both.
-    expect(verifyCorrectionConfirmToken(token, binding()).ok).toBe(true);
-    expect(burnCorrectionConfirmNonce(first.nonce, first.expSeconds)).toBe(false);
+    expect(verifyStagedConfirmToken(CORRECTION_STAGED_VERB, token, binding()).ok).toBe(true);
+    expect(burnConfirmNonce(first.nonce, first.expSeconds)).toBe(false);
   });
 });
 
@@ -229,14 +232,14 @@ describe("confirm gates are domain-separated", () => {
       operationId: "createOnePerson",
       params: { body: { name: "Ada" } },
     });
-    expect(verifyCorrectionConfirmToken(restToken, binding())).toEqual({
+    expect(verifyStagedConfirmToken(CORRECTION_STAGED_VERB, restToken, binding())).toEqual({
       ok: false,
       reason: "malformed",
     });
   });
 
   it("a correction token does not verify at the REST write gate", () => {
-    const correctionToken = mintCorrectionConfirmToken(binding());
+    const correctionToken = mintStagedConfirmToken(CORRECTION_STAGED_VERB, binding());
     expect(
       verifyRestConfirmToken(correctionToken, {
         workspaceId: "ws-1",

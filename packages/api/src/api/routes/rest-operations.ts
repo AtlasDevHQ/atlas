@@ -36,8 +36,10 @@ import {
 import {
   confirmRequestToParams,
   verifyRestConfirmToken,
-  burnRestConfirmNonce,
 } from "@atlas/api/lib/openapi/rest-write-confirm";
+// The nonce store is one store across every confirm gate (#5571 removed the
+// per-gate re-export that made it look like several).
+import { burnConfirmNonce } from "@atlas/api/lib/confirm-token";
 import { auditRestOperation, deriveRestRowCount } from "@atlas/api/lib/openapi/rest-audit";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
@@ -335,7 +337,7 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
       // verifyRestConfirmToken above and here, so two concurrent replays of the
       // same token can't both reach the upstream (the first burns it; the second
       // sees it burned and is rejected as a replay).
-      if (!burnRestConfirmNonce(verification.nonce, verification.expSeconds)) {
+      if (!burnConfirmNonce(verification.nonce, verification.expSeconds)) {
         log.warn(
           { orgId, datasource: datasource.id, operationId: input.operationId, requestId },
           "Confirm rejected: confirm token already used (replay)",

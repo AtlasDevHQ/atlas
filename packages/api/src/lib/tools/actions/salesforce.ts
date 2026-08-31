@@ -424,6 +424,11 @@ async function mintAccessToken(
   try {
     return (await response.json()) as SalesforceTokenResponse;
   } catch (err) {
+    // ⚠️ The body is a STREAM, so the deadline can fire here — after the
+    // headers arrived and before the body finished. Without this re-throw a
+    // hung body reads as "unreadable token response", which is the exact
+    // misclassification the bound exists to prevent.
+    if (isAbortError(err)) throw err;
     log.error(
       { host: hostForLog(instanceUrl), status: response.status },
       "Salesforce token response was not readable JSON",
@@ -491,6 +496,11 @@ async function postRecord(
   try {
     return (await response.json()) as SalesforceSaveResult;
   } catch (err) {
+    // ⚠️ Same stream case as the token leg, and worse here: the message below
+    // ASSERTS Salesforce accepted the record. On a deadline that fired mid-body
+    // that is a claim we cannot make, so the abort goes back to
+    // `withVendorDeadline` and comes out as the create-leg timeout instead.
+    if (isAbortError(err)) throw err;
     log.error(
       { object, status: response.status },
       "Salesforce create response was not readable JSON",
@@ -515,7 +525,13 @@ export async function executeSalesforceCreate(
   params: SalesforceCreateParams,
   credentials: SalesforceCredentials,
 ): Promise<SalesforceCreateResult> {
-  const secrets = [credentials.SALESFORCE_ACTION_CLIENT_SECRET];
+  // The Consumer Key is not a secret the way the Consumer Secret is, but
+  // Salesforce's `invalid_client` description commonly echoes it back and it
+  // is not ours to put in an agent-visible string either.
+  const secrets = [
+    credentials.SALESFORCE_ACTION_CLIENT_SECRET,
+    credentials.SALESFORCE_ACTION_CLIENT_ID,
+  ];
 
   const requested = params.object ?? credentials.SALESFORCE_ACTION_DEFAULT_OBJECT;
   if (!requested) {
@@ -589,7 +605,7 @@ export async function executeSalesforceCreate(
       createSecrets,
       signal,
     );
-    return { sessionUrl, accessToken, saved };
+    return { sessionUrl, createSecrets, saved };
   });
 
   if (!exchange.ok) {
@@ -610,16 +626,14 @@ export async function executeSalesforceCreate(
     );
   }
 
-  const { sessionUrl, accessToken, saved } = exchange.value;
+  const { sessionUrl, createSecrets, saved } = exchange.value;
 
   // Belt-and-braces: the single-record endpoint signals a refusal with a
   // non-2xx, which `postRecord` already threw on. A 2xx body that still says
   // `success: false` is not a shape Salesforce documents, and reporting it as
   // a success would be the one unrecoverable way to be wrong here.
   if (saved.success !== true) {
-    const detail =
-      describeSaveErrors(saved.errors, [...secrets, accessToken]).join("; ") ||
-      "no reason given";
+    const detail = describeSaveErrors(saved.errors, createSecrets).join("; ") || "no reason given";
     log.error({ object, detail }, "Salesforce refused the record");
     throw new Error(`Salesforce did not create the ${object}: ${detail}`);
   }

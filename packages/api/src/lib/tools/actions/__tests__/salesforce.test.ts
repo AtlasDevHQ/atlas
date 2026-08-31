@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from "bun:test";
 
 // ---------------------------------------------------------------------------
-// Mocks — handler (no DB/auth), logger, credential store, jsforce
+// Mocks — handler (no DB/auth), logger, credential store, the Salesforce wire
 // ---------------------------------------------------------------------------
 
 let lastHandleActionCall: { request: unknown } | null = null;
@@ -107,14 +107,38 @@ let tokenBody: unknown = {
 };
 /** Set to make the token leg reject at the transport, e.g. with an abort. */
 let tokenThrows: (() => never) | null = null;
+/** Set to make the token leg's HEADERS arrive but its body abort mid-stream. */
+let tokenBodyAborts = false;
 
 let createStatus = 201;
 let createBody: unknown = { id: "00Q000000000001AAA", success: true, errors: [] };
 /** Set to make the create leg reject at the transport, e.g. with an abort. */
 let createThrows: (() => never) | null = null;
+/** Set to make the create leg's HEADERS arrive but its body abort mid-stream. */
+let createBodyAborts = false;
 
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(typeof body === "string" ? body : JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * A response whose HEADERS arrived but whose body never finishes — the shape a
+ * deadline actually hits on a half-hung host.
+ *
+ * `fetch` resolving is not the end of the exchange: the body is a stream, and
+ * `response.json()` is a second place the abort can land. A mock that only
+ * rejects at the `fetch` call cannot reach that path at all.
+ */
+function abortingBodyResponse(status: number): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    pull() {
+      return Promise.reject(new DOMException("The operation was aborted.", "AbortError"));
+    },
+  });
+  return new Response(stream, {
     status,
     headers: { "Content-Type": "application/json" },
   });
@@ -130,12 +154,21 @@ function installFetchMock(): void {
     input: string | URL | Request,
     init?: RequestInit,
   ): Promise<Response> => {
-    const url = typeof input === "string" ? input : input.toString();
+    // Narrowed rather than `String(input)`: `Request` has no useful
+    // `toString`, so the loose form is a `no-base-to-string` warning AND would
+    // silently yield "[object Request]" if a caller ever passed one.
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     seenSignals.push(init?.signal ?? undefined);
+
+    // Both legs send a string body; anything else is a test bug, not a case to
+    // coerce past.
+    const body = typeof init?.body === "string" ? init.body : "";
 
     if (url.endsWith("/services/oauth2/token")) {
       if (tokenThrows) tokenThrows();
-      const form = new URLSearchParams(String(init?.body ?? ""));
+      if (tokenBodyAborts) return abortingBodyResponse(tokenStatus);
+      const form = new URLSearchParams(body);
       lastTokenRequest = {
         loginUrl: url.slice(0, -"/services/oauth2/token".length),
         clientId: form.get("client_id") ?? "",
@@ -148,13 +181,14 @@ function installFetchMock(): void {
     const create = CREATE_URL.exec(url);
     if (create?.groups) {
       if (createThrows) createThrows();
+      if (createBodyAborts) return abortingBodyResponse(createStatus);
       const headers = new Headers(init?.headers);
       lastCreateRequest = {
         instanceUrl: create.groups.instance ?? "",
         apiVersion: create.groups.version ?? "",
         object: create.groups.object ?? "",
         accessToken: (headers.get("Authorization") ?? "").replace(/^Bearer /, ""),
-        fields: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+        fields: JSON.parse(body || "{}") as Record<string, unknown>,
       };
       return jsonResponse(createBody, createStatus);
     }
@@ -213,6 +247,8 @@ beforeEach(() => {
   seenSignals = [];
   tokenThrows = null;
   createThrows = null;
+  tokenBodyAborts = false;
+  createBodyAborts = false;
   tokenStatus = 200;
   tokenBody = {
     access_token: "sf-access-token",
@@ -439,6 +475,8 @@ describe("executeSalesforceCreate", () => {
       const message = (err as Error).message;
       expect(message).toContain("invalid_client");
       expect(message).not.toContain("tenant-consumer-secret");
+      // Salesforce's `invalid_client` description commonly echoes the key back.
+      expect(message).not.toContain("tenant-consumer-key");
       expect(message).toContain("[redacted]");
     }
   });
@@ -510,6 +548,21 @@ describe("executeSalesforceCreate", () => {
     await expect(
       executeSalesforceCreate({ object: "Lead", fields: { LastName: "Reyes" } }, creds()),
     ).rejects.toThrow(/no access token/);
+  });
+
+  it("refuses a 2xx body that still says success: false", async () => {
+    // Not a shape Salesforce documents — the single-record endpoint signals a
+    // refusal with a non-2xx. It is kept because reporting it as a success is
+    // the one unrecoverable way to be wrong here, and an untested guard is
+    // indistinguishable from a missing one.
+    createStatus = 200;
+    createBody = {
+      success: false,
+      errors: [{ errorCode: "UNKNOWN_EXCEPTION", message: "something went sideways" }],
+    };
+    await expect(
+      executeSalesforceCreate({ object: "Lead", fields: { LastName: "Reyes" } }, creds()),
+    ).rejects.toThrow(/did not create the Lead: UNKNOWN_EXCEPTION/);
   });
 
   it("throws when a successful save carries no record id", async () => {
@@ -641,6 +694,37 @@ describe("executeSalesforceCreate — the 15s bound", () => {
       expect(message).not.toContain("tenant-consumer-key");
       expect(message).not.toContain("sf-access-token");
       expect(message).not.toContain("tenant.my.salesforce.com");
+    }
+  });
+
+  it("⭐ a deadline that fires during the token BODY is still a timeout", async () => {
+    // `fetch` resolving is not the end of the exchange. The headers can arrive
+    // and the body hang, and `response.json()` is where the abort then lands —
+    // a `catch` there that does not re-throw turns the timeout into
+    // "unreadable token response", which is not a timeout classification at all.
+    tokenBodyAborts = true;
+
+    await expect(
+      executeSalesforceCreate({ object: "Lead", fields: { LastName: "Reyes" } }, creds()),
+    ).rejects.toThrow(/did not respond within 15s while authenticating/);
+  });
+
+  it("⭐ a deadline during the create BODY does not claim the record was accepted", async () => {
+    // The worst misclassification available on this path: the create-leg parse
+    // failure message ASSERTS Salesforce accepted the record, and a deadline
+    // that fired mid-body is not evidence of that.
+    createBodyAborts = true;
+
+    try {
+      await executeSalesforceCreate(
+        { object: "Lead", fields: { LastName: "Reyes" } },
+        creds(),
+      );
+      expect(true).toBe(false); // should not reach here
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).toMatch(/may or may not have been created/);
+      expect(message).not.toMatch(/accepted the Lead/);
     }
   });
 

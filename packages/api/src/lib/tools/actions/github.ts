@@ -47,6 +47,24 @@ const log = createLogger("action:github");
 
 const GITHUB_API_BASE = "https://api.github.com";
 
+/** Outer budget for the issue-create call — the same bound the Linear and
+ * Jira actions use. `executeWithTimeout(fn, undefined)` is unguarded on a
+ * default deployment, so without this a hung GitHub call hangs the agent
+ * turn. (No egress guard here, deliberately: the host is the fixed
+ * `GITHUB_API_BASE`, not a tenant-typed URL.) */
+const GITHUB_TIMEOUT_MS = 15_000;
+
+/** Duck-typed abort check — `DOMException` does not subclass `Error` on
+ * every runtime. Same shape as the Linear and Jira actions'; a shared home
+ * is ADR-0045's deferred `lib/vendor-http` extraction. */
+function isAbortError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { name?: unknown }).name === "AbortError"
+  );
+}
+
 /**
  * `owner/repo`, validated before it is interpolated into an API path. GitHub
  * allows alphanumerics, `-`, `_` and `.` in both halves and nothing else, so
@@ -191,16 +209,32 @@ export async function executeGitHubIssueCreate(
     ...(params.labels?.length ? { labels: params.labels } : {}),
   };
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  const abort = new AbortController();
+  const deadline = setTimeout(() => abort.abort(), GITHUB_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      signal: abort.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (isAbortError(err)) {
+      log.error({ repo, timeoutMs: GITHUB_TIMEOUT_MS }, "GitHub API request timed out");
+      throw new Error(
+        `GitHub did not respond within ${GITHUB_TIMEOUT_MS / 1000}s. The issue was not created — retry in a moment.`,
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(deadline);
+  }
 
   if (!response.ok) {
     let detail: string;

@@ -17,11 +17,11 @@ import type {
   ActionStatus,
   RollbackInfo,
 } from "@atlas/api/lib/action-types";
-import type { AtlasRole } from "@atlas/api/lib/auth/types";
+import type { AtlasRole, AtlasUser } from "@atlas/api/lib/auth/types";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { getConfig, type ActionsConfig, type PerActionConfig } from "@atlas/api/lib/config";
-import { parseRole } from "@atlas/api/lib/auth/permissions";
+import { canApprove, parseRole } from "@atlas/api/lib/auth/permissions";
 import { logActionAudit } from "./audit";
 
 const log = createLogger("action-handler");
@@ -633,6 +633,118 @@ export async function denyAction(
 }
 
 // ---------------------------------------------------------------------------
+// Authorized resolution — the verbs a caller with a user actually wants
+// ---------------------------------------------------------------------------
+
+/** Who is resolving (approving/denying), and from which workspace. */
+export interface ActionResolutionActor {
+  readonly user: AtlasUser | undefined;
+  /**
+   * The CALLER's active workspace — scopes the lookup and the CAS so a
+   * cross-org id surfaces as `not_found` rather than leaking existence.
+   * Distinct from the workspace whose credentials fire at execution: that is
+   * `action_log.org_id`, stamped at REQUEST time (ADR-0046).
+   */
+  readonly orgId: string | null | undefined;
+}
+
+/** Why a resolution was refused before any state changed. */
+export type ActionResolutionRefusal =
+  | { readonly kind: "not_found" }
+  | { readonly kind: "forbidden"; readonly reason: "role" | "self_approval" }
+  /** Lost the CAS — the action was already resolved (or raced). */
+  | { readonly kind: "conflict" };
+
+export type ApproveActionOutcome =
+  | ActionResolutionRefusal
+  | { readonly kind: "approved"; readonly entry: ActionLogEntry }
+  /**
+   * The row is `approved` but NOTHING RAN: no executor was registered for
+   * this action id in this process. `executorRegistry` is an in-process Map,
+   * so this is what a restart or a multi-instance deploy looks like — and
+   * the row is no longer `pending`, so nothing will retry it. Callers must
+   * not report this as plain success; the split in the type is what makes
+   * forgetting that a compile error instead of a silent drop.
+   */
+  | { readonly kind: "approved_not_executed"; readonly entry: ActionLogEntry };
+
+export type DenyActionOutcome =
+  | ActionResolutionRefusal
+  | { readonly kind: "denied"; readonly entry: ActionLogEntry };
+
+/**
+ * The authorization preamble both resolution verbs share. Until this
+ * existed, its five steps were duplicated across `api/routes/actions.ts`
+ * (approve AND deny handlers) and `bulk.ts`'s preClassify — and the copies
+ * had already diverged once: bulk fetched the action UNSCOPED and re-applied
+ * the org filter by hand, the exact omission the `@security` note on
+ * `orgScopeClause` warns about.
+ */
+async function authorizeResolution(
+  actionId: string,
+  { user, orgId }: ActionResolutionActor,
+): Promise<ActionResolutionRefusal | { readonly kind: "authorized"; readonly entry: ActionLogEntry }> {
+  const entry = await getAction(actionId, orgId);
+  if (!entry) return { kind: "not_found" };
+
+  const cfg = getActionConfig(entry.action_type);
+  if (!canApprove(user, cfg.approval, cfg.requiredRole)) {
+    return { kind: "forbidden", reason: "role" };
+  }
+  // Separation of duties: the requester cannot resolve their own
+  // admin-only action.
+  if (cfg.approval === "admin-only" && user?.id === entry.requested_by) {
+    return { kind: "forbidden", reason: "self_approval" };
+  }
+  return { kind: "authorized", entry };
+}
+
+/**
+ * Approve as a user: authorization, the CAS, the executor lookup and the
+ * executed/not-executed distinction, behind one interface. Callers keep only
+ * their genuinely different jobs — HTTP status mapping for the route,
+ * per-id partitioning for bulk. Neither passes an executor: the registry
+ * lives in this module, and both callers used to fetch the value out of it
+ * just to hand it straight back.
+ */
+export async function approveActionAsUser(
+  actionId: string,
+  actor: ActionResolutionActor,
+): Promise<ApproveActionOutcome> {
+  const auth = await authorizeResolution(actionId, actor);
+  if (auth.kind !== "authorized") return auth;
+
+  const entry = await approveAction(actionId, actor.user?.id ?? "anonymous", undefined, actor.orgId);
+  if (entry === null) return { kind: "conflict" };
+
+  // `executeApprovedAction` always advances the status past `approved`
+  // (executed / failed / timed_out / rolled_back), so a row still sitting at
+  // `approved` means the executor branch never ran.
+  if (entry.status === "approved") {
+    log.error(
+      { actionId, actionType: entry.action_type },
+      "Action approved but never executed — no executor registered in this process (restart or other instance?). The row has left 'pending', so nothing will retry it.",
+    );
+    return { kind: "approved_not_executed", entry };
+  }
+  return { kind: "approved", entry };
+}
+
+/** Deny as a user — same authorization, same refusal vocabulary. */
+export async function denyActionAsUser(
+  actionId: string,
+  actor: ActionResolutionActor,
+  reason?: string,
+): Promise<DenyActionOutcome> {
+  const auth = await authorizeResolution(actionId, actor);
+  if (auth.kind !== "authorized") return auth;
+
+  const entry = await denyAction(actionId, actor.user?.id ?? "anonymous", reason, actor.orgId);
+  if (entry === null) return { kind: "conflict" };
+  return { kind: "denied", entry };
+}
+
+// ---------------------------------------------------------------------------
 // Read operations
 // ---------------------------------------------------------------------------
 
@@ -869,4 +981,14 @@ export function _resetActionStore(): void {
   memoryStore.clear();
   executorRegistry.clear();
   rollbackMethodRegistry.clear();
+}
+
+/**
+ * Test-only: drop the in-process executor for ONE action while keeping its
+ * row — the exact state a restart or a sibling instance leaves behind, and
+ * the state `approveActionAsUser`'s `approved_not_executed` arm exists to
+ * name. `_resetActionStore` cannot stage it because it clears the row too.
+ */
+export function _dropActionExecutor(actionId: string): void {
+  executorRegistry.delete(actionId);
 }

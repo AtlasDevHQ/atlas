@@ -67,7 +67,7 @@ describe("the action-tool name contract (manifest ↔ barrel ↔ warning copy)",
   // lists agreeing IS the contract, and target #6 has to be named in both
   // before it ships.
   it("ACTION_TOOLS registers exactly the names the manifest promises, in order", async () => {
-    const { ACTION_TOOLS, ACTION_TOOL_NAMES } = await import("@atlas/api/lib/tools/actions");
+    const { ACTION_TOOLS, ACTION_TOOL_NAMES } = await import("@atlas/api/lib/tools/actions/index");
     expect(ACTION_TOOLS.map((a) => a.name)).toEqual([...ACTION_TOOL_NAMES]);
   });
 
@@ -80,7 +80,7 @@ describe("the action-tool name contract (manifest ↔ barrel ↔ warning copy)",
   });
 
   it("every operator action declares requiredCredentials: [] (per-workspace targets, ADR-0046)", async () => {
-    const { ACTION_TOOLS } = await import("@atlas/api/lib/tools/actions");
+    const { ACTION_TOOLS } = await import("@atlas/api/lib/tools/actions/index");
     for (const action of ACTION_TOOLS) {
       expect(action.requiredCredentials).toEqual([]);
     }

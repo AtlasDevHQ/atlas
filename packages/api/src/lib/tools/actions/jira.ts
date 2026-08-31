@@ -22,10 +22,72 @@ import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
 import { buildActionRequest, handleAction } from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
+import { assertBaseUrlAllowed, hostForLog } from "@atlas/api/lib/openapi/egress-guard";
 import { resolveCredentialsFor } from "./credentials/resolver";
 import { JIRA_TARGET, type ActionCredentialsOf } from "./credentials/targets";
 
 const log = createLogger("action:jira");
+
+/** Outer budget for the create call — the same bound the Linear action uses.
+ * Without it, `getActionConfig` leaves `timeout` undefined on a default
+ * deployment and `executeWithTimeout(fn, undefined)` returns `fn()`
+ * unguarded, so a hung Jira host would hang the agent turn with no bound. */
+const JIRA_TIMEOUT_MS = 15_000;
+
+/**
+ * An abort from the outer timeout. Duck-typed rather than `instanceof Error`:
+ * `AbortController` rejects with a `DOMException`, which does not subclass
+ * `Error` on every runtime, so an instanceof check would misreport a timeout
+ * as an upstream failure. (Same shape as the Linear action's — a third copy
+ * would justify reopening ADR-0045's deferred `lib/vendor-http` extraction,
+ * which is exactly where this belongs when that happens.)
+ */
+function isAbortError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { name?: unknown }).name === "AbortError"
+  );
+}
+
+/**
+ * Validate the tenant-typed base URL before any request carries the Basic
+ * auth header to it. `JIRA_BASE_URL` comes from the same
+ * `workspace_action_credentials` row as Salesforce's instance URL, typed by
+ * the same tenant admin — and the Salesforce action already reasoned its way
+ * to this guard (`normalizeInstanceUrl`): an unguarded value turns a
+ * settings form into an outbound probe of the deployment's own network,
+ * with a credential attached. The refusal message deliberately does not echo
+ * the guard's own wording — naming "blocked internal address" back to
+ * whoever typed the URL turns the form into a network scanner with a
+ * readout.
+ */
+function normalizeJiraBaseUrl(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "Jira base URL is not a valid URL");
+    throw new Error(
+      "The configured Jira base URL is not a valid URL. It should be your Jira site URL, e.g. https://acme.atlassian.net.",
+    );
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error(`The configured Jira base URL must use https (got "${parsed.protocol}").`);
+  }
+  try {
+    assertBaseUrlAllowed(parsed.origin);
+  } catch (err) {
+    log.error(
+      { host: hostForLog(parsed.origin), err: err instanceof Error ? err.message : String(err) },
+      "Jira base URL was refused by the egress guard",
+    );
+    throw new Error(
+      "The configured Jira base URL does not point at a reachable public Jira host. Use your Jira site URL, e.g. https://acme.atlassian.net.",
+    );
+  }
+  return parsed.origin + parsed.pathname.replace(/\/+$/, "");
+}
 
 // ---------------------------------------------------------------------------
 // ADF (Atlassian Document Format) helper
@@ -78,7 +140,7 @@ export async function executeJiraCreate(
   params: JiraCreateParams,
   credentials: JiraCredentials,
 ): Promise<JiraCreateResult> {
-  const baseUrl = credentials.JIRA_BASE_URL;
+  const baseUrl = normalizeJiraBaseUrl(credentials.JIRA_BASE_URL);
   const email = credentials.JIRA_EMAIL;
   const apiToken = credentials.JIRA_API_TOKEN;
 
@@ -91,7 +153,7 @@ export async function executeJiraCreate(
   }
 
   const auth = Buffer.from(`${email}:${apiToken}`).toString("base64");
-  const url = `${baseUrl.replace(/\/$/, "")}/rest/api/3/issue`;
+  const url = `${baseUrl}/rest/api/3/issue`;
 
   const body = {
     fields: {
@@ -103,15 +165,31 @@ export async function executeJiraCreate(
     },
   };
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  const abort = new AbortController();
+  const deadline = setTimeout(() => abort.abort(), JIRA_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      signal: abort.signal,
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (isAbortError(err)) {
+      log.error({ host: hostForLog(url), timeoutMs: JIRA_TIMEOUT_MS }, "JIRA API request timed out");
+      throw new Error(
+        `JIRA did not respond within ${JIRA_TIMEOUT_MS / 1000}s. The issue was not created — check the site is reachable and retry.`,
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(deadline);
+  }
 
   if (!response.ok) {
     let detail: string;
@@ -159,7 +237,7 @@ export async function executeJiraCreate(
 
   return {
     key: data.key,
-    url: `${baseUrl.replace(/\/$/, "")}/browse/${data.key}`,
+    url: `${baseUrl}/browse/${data.key}`,
   };
 }
 

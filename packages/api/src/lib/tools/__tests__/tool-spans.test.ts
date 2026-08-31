@@ -71,7 +71,9 @@ function makeStubSpan(name: string, attributes: Attributes): Span {
     setStatus(status: { code: SpanStatusCode; message?: string }) {
       fault("setStatus");
       rec.statusCode = status.code;
-      rec.statusMessage = status.message;
+      // Assign on presence: `statusMessage` is an exact optional, and a status
+      // with no message must leave the key absent (#5522).
+      if (status.message !== undefined) rec.statusMessage = status.message;
       return this;
     },
     recordException(err: unknown) {

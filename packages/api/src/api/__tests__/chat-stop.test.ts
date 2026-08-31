@@ -270,7 +270,9 @@ describe("POST /api/v1/chat/runs/:runId/stop (#4294)", () => {
   function echoRunAgent(steps: Promise<unknown[]>) {
     const captured: { signal?: AbortSignal } = {};
     mockRunAgent.mockImplementationOnce(((opts: { runId?: string; abortSignal?: AbortSignal }) => {
-      captured.signal = opts.abortSignal;
+      // Assign on presence: `signal` is an exact optional, so "no signal
+      // supplied" has to leave the key absent (#5522).
+      if (opts.abortSignal !== undefined) captured.signal = opts.abortSignal;
       return Promise.resolve({
         // Echo the caller-supplied id — exactly what the real runAgent does
         // with `callerRunId`; the x-run-id header must name the REGISTERED id.

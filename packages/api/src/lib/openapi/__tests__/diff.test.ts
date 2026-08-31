@@ -276,7 +276,10 @@ describe("diffOperationGraphs — changed operations", () => {
   it("flags an operation-level attribute change (GET -> POST) without touching fields", () => {
     const next = clone(BASE_DOC);
     // Same operationId, different method: move the operation from GET to POST.
-    next.paths["/people"].post = next.paths["/people"].get;
+    // Read once into a local so the move is a plain assignment of a defined
+    // value: the operation slots are exact optionals (#5522).
+    const listPeopleGet = next.paths["/people"].get!;
+    next.paths["/people"].post = listPeopleGet;
     delete next.paths["/people"].get;
     const diff = diffOperationGraphs(graph(clone(BASE_DOC)), graph(next));
     const change = diff.operations.changed.find((c) => c.operationId === "listPeople");

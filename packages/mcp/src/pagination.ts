@@ -84,7 +84,11 @@ export function paginate<T>(
 
 /** A request handler as stored in the SDK's internal handler map. */
 type RawListHandler = (
-  request: { params?: { cursor?: string } },
+  // Loose-optional: this mirrors the MCP SDK's own list-request shape, whose
+  // `params` and `params.cursor` are both `T | undefined`. A narrower mirror
+  // stops accepting the SDK's request under `exactOptionalPropertyTypes`
+  // (#5522).
+  request: { params?: { cursor?: string | undefined } | undefined },
   extra: unknown,
 ) => Promise<Record<string, unknown>>;
 

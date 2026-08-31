@@ -583,7 +583,9 @@ export function reinstateWorkspace(
   // gate would be vacuously satisfied, but worse, the timestamp would now
   // refer to a *prior instance*'s transition, which is misleading in any
   // future restore-time invariant check.
-  state.lastLevelChangeAt = undefined;
+  // `delete`, not `= undefined`: the field is an exact optional, so clearing it
+  // has to remove the key rather than park an `undefined` in it (#5522).
+  delete state.lastLevelChangeAt;
 
   const event: AbuseEvent = {
     id: crypto.randomUUID(),

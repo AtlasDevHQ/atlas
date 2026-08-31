@@ -20,14 +20,23 @@ function escapeIlike(s: string): string {
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Query-string filters, loose-optional (`| undefined`) by construction (#5522).
+ *
+ * Every field is read off a `(key: string) => string | undefined` query getter,
+ * and every consumer below tests it for TRUTHINESS before building its clause —
+ * so an absent filter and one holding `undefined` take the same branch, and
+ * neither can reach the SQL. There is nothing here for an exact optional to
+ * catch; the shape is the URL's, not a domain value's.
+ */
 export interface ActionFilterParams {
-  actor?: string;
-  actionType?: string;
-  targetType?: string;
-  from?: string;
-  to?: string;
-  search?: string;
-  orgId?: string;
+  actor?: string | undefined;
+  actionType?: string | undefined;
+  targetType?: string | undefined;
+  from?: string | undefined;
+  to?: string | undefined;
+  search?: string | undefined;
+  orgId?: string | undefined;
 }
 
 export type ActionFilterResult =

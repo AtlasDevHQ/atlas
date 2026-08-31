@@ -239,7 +239,7 @@ export async function createAtlasMcpServer(
     // (system:mcp) — gating falls back to the platform-level demo signal
     // (`ATLAS_DEMO_INDUSTRY`) in that case.
     ...(actor.activeOrganizationId !== undefined ? { workspaceId: actor.activeOrganizationId } : {}),
-    clientId,
+    ...(clientId !== undefined ? { clientId } : {}),
     transport,
     deployMode: getConfig()?.deployMode ?? "self-hosted",
     authMode: actor.mode,

@@ -1058,8 +1058,13 @@ describe("scheduled-tasks routes", () => {
       // `listAllRuns` guards on `!== undefined`, so both spellings produce the
       // same SQL — and this assertion holds for either.
       expect(mockListAllRuns).toHaveBeenCalledTimes(1);
-      const runsFilter = mockListAllRuns.mock.calls[0]?.[0] as { status?: string } | undefined;
-      expect(runsFilter?.status).toBeUndefined();
+      // `expect.anything()` matches any value except null/undefined, so this
+      // fails if — and only if — a status filter actually reached the query.
+      // Holds whether absence is spelled as an omitted key (what the route does
+      // now, the options being exact optionals) or as an explicit `undefined`.
+      expect(mockListAllRuns).not.toHaveBeenCalledWith(
+        expect.objectContaining({ status: expect.anything() }),
+      );
     });
 
     it("returns 404 when no internal DB", async () => {

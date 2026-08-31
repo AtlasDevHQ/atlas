@@ -3128,7 +3128,7 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
   // in workspace A while the user is SCIM-provisioned in workspace B —
   // scoping the SCIM check to the actor's active org would silently let
   // the ban through and the next sync from B would re-activate the user.
-  // Pass `orgId: undefined` so the guard searches across ALL SCIM providers
+  // OMIT `orgId` so the guard searches across ALL SCIM providers
   // for this user; matches the global blast-radius of the mutation.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
@@ -3365,7 +3365,7 @@ admin.openapi(deleteUserRoute, async (c) => {
   // to the actor's active org would let a workspace-admin path silently
   // delete a user provisioned via SCIM in some other workspace, then the
   // next sync re-provisions them with a fresh userId, orphaning every
-  // audit_log / RLS reference to the old id. Pass `orgId: undefined` so
+  // audit_log / RLS reference to the old id. OMIT `orgId` so
   // the guard searches across ALL SCIM providers for this user.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,

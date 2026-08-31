@@ -124,7 +124,10 @@ memToolRegistry.register({
   tool: tool({
     description: "Test tool",
     inputSchema: z.object({ write: z.string().optional() }),
-    execute: async ({ write }: { write?: string }) => {
+    // `| undefined`: the AI SDK infers the execute argument from `inputSchema`,
+    // where Zod's `.optional()` yields `write?: string | undefined`. A narrower
+    // annotation no longer matches the overload (#5522).
+    execute: async ({ write }: { write?: string | undefined }) => {
       capturedReads.push(noteSlot.get());
       if (write !== undefined) noteSlot.set(write);
       return { ok: true };

@@ -52,9 +52,11 @@ const mockAuthenticate: Mock<() => Promise<{
   Promise.resolve({
     authenticated,
     mode: currentAuthMode,
-    user: currentUser,
-    status: authenticated ? undefined : 401,
-    error: authenticated ? undefined : "No session",
+    // All three are exact optionals on the mocked result: an authenticated call
+    // has no status/error, and an unauthenticated one has no user — absence,
+    // not a key holding `undefined` (#5522).
+    ...(currentUser !== undefined ? { user: currentUser } : {}),
+    ...(authenticated ? {} : { status: 401, error: "No session" }),
   }),
 );
 

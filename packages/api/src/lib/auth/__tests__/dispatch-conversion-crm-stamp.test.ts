@@ -374,11 +374,18 @@ describe("planConversionStamp — onSubscriptionComplete trigger", () => {
 });
 
 describe("planConversionStamp — onSubscriptionUpdate trigger", () => {
+  // `previous_attributes` is an exact optional on the event shape, so
+  // "Stripe sent no previous_attributes" is an ABSENT key here, not one holding
+  // `undefined` — which is exactly the distinction the non-transition arms
+  // below exercise (#5522).
   const updateEvent = (current: string | null | undefined, previous: string | null | undefined) => ({
     type: "customer.subscription.updated",
     data: {
-      previous_attributes: previous === undefined ? undefined : { status: previous },
-      object: { status: current },
+      ...(previous === undefined ? {} : { previous_attributes: { status: previous } }),
+      // `status` is a required `string | null` on the object arm — a test that
+      // wants "no status" passes `null`, so normalise `undefined` here rather
+      // than widening the event shape (#5522).
+      object: { status: current ?? null },
     },
   });
 

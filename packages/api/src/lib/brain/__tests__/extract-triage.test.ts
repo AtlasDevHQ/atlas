@@ -361,7 +361,10 @@ describe("the SQL verbs", () => {
 // 4. The Triager seam — the adapter socket stage 1 mounts into
 // ---------------------------------------------------------------------------
 
-import { composeTriagers, deterministicTriager, type Triager } from "@atlas/api/lib/brain/triage";
+// Dynamic import, matching the rest of the file: a static `import` hoists
+// above the `mock.module("@atlas/api/lib/db/internal", …)` call at the top.
+const { composeTriagers, deterministicTriager } = await import("@atlas/api/lib/brain/triage");
+import type { Triager } from "@atlas/api/lib/brain/triage";
 
 describe("the Triager seam — deps.triage", () => {
   test("injecting deterministicTriager explicitly is the default, verbatim", async () => {
@@ -422,6 +425,29 @@ describe("the Triager seam — deps.triage", () => {
     expect(extract).toHaveBeenCalledTimes(1);
     expect(marked).toEqual([]);
     expect(result.skipped.triaged).toBe(0);
+  });
+
+  test("runtime contract violations fail OPEN too — undefined verdicts and non-string reasons never abort the tick", async () => {
+    // TypeScript cannot see across an injected adapter at runtime. An adapter
+    // returning `undefined` (not `null`) or a non-string reason must cost one
+    // model call like every other fault — not a thrown `.trim()` that aborts
+    // the whole tick, which would be strictly worse than the single dropped
+    // claim the module protects against.
+    drainServes([episode("ep-1", "prod uses us-east-1"), episode("ep-2", "the contract renews in March")]);
+    const extract = mock(async () => [] as FactCandidate[]);
+    let call = 0;
+    const violating = (() => {
+      call++;
+      return call === 1 ? undefined : { stage: 1, reason: 42 };
+    }) as unknown as Triager;
+
+    const { result } = await runCycle({ extract, triageEnabled: () => true, triage: violating });
+
+    expect(extract).toHaveBeenCalledTimes(2);
+    expect(marked).toEqual([]);
+    expect(result.skipped.triaged).toBe(0);
+    expect(result.triage.evaluated).toBe(2);
+    expect(result.status).toBe("success");
   });
 
   test("⭐ composed stage-0 + stage-1: the deterministic floor decides first, the classifier only sees what it passed", async () => {

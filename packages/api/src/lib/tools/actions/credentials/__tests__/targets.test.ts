@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { ACTION_TARGETS, getActionTarget } from "../targets";
+import { ACTION_TARGETS, getActionTarget, type ActionCredentialField } from "../targets";
 
 describe("ACTION_TARGETS — registry invariants", () => {
   it("every target slug is unique", () => {
@@ -62,7 +62,11 @@ describe("ACTION_TARGETS — registry invariants", () => {
     // presentational hint #5555 introduced (a pasted PEM) rather than drifting
     // into a general "big text field" flag on ordinary config.
     for (const target of ACTION_TARGETS) {
-      for (const field of target.fields) {
+      // Read through the general shape: the literal spec types (as const, so
+      // ActionCredentialsOf can derive) narrow members without `multiline`
+      // to types that don't carry the property at all.
+      const fields: readonly ActionCredentialField[] = target.fields;
+      for (const field of fields) {
         // Opt-in: a single-line field says nothing rather than `false`, so the
         // registry reads as "GITHUB_ACTION_PRIVATE_KEY is the odd one".
         if (field.multiline !== undefined) expect(field.multiline).toBe(true);

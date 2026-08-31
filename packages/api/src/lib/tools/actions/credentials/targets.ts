@@ -323,12 +323,17 @@ export const GITHUB_TARGET = {
  * strongest evidence the seam holds: all #3765 asked of them was this list and
  * the tool-name copy in `registry.ts`, and that is exactly where they met.
  */
-export const ACTION_TARGETS: readonly ActionTargetSpec[] = [
+// `as const satisfies`, not an `ActionTargetSpec[]` annotation: the
+// annotation would widen the entries and make `ActionCredentialsOf` over an
+// element of this array degrade to `{}` (every Extract against a widened
+// `required: boolean` is `never`). Consumers that want the general shape
+// still get it — each literal member assigns to ActionTargetSpec.
+export const ACTION_TARGETS = [
   JIRA_TARGET,
   GITHUB_TARGET,
   LINEAR_TARGET,
   SALESFORCE_TARGET,
-];
+] as const satisfies readonly ActionTargetSpec[];
 
 /** Look up a managed action target by slug. `undefined` if unmanaged. */
 export function getActionTarget(target: string): ActionTargetSpec | undefined {

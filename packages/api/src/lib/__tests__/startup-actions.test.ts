@@ -53,13 +53,11 @@ void mock.module("@atlas/api/lib/auth/migrate", () => ({
   getMigrationError: () => null,
 }));
 
-// Mock the tool registry: startup's action diagnostics no longer consult it
-// (validateActionCredentials is gone, ADR-0046 cleanup), but other startup
-// paths may still import the module — keep an inert stand-in.
-void mock.module("@atlas/api/lib/tools/registry", () => ({
-  defaultRegistry: {},
-  buildRegistry: async () => ({ registry: {}, warnings: [] }),
-}));
+// No registry mock: startup.ts stopped importing `tools/registry` entirely
+// when the validateActionCredentials diagnostic was deleted (ADR-0046
+// cleanup), and a partial mock of a module nothing in the reachable graph
+// imports is exactly the "mock all exports" trap lying in wait for the next
+// import to walk into.
 
 // Mock the config module so we can control getConfig()
 let mockConfig: Record<string, unknown> | null = null;

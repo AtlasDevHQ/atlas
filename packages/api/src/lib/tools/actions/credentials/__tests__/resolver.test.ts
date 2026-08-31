@@ -559,8 +559,11 @@ describe("resolveActionDeployMode", () => {
 // resolveCredentialsFor — the typed seam every action module crosses (#3766)
 // ---------------------------------------------------------------------------
 
-import { resolveCredentialsFor } from "../resolver";
-import { ACTION_TARGETS, JIRA_TARGET } from "../targets";
+// Dynamic imports, matching the file's top half: static `import` statements
+// hoist above the `mock.module` calls, so they would evaluate `../resolver`'s
+// graph unmocked — the exact ordering the harness above exists to control.
+const { resolveCredentialsFor } = await import("../resolver");
+const { ACTION_TARGETS, JIRA_TARGET } = await import("../targets");
 
 describe("resolveCredentialsFor — property over every registered target", () => {
   // These two replace the four per-target `toXCredentials` suites: the

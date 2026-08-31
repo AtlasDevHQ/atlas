@@ -83,54 +83,54 @@ function dedupe(ids: readonly string[]): string[] {
   return unique;
 }
 
-/** Route one resolution outcome into its result bucket. */
-function bucketOutcome(
-  id: string,
-  outcome: ApproveActionOutcome | DenyActionOutcome,
-  result: BulkActionsResult,
-  input: { orgId: string | null; userId: string | undefined; requestId: string | undefined },
-): void {
-  switch (outcome.kind) {
-    case "not_found":
-      result.notFound.push(id);
-      return;
-    case "forbidden":
-      result.forbidden.push(id);
-      return;
-    case "conflict":
-      log.warn(
-        { actionId: id, orgId: input.orgId, userId: input.userId, requestId: input.requestId },
-        "Bulk resolution lost CAS race — action already resolved",
-      );
-      result.errors.push({ id, error: "Action has already been resolved." });
-      return;
-    case "approved":
-    case "approved_not_executed":
-    case "denied":
-      // `approved_not_executed` still counts as updated on the wire (the row
-      // IS approved; the entry's status says nothing ran) — the verb logs it
-      // at error level, and the distinct kind exists so this mapping is a
-      // visible decision rather than a conflation.
-      result.updated.push(id);
-      return;
-  }
-}
-
-export async function bulkApproveActions(
-  input: BulkApproveInput,
+/**
+ * The one loop both bulk verbs run: dedupe, resolve per id through the
+ * injected verb, bucket every outcome, and convert a thrown error into the
+ * generic client-safe entry (the raw message can carry schema names, so it
+ * goes only to the log). The two exported functions differ only in which
+ * resolution verb they close over — the same relationship the single-action
+ * routes have.
+ */
+async function runBulkResolution(
+  input: { ids: readonly string[]; user: AtlasUser | undefined; orgId: string | null; requestId?: string },
+  verb: "approve" | "deny",
+  resolve: (id: string) => Promise<ApproveActionOutcome | DenyActionOutcome>,
 ): Promise<BulkActionsResult> {
   const { ids, user, orgId, requestId } = input;
   const result: BulkActionsResult = { updated: [], notFound: [], forbidden: [], errors: [] };
 
   for (const id of dedupe(ids)) {
     try {
-      const outcome = await approveActionAsUser(id, { user, orgId });
-      bucketOutcome(id, outcome, result, { orgId, userId: user?.id, requestId });
+      const outcome = await resolve(id);
+      switch (outcome.kind) {
+        case "not_found":
+          result.notFound.push(id);
+          break;
+        case "forbidden":
+          result.forbidden.push(id);
+          break;
+        case "conflict":
+          log.warn(
+            { actionId: id, orgId, userId: user?.id, requestId },
+            "Bulk resolution lost CAS race — action already resolved",
+          );
+          result.errors.push({ id, error: "Action has already been resolved." });
+          break;
+        case "approved":
+        case "approved_not_executed":
+        case "denied":
+          // `approved_not_executed` still counts as updated on the wire (the
+          // row IS approved; the entry's status says nothing ran) — the verb
+          // logs it at error level, and the distinct kind exists so this
+          // mapping is a visible decision rather than a conflation.
+          result.updated.push(id);
+          break;
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error(
         { err: message, actionId: id, orgId, userId: user?.id, requestId },
-        "Bulk approve threw for action",
+        `Bulk ${verb} threw for action`,
       );
       result.errors.push({ id, error: GENERIC_RESOLVE_ERROR });
     }
@@ -139,25 +139,16 @@ export async function bulkApproveActions(
   return result;
 }
 
+export async function bulkApproveActions(
+  input: BulkApproveInput,
+): Promise<BulkActionsResult> {
+  const { user, orgId } = input;
+  return runBulkResolution(input, "approve", (id) => approveActionAsUser(id, { user, orgId }));
+}
+
 export async function bulkDenyActions(
   input: BulkDenyInput,
 ): Promise<BulkActionsResult> {
-  const { ids, user, orgId, reason, requestId } = input;
-  const result: BulkActionsResult = { updated: [], notFound: [], forbidden: [], errors: [] };
-
-  for (const id of dedupe(ids)) {
-    try {
-      const outcome = await denyActionAsUser(id, { user, orgId }, reason);
-      bucketOutcome(id, outcome, result, { orgId, userId: user?.id, requestId });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.error(
-        { err: message, actionId: id, orgId, userId: user?.id, requestId },
-        "Bulk deny threw for action",
-      );
-      result.errors.push({ id, error: GENERIC_RESOLVE_ERROR });
-    }
-  }
-
-  return result;
+  const { user, orgId, reason } = input;
+  return runBulkResolution(input, "deny", (id) => denyActionAsUser(id, { user, orgId }, reason));
 }

@@ -30,7 +30,8 @@ const mockSalesforceTool = tool({
   execute: async ({ object }) => object,
 });
 
-void mock.module("@atlas/api/lib/tools/actions", () => ({
+void mock.module("@atlas/api/lib/tools/actions", () => {
+  const actions = {
   createJiraTicket: {
     name: "createJiraTicket",
     description: "### Create JIRA Ticket\nMock description",
@@ -80,7 +81,20 @@ void mock.module("@atlas/api/lib/tools/actions", () => ({
     defaultApproval: "manual",
     requiredCredentials: [],
   },
-}));
+  };
+  return {
+    ...actions,
+    // What `buildRegistry` actually iterates since the ADR-0046 cleanup pass
+    // — same objects as the named exports, manifest order.
+    ACTION_TOOLS: [
+      actions.createJiraTicket,
+      actions.createGitHubIssue,
+      actions.createLinearTicket,
+      actions.sendEmailReport,
+      actions.createSalesforceRecord,
+    ],
+  };
+});
 
 const {
   ToolRegistry,

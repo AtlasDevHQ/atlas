@@ -1385,17 +1385,24 @@ async function triageFreshEpisodes(
       kept.push(row);
       continue;
     }
-    if (verdict === null) {
+    // `== null` (not `===`): an adapter that returns `undefined` instead of
+    // `null` is violating the Triager contract, but the violation must fail
+    // OPEN like every other adapter fault — the strict check would make the
+    // next line throw and abort the whole tick.
+    if (verdict == null) {
       kept.push(row);
       continue;
     }
-    const reason = verdict.reason.trim();
+    // Same defence for the reason field: a non-string (a runtime contract
+    // violation TypeScript cannot see across an injected adapter) must not
+    // escape this function's fail-open posture by throwing on `.trim()`.
+    const reason = typeof verdict.reason === "string" ? verdict.reason.trim() : "";
     if (reason === "") {
       // A verdict with no storable reason cannot be marked, and an unmarked
       // drop is the silent loss the mark exists to prevent.
       log.warn(
         { workspaceId: row.workspace_id, episodeId: row.id, stage: verdict.stage },
-        "brain extraction: a triage verdict carried an empty reason id — letting the episode through to the model; fix the adapter",
+        "brain extraction: a triage verdict carried no storable reason id — letting the episode through to the model; fix the adapter",
       );
       kept.push(row);
       continue;

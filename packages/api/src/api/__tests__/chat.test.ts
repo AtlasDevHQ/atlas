@@ -185,6 +185,17 @@ void mock.module("@atlas/api/lib/tools/actions", () => ({
   createGitHubIssue: mockGitHubAction,
   sendEmailReport: mockEmailAction,
   createSalesforceRecord: mockSalesforceAction,
+  // What `buildRegistry` actually iterates since the ADR-0046 cleanup pass.
+  // Same OBJECTS as the named exports above, manifest order — the #4941
+  // mutable-entry lever (a test blanks mockJiraAction.description to drive
+  // the warning branch) reaches these references too.
+  ACTION_TOOLS: [
+    mockJiraAction,
+    mockGitHubAction,
+    mockLinearAction,
+    mockEmailAction,
+    mockSalesforceAction,
+  ],
 }));
 
 const mockCreateConversation = mock((): Promise<{ id: string } | null> =>

@@ -585,15 +585,18 @@ const NEVER_DISOWN_A_VISIBLE_TOOL =
  * The warning for "the operator action tools did not load", authored by
  * {@link buildRegistry} and relayed by every surface that requested them.
  *
- * Names the tools by their registry names rather than "JIRA, GitHub, Linear
- * and email": `sendEmailReport` is gone, the core `sendEmail` is not, and the
- * model has to be able to tell them apart. Same for `createLinearTicket`
- * (#5554) against the core `createLinearIssue`, which SURVIVES this failure —
- * naming the category would disown a tool still in the list.
+ * Names each tool by its registry name rather than "JIRA, GitHub, Linear,
+ * Salesforce and email": `sendEmailReport` is gone, the core `sendEmail` is
+ * not, and the model has to be able to tell them apart. Same for
+ * `createLinearTicket` (#5554) against the core `createLinearIssue`, and
+ * `createSalesforceRecord` (#5556) against the core `querySalesforce` — both
+ * of those SURVIVE this failure, so naming the category would disown a tool
+ * still in the list.
  */
 export const ACTION_TOOLS_UNAVAILABLE_WARNING =
   "The operator action tools (createJiraTicket, createGitHubIssue, createLinearTicket, " +
-  "sendEmailReport) failed to load and are unavailable for this session. " +
+  "sendEmailReport, createSalesforceRecord) failed to load and are unavailable for this " +
+  "session. " +
   NEVER_DISOWN_A_VISIBLE_TOOL;
 
 /**
@@ -604,7 +607,7 @@ export const ACTION_TOOLS_UNAVAILABLE_WARNING =
  * the first draft of this fix re-created the bug it was fixing.
  *
  * Relative to a build that SUCCEEDED, a fallback loses only what the env asked
- * for on top of the core set: the `tools/actions` operator trio under
+ * for on top of the core set: the `tools/actions` operator tools under
  * `ATLAS_ACTIONS_ENABLED`, and `executePython` under `ATLAS_PYTHON_ENABLED`.
  * The copy is derived from exactly that, so a deployment that never enabled
  * either is never told it lost them.
@@ -613,7 +616,7 @@ export function registryBuildFailedWarning(): string {
   const lost: string[] = [];
   if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
     lost.push(
-      "the operator action tools (createJiraTicket, createGitHubIssue, createLinearTicket, sendEmailReport)",
+      "the operator action tools (createJiraTicket, createGitHubIssue, createLinearTicket, sendEmailReport, createSalesforceRecord)",
     );
   }
   if (isPythonToolRequested()) {
@@ -718,18 +721,24 @@ export async function buildRegistry(options?: {
 
   if (options?.includeActions) {
     try {
-      const { createJiraTicket, createGitHubIssue, createLinearTicket, sendEmailReport } =
-        await import("./actions");
+      const {
+        createJiraTicket,
+        createGitHubIssue,
+        createLinearTicket,
+        sendEmailReport,
+        createSalesforceRecord,
+      } = await import("./actions");
       registry.register(createJiraTicket as unknown as AtlasTool);
       registry.register(createGitHubIssue as unknown as AtlasTool);
       registry.register(createLinearTicket as unknown as AtlasTool);
       registry.register(sendEmailReport as unknown as AtlasTool);
+      registry.register(createSalesforceRecord as unknown as AtlasTool);
     } catch (err) {
       const { createLogger } = await import("@atlas/api/lib/logger");
       const actionLog = createLogger("registry");
       actionLog.error(
         { err: err instanceof Error ? err : new Error(String(err)) },
-        "Failed to load action tools — JIRA, GitHub, Linear and email actions will be unavailable",
+        "Failed to load action tools — JIRA, GitHub, Linear, email and Salesforce actions will be unavailable",
       );
       warnings.push(ACTION_TOOLS_UNAVAILABLE_WARNING);
     }

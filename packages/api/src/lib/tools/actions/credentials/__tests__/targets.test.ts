@@ -105,6 +105,49 @@ describe("Jira — the pilot target", () => {
   });
 });
 
+describe("Salesforce — a one-entry child (#5556)", () => {
+  const salesforce = getActionTarget("salesforce");
+
+  it("is registered", () => {
+    expect(salesforce).toBeDefined();
+  });
+
+  it("declares the three client-credentials fields, plus the optional default object", () => {
+    expect(salesforce?.fields.filter((f) => f.required).map((f) => f.envVar)).toEqual([
+      "SALESFORCE_ACTION_INSTANCE_URL",
+      "SALESFORCE_ACTION_CLIENT_ID",
+      "SALESFORCE_ACTION_CLIENT_SECRET",
+    ]);
+    expect(
+      salesforce?.fields.find((f) => f.envVar === "SALESFORCE_ACTION_DEFAULT_OBJECT")?.required,
+    ).toBe(false);
+  });
+
+  it("marks only the consumer secret secret", () => {
+    // Same convention as the operator tier: client IDs are not secret,
+    // client secrets are.
+    expect(salesforce?.fields.filter((f) => f.secret).map((f) => f.envVar)).toEqual([
+      "SALESFORCE_ACTION_CLIENT_SECRET",
+    ]);
+  });
+
+  it("shares no env-var name with the datasource connected-app pair", () => {
+    // `SALESFORCE_CLIENT_ID` / `SALESFORCE_CLIENT_SECRET` / `SALESFORCE_LOGIN_URL`
+    // are the OPERATOR's app for the datasource OAuth dance (ADR-0014) — a
+    // different grant that cannot create a record in a tenant's org. Sharing a
+    // name would make the self-host env rung report this target "configured"
+    // out of credentials the action can never authenticate with.
+    const datasourceEnv = [
+      "SALESFORCE_CLIENT_ID",
+      "SALESFORCE_CLIENT_SECRET",
+      "SALESFORCE_LOGIN_URL",
+    ];
+    for (const field of salesforce?.fields ?? []) {
+      expect(datasourceEnv).not.toContain(field.envVar);
+    }
+  });
+});
+
 describe("Linear — the first target added on the seam (#5554)", () => {
   const linear = getActionTarget("linear");
 

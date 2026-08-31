@@ -168,11 +168,23 @@ const mockEmailAction = {
   defaultApproval: "admin-only",
   requiredCredentials: ["RESEND_API_KEY"],
 };
+// #5556 — per-workspace credentials, so `requiredCredentials` is empty (the
+// real action declares it empty for the same reason).
+const mockSalesforceAction = {
+  name: "createSalesforceRecord",
+  description: "### Create Salesforce Record\nMock",
+  tool: { type: "function" },
+  actionType: "salesforce:create",
+  reversible: true,
+  defaultApproval: "manual",
+  requiredCredentials: [],
+};
 void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: mockJiraAction,
   createLinearTicket: mockLinearAction,
   createGitHubIssue: mockGitHubAction,
   sendEmailReport: mockEmailAction,
+  createSalesforceRecord: mockSalesforceAction,
 }));
 
 const mockCreateConversation = mock((): Promise<{ id: string } | null> =>

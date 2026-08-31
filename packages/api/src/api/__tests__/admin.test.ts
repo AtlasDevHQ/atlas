@@ -612,6 +612,15 @@ void mock.module("@atlas/api/lib/tools/actions", () => ({
     defaultApproval: "admin-only",
     requiredCredentials: ["RESEND_API_KEY"],
   },
+  createSalesforceRecord: {
+    name: "createSalesforceRecord",
+    description: "Mock",
+    tool: { type: "function" },
+    actionType: "salesforce:create",
+    reversible: true,
+    defaultApproval: "manual",
+    requiredCredentials: [],
+  },
 }));
 
 const mockRunDiff: Mock<(connectionId?: string) => Promise<unknown>> = mock(() =>

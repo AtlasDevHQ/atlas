@@ -24,6 +24,11 @@ const mockEmailTool = tool({
   inputSchema: z.object({ to: z.string() }),
   execute: async ({ to }) => to,
 });
+const mockSalesforceTool = tool({
+  description: "Mock createSalesforceRecord tool",
+  inputSchema: z.object({ object: z.string() }),
+  execute: async ({ object }) => object,
+});
 
 void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: {
@@ -63,6 +68,17 @@ void mock.module("@atlas/api/lib/tools/actions", () => ({
     reversible: false,
     defaultApproval: "admin-only",
     requiredCredentials: ["RESEND_API_KEY"],
+  },
+  // #5556 — per-workspace credentials, so `requiredCredentials` is empty
+  // (the real action declares it empty for the same reason).
+  createSalesforceRecord: {
+    name: "createSalesforceRecord",
+    description: "### Create Salesforce Record\nMock description",
+    tool: mockSalesforceTool,
+    actionType: "salesforce:create",
+    reversible: true,
+    defaultApproval: "manual",
+    requiredCredentials: [],
   },
 }));
 
@@ -420,6 +436,7 @@ describe("buildRegistry", () => {
       "createJiraTicket",
       "createLinearIssue",
       "createLinearTicket",
+      "createSalesforceRecord",
       "executeSQL",
       "explore",
       "searchAtlas",
@@ -512,6 +529,7 @@ describe("buildRegistry", () => {
       "github:create_issue",
       "jira:create",
       "linear:create",
+      "salesforce:create",
     ]);
   });
 

@@ -184,6 +184,7 @@ mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: { name: "createJiraTicket", description: "Mock", tool: { type: "function" }, actionType: "jira:create", reversible: true, defaultApproval: "manual", requiredCredentials: ["JIRA_BASE_URL"] },
   createLinearTicket: { name: "createLinearTicket", description: "Mock", tool: { type: "function" }, actionType: "linear:create", reversible: true, defaultApproval: "manual", requiredCredentials: [] },
   sendEmailReport: { name: "sendEmailReport", description: "Mock", tool: { type: "function" }, actionType: "email:send", reversible: false, defaultApproval: "admin-only", requiredCredentials: ["RESEND_API_KEY"] },
+  createSalesforceRecord: { name: "createSalesforceRecord", description: "Mock", tool: { type: "function" }, actionType: "salesforce:create", reversible: true, defaultApproval: "manual", requiredCredentials: [] },
 }));
 
 const mockGetAction: Mock<(actionId: string) => Promise<{

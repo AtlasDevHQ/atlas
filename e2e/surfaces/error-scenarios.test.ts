@@ -120,6 +120,15 @@ mock.module("@atlas/api/lib/tools/actions", () => ({
     actionType: "email:send", reversible: false, defaultApproval: "admin-only",
     requiredCredentials: ["RESEND_API_KEY"],
   },
+  createSalesforceRecord: {
+    name: "createSalesforceRecord",
+    description: "Mock",
+    tool: { type: "function" },
+    actionType: "salesforce:create",
+    reversible: true,
+    defaultApproval: "manual",
+    requiredCredentials: [],
+  },
 }));
 
 mock.module("@atlas/api/lib/conversations", () => ({

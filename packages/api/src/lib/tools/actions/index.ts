@@ -24,6 +24,11 @@ export { createJiraTicket } from "./jira";
 export { createLinearTicket } from "./linear";
 export { createGitHubIssue } from "./github";
 export { sendEmailReport } from "./email";
+export {
+  createSalesforceRecord,
+  SALESFORCE_ACTION_OBJECTS,
+  type SalesforceActionObject,
+} from "./salesforce";
 
 // Per-workspace action-target credentials (#3766). The resolver is the single
 // place the workspace → self-host-env ladder is decided; the target registry

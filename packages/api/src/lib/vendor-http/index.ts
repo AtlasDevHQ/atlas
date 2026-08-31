@@ -62,15 +62,21 @@
  * | `lib/tools/actions/jira.ts` | deadline · narrowing · host pinning |
  * | `lib/tools/actions/github.ts` | deadline · narrowing |
  * | `lib/tools/actions/linear.ts` | deadline · narrowing (text path) |
- * | `lib/tools/actions/salesforce.ts` | host pinning only |
+ * | `lib/tools/actions/salesforce.ts` | deadline · narrowing · host pinning |
  * | `lib/email/delivery.ts` (×4 provider sites) | the truncation only |
  *
- * ⚠️ Two things that table is here to stop you assuming. **`salesforce.ts`
- * has no deadline at all** — it drives `jsforce`, not `fetch`, so there is no
- * signal to hand it; its token request and record POST are unbounded, exactly
- * as before this extraction, and bounding them is a behaviour change that
- * wants its own issue. And **`lib/tools/actions/email.ts` is untouched** — it
- * delegates to the delivery chain and re-rolls nothing, so the fifth site is
+ * ⚠️ **`salesforce.ts` took host pinning only at first, and took the rest in
+ * #5572.** At extraction it drove `jsforce` rather than `fetch`, so there was
+ * no signal to hand it and its token request and record POST were unbounded —
+ * the one action client this spine could not fix, which is why the deadline
+ * doc still calls out the case. #5572 replaced `jsforce` on the ACTION path
+ * with two hand-rolled `fetch` calls under one `withVendorDeadline` budget, so
+ * the table above is now four action clients with a deadline and no
+ * exceptions. `jsforce` is still the datasource path's client; it is only the
+ * action that stopped using it.
+ *
+ * And **`lib/tools/actions/email.ts` is untouched** — it delegates to the
+ * delivery chain and re-rolls nothing, so the fifth site is
  * `lib/email/delivery.ts`, which is not itself an action client.
  *
  * The vendor connectors — `lib/knowledge/{confluence,freshdesk,front,gitbook,

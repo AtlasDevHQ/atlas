@@ -42,11 +42,12 @@ export function isAbortError(err: unknown): boolean {
  * caller's scope rather than silently widening a deadline: jira and github
  * bound the fetch alone, linear bounds its team lookup and create together.
  *
- * Those THREE are every consumer. `salesforce.ts` drives `jsforce` rather
- * than `fetch`, so there is no signal to hand it and its calls are unbounded
- * — as they were before this extraction. Do not read this module's existence
- * as a claim that every action client is bounded; bounding the jsforce path
- * is a behaviour change and wants its own issue.
+ * `salesforce.ts` is the FOURTH, and it arrived a step later: at extraction it
+ * drove `jsforce`, which exposes no `AbortSignal`, so there was no signal to
+ * hand it and its token request and record POST ran unbounded. #5572 took the
+ * behaviour change that fixes it — the action path now hand-rolls its two
+ * `fetch` calls, and threads ONE budget through both, the same scope choice
+ * `linear.ts` makes. All four action clients are bounded.
  *
  * The signal is handed to the callback rather than owned by it, so a caller
  * making several requests inside one budget (Linear's team lookup then its

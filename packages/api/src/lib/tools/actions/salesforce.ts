@@ -36,12 +36,35 @@
  * tenant's org. Sharing the names would make the self-host env rung report
  * this target "configured" out of credentials that can never create a record.
  *
- * `jsforce` is the in-tree Salesforce client (already a dependency and already
- * in `serverExternalPackages` for the datasource path), reached through the
- * same optional-peer `require` shim `integrations/salesforce/lazy-builder.ts`
- * uses — a second HTTP client for the same vendor would be a second place to
- * get auth wrong.
+ * ── Why two hand-rolled `fetch` calls, and not `jsforce` (#5572) ─────────
  *
+ * This action drove `jsforce` until #5572 — the datasource path's client,
+ * reached through the optional-peer `require` shim — on the reasoning that a
+ * second HTTP client for one vendor is a second place to get auth wrong. That
+ * held until the bound did not. `jsforce` exposes no `AbortSignal` seam, and
+ * on a default deployment `getActionConfig` leaves `timeout` undefined, so
+ * `executeWithTimeout(fn, undefined)` returns `fn()` unguarded: a hung
+ * Salesforce host held the agent turn open with no bound at all. Salesforce
+ * was the one sibling #5567 could not hand the 15-second bound to.
+ *
+ * Issue 5572 weighed a `Promise.race` deadline against hand-rolling. **The
+ * hand-roll is what shipped, and the difference is what gets cancelled.** A
+ * race bounds only the agent turn: the underlying request runs on to whatever
+ * `jsforce`'s socket does with it, and a write still in flight after we have
+ * stopped waiting is the worst thing to be vague about on a record-creating
+ * action. The `AbortController` here aborts the in-flight `fetch` itself, and
+ * the error names which leg the deadline fired on — because that, not the
+ * bound, is what tells an operator whether a record may exist.
+ *
+ * The cost the old header named is paid down rather than accepted: this is
+ * two `fetch` calls against a documented wire format — the client-credentials
+ * token POST and one REST create — which is the shape ADR-0045 ratifies, and
+ * #5569's `lib/vendor-http` spine supplies every part of it that is not
+ * Salesforce-specific. `jsforce` stays a dependency for the DATASOURCE path
+ * (`integrations/salesforce/lazy-builder.ts`, `knowledge/salesforce/client.ts`);
+ * it is only the action that no longer reaches for it.
+ *
+ * @see ADR-0045 — hand-rolled vendor HTTP clients, and the `lib/vendor-http` spine
  * @see ADR-0046 — per-workspace action credentials
  * @see ADR-0014 — why the Salesforce DATASOURCE stays on OAuth
  */
@@ -57,11 +80,34 @@ import {
 } from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hostForLog } from "@atlas/api/lib/openapi/egress-guard";
-import { pinVendorHost } from "@atlas/api/lib/vendor-http";
+import {
+  describeHttpFailure,
+  isAbortError,
+  pinVendorHost,
+  withVendorDeadline,
+} from "@atlas/api/lib/vendor-http";
 import { resolveCredentialsFor } from "./credentials/resolver";
 import { SALESFORCE_TARGET, type ActionCredentialsOf } from "./credentials/targets";
 
 const log = createLogger("action:salesforce");
+
+/**
+ * Outer budget for the WHOLE exchange — the token mint and the record create
+ * share one deadline, the shape `linear.ts` uses for its team lookup + create
+ * pair. Two 15-second budgets would let a half-hung org hold the turn for 30
+ * (#5572); one signal threaded through both legs cannot outlast the bound
+ * between them. 15s matches the jira, github and linear siblings.
+ */
+const SALESFORCE_TIMEOUT_MS = 15_000;
+
+/**
+ * The REST API version the create POST targets, pinned rather than
+ * discovered: a version probe would be a third request inside the same
+ * budget, and the create payload for these five sObjects has been stable for
+ * far longer than this floor. Matches the version the datasource path's
+ * paging URLs already carry.
+ */
+const SALESFORCE_API_VERSION = "v60.0";
 
 // ---------------------------------------------------------------------------
 // What the agent may create
@@ -142,33 +188,15 @@ export interface SalesforceCreateResult {
   url: string;
 }
 
-/**
- * jsforce import shim. Mirrors `integrations/salesforce/lazy-builder.ts`:
- * jsforce is an optional peer dep with no types of its own here, so the
- * require is wrapped in a try/catch that throws a clear error if the operator
- * hasn't installed it.
- */
-// oxlint-disable-next-line @typescript-eslint/no-explicit-any
-function requireJsforce(): any {
-  try {
-    // oxlint-disable-next-line @typescript-eslint/no-require-imports
-    return require("jsforce");
-  } catch {
-    throw new Error(
-      "The Salesforce action requires the jsforce package. Install with: bun add jsforce",
-    );
-  }
-}
-
-/** One `SaveResult` row as Salesforce returns it — every field untrusted. */
-interface JsforceSaveResult {
+/** The create response as Salesforce returns it — every field untrusted. */
+interface SalesforceSaveResult {
   readonly id?: unknown;
   readonly success?: unknown;
   readonly errors?: unknown;
 }
 
 /** The client-credentials token response — only two fields are used. */
-interface JsforceTokenResponse {
+interface SalesforceTokenResponse {
   readonly access_token?: unknown;
   readonly instance_url?: unknown;
 }
@@ -206,8 +234,22 @@ function describeSaveErrors(errors: unknown, secrets: readonly string[]): string
   if (!Array.isArray(errors)) return [];
   return errors.map((raw) => {
     if (typeof raw === "string") return redactCredentials(raw, secrets);
-    const e = raw as { statusCode?: unknown; message?: unknown; fields?: unknown };
-    const code = typeof e.statusCode === "string" ? e.statusCode : "ERROR";
+    const e = raw as {
+      errorCode?: unknown;
+      statusCode?: unknown;
+      message?: unknown;
+      fields?: unknown;
+    };
+    // The single-record sObject endpoint names it `errorCode`; the composite
+    // and collections endpoints name the same thing `statusCode`, which is
+    // also what `jsforce` surfaced before #5572. Both are read so the copy an
+    // operator sees does not depend on which one Salesforce chose.
+    const code =
+      typeof e.errorCode === "string"
+        ? e.errorCode
+        : typeof e.statusCode === "string"
+          ? e.statusCode
+          : "ERROR";
     const detail = typeof e.message === "string" ? e.message : "(no message)";
     const fields = Array.isArray(e.fields) && e.fields.length > 0 ? ` [${e.fields.join(", ")}]` : "";
     return redactCredentials(`${code}: ${detail}${fields}`, secrets);
@@ -268,9 +310,18 @@ function validateRecordFields(fields: unknown): Record<string, string> {
  * response's `instance_url` is the same problem one hop later: it decides where
  * the record POST goes and what link the approval card shows. `assertBaseUrlAllowed`
  * is the sync chokepoint the form-install handlers use (`isSafeExternalUrl`:
- * scheme, internal-hostname denylist, IP-literal ranges), and the sync one is
- * the right one here — the async `assertSafeEgressTarget` hands back a pin the
- * caller must connect through, which `jsforce` gives us no way to honour.
+ * scheme, internal-hostname denylist, IP-literal ranges), reached through
+ * `pinVendorHost`.
+ *
+ * ⚠️ This module's reason for taking the SYNC guard changed under it in
+ * #5572 and is worth stating rather than inheriting. It used to be that the
+ * async `assertSafeEgressTarget` hands back a pin the caller must connect
+ * through and `jsforce` gave us no way to honour one. Hand-rolling the two
+ * `fetch` calls removes that obstacle — this module now could honour a pin.
+ * What it takes instead is the spine's shape: `pinVendorHost` is the one call
+ * shape all the action clients share, and moving one of them to a different
+ * guard is a change to `lib/vendor-http`, not a local edit. Not done here,
+ * and not an oversight.
  *
  * The call shape — parse, require https, guard, normalize, and refuse with
  * copy that is NOT the guard's own wording — is `lib/vendor-http`'s since
@@ -291,19 +342,196 @@ function normalizeInstanceUrl(raw: string, label: string): string {
 }
 
 /**
+ * Salesforce's OAuth error body — `{ error, error_description }` — flattened
+ * for the operator-facing refusal. The structured extractor
+ * `describeHttpFailure` takes; a body that is not this shape falls through to
+ * its bounded text fallback.
+ */
+function describeTokenError(body: unknown, status: number): string {
+  const b = body as { error?: unknown; error_description?: unknown };
+  const code = typeof b.error === "string" ? b.error : "";
+  const description = typeof b.error_description === "string" ? b.error_description : "";
+  return [code, description].filter((part) => part.length > 0).join(": ") || `HTTP ${status}`;
+}
+
+/**
+ * Mint a client-credentials access token against the org's My Domain token
+ * endpoint.
+ *
+ * The wire format is the same `POST /services/oauth2/token` the datasource
+ * install already speaks (`integrations/install/salesforce-oauth-handler.ts`),
+ * with `client_credentials` in place of the auth code. The minted token lives
+ * for this one exchange: there is no refresh lifecycle to store, which is what
+ * makes the static credential set the resolver hands over sufficient — and no
+ * module-level cache, per ADR-0045's fourth property.
+ *
+ * `signal` is the caller's deadline, not this function's: the token mint and
+ * the record create share one budget, so a slow mint eats into the create's
+ * time rather than granting it a fresh 15 seconds.
+ */
+async function mintAccessToken(
+  instanceUrl: string,
+  credentials: SalesforceCredentials,
+  secrets: readonly string[],
+  signal: AbortSignal,
+): Promise<SalesforceTokenResponse> {
+  const form = new URLSearchParams({
+    grant_type: "client_credentials",
+    client_id: credentials.SALESFORCE_ACTION_CLIENT_ID,
+    client_secret: credentials.SALESFORCE_ACTION_CLIENT_SECRET,
+  });
+
+  let response: Response;
+  try {
+    response = await fetch(`${instanceUrl}/services/oauth2/token`, {
+      method: "POST",
+      signal,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body: form.toString(),
+    });
+  } catch (err) {
+    // ⚠️ The deadline's own abort must reach `withVendorDeadline` unchanged.
+    // Swallowing it here would re-label every timeout as an unreachable host —
+    // the exact distinction acceptance criterion 2 of #5572 asks for.
+    if (isAbortError(err)) throw err;
+    const detail = safeMessage(err, secrets);
+    log.error(
+      { host: hostForLog(instanceUrl), detail },
+      "Salesforce token endpoint unreachable",
+    );
+    throw new Error(
+      `Could not reach the Salesforce token endpoint: ${detail}. Check the instance URL is your org's My Domain host and that it is reachable.`,
+    );
+  }
+
+  if (!response.ok) {
+    const failure = await describeHttpFailure(response, describeTokenError);
+    // Redacted again on the way out: `describeTokenError` reads vendor text,
+    // and `describeHttpFailure`'s own text fallback is not redacted at all.
+    const detail = redactCredentials(failure.detail, secrets);
+    log.error(
+      { host: hostForLog(instanceUrl), status: failure.status, detail },
+      "Salesforce client-credentials token request failed",
+    );
+    throw new Error(
+      `Salesforce rejected the connected app's credentials: ${detail}. Check the Consumer Key/Secret and that the app enables the client-credentials flow with a run-as user.`,
+    );
+  }
+
+  try {
+    return (await response.json()) as SalesforceTokenResponse;
+  } catch (err) {
+    // ⚠️ The body is a STREAM, so the deadline can fire here — after the
+    // headers arrived and before the body finished. Without this re-throw a
+    // hung body reads as "unreadable token response", which is the exact
+    // misclassification the bound exists to prevent.
+    if (isAbortError(err)) throw err;
+    log.error(
+      { host: hostForLog(instanceUrl), status: response.status },
+      "Salesforce token response was not readable JSON",
+    );
+    throw new Error(
+      "Salesforce returned an unreadable token response for the connected app.",
+      { cause: err },
+    );
+  }
+}
+
+/**
+ * POST the validated record body to the sObject create endpoint.
+ *
+ * `object` is interpolated into the path, which is safe because it is not the
+ * agent's string: `canonicalSalesforceObject` has already resolved it to one
+ * of the five `SALESFORCE_ACTION_OBJECTS` literals. The FIELD names went
+ * through `validateRecordFields` and travel in the JSON body, never the path.
+ */
+async function postRecord(
+  sessionUrl: string,
+  object: SalesforceActionObject,
+  fields: Record<string, string>,
+  accessToken: string,
+  secrets: readonly string[],
+  signal: AbortSignal,
+): Promise<SalesforceSaveResult> {
+  const url = `${sessionUrl}/services/data/${SALESFORCE_API_VERSION}/sobjects/${object}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      signal,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(fields),
+    });
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    const detail = safeMessage(err, secrets);
+    log.error(
+      { host: hostForLog(sessionUrl), object, detail },
+      "Salesforce record creation could not be sent",
+    );
+    throw new Error(`Salesforce API error: ${detail}`);
+  }
+
+  if (!response.ok) {
+    const failure = await describeHttpFailure(
+      response,
+      (body, status) => describeSaveErrors(body, secrets).join("; ") || `HTTP ${status}`,
+    );
+    const detail = redactCredentials(failure.detail, secrets);
+    log.error(
+      { host: hostForLog(sessionUrl), object, status: failure.status, detail },
+      "Salesforce record creation failed",
+    );
+    throw new Error(`Salesforce API error: ${detail}`);
+  }
+
+  try {
+    return (await response.json()) as SalesforceSaveResult;
+  } catch (err) {
+    // ⚠️ Same stream case as the token leg, and worse here: the message below
+    // ASSERTS Salesforce accepted the record. On a deadline that fired mid-body
+    // that is a claim we cannot make, so the abort goes back to
+    // `withVendorDeadline` and comes out as the create-leg timeout instead.
+    if (isAbortError(err)) throw err;
+    log.error(
+      { object, status: response.status },
+      "Salesforce create response was not readable JSON",
+    );
+    throw new Error(
+      `Salesforce accepted the ${object} but its response could not be read, so the record id is unknown.`,
+      { cause: err },
+    );
+  }
+}
+
+/**
  * Create one Salesforce record.
  *
  * Auth is the OAuth 2.0 client-credentials flow against the org's My Domain
- * token endpoint — `jsforce`'s `OAuth2.requestToken` takes the grant verbatim
- * and adds the app credentials. The minted access token lives for this one
- * call: there is no refresh lifecycle to store, which is what makes the static
- * credential set the resolver hands over sufficient.
+ * token endpoint, then one REST create — two `fetch` calls under ONE
+ * {@link SALESFORCE_TIMEOUT_MS} deadline, so the pair cannot hold the agent
+ * turn past the bound between them (#5572). See the module header for why
+ * this hand-rolls rather than driving `jsforce`.
  */
 export async function executeSalesforceCreate(
   params: SalesforceCreateParams,
   credentials: SalesforceCredentials,
 ): Promise<SalesforceCreateResult> {
-  const secrets = [credentials.SALESFORCE_ACTION_CLIENT_SECRET];
+  // The Consumer Key is not a secret the way the Consumer Secret is, but
+  // Salesforce's `invalid_client` description commonly echoes it back and it
+  // is not ours to put in an agent-visible string either.
+  const secrets = [
+    credentials.SALESFORCE_ACTION_CLIENT_SECRET,
+    credentials.SALESFORCE_ACTION_CLIENT_ID,
+  ];
 
   const requested = params.object ?? credentials.SALESFORCE_ACTION_DEFAULT_OBJECT;
   if (!requested) {
@@ -330,60 +558,82 @@ export async function executeSalesforceCreate(
     "The configured Salesforce instance URL",
   );
 
-  const jsforce = requireJsforce();
+  /**
+   * Which leg the deadline could fire on. This is the whole reason the bound
+   * is worth having on a WRITE: a timeout during the token mint provably
+   * created nothing, while one during the create POST is genuinely unknown —
+   * aborting our request says nothing about whether Salesforce had already
+   * committed the record. Telling an operator which of those happened is the
+   * difference between "retry" and "go look first".
+   */
+  let reachedCreate = false;
 
-  let token: JsforceTokenResponse;
-  try {
-    const oauth2 = new jsforce.OAuth2({
-      loginUrl: instanceUrl,
-      clientId: credentials.SALESFORCE_ACTION_CLIENT_ID,
-      clientSecret: credentials.SALESFORCE_ACTION_CLIENT_SECRET,
-    });
-    token = (await oauth2.requestToken({
-      grant_type: "client_credentials",
-    })) as JsforceTokenResponse;
-  } catch (err) {
-    const detail = safeMessage(err, secrets);
-    log.error({ host: hostForLog(instanceUrl), detail }, "Salesforce client-credentials token request failed");
-    throw new Error(
-      `Salesforce rejected the connected app's credentials: ${detail}. Check the Consumer Key/Secret and that the app enables the client-credentials flow with a run-as user.`,
+  const exchange = await withVendorDeadline(SALESFORCE_TIMEOUT_MS, async (signal) => {
+    const token = await mintAccessToken(instanceUrl, credentials, secrets, signal);
+
+    const accessToken = typeof token.access_token === "string" ? token.access_token : "";
+    if (accessToken === "") {
+      log.error(
+        { host: hostForLog(instanceUrl) },
+        "Salesforce token response carried no access_token",
+      );
+      throw new Error(
+        "Salesforce returned no access token for the connected app — the client-credentials flow may not be enabled on it.",
+      );
+    }
+
+    // Salesforce echoes the org's canonical host; fall back to the configured
+    // one rather than failing a call that is otherwise authorized. The echo is
+    // re-validated rather than trusted: it decides where the record POST goes
+    // and what host the approval card links to, so it gets the same guard the
+    // configured URL got.
+    const sessionUrl =
+      typeof token.instance_url === "string" && token.instance_url.length > 0
+        ? normalizeInstanceUrl(token.instance_url, "The instance URL Salesforce returned")
+        : instanceUrl;
+
+    // The minted token joins the redaction set for the create leg: it is a
+    // credential derivative, and Salesforce's session errors quote it back.
+    const createSecrets = [...secrets, accessToken];
+
+    reachedCreate = true;
+    const saved = await postRecord(
+      sessionUrl,
+      object,
+      fields,
+      accessToken,
+      createSecrets,
+      signal,
     );
-  }
+    return { sessionUrl, createSecrets, saved };
+  });
 
-  const accessToken = typeof token.access_token === "string" ? token.access_token : "";
-  if (accessToken === "") {
-    log.error({ host: hostForLog(instanceUrl) }, "Salesforce token response carried no access_token");
-    throw new Error(
-      "Salesforce returned no access token for the connected app — the client-credentials flow may not be enabled on it.",
-    );
-  }
-  // Salesforce echoes the org's canonical host; fall back to the configured
-  // one rather than failing a call that is otherwise authorized. The echo is
-  // re-validated rather than trusted: it decides where the record POST goes
-  // and what host the approval card links to, so it gets the same guard the
-  // configured URL got.
-  const sessionUrl =
-    typeof token.instance_url === "string" && token.instance_url.length > 0
-      ? normalizeInstanceUrl(token.instance_url, "The instance URL Salesforce returned")
-      : instanceUrl;
-
-  let saved: JsforceSaveResult;
-  try {
-    const connection = new jsforce.Connection({ instanceUrl: sessionUrl, accessToken });
-    saved = (await connection.sobject(object).create(fields)) as JsforceSaveResult;
-  } catch (err) {
-    const detail = safeMessage(err, [...secrets, accessToken]);
+  if (!exchange.ok) {
+    const seconds = SALESFORCE_TIMEOUT_MS / 1000;
     log.error(
-      { host: hostForLog(sessionUrl), object, detail },
-      "Salesforce record creation failed",
+      {
+        host: hostForLog(instanceUrl),
+        object,
+        timeoutMs: SALESFORCE_TIMEOUT_MS,
+        leg: reachedCreate ? "create" : "token",
+      },
+      "Salesforce request timed out",
     );
-    throw new Error(`Salesforce API error: ${detail}`);
+    throw new Error(
+      reachedCreate
+        ? `Salesforce did not respond within ${seconds}s and the request was cancelled. The ${object} may or may not have been created — check the org before retrying.`
+        : `Salesforce did not respond within ${seconds}s while authenticating. No ${object} was created — check the org is reachable and retry.`,
+    );
   }
 
+  const { sessionUrl, createSecrets, saved } = exchange.value;
+
+  // Belt-and-braces: the single-record endpoint signals a refusal with a
+  // non-2xx, which `postRecord` already threw on. A 2xx body that still says
+  // `success: false` is not a shape Salesforce documents, and reporting it as
+  // a success would be the one unrecoverable way to be wrong here.
   if (saved.success !== true) {
-    const detail =
-      describeSaveErrors(saved.errors, [...secrets, accessToken]).join("; ") ||
-      "no reason given";
+    const detail = describeSaveErrors(saved.errors, createSecrets).join("; ") || "no reason given";
     log.error({ object, detail }, "Salesforce refused the record");
     throw new Error(`Salesforce did not create the ${object}: ${detail}`);
   }

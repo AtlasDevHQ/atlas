@@ -201,8 +201,9 @@ const {
   approveAction,
   denyAction,
   getActionConfig,
-  registerActionExecutor,
-  getActionExecutor,
+  defineActionExecutor,
+  getActionExecutorForType,
+  redispatchActionAsUser,
 } = await import("../../packages/api/src/lib/tools/actions/handler");
 const { withRequestContext } = await import("../../packages/api/src/lib/logger");
 
@@ -233,7 +234,11 @@ async function createPendingAction(overrides?: {
       requestId: crypto.randomUUID(),
       user: { id: requestedBy, mode: "simple-key" as const, label: "Test", role: "admin" as const },
     },
-    () => handleAction(request, async (payload) => ({ ok: true, payload })),
+    () => {
+      // Registered by TYPE, as an action module does at load (#5570).
+      defineActionExecutor(actionType, async (payload) => ({ ok: true, payload }));
+      return handleAction(request);
+    },
   );
 
   return { actionId: request.id, result };
@@ -586,13 +591,15 @@ describe("E2E: Action framework", () => {
             requestId: crypto.randomUUID(),
             user: adminUser,
           },
-          () =>
-            handleAction(request, async (payload) => {
-              return executeJiraCreate(
+          () => {
+            defineActionExecutor(request.actionType, async (payload) =>
+              executeJiraCreate(
                 payload as { summary: string; description: string; project?: string; labels?: string[] },
                 jiraCreds(),
-              );
-            }),
+              ),
+            );
+            return handleAction(request);
+          },
         );
 
         expect(pendingResult.status).toBe("pending");
@@ -664,10 +671,12 @@ describe("E2E: Action framework", () => {
             requestId: crypto.randomUUID(),
             user: adminUser,
           },
-          () =>
-            handleAction(request, async (payload) => {
-              return executeEmailSend(payload as { to: string | string[]; subject: string; body: string });
-            }),
+          () => {
+            defineActionExecutor(request.actionType, async (payload) =>
+              executeEmailSend(payload as { to: string | string[]; subject: string; body: string }),
+            );
+            return handleAction(request);
+          },
         );
 
         expect(pendingResult.status).toBe("pending");
@@ -875,17 +884,39 @@ describe("E2E: Action framework", () => {
   });
 
   describe("executor registry", () => {
-    it("registers and retrieves action executor", () => {
+    it("registers and retrieves an executor by ACTION TYPE", () => {
+      // Keyed by type, not by action id (#5570) — that is what lets an
+      // instance that never took the request execute an approved row.
       const executor = async () => ({ success: true });
-      registerActionExecutor("test-action-id", executor);
+      defineActionExecutor("test:registry-probe", executor);
 
-      const retrieved = getActionExecutor("test-action-id");
-      expect(retrieved).toBe(executor);
+      expect(getActionExecutorForType("test:registry-probe")).toBe(executor);
     });
 
-    it("returns undefined for unregistered executor", () => {
-      const retrieved = getActionExecutor("nonexistent-id");
-      expect(retrieved).toBeUndefined();
+    it("returns undefined for an unregistered action type", () => {
+      expect(getActionExecutorForType("test:never-registered")).toBeUndefined();
+    });
+
+    it("⭐ re-dispatches a stranded approval end to end", async () => {
+      // The full stranded-row lifecycle through the real handler: approve with
+      // the type unregistered (a deploy that does not have the module), then
+      // register it and re-dispatch. Before #5570 the row stopped at
+      // `approved` with nothing able to move it.
+      const { actionId } = await createPendingAction({ actionType: "test:stranded-e2e" });
+      const { _undefineActionExecutor } = await import(
+        "../../packages/api/src/lib/tools/actions/handler"
+      );
+      _undefineActionExecutor("test:stranded-e2e");
+
+      const approved = await approveAction(actionId, "admin-1");
+      expect(approved!.status).toBe("approved");
+
+      defineActionExecutor("test:stranded-e2e", async () => ({ recovered: true }));
+      const outcome = await redispatchActionAsUser(actionId, { user: adminUser, orgId: null });
+
+      expect(outcome.kind).toBe("redispatched");
+      expect((await getAction(actionId))!.status).toBe("executed");
+      expect((await getAction(actionId))!.result).toEqual({ recovered: true });
     });
 
     it("executor handles failure gracefully", async () => {
@@ -899,10 +930,12 @@ describe("E2E: Action framework", () => {
 
       const failResult = await withRequestContext(
         { requestId: crypto.randomUUID(), user: adminUser },
-        () =>
-          handleAction(request, async () => {
+        () => {
+          defineActionExecutor(request.actionType, async () => {
             throw new Error("Simulated failure");
-          }),
+          });
+          return handleAction(request);
+        },
       );
 
       // Manual mode -> pending (error only happens on execution)

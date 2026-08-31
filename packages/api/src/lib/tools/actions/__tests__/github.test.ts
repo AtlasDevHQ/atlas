@@ -15,16 +15,29 @@ import { generateKeyPairSync } from "node:crypto";
 // Mocks — handler (no DB / auth) and the installation-token minter (no network)
 // ---------------------------------------------------------------------------
 
-let lastHandleActionCall: { request: unknown; executeFn: unknown } | null = null;
+let lastHandleActionCall: { request: unknown } | null = null;
+/**
+ * What the module registered at load, by action type (#5570).
+ *
+ * `handleAction` no longer takes an executor — the module declares one for its
+ * TYPE when it is imported, so this map is where that call lands under the
+ * mock. Capturing it is not optional bookkeeping: the top-level
+ * `defineActionExecutor` call runs at import, so a mock without this key makes
+ * the module under test throw before a single test runs.
+ */
+const registeredExecutors = new Map<string, unknown>();
 
 void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   buildActionRequest: (params: Record<string, unknown>) => ({
     id: "test-action-id",
     ...params,
   }),
-  handleAction: async (request: unknown, executeFn: unknown) => {
-    lastHandleActionCall = { request, executeFn };
+  handleAction: async (request: unknown) => {
+    lastHandleActionCall = { request };
     return { status: "pending", actionId: "test-action-id", summary: "test" };
+  },
+  defineActionExecutor: (actionType: string, executor: unknown) => {
+    registeredExecutors.set(actionType, executor);
   },
 }));
 
@@ -419,5 +432,17 @@ describe("createGitHubIssue — tool execute", () => {
     // The card is rendered to an approver who may not be a workspace admin.
     const request = lastHandleActionCall?.request as Record<string, unknown> | undefined;
     expect(JSON.stringify(request ?? {})).not.toContain("BEGIN PRIVATE KEY");
+  });
+});
+
+describe("executor registration (#5570)", () => {
+  it("registers an executor under its own actionType at module load", () => {
+    // The property that makes an approval durable: the key is the TYPE the
+    // `AtlasAction` declares and the rows carry, so any instance can execute
+    // an approved row by looking it up. Reading `createGitHubIssue.actionType`
+    // rather than re-typing the literal is what keeps this a check on the
+    // module's agreement with itself.
+    expect(createGitHubIssue.actionType).toBe("github:create_issue");
+    expect(registeredExecutors.get(createGitHubIssue.actionType)).toBeTypeOf("function");
   });
 });

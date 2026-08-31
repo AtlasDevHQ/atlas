@@ -47,6 +47,30 @@ export interface AtlasAction {
   readonly reversible: boolean;
   readonly defaultApproval: ActionApprovalMode;
   readonly requiredCredentials: string[];
+  /**
+   * How this action type executes, for a PLUGIN-declared action (#5570).
+   *
+   * The five built-in action modules do not use this field: they call
+   * `defineActionExecutor` themselves at module load, beside their
+   * `AtlasAction`. A plugin cannot — it is loaded dynamically and must not
+   * import `@atlas/api` — so it declares the executor here and
+   * `wireActionPlugins` registers it into the same type-keyed registry. One
+   * seam for both paths, which is what keeps a plugin action from being the
+   * one kind that still strands after a restart.
+   *
+   * Structurally typed rather than importing `ActionExecutor`, for the reason
+   * `tool: unknown` is: this module cannot depend on the handler, and the
+   * plugin SDK mirrors the same shape without depending on either.
+   *
+   * ⚠️ Must be a pure function of `(payload, ctx)`. Everything it needs comes
+   * from the persisted row, because that is all a re-dispatching instance has.
+   * `ctx.workspaceId` is the ACTION's workspace (ADR-0046) — resolve
+   * credentials from it, never from ambient request state.
+   */
+  readonly executor?: (
+    payload: Record<string, unknown>,
+    ctx: { readonly workspaceId: string | null },
+  ) => Promise<unknown>;
 }
 
 /** Type guard: returns true if the tool has action metadata. */

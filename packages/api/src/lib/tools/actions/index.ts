@@ -10,10 +10,18 @@ export {
   listPendingActions,
   buildActionRequest,
   getActionConfig,
-  registerActionExecutor,
-  getActionExecutor,
+  // The action_type-keyed executor registry (#5570). `defineActionExecutor` is
+  // called at MODULE LOAD beside each `AtlasAction`, and by `wireActionPlugins`
+  // for plugin-declared types — never per request.
+  defineActionExecutor,
+  getActionExecutorForType,
+  isActionTypeExecutable,
+  UnregisteredActionTypeError,
+  redispatchActionAsUser,
   _resetActionStore,
+  type ActionExecutor,
   type ActionExecutionContext,
+  type RedispatchActionOutcome,
   type HandleActionOptions,
   type ListActionsOptions,
 } from "./handler";

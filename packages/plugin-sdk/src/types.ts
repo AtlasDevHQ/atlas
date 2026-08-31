@@ -1111,6 +1111,24 @@ export interface AtlasInteractionPlugin<TConfig = undefined> extends AtlasPlugin
 // Action plugin
 // ---------------------------------------------------------------------------
 
+/**
+ * Execution-time context handed to a plugin action's executor.
+ *
+ * Structural mirror of the host's `ActionExecutionContext`, the way
+ * `PluginExploreBackend` mirrors `ExploreBackend` — plugins bind to the shape
+ * without importing `@atlas/api`.
+ */
+export interface PluginActionExecutionContext {
+  /**
+   * The workspace the ACTION belongs to, stamped from the requester's active
+   * organization when the action was created — NOT the approver's, and not
+   * whoever later re-dispatched it. Resolve per-workspace credentials from
+   * this and nothing else. `null` when the action carries no workspace
+   * (self-host with auth off).
+   */
+  readonly workspaceId: string | null;
+}
+
 export interface PluginAction {
   readonly name: string;
   readonly description: string;
@@ -1120,6 +1138,23 @@ export interface PluginAction {
   readonly reversible: boolean;
   readonly defaultApproval: ActionApprovalMode;
   readonly requiredCredentials: string[];
+  /**
+   * How this action type executes once an approval lands.
+   *
+   * Declare it whenever the action goes through the host's approval flow.
+   * Atlas registers it by ACTION TYPE at plugin wiring time, so any instance
+   * can execute an approved row of this type — including one that never took
+   * the request, and one that restarted after the approval. Omit it for an
+   * action that executes inline in its own `tool` and never pends.
+   *
+   * ⚠️ Must be a pure function of `(payload, ctx)`: it is reconstructed from
+   * the persisted row, so it cannot close over the requesting user, the
+   * request that created the action, or anything else request-scoped.
+   */
+  readonly executor?: (
+    payload: Record<string, unknown>,
+    ctx: PluginActionExecutionContext,
+  ) => Promise<unknown>;
 }
 
 export interface AtlasActionPlugin<TConfig = undefined> extends AtlasPluginBase<TConfig> {

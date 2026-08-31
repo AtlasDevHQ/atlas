@@ -9,6 +9,14 @@ import { createLogger } from "@atlas/api/lib/logger";
 import type { PluginRegistry, PluginLike } from "./registry";
 import type { ConnectionRegistry } from "@atlas/api/lib/db/connection";
 import type { ToolRegistry, AtlasTool, AtlasAction } from "@atlas/api/lib/tools/registry";
+// Statically imported, unlike the tool registry below it: that one is a
+// DEFAULT for an optional DI parameter and only needed when the caller omits
+// it, while the action-type registry is used on every wired action. Nothing in
+// the handler's graph reaches back here, so there is no cycle to defer around.
+import {
+  defineActionExecutor,
+  getActionExecutorForType,
+} from "@atlas/api/lib/tools/actions/handler";
 
 const log = createLogger("plugins:wiring");
 
@@ -222,7 +230,23 @@ export async function wireDatasourcePlugins(
 
 /**
  * For each healthy action plugin, register each PluginAction as an AtlasTool
- * in the ToolRegistry.
+ * in the ToolRegistry — and, when it declares one, its executor in the
+ * action-type registry.
+ *
+ * ## Why the executor is registered HERE (#5570)
+ *
+ * The five built-in action modules call `defineActionExecutor` themselves, at
+ * module load, beside the `AtlasAction` they belong to. A plugin cannot: it is
+ * loaded dynamically, it must not import `@atlas/api`, and there is no moment
+ * in its own lifecycle that corresponds to "the host's action registry is
+ * ready". Wiring is that moment, and it is already the point where the
+ * plugin's actions become visible to the rest of Atlas.
+ *
+ * The important property is that this is the SAME registry, not a parallel
+ * one. An approved `webhook:post` row is executable by any instance that
+ * wired the plugin, on exactly the terms a built-in `jira:create` row is —
+ * so the restart gap this issue closes closes for plugin actions too, rather
+ * than leaving them as the one path that still strands.
  */
 export async function wireActionPlugins(
   pluginRegistry: PluginRegistry,
@@ -241,6 +265,33 @@ export async function wireActionPlugins(
     for (const action of plugin.actions) {
       try {
         registry.register(action);
+
+        if (action.executor) {
+          // Last registration wins in the registry, so say so when it
+          // displaces something. Two plugins claiming one action type, or a
+          // plugin claiming a built-in's, is a real configuration to be able
+          // to see in a log — and it is legitimate (it is how an operator
+          // overrides a built-in), so it is not an error.
+          const displaced = getActionExecutorForType(action.actionType) !== undefined;
+          defineActionExecutor(action.actionType, action.executor);
+          log.info(
+            { pluginId: plugin.id, action: action.name, actionType: action.actionType, displaced },
+            displaced
+              ? "Action plugin executor registered — REPLACED an existing executor for this action type"
+              : "Action plugin executor registered",
+          );
+        } else {
+          // Not a failure: an action that executes inline in its own tool and
+          // never pends has nothing to register. Logged at debug because the
+          // consequence only bites if it DOES pend — an approval would then
+          // report `approved_not_executed`, and this line is where that trail
+          // starts.
+          log.debug(
+            { pluginId: plugin.id, action: action.name, actionType: action.actionType },
+            "Action plugin declares no executor — approvals for this action type cannot be executed or re-dispatched",
+          );
+        }
+
         wired.push(action.name);
         log.info({ pluginId: plugin.id, action: action.name }, "Action plugin tool wired");
       } catch (err) {

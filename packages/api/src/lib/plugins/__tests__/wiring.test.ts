@@ -1,8 +1,18 @@
-import { describe, test, expect, beforeEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { PluginRegistry } from "../registry";
 import type { PluginLike, PluginContextLike } from "../registry";
 import { wireDatasourcePlugins, wireActionPlugins, wireInteractionPlugins, wireContextPlugins, wireSandboxPlugins } from "../wiring";
 import type { SandboxExecBackend } from "../wiring";
+import {
+  approveAction,
+  buildActionRequest,
+  getActionExecutorForType,
+  handleAction,
+  _resetActionExecutors,
+  _resetActionStore,
+} from "@atlas/api/lib/tools/actions/handler";
+import { withRequestContext } from "@atlas/api/lib/logger";
+import { _resetPool } from "@atlas/api/lib/db/internal";
 
 const minimalCtx: PluginContextLike = {
   db: null,
@@ -515,6 +525,165 @@ describe("wireActionPlugins", () => {
     expect(result.wired).toEqual(["good-action"]);
     expect(result.failed).toHaveLength(1);
     expect(result.failed[0].pluginId).toBe("fail-action");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin action executors (#5570)
+// ---------------------------------------------------------------------------
+
+describe("wireActionPlugins — the action_type executor registry", () => {
+  let registry: PluginRegistry;
+  let toolRegistry: ReturnType<typeof makeMockToolRegistry>;
+
+  const origDbUrl = process.env.DATABASE_URL;
+
+  /** A plugin whose action declares how it executes once an approval lands. */
+  function makeExecutablePlugin(
+    id: string,
+    actionType: string,
+    executor: (payload: Record<string, unknown>, ctx: { workspaceId: string | null }) => Promise<unknown>,
+  ): PluginLike {
+    return {
+      id,
+      types: ["action"],
+      version: "1.0.0",
+      actions: [
+        {
+          name: `${id}-action`,
+          description: "Test action",
+          tool: {},
+          actionType,
+          reversible: false,
+          defaultApproval: "manual",
+          requiredCredentials: [],
+          executor,
+        },
+      ],
+    };
+  }
+
+  beforeEach(() => {
+    // Memory-only action store, as the handler suites do.
+    delete process.env.DATABASE_URL;
+    _resetPool(null);
+    _resetActionStore();
+    registry = new PluginRegistry();
+    toolRegistry = makeMockToolRegistry();
+  });
+
+  afterEach(() => {
+    if (origDbUrl) process.env.DATABASE_URL = origDbUrl;
+    else delete process.env.DATABASE_URL;
+    _resetPool(null);
+    _resetActionStore();
+  });
+
+  async function wire(): Promise<void> {
+    await registry.initializeAll(minimalCtx);
+    await wireActionPlugins(
+      registry,
+      toolRegistry as unknown as import("@atlas/api/lib/tools/registry").ToolRegistry,
+    );
+  }
+
+  test("registers a declared executor under the action's TYPE", async () => {
+    const executor = async () => ({ ok: true });
+    registry.register(makeExecutablePlugin("declaring", "plugin:declared", executor));
+
+    await wire();
+
+    expect(getActionExecutorForType("plugin:declared")).toBe(executor);
+  });
+
+  test("an action that declares no executor registers none, and does not fail wiring", async () => {
+    // Legitimate: an action that executes inline in its own tool and never
+    // pends has nothing to register.
+    registry.register(makeActionPlugin("inline-only"));
+
+    await registry.initializeAll(minimalCtx);
+    const result = await wireActionPlugins(
+      registry,
+      toolRegistry as unknown as import("@atlas/api/lib/tools/registry").ToolRegistry,
+    );
+
+    expect(result.wired).toEqual(["inline-only-action"]);
+    expect(result.failed).toEqual([]);
+    expect(getActionExecutorForType("test:do")).toBeUndefined();
+  });
+
+  test("a later plugin claiming the same action type replaces the earlier one", async () => {
+    // Last registration wins — the operator-override case. Asserted rather
+    // than left implicit, because the alternative (first wins) would make
+    // which plugin runs depend on load order in a way nothing surfaces.
+    const first = async () => "first";
+    const second = async () => "second";
+    registry.register(makeExecutablePlugin("plugin-a", "plugin:contested", first));
+    registry.register(makeExecutablePlugin("plugin-b", "plugin:contested", second));
+
+    await wire();
+
+    expect(getActionExecutorForType("plugin:contested")).toBe(second);
+  });
+
+  test("⭐ a plugin action approved after a RESTART executes, through the wiring path", async () => {
+    // The acceptance criterion, end to end and through the real seam: the
+    // plugin path is not a parallel registry, so a plugin-declared action gets
+    // the same restart durability a built-in `jira:create` does. Before #5570
+    // the executor was a closure the requesting process stashed per action id,
+    // and this approval would have stranded the row at `approved` forever.
+    const seen: { payload?: Record<string, unknown>; workspaceId?: string | null } = {};
+    const plugin = makeExecutablePlugin("resilient", "plugin:restart", async (payload, ctx) => {
+      seen.payload = payload;
+      seen.workspaceId = ctx.workspaceId;
+      return { delivered: true };
+    });
+
+    // --- process 1: the plugin is wired and takes the request ---
+    registry.register(plugin);
+    await wire();
+
+    const request = buildActionRequest({
+      actionType: "plugin:restart",
+      target: "https://example.test/hook",
+      summary: "Post a webhook",
+      payload: { body: "hi" },
+      reversible: false,
+    });
+    const pending = await withRequestContext(
+      {
+        requestId: "req-plugin",
+        user: { id: "u-requester", label: "analyst", mode: "managed", activeOrganizationId: "org-requester" },
+      },
+      () => handleAction(request),
+    );
+    expect(pending.status).toBe("pending");
+
+    // --- the restart: every registration in this process is gone ---
+    _resetActionExecutors();
+    expect(getActionExecutorForType("plugin:restart")).toBeUndefined();
+
+    // --- process 2: boot wires the same plugin again, having never seen the
+    // request. A fresh registry and tool registry, as a new process would have.
+    registry = new PluginRegistry();
+    toolRegistry = makeMockToolRegistry();
+    registry.register(plugin);
+    await wire();
+
+    // --- the approval lands here, in a DIFFERENT workspace's context ---
+    const approved = await withRequestContext(
+      {
+        requestId: "req-approver",
+        user: { id: "u-approver", label: "admin", mode: "managed", activeOrganizationId: "org-approver" },
+      },
+      () => approveAction(request.id, "u-approver"),
+    );
+
+    expect(approved!.status).toBe("executed");
+    expect(approved!.result).toEqual({ delivered: true });
+    expect(seen.payload).toEqual({ body: "hi" });
+    // ADR-0046: the ROW's workspace, not the approver's.
+    expect(seen.workspaceId).toBe("org-requester");
   });
 });
 

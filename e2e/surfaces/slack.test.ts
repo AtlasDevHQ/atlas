@@ -212,8 +212,13 @@ mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   denyAction: mockDenyAction,
   getAction: mockGetAction,
   listPendingActions: mock(() => Promise.resolve([])),
-  registerActionExecutor: mock(() => {}),
-  getActionExecutor: mock(() => undefined),
+  // The action_type-keyed registry (#5570) — `lib/plugins/wiring.ts` imports
+  // these two statically, so a module mock that omits them breaks plugin
+  // wiring rather than the action surface this suite is about.
+  defineActionExecutor: mock(() => {}),
+  getActionExecutorForType: mock(() => undefined),
+  isActionTypeExecutable: mock(() => false),
+  redispatchActionAsUser: mock(() => Promise.resolve({ kind: "conflict" as const })),
   getActionConfig: mock(() => ({ approval: "manual" as const })),
   buildActionRequest: mock(() => ({})),
   _resetActionStore: mock(() => {}),

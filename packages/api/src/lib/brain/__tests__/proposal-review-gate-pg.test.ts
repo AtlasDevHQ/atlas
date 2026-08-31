@@ -11,6 +11,16 @@
  * a new gate*. Nothing here adds machinery; every assertion is that machinery
  * built for connector-extracted drafts holds for agent-proposed ones.
  *
+ * ## Driven through `lib/brain/review-gate.ts` since #5568
+ *
+ * This suite used to import from four modules to assert four properties of one
+ * concept — which was the clearest evidence that the concept had no home. It
+ * now drives the facade's four verbs: {@link queued}, {@link previewApprove},
+ * {@link approve}, {@link reject}. Identical behaviour, because the facade
+ * composes the identical internals; what the change buys is that a future
+ * slice which breaks the composition breaks THIS file, rather than leaving the
+ * gate's four halves passing separately while the gate itself no longer exists.
+ *
  * The four properties, one per test:
  *
  *   1. **Reviewable, and labelled.** An ordinary member's proposal reaches an
@@ -36,7 +46,12 @@
  * transaction committed — the ACL predicate, the corroboration sub-SELECT, the
  * widening evidence join, and the tombstone are all evaluated by Postgres, and
  * `proposal.test.ts`'s fake executor cannot see any of them (#5021's finding,
- * one seam over).
+ * one seam over). That is the standing entry condition for this file: a claim
+ * that a double could falsify belongs in the unit lane, which is where the
+ * scoped-arm comparison lives (`content-mode/adapters/__tests__/brain-facts-scoped-promotion.test.ts`)
+ * rather than here — the scope is decided in TypeScript over rows a double can
+ * supply, so proving it against real Postgres would buy nothing this file's
+ * own `approve` call does not already buy.
  *
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
  */
@@ -47,11 +62,16 @@ import { Pool } from "pg";
 import { BRAIN_PROPOSAL_PRODUCER } from "@useatlas/schemas";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
-import { promoteBrainFacts } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { ORG_PRINCIPAL, type BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
-import { loadFactCandidates } from "@atlas/api/lib/brain/candidates";
-import { loadWideningPreview } from "@atlas/api/lib/brain/oversight";
-import { correctFact } from "@atlas/api/lib/brain/correction";
+// ⭐ THE FACADE, not the four modules this file used to reach into (#5568).
+// Every assertion below is about the review gate, and until `review-gate.ts`
+// existed "the review gate" was a claim spread across `candidates.ts`,
+// `oversight.ts`, `correction.ts` and the content-mode adapter — so a test OF
+// the gate had to name four subsystems to say one thing. The verbs are the
+// same functions with the same behaviour; what changed is that this suite now
+// imports the CONCEPT it is testing, and would fail to compile if the four
+// verbs stopped composing into one.
+import { approve, previewApprove, queued, reject } from "@atlas/api/lib/brain/review-gate";
 import { proposeFact } from "@atlas/api/lib/brain/proposal";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 import { HUMAN_SOURCE, SLACK_SOURCE } from "@atlas/api/lib/brain/sources";
@@ -160,7 +180,7 @@ describeIfPg("the review gate proposeFact exits through (#5483)", () => {
     let destroyReason: Error | undefined;
     try {
       await client.query("BEGIN");
-      const report = await Effect.runPromise(promoteBrainFacts(client, workspaceId));
+      const report = await Effect.runPromise(approve(client, workspaceId));
       await client.query("COMMIT");
       return report;
     } catch (err) {
@@ -260,7 +280,7 @@ describeIfPg("the review gate proposeFact exits through (#5483)", () => {
       if (outcome.kind !== "proposed") return;
       expect(outcome.result.status).toBe("draft");
 
-      const page = await loadFactCandidates(pool, {
+      const page = await queued(pool, {
         ctx: reviewer(ws),
         limit: 10,
         offset: 0,
@@ -309,7 +329,7 @@ describeIfPg("the review gate proposeFact exits through (#5483)", () => {
       expect(row.invalidated_at).toBeNull();
 
       // And it has left the review queue the way every published draft does.
-      const page = await loadFactCandidates(pool, { ctx: reviewer(ws), limit: 10, offset: 0 });
+      const page = await queued(pool, { ctx: reviewer(ws), limit: 10, offset: 0 });
       expect(page.candidates).toEqual([]);
     },
     PG_TEST_TIMEOUT_MS,
@@ -324,10 +344,12 @@ describeIfPg("the review gate proposeFact exits through (#5483)", () => {
       if (outcome.kind !== "proposed") return;
       const factId = outcome.result.factId;
 
-      const rejection = await correctFact({
+      // `reject` fixes the verb at `retract`: this is the GATE's negative
+      // verb, where `supersede` / `re-authority` / `pin` are corrections making
+      // a different claim (`correction.ts` stays exported for those).
+      const rejection = await reject({
         ctx: reviewer(ws),
         factId,
-        verb: "retract",
         intent: "admin-ui",
         reason: "not something we want on the record",
         vocabulary: identityVocabulary,
@@ -351,7 +373,7 @@ describeIfPg("the review gate proposeFact exits through (#5483)", () => {
       expect(episodes[0]!.body).toContain("not something we want on the record");
 
       // And the queue no longer offers the rejected draft for a trust call.
-      const page = await loadFactCandidates(pool, { ctx: reviewer(ws), limit: 10, offset: 0 });
+      const page = await queued(pool, { ctx: reviewer(ws), limit: 10, offset: 0 });
       expect(page.candidates).toEqual([]);
     },
     PG_TEST_TIMEOUT_MS,
@@ -380,7 +402,7 @@ describeIfPg("the review gate proposeFact exits through (#5483)", () => {
       // the proposer who vouched for it. The single-source case is pinned in
       // the first test; this is the count a reviewer actually weighs when
       // deciding whether corroborated testimony earns a wider audience.
-      const queueBefore = await loadFactCandidates(pool, {
+      const queueBefore = await queued(pool, {
         ctx: reviewer(ws, ["chat-channel:slack:C0PRIVATE"]),
         limit: 10,
         offset: 0,
@@ -392,11 +414,11 @@ describeIfPg("the review gate proposeFact exits through (#5483)", () => {
       // fact and the exact token the evidence will add. The reviewer must be
       // in the narrow audience to see the row at all — the preview is
       // reader-scoped, which is itself part of the disclosure design.
-      const preview = await loadWideningPreview(
+      const preview = await previewApprove(
         pool,
         reviewer(ws, ["chat-channel:slack:C0PRIVATE"]),
       );
-      const entry = preview.entries.find((e) => e.factId === factId);
+      const entry = preview.willWiden.entries.find((e) => e.factId === factId);
       expect(entry, "the coming widening must be disclosed to the reviewer before publish").toBeDefined();
       expect(entry?.added).toEqual([ORG_PRINCIPAL]);
 

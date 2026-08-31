@@ -233,6 +233,60 @@ export const DRAFT_FACTS_SQL = `
 `;
 
 /**
+ * {@link DRAFT_FACTS_SQL} narrowed to an explicit id list — the read half of
+ * the **scoped facts-only approve arm** (#5568).
+ *
+ * ## Why the scope lives HERE and nowhere downstream
+ *
+ * Every later statement in {@link promoteBrainFacts} is already keyed off the
+ * ids this SELECT returned: the supersession targets, both held-back counts,
+ * the evidence join, and both promote UPDATEs all bind `promotable`'s id list.
+ * So filtering the DRAFT READ is the *only* edit that scopes the phase, and it
+ * scopes it **completely** — there is no second place a scope could be applied
+ * and no arm of the policy that can miss it. That is the property the
+ * scoped-vs-unscoped comparison test pins: the same fixture rows classified,
+ * widened, superseded and audited identically, the set of rows being the only
+ * difference.
+ *
+ * A separate constant rather than a nullable `$2` on {@link DRAFT_FACTS_SQL},
+ * deliberately: the unscoped publish phase must keep issuing the statement it
+ * issues today, byte for byte, so nothing about the workspace-wide publish can
+ * regress on a slice that exists for a different caller. `promoteBrainFacts`
+ * picks between the two by whether a scope was passed, and passes no scope for
+ * the content-mode registry.
+ *
+ * ⚠️ **`FOR UPDATE` here locks only the named rows**, where the unscoped
+ * statement locks the workspace's whole draft backlog. That is the correct
+ * narrowing and not an oversight: the lock exists so a read-then-write
+ * classifies committed state rather than a mid-flight snapshot, and a scoped
+ * approve reads and writes exactly these rows. The workspace-wide serialization
+ * a full publish wants comes from the identity advisory lock, which
+ * `promoteBrainFacts` takes on BOTH paths and which is workspace-scoped on both
+ * — collisions are a workspace-wide question even when the promotion is not.
+ *
+ * No `LIMIT`, for {@link DRAFT_FACTS_SQL}'s reason one step over: the caller
+ * named the rows, so a truncation here would promote a prefix of a set a human
+ * enumerated — worse than the unscoped prefix, because nothing would be left in
+ * the backlog to reveal it.
+ */
+export const DRAFT_FACTS_SCOPED_SQL = `
+  SELECT id::text AS id,
+         subject,
+         predicate,
+         object,
+         source_episode_id::text AS source_episode_id,
+         provenance,
+         visible_to
+    FROM brain_facts
+   WHERE workspace_id = $1
+     AND status = 'draft'
+     AND invalidated_at IS NULL
+     AND id = ANY($2::uuid[])
+   ORDER BY ingested_at
+     FOR UPDATE
+`;
+
+/**
  * Promote the classified-promotable subset, by explicit id.
  *
  * The `status = 'draft'` predicate is kept alongside the id list even though
@@ -1746,10 +1800,44 @@ function toStoredGrant(visibleTo: unknown): StoredGrant {
  * change can reach a record its caller controls: `admin-publish.ts` puts it in
  * `logAdminAction`'s durable jsonb; the MCP seam, which audits nothing, at
  * least logs the same swept list rather than a different one.
+ *
+ * ## `factIds` — the scoped facts-only approve arm (#5568)
+ *
+ * Omit it and this is the workspace-wide publish phase, unchanged: the
+ * content-mode registry calls `promote(tx, orgId)` and reaches exactly the
+ * statements and the behaviour it reached before this parameter existed.
+ *
+ * Pass it and the phase promotes ONLY those facts — the deliberate carve-out
+ * from *"every publish is the one atomic workspace-wide transaction across
+ * content-mode tables"*, recorded with its rationale in
+ * `docs/development/content-mode.md`. The review queue's unit of decision is a
+ * fact, and ADR-0043's Keystone confirmation screen is promised to be *"the
+ * review gate wearing a friendlier skin — same table, same promotion adapter"*,
+ * which is unsatisfiable while the adapter can only publish everything.
+ *
+ * **The scope narrows WHICH rows, never HOW they are judged.** It is applied at
+ * the draft read ({@link DRAFT_FACTS_SCOPED_SQL}) and nowhere else, so every
+ * arm of the policy below — `classifyFactForPromotion`'s refusals, grant
+ * widening from evidence, supersession and its two held-back diagnostics, the
+ * shortfall warnings, the report — runs on the scoped rows exactly as it runs
+ * on the unscoped ones. There is no second code path to keep in agreement.
+ *
+ * ⚠️ **An EMPTY array scopes to nothing; it does not mean "unscoped".** Only
+ * `undefined` is unscoped. The distinction is load-bearing in the one direction
+ * that matters: a caller that computed an empty selection and fell through to
+ * the workspace-wide behaviour would publish a tenant's entire draft backlog
+ * because a reviewer ticked no boxes.
+ *
+ * Ids the scope names that are NOT promotable drafts — already published,
+ * retracted, another workspace's, or simply absent — are not an error: they
+ * contribute no row, exactly as the status and workspace predicates intend, and
+ * they are logged. `promotedIds` is what tells a caller which of the ids it
+ * asked for actually landed, and it is on the report for every path.
  */
 export function promoteBrainFacts(
   tx: ModeTxClient,
   orgId: string,
+  factIds?: readonly string[],
 ): Effect.Effect<PromotionReport, PublishPhaseError, never> {
   return Effect.gen(function* () {
     // IDENTITY LOCK FIRST — before the drafts are read, because what this phase
@@ -1827,11 +1915,47 @@ export function promoteBrainFacts(
         new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
     });
 
+    // ⚠️ `undefined` is the ONLY unscoped spelling — see the `factIds` note on
+    // this function. An empty array reaches the scoped statement and matches no
+    // row, which is what "approve nothing" must mean.
+    //
+    // Deduplicated so a caller that listed an id twice cannot make the
+    // requested-vs-found reconciliation below report a phantom shortfall.
+    const scope = factIds === undefined ? undefined : [...new Set(factIds)];
     const drafts = yield* Effect.tryPromise({
-      try: () => tx.query(DRAFT_FACTS_SQL, [orgId]),
+      try: () =>
+        scope === undefined
+          ? tx.query(DRAFT_FACTS_SQL, [orgId])
+          : tx.query(DRAFT_FACTS_SCOPED_SQL, [orgId, scope]),
       catch: (cause) =>
         new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
     });
+    if (scope !== undefined && drafts.rows.length !== scope.length) {
+      // NEVER silent, on this adapter's own posture: a scoped approve is a human
+      // naming rows, so an id that produced none is a row that human believes
+      // they approved. Not a failure — already-published, retracted and
+      // out-of-workspace ids are all legitimately absent, and refusing the
+      // transaction would leave a reviewer on a slightly stale page unable to
+      // approve anything at all. `promotedIds` on the returned report is the
+      // caller's authoritative answer to "which of mine landed"; this is the
+      // operator-side trace of the gap.
+      const found = new Set(
+        drafts.rows.flatMap((raw) =>
+          isJsonObject(raw) && typeof raw.id === "string" ? [raw.id] : [],
+        ),
+      );
+      const absent = scope.filter((id) => !found.has(id));
+      log.warn(
+        {
+          workspaceId: orgId,
+          requested: scope.length,
+          matched: drafts.rows.length,
+          absent: absent.slice(0, LOGGED_ID_SAMPLE_CAP),
+          sampleTruncated: absent.length > LOGGED_ID_SAMPLE_CAP,
+        },
+        "brain publish: a scoped approve named facts that are not promotable drafts — already published, retracted, or not in this workspace; they were skipped and the rest of the scope was promoted normally (#5568)",
+      );
+    }
 
     const promotable: PromotableDraft[] = [];
     const refused: PromotionRefusal[] = [];

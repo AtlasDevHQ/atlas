@@ -925,11 +925,30 @@ export const WILL_SUPERSEDE_PAIR_MAX = 100;
  * separately disclosed; replicating the refusal rules in SQL is not worth a
  * second spelling of them.
  */
-export const WILL_SUPERSEDE_TOTAL_SQL = `SELECT COUNT(*)::int AS will_supersede_total
+export const WILL_SUPERSEDE_TOTAL_SQL = willSupersedeTotalSql();
+
+/**
+ * {@link WILL_SUPERSEDE_TOTAL_SQL}, optionally narrowed to the drafts an
+ * id-scoped approve will actually offer (#5568).
+ *
+ * ⚠️ **Unscoped output is byte-identical to the constant** — `collision-sql-pinned.test.ts`
+ * asserts it, and that pin is the point: the workspace-wide publish preview
+ * must not move because a different caller wanted a narrower question.
+ *
+ * The scope binds the DRAFT side only. `p` is the published rival being
+ * retired, which the reviewer never selected and must not filter: scoping it
+ * would hide the very row the disclosure exists to name.
+ */
+export function willSupersedeTotalSql(scopeParam?: number): string {
+  return `SELECT COUNT(*)::int AS will_supersede_total
     FROM brain_facts d
     ${supersessionCollisionJoin("d", "p")}
    WHERE d.workspace_id = $1
-     AND ${supersedingDraftPredicate("d")}`;
+     AND ${supersedingDraftPredicate("d")}${
+       scopeParam === undefined ? "" : `
+     AND d.id = ANY($${scopeParam}::uuid[])`
+     }`;
+}
 
 /**
  * The reader-visible pairs, BOTH sides gated by the reader's own predicate.
@@ -955,6 +974,7 @@ export function willSupersedePairsSql(
   draftAclSql: string,
   publishedAclSql: string,
   limitParam: number,
+  scopeParam?: number,
 ): string {
   return `SELECT d.id::text AS draft_id,
          d.subject || ' ' || d.predicate || ' ' || d.object AS draft_label,
@@ -965,7 +985,10 @@ export function willSupersedePairsSql(
     ${supersessionCollisionJoin("d", "p")}
    WHERE ${draftAclSql}
      AND ${publishedAclSql}
-     AND ${supersedingDraftPredicate("d")}
+     AND ${supersedingDraftPredicate("d")}${
+       scopeParam === undefined ? "" : `
+     AND d.id = ANY($${scopeParam}::uuid[])`
+     }
    ORDER BY d.ingested_at, d.id, p.ingested_at, p.id
    LIMIT $${limitParam}`;
 }
@@ -1011,6 +1034,7 @@ export async function loadSupersessionPreview(
   db: BrainCandidateReader,
   ctx: BrainPrincipalContext,
   requestId?: string,
+  factIds?: readonly string[],
 ): Promise<BrainFactWillSupersede> {
   const workspaceId = ctx.workspaceId;
   const draftAcl = aclVisibilityClause(ctx, {
@@ -1037,12 +1061,28 @@ export async function loadSupersessionPreview(
   }
 
   const limitParam = publishedAcl.nextParamIndex;
+  // ⚠️ `undefined` is unscoped; an EMPTY array scopes to nothing — the same
+  // distinction `promoteBrainFacts` enforces, and it has to be the same one:
+  // a preview that read `[]` as "the whole workspace" would disclose
+  // supersessions an empty approve is not going to perform, which is the
+  // disagreement between the disclosure and the act that #4912 forbids.
+  // Deduplicated on the adapter's reasoning.
+  const scope = factIds === undefined ? undefined : [...new Set(factIds)];
+  // BOTH statements take the scope, never one. `withheld` is their difference,
+  // so scoping only the reader-visible pairs would inflate it by every
+  // out-of-scope supersession in the workspace and report them as rows this
+  // reader may not see.
+  const scopeParam = scope === undefined ? undefined : limitParam + 1;
   const [totalResult, pairsResult] = await Promise.all([
-    db.query(WILL_SUPERSEDE_TOTAL_SQL, [workspaceId]),
-    db.query(willSupersedePairsSql(draftAcl.sql, publishedAcl.sql, limitParam), [
+    db.query(
+      willSupersedeTotalSql(scope === undefined ? undefined : 2),
+      scope === undefined ? [workspaceId] : [workspaceId, scope],
+    ),
+    db.query(willSupersedePairsSql(draftAcl.sql, publishedAcl.sql, limitParam, scopeParam), [
       ...draftAcl.params,
       ...publishedAcl.params,
       WILL_SUPERSEDE_PAIR_MAX + 1,
+      ...(scope === undefined ? [] : [scope]),
     ]),
   ]);
 
@@ -1291,12 +1331,19 @@ export const WILL_WIDEN_DRAFT_SCAN_MAX = 5_000;
  * `factAclSql` is interpolated, so callers pass a clause they built — same
  * contract as {@link willSupersedePairsSql}.
  */
-export function willWidenRowsSql(factAclSql: string, draftLimitParam: number): string {
+export function willWidenRowsSql(
+  factAclSql: string,
+  draftLimitParam: number,
+  scopeParam?: number,
+): string {
   return `WITH scoped AS (
       SELECT f.id, f.ingested_at, f.subject, f.predicate, f.object, f.visible_to, f.workspace_id
         FROM brain_facts f
        WHERE ${factAclSql}
-         AND ${supersedingDraftPredicate("f")}
+         AND ${supersedingDraftPredicate("f")}${
+         scopeParam === undefined ? "" : `
+         AND f.id = ANY($${scopeParam}::uuid[])`
+       }
        ORDER BY f.ingested_at, f.id
        LIMIT $${draftLimitParam}
     )
@@ -1370,6 +1417,7 @@ export async function loadWideningPreview(
   db: BrainCandidateReader,
   ctx: BrainPrincipalContext,
   requestId?: string,
+  factIds?: readonly string[],
 ): Promise<BrainFactWillWiden> {
   const workspaceId = ctx.workspaceId;
   const factAcl = aclVisibilityClause(ctx, {
@@ -1385,10 +1433,17 @@ export async function loadWideningPreview(
   // Spread into a fresh array: `AclClause.params` is a readonly tuple and the
   // reader's `query` takes `unknown[]`. The draft cap binds after the ACL's own
   // params, so its placeholder number is whatever the clause left free.
-  const result = await db.query(willWidenRowsSql(factAcl.sql, factAcl.nextParamIndex), [
-    ...factAcl.params,
-    WILL_WIDEN_DRAFT_SCAN_MAX,
-  ]);
+  // `undefined` unscoped, `[]` scoped to nothing — `loadSupersessionPreview`'s
+  // note applies verbatim, one surface over.
+  const scope = factIds === undefined ? undefined : [...new Set(factIds)];
+  const result = await db.query(
+    willWidenRowsSql(
+      factAcl.sql,
+      factAcl.nextParamIndex,
+      scope === undefined ? undefined : factAcl.nextParamIndex + 1,
+    ),
+    [...factAcl.params, WILL_WIDEN_DRAFT_SCAN_MAX, ...(scope === undefined ? [] : [scope])],
+  );
 
   // Grouped in SQL's order, so the token order this discloses is the token
   // order publish will store — `EVIDENCE_GRANTS_SQL` orders by the same two

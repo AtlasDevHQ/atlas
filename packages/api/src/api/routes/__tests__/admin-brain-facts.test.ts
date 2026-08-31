@@ -301,6 +301,9 @@ void mock.module("@atlas/api/lib/brain/oversight", () => ({
   OVERSIGHT_DISTINCT_TOKENS_SQL: "SELECT 1 FROM brain_facts",
   WILL_SUPERSEDE_PAIR_MAX: 100,
   WILL_SUPERSEDE_TOTAL_SQL: "SELECT 1 FROM brain_facts",
+  // #5568's scoped builder. Present for the factory's own stated rule — every
+  // named export, not just the ones this route reaches.
+  willSupersedeTotalSql: () => "SELECT 1 FROM brain_facts",
   WILL_WIDEN_ENTRY_MAX: 100,
   WILL_WIDEN_DRAFT_SCAN_MAX: 5_000,
   willSupersedePairsSql: () => "SELECT 1 FROM brain_facts",

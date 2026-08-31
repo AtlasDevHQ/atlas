@@ -2872,3 +2872,89 @@ The consequence was structural rather than incidental: any surface had exactly t
 - **The declaration is already carrying weight it was not built for.** #5289 → PR #5291 extended the same entry with `additionalKeySources` to widen the ledger delete, and collapsed the tombstone + DELETE into a single `WITH` — one builder, one call site, so handing two builders different options became unrepresentable. That extension cost one field on an existing declaration rather than a fifth copy.
 
 **Category:** A contract maintained in parallel with its data by a regex over the type's own source text → a mapped type derived from the registry, with the relation declared once and the consistency the collapse *cannot* check delegated to the schema's foreign keys.
+
+---
+
+## 106. Four deepening passes from one architecture survey — a triage seam becomes an injected adapter, action targets become one registry entry truly, and `approveActionAsUser` absorbs a five-step preamble that had diverged (#5567)
+
+**Date:** 2026-08-31
+**Issue:** — (survey-sourced; the deferrals it filed are #5568–#5572)
+**PR:** #5567
+**Commit:** cd4a09a7d
+
+**Problem:** Three exploration agents over the last ~100 commits' hot spots found four shallow surfaces, three of which were copies of a contract. `triage.ts` promised stage 1 "slots in at exactly one place," but the slot was a **sync `string → closed-union` function hard-imported by a private fiber helper** — not a seam, and not the shape a distilled classifier could mount into. ADR-0046 promised one-entry action targets, but target 6 still meant **six edits, three of them hand-maintained name lists**. And both action-resolution callers ran the identical five-step authorization preamble, where **the copies had already diverged once**: bulk fetched actions unscoped, the exact omission `handler.ts`'s `@security` note warns about.
+
+**Solution:** The triage seam becomes `BrainExtractionDeps.triage: Triager`, beside the ten adapters the fiber already injects, with `deterministicTriager` as the default and `composeTriagers` as milestone 98's stage-1 mount point. `ActionCredentialsOf` derives each target's credential type from its `as const` spec. `approveActionAsUser` / `denyActionAsUser` own authorization, CAS and executor lookup behind tagged outcomes.
+
+**Impact:**
+- **34 files, +1,901 / −1,543.** The action-targets plate alone is **−311 net**: four dead `toXCredentials` narrowing functions, four byte-identical resolver copies, six `as unknown as` casts, three name-list copies, and the zero-subject `validateActionCredentials` with its startup block, all deleted. `resolver.test.ts` gains property tests over *every registered target* rather than a per-target list that a seventh target could be added without.
+- **The divergence was load-bearing, not cosmetic.** Deleting bulk's `preClassify` deletes its TOCTOU window with it; 18 behavioral bulk tests pass unchanged through the new verbs, which is what says the collapse preserved behaviour rather than redefining it.
+- **Every adapter fault fails open** on the triage seam — one cheap model call, never a silent drop — and the off-by-default byte-identical pin survives unchanged, so the seam change is provably inert in the three prod regions until the dial turns.
+- ⚠️ **A survey's real output is the deferrals it can name.** Four passes shipped here; five more were filed as #5568–#5572 and all five closed within five hours (PRs #5573–#5577). The two defence gaps closed in passing — `JIRA_BASE_URL` now passes the egress guard like Salesforce's instance URL, and jira/github get the 15s abort bound linear already had — are what made the *remaining* Salesforce gap nameable as #5572 rather than invisible.
+- The first plate (an encryption-axis completeness tripwire) is by this file's own rule a **guard refinement** and would not earn an entry alone; it rides along here because it was one commit of the four.
+
+**Category:** A seam that existed only as a comment's promise → an injected adapter beside its siblings; and a registry whose per-target cost was three hand-maintained name lists → a derived type with property tests over the registry itself.
+
+---
+
+## 107. The review gate gets a name and an addressable approve — `promoteBrainFacts` grows a scope on itself rather than in a second writer (#5568)
+
+**Date:** 2026-08-31
+**Issue:** #5568
+**PR:** #5573
+**Commit:** ba20aac41
+
+**Problem:** The reviewer's four verbs had no home, and the asymmetry that named the issue was that **reject was addressable by id and approve was not addressable at all**. `promoteBrainFacts(tx, orgId)` selected *every* `status='draft'` row in the workspace, so "approve" meant publishing the tenant's entire draft backlog — across facts, semantic entities and dashboards — through an unrelated route. ADR-0043 promises the Keystone wizard's confirmation screen is *"the review gate wearing a friendlier skin — same table, **same promotion adapter**, same audit row"*, which is unsatisfiable while the adapter can only publish everything.
+
+**Solution:** `lib/brain/review-gate.ts` gives `queued`, `previewApprove`, `approve` and `reject` one home as a **facade**: it owns no SQL, writes no row, moves no subsystem and makes no gate decision of its own — every verb composes an existing internal that keeps its own tests, docstring and callers. `promoteBrainFacts` grows an optional `factIds` scope **on itself**, applied at the draft READ and nowhere else.
+
+**Impact:**
+- **10 files, +1,040 / −39** — almost entirely additive, because the facade composes rather than moves. `admin-brain-facts.ts`, the gate's HTTP face, now calls the verbs, so the facade's import list *is* the register of the gate's consumers.
+- **The unscoped path is byte-equivalent.** The content-mode registry still calls `promote(tx, orgId)` with no scope; `ExoticModeAdapter.promote`'s type is unchanged; the publish wire contract (`/api/v1/admin/publish`, `draftCounts`, supersession + widening previews) does not move.
+- ⭐ **Scoping on the existing writer, not beside it, is what makes the carve-out cheap to hold.** The scope narrows *which* rows, never *how* they are judged: every later statement in the phase is already keyed off the ids the draft read returned, so classifier refusals, `WIDEN_AND_PROMOTE` grant widening, the `valid_to` stamp and its `supersedes` edges run on scoped rows exactly as on unscoped ones. **There is no second code path to keep in agreement** — the general form is that an optional narrowing parameter on the one writer beats a second writer that must be proved equivalent forever.
+- **The disclosure moves with the act.** `previewApprove` takes the same scope, threaded through all three preview statements — a preview and the transaction it previews must answer about the same rows, or a wizard confirming five keystone answers is warned about irreversible consequences its approve will not perform.
+
+**Category:** Four verbs with no home and an unaddressable write → a composing facade plus an id scope on the existing writer, with the unscoped path proven byte-equivalent.
+
+---
+
+## 108. `lib/vendor-http` — ADR-0045's deferral trigger fires, and four concerns get one author each (#5569)
+
+**Date:** 2026-08-31
+**Issue:** #5569
+**PR:** #5574
+**Commit:** 8974f6eec
+
+**Problem:** ADR-0045 ratified hand-rolled vendor HTTP clients and **deferred** the shared extraction on one stated condition: the duplication "has not yet produced a cross-connector bug that the shared trio above didn't catch." The 2026-08-31 survey found it had, **twice** — #5567 fixed both live instances directly, leaving `isAbortError` as three verbatim marked copies, the full `!ok → json → text → slice(0, 200)` failure-narrowing block verbatim in `jira.ts` and `github.ts` with its text-only half in `linear.ts`, truncation open-coded at four more sites in `email/delivery.ts`, and two independent derivations of host pinning (`normalizeJiraBaseUrl`, `normalizeInstanceUrl`) of which **only one actually had the check**.
+
+**Solution:** Exactly four concerns, one file each — `result.ts` (the discriminated result shape, with `VendorHttpResult` narrowing the failure half per producer so a deadline's caller reads `failure.cause` without re-proving that a deadline produced a timeout), `failure-detail.ts` (one definition of the bound and one statement of what it is for), `deadline.ts` (the callback receives the signal rather than owning it, so a two-call pair shares one budget), `host-pinning.ts`.
+
+**Impact:**
+- **14 files, +1,131 / −210.** Five migration sites, and **they do not each take all four concerns** — jira takes deadline + narrowing + host pinning, github takes deadline + narrowing, linear takes deadline + narrowing's text half. A spine that forced all four on every caller would be the wrong shape.
+- ⭐ **`index.ts` names the four things the module deliberately does NOT own** — retries/backoff, token caching, SDK adoption, and `fetch` itself — each stated as a live ADR position rather than a to-do. The general form is that a new shared module's most useful header is its *non*-scope, because that is what the next editor would otherwise grow it into by accident.
+- **`openapi/egress-guard` is consumed and did not move**, so the extraction added no second home for a check that already had one.
+- ⚠️ The deferral trigger was written into ADR-0045 as a falsifiable condition and it **fired on its own terms** — the extraction is not a judgement call re-litigated, it is a recorded predicate coming true. #5576 then closed the one client the spine could not reach (`jsforce` on the Salesforce action path), and corrected the four now-false claims the spine's own files and ADR-0045's amendment had made about it.
+
+**Category:** Three verbatim copies of an abort check and two independent derivations of one host check → four single-concern files with one author each, and a module header whose main content is the scope it refuses.
+
+---
+
+## 109. One staged-write gate — the verify→burn ordering becomes a function no caller can decompose (#5571)
+
+**Date:** 2026-08-31
+**Issue:** #5571
+**PR:** #5577
+**Commit:** 044fd9fb2
+
+**Problem:** The staged-write invariant — stage onto a confirm card → verify token → burn nonce → execute, with the security-critical **no `await` between verification and burn** ordering — **existed nowhere as code**. It was two ~480-line routes with the same nine-rung ladder copied into both, the ordering comment copy-pasted alongside it, two copies of the tool-side staging preamble, three copies of `withRequestId`, and three prefixed re-export vocabularies for one confirm-token concept. A third staged verb would have had to derive the invariant by reading two routes side by side.
+
+**Solution:** `lib/brain/staged-write.ts` holds `StagedVerb`, `resolveStagedActor` (the degradation preamble and the actor re-resolution that makes neither endpoint a trusted fast-path, once), and **`verifyAndBurnStagedConfirm`** — the ordering as ONE function, transport-free. `api/routes/shared-staged-confirm.ts` maps the seam's tagged refusals onto status codes, the same split `shared-correction.ts` already makes. `staged-propose.ts` / `staged-correct.ts` supply only what genuinely differs: claim shape, binding, summary builder, outcome projection, and the authority predicate.
+
+**Impact:**
+- **27 files, +1,639 / −927.** `confirm-token.ts` is untouched as the deep core — the extraction went *around* it, not through it.
+- ⭐ **There is no signature by which a caller can obtain a verified token and burn it later.** That is the whole design: a third staged verb inherits the ordering rather than being trusted to repeat a comment. The general form is that a security-critical sequence guarded by a comment is guarded by nothing, and the fix is to make the wrong sequence unrepresentable — not to document it more loudly.
+- **Refusal *reasons* are domain facts, their *statuses* are transport** — `lib/` holds no status codes, so the seam stays usable by a non-HTTP caller and the ladder has one place to change.
+- **Three alias vocabularies deleted.** `burnRestConfirmNonce`, `_resetRestConfirmNonces` and the three `Mint*Options` / `*TokenRejection` / `*TokenVerification` aliases were re-exports that made **one deliberately-shared nonce store look like several** — a naming that would eventually invite someone to reason about them as separate stores.
+- **`withRequestId` moved to `lib/tools/tool-message.ts`, deliberately not into the gate** — `searchBrain` needs it and stages nothing, so borrowing it from the seam would drag the confirm-token graph into an unrelated caller. A shared helper's home is decided by its widest consumer, not by the module that happened to extract it.
+
+**Category:** A security-critical ordering maintained by a copy-pasted comment across two 480-line routes → one function whose signature makes the unsafe decomposition unrepresentable, with transport mapping split out above it.

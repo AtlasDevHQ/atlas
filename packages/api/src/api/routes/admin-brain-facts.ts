@@ -667,6 +667,9 @@ adminBrainFacts.openapi(listRoute, async (c) => {
       const { limit, offset } = parsePagination(c);
 
       const ctx = yield* reviewerContext(mode, user, orgId, requestId);
+      // Read once into a local: the conditional-spread idiom evaluates its
+      // subject twice, and this one parses the URL (#5522).
+      const searchTerm = url.searchParams.get("q")?.slice(0, MAX_SEARCH_CHARS);
       const page = yield* Effect.tryPromise({
         try: () =>
           loadFactCandidates(getInternalDB(), {
@@ -677,7 +680,7 @@ adminBrainFacts.openapi(listRoute, async (c) => {
             // Bounded like every other input at this seam (`limit`, `offset`,
             // `:id`). It reaches three ILIKE predicates; admin-authenticated,
             // so this is uniformity rather than a live risk.
-            search: url.searchParams.get("q")?.slice(0, MAX_SEARCH_CHARS) ?? undefined,
+            ...(searchTerm !== undefined ? { search: searchTerm } : {}),
             limit: Math.min(limit || DEFAULT_LIMIT, CANDIDATE_PAGE_MAX),
             offset,
             requestId,
@@ -925,9 +928,9 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
             ...(body.reason !== undefined ? { reason: body.reason } : {}),
             // Always a valid Date past the body schema's `.datetime()` gate;
             // the machinery keeps a warn-and-degrade backstop regardless.
-            replacement: body.replacement
-              ? { object: body.replacement.object, validFrom: replacementValidFrom }
-              : undefined,
+            ...(body.replacement
+              ? { replacement: { object: body.replacement.object, validFrom: replacementValidFrom } }
+              : {}),
             requestId,
             // `correctFact` reads this at BOTH of the `supersede` verb's key
             // sites — the guard's slot comparison and the replacement claim it

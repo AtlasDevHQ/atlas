@@ -100,11 +100,15 @@ void mock.module("jsforce", () => ({
 const {
   executeSalesforceCreate,
   createSalesforceRecord,
-  resolveSalesforceCredentials,
-  toSalesforceCredentials,
   canonicalSalesforceObject,
   SALESFORCE_ACTION_OBJECTS,
 } = await import("@atlas/api/lib/tools/actions/salesforce");
+const { resolveCredentialsFor } = await import(
+  "@atlas/api/lib/tools/actions/credentials/resolver"
+);
+const { SALESFORCE_TARGET } = await import(
+  "@atlas/api/lib/tools/actions/credentials/targets"
+);
 
 /** A complete tenant-owned credential set, built directly (never from env). */
 function creds(overrides: Record<string, string | undefined> = {}) {
@@ -458,28 +462,13 @@ describe("executeSalesforceCreate", () => {
     expect(lastOAuth2Config?.loginUrl).toBe("https://tenant.my.salesforce.com");
   });
 
-  it("toSalesforceCredentials rejects a partial set and names only the missing KEYS", () => {
-    try {
-      toSalesforceCredentials({
-        SALESFORCE_ACTION_INSTANCE_URL: "https://tenant.my.salesforce.com",
-        SALESFORCE_ACTION_CLIENT_SECRET: "tenant-consumer-secret",
-      });
-      expect(true).toBe(false); // should not reach here
-    } catch (err) {
-      const message = (err as Error).message;
-      expect(message).toContain("SALESFORCE_ACTION_CLIENT_ID");
-      // Names, never values — the message must not echo a credential.
-      expect(message).not.toContain("tenant-consumer-secret");
-      expect(message).not.toContain("tenant.my.salesforce.com");
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
 // All-or-nothing per rung, for THIS target (ADR-0046)
 // ---------------------------------------------------------------------------
 
-describe("resolveSalesforceCredentials — all-or-nothing per rung", () => {
+describe("resolveCredentialsFor(SALESFORCE_TARGET) — all-or-nothing per rung", () => {
   it("a complete workspace row wins and the operator env is ignored", async () => {
     process.env.SALESFORCE_ACTION_INSTANCE_URL = "https://operator.my.salesforce.com";
     process.env.SALESFORCE_ACTION_CLIENT_ID = "operator-key";
@@ -490,7 +479,7 @@ describe("resolveSalesforceCredentials — all-or-nothing per rung", () => {
       SALESFORCE_ACTION_CLIENT_SECRET: "tenant-consumer-secret",
     });
 
-    const resolved = await resolveSalesforceCredentials({ workspaceId: "ws-1" });
+    const resolved = await resolveCredentialsFor(SALESFORCE_TARGET, { workspaceId: "ws-1" }, { deployMode: "self-hosted" });
 
     expect(resolved.SALESFORCE_ACTION_CLIENT_ID).toBe("tenant-consumer-key");
     expect(resolved.SALESFORCE_ACTION_CLIENT_SECRET).toBe("tenant-consumer-secret");
@@ -512,7 +501,7 @@ describe("resolveSalesforceCredentials — all-or-nothing per rung", () => {
     });
 
     try {
-      await resolveSalesforceCredentials({ workspaceId: "ws-1" });
+      await resolveCredentialsFor(SALESFORCE_TARGET, { workspaceId: "ws-1" }, { deployMode: "self-hosted" });
       expect(true).toBe(false); // should not reach here
     } catch (err) {
       const message = (err as Error).message;
@@ -530,7 +519,9 @@ describe("resolveSalesforceCredentials — all-or-nothing per rung", () => {
       SALESFORCE_ACTION_CLIENT_ID: "tenant-consumer-key",
       SALESFORCE_ACTION_CLIENT_SECRET: "",
     });
-    await expect(resolveSalesforceCredentials({ workspaceId: "ws-1" })).rejects.toThrow(
+    await expect(
+      resolveCredentialsFor(SALESFORCE_TARGET, { workspaceId: "ws-1" }, { deployMode: "self-hosted" }),
+    ).rejects.toThrow(
       /SALESFORCE_ACTION_CLIENT_SECRET/,
     );
   });

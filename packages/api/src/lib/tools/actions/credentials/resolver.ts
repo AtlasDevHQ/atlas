@@ -44,7 +44,11 @@ import { resolveDeployMode } from "@atlas/api/lib/effect/deploy-mode";
 import { createLogger } from "@atlas/api/lib/logger";
 import { readActionCredentials } from "./store";
 import type { ActionCredentialBundle } from "./store";
-import { getActionTarget, type ActionTargetSpec } from "./targets";
+import {
+  getActionTarget,
+  type ActionCredentialsOf,
+  type ActionTargetSpec,
+} from "./targets";
 
 const log = createLogger("actions.credentials.resolver");
 
@@ -267,6 +271,38 @@ export async function resolveActionCredentials(
     target: spec.target,
     reason: "unconfigured",
   });
+}
+
+/**
+ * Resolve a target's credentials for an action execution context, typed by
+ * the target's own spec. THE one place an action module crosses into the
+ * credential seam — each used to carry its own copy of this function plus a
+ * hand-written interface and a narrowing step whose failure arm the
+ * all-or-nothing rule makes unreachable.
+ *
+ * The `as` below is that rule, stated once: {@link resolveActionCredentials}
+ * returns only when every `required: true` field of `spec` is present and
+ * non-empty (`missingRequired` reads the same spec this type derives from),
+ * so the record IS an {@link ActionCredentialsOf} of `spec`. TypeScript
+ * cannot carry a runtime guarantee across a `Record<string, string>`, which
+ * is exactly why this assertion lives here, beside the guarantee, and
+ * nowhere else.
+ */
+export async function resolveCredentialsFor<T extends ActionTargetSpec>(
+  spec: T,
+  ctx: { readonly workspaceId: string | null },
+  overrides?: Partial<Omit<ResolveActionCredentialsOptions, "workspaceId">>,
+): Promise<ActionCredentialsOf<T>> {
+  const resolved = await resolveActionCredentials(spec.target, {
+    workspaceId: ctx.workspaceId,
+    deployMode: overrides?.deployMode ?? resolveActionDeployMode(),
+    ...(overrides?.env ? { env: overrides.env } : {}),
+  });
+  log.info(
+    { workspaceId: ctx.workspaceId, target: spec.target, resolvedFrom: resolved.resolvedFrom },
+    "Resolved action credentials",
+  );
+  return resolved.values as ActionCredentialsOf<T>;
 }
 
 /**

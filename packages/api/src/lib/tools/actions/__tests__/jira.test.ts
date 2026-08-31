@@ -26,7 +26,7 @@ void mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
-const { executeJiraCreate, createJiraTicket, textToADF, toJiraCredentials } = await import(
+const { executeJiraCreate, createJiraTicket, textToADF } = await import(
   "@atlas/api/lib/tools/actions/jira"
 );
 
@@ -342,18 +342,6 @@ describe("executeJiraCreate", () => {
     expect(body.fields.labels).toBeUndefined();
   });
 
-  it("toJiraCredentials rejects a partial set and names only the missing KEYS", () => {
-    try {
-      toJiraCredentials({ JIRA_BASE_URL: "https://test.atlassian.net", JIRA_API_TOKEN: "tok-123" });
-      expect(true).toBe(false); // should not reach here
-    } catch (err) {
-      const message = (err as Error).message;
-      expect(message).toContain("JIRA_EMAIL");
-      // Names, never values — the message must not echo a credential.
-      expect(message).not.toContain("tok-123");
-      expect(message).not.toContain("test.atlassian.net");
-    }
-  });
 
   it("throws when success response is not valid JSON", async () => {
 

@@ -49,13 +49,11 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
-import { buildActionRequest, handleAction, type ActionExecutionContext } from "./handler";
+import { buildActionRequest, handleAction } from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
 import { assertBaseUrlAllowed, hostForLog } from "@atlas/api/lib/openapi/egress-guard";
-import {
-  resolveActionCredentials,
-  resolveActionDeployMode,
-} from "./credentials/resolver";
+import { resolveCredentialsFor } from "./credentials/resolver";
+import { SALESFORCE_TARGET, type ActionCredentialsOf } from "./credentials/targets";
 
 const log = createLogger("action:salesforce");
 
@@ -114,70 +112,12 @@ const SUMMARY_FIELDS = ["Subject", "Name", "LastName", "Company", "Title"] as co
 // ---------------------------------------------------------------------------
 
 /**
- * The credential set `executeSalesforceCreate` needs, keyed by the env-var
- * names declared in the Salesforce {@link ActionTargetSpec}. The resolver
- * guarantees every REQUIRED field is present and non-empty before this is
- * built, which is why the three required values are non-optional here — a
- * missing one is a resolver bug, not a runtime branch this function re-checks.
+ * The credential set the Salesforce action executes with — DERIVED from its
+ * target spec, so the required/optional split has exactly one author (the
+ * registry). Resolution goes through `resolveCredentialsFor(SALESFORCE_TARGET, …)`,
+ * whose all-or-nothing guarantee is what makes every required key present.
  */
-export interface SalesforceCredentials {
-  /** The org's My Domain URL — also the client-credentials token host. */
-  readonly SALESFORCE_ACTION_INSTANCE_URL: string;
-  readonly SALESFORCE_ACTION_CLIENT_ID: string;
-  readonly SALESFORCE_ACTION_CLIENT_SECRET: string;
-  /** Optional in the spec — the agent may name an object per call instead. */
-  readonly SALESFORCE_ACTION_DEFAULT_OBJECT?: string;
-}
-
-/**
- * Narrow a resolved credential map to the Salesforce shape. Throws rather than
- * returning a partial: the resolver's all-or-nothing rule means a set that
- * reaches here is complete, so a gap is corruption between the two.
- */
-export function toSalesforceCredentials(
-  values: Readonly<Record<string, string>>,
-): SalesforceCredentials {
-  const instanceUrl = values.SALESFORCE_ACTION_INSTANCE_URL;
-  const clientId = values.SALESFORCE_ACTION_CLIENT_ID;
-  const clientSecret = values.SALESFORCE_ACTION_CLIENT_SECRET;
-  if (!instanceUrl || !clientId || !clientSecret) {
-    // No values in the message — only the NAMES of what is missing.
-    const missing = [
-      !instanceUrl && "SALESFORCE_ACTION_INSTANCE_URL",
-      !clientId && "SALESFORCE_ACTION_CLIENT_ID",
-      !clientSecret && "SALESFORCE_ACTION_CLIENT_SECRET",
-    ].filter((v): v is string => typeof v === "string");
-    log.error({ missing }, "Resolved Salesforce credentials are incomplete");
-    throw new Error(`Missing Salesforce credentials: ${missing.join(", ")}.`);
-  }
-  return {
-    SALESFORCE_ACTION_INSTANCE_URL: instanceUrl,
-    SALESFORCE_ACTION_CLIENT_ID: clientId,
-    SALESFORCE_ACTION_CLIENT_SECRET: clientSecret,
-    ...(values.SALESFORCE_ACTION_DEFAULT_OBJECT
-      ? { SALESFORCE_ACTION_DEFAULT_OBJECT: values.SALESFORCE_ACTION_DEFAULT_OBJECT }
-      : {}),
-  };
-}
-
-/**
- * Resolve the Salesforce credentials for an action execution context, then
- * narrow them. The single place this action path crosses into the credential
- * seam.
- */
-export async function resolveSalesforceCredentials(
-  ctx: ActionExecutionContext,
-): Promise<SalesforceCredentials> {
-  const resolved = await resolveActionCredentials("salesforce", {
-    workspaceId: ctx.workspaceId,
-    deployMode: resolveActionDeployMode(),
-  });
-  log.info(
-    { workspaceId: ctx.workspaceId, resolvedFrom: resolved.resolvedFrom },
-    "Resolved Salesforce action credentials",
-  );
-  return toSalesforceCredentials(resolved.values);
-}
+export type SalesforceCredentials = ActionCredentialsOf<typeof SALESFORCE_TARGET>;
 
 // ---------------------------------------------------------------------------
 // Raw Salesforce API call
@@ -499,14 +439,10 @@ export const createSalesforceRecord: AtlasAction = {
   actionType: "salesforce:create",
   reversible: true,
   defaultApproval: "manual",
-  // Empty, same as `createJiraTicket` and `sendEmailReport`.
-  // `requiredCredentials` is checked by
-  // `ToolRegistry.validateActionCredentials()` against the GLOBAL
-  // `process.env` — a question with no meaningful answer for a per-workspace
-  // target: on SaaS there is no global rung at all, and on self-hosted the env
-  // rung is one of two, so a workspace that configured Salesforce from Admin
-  // would still be reported "missing credentials". Configuration status is
-  // per-workspace and lives on the Admin surface (`getActionTargetStatus`).
+  // Vestigial (ADR-0046): credentials are per-workspace, so the global-env
+  // question this field used to answer has no subject — status lives on the
+  // Admin surface (`getActionTargetStatus`). Kept because the published
+  // action shape and `isAction` still carry the field.
   requiredCredentials: [],
 
   tool: tool({
@@ -543,7 +479,7 @@ export const createSalesforceRecord: AtlasAction = {
       return handleAction(request, async (payload, ctx) => {
         // Resolved from the ACTION's workspace, not the approver's — a
         // manual-approval action executes inside the approver's request.
-        const credentials = await resolveSalesforceCredentials(ctx);
+        const credentials = await resolveCredentialsFor(SALESFORCE_TARGET, ctx);
         const result = await executeSalesforceCreate(
           payload as unknown as SalesforceCreateParams,
           credentials,

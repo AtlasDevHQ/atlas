@@ -39,12 +39,10 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { AtlasAction } from "@atlas/api/lib/action-types";
-import { buildActionRequest, handleAction, type ActionExecutionContext } from "./handler";
+import { buildActionRequest, handleAction } from "./handler";
 import { createLogger } from "@atlas/api/lib/logger";
-import {
-  resolveActionCredentials,
-  resolveActionDeployMode,
-} from "./credentials/resolver";
+import { resolveCredentialsFor } from "./credentials/resolver";
+import { LINEAR_TARGET, type ActionCredentialsOf } from "./credentials/targets";
 
 const log = createLogger("action:linear");
 
@@ -75,57 +73,12 @@ export interface LinearCreateResult {
 }
 
 /**
- * The credential set `executeLinearCreate` needs, keyed by the env-var names
- * declared in the Linear {@link ActionTargetSpec}. The resolver guarantees
- * every REQUIRED field is present and non-empty before this is built, which is
- * why the API key is non-optional here — a missing one is a resolver bug, not
- * a runtime branch this function re-checks.
+ * The credential set the Linear action executes with — DERIVED from its
+ * target spec, so the required/optional split has exactly one author (the
+ * registry). Resolution goes through `resolveCredentialsFor(LINEAR_TARGET, …)`,
+ * whose all-or-nothing guarantee is what makes every required key present.
  */
-export interface LinearCredentials {
-  readonly LINEAR_API_KEY: string;
-  /** Optional in the spec — the agent may name a team per call instead. */
-  readonly LINEAR_DEFAULT_TEAM_KEY?: string;
-}
-
-/**
- * Narrow a resolved credential map to the Linear shape. Throws rather than
- * returning a partial: the resolver's all-or-nothing rule means a set that
- * reaches here is complete, so a gap is corruption between the two.
- */
-export function toLinearCredentials(
-  values: Readonly<Record<string, string>>,
-): LinearCredentials {
-  const apiKey = values.LINEAR_API_KEY;
-  if (!apiKey) {
-    // No values in the message — only the NAME of what is missing.
-    log.error({ missing: ["LINEAR_API_KEY"] }, "Resolved Linear credentials are incomplete");
-    throw new Error("Missing Linear credentials: LINEAR_API_KEY.");
-  }
-  return {
-    LINEAR_API_KEY: apiKey,
-    ...(values.LINEAR_DEFAULT_TEAM_KEY
-      ? { LINEAR_DEFAULT_TEAM_KEY: values.LINEAR_DEFAULT_TEAM_KEY }
-      : {}),
-  };
-}
-
-/**
- * Resolve the Linear credentials for an action execution context, then narrow
- * them. The single place the action path crosses into the credential seam.
- */
-export async function resolveLinearCredentials(
-  ctx: ActionExecutionContext,
-): Promise<LinearCredentials> {
-  const resolved = await resolveActionCredentials("linear", {
-    workspaceId: ctx.workspaceId,
-    deployMode: resolveActionDeployMode(),
-  });
-  log.info(
-    { workspaceId: ctx.workspaceId, resolvedFrom: resolved.resolvedFrom },
-    "Resolved Linear action credentials",
-  );
-  return toLinearCredentials(resolved.values);
-}
+export type LinearCredentials = ActionCredentialsOf<typeof LINEAR_TARGET>;
 
 // ---------------------------------------------------------------------------
 // Raw Linear API call
@@ -352,14 +305,10 @@ export const createLinearTicket: AtlasAction = {
   actionType: "linear:create",
   reversible: true,
   defaultApproval: "manual",
-  // Empty, same as `createJiraTicket` and `sendEmailReport`.
-  // `requiredCredentials` is checked by `ToolRegistry.validateActionCredentials()`
-  // against the GLOBAL `process.env` — a question with no meaningful answer for
-  // a per-workspace target: on SaaS there is no global rung at all, and on
-  // self-hosted the env rung is one of two, so a workspace that configured
-  // Linear from Admin would still be reported "missing credentials".
-  // Configuration status is per-workspace and lives on the Admin surface
-  // (`getActionTargetStatus`), not in a process-wide startup warning.
+  // Vestigial (ADR-0046): credentials are per-workspace, so the global-env
+  // question this field used to answer has no subject — status lives on the
+  // Admin surface (`getActionTargetStatus`). Kept because the published
+  // action shape and `isAction` still carry the field.
   requiredCredentials: [],
 
   tool: tool({
@@ -412,7 +361,7 @@ export const createLinearTicket: AtlasAction = {
       return handleAction(request, async (payload, ctx) => {
         // Resolved from the ACTION's workspace, not the approver's — a
         // manual-approval action executes inside the approver's request.
-        const credentials = await resolveLinearCredentials(ctx);
+        const credentials = await resolveCredentialsFor(LINEAR_TARGET, ctx);
         const result = await executeLinearCreate(
           payload as unknown as LinearCreateParams,
           credentials,

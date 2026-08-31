@@ -57,55 +57,33 @@ describe("ToolRegistry — getActions", () => {
   });
 });
 
-describe("ToolRegistry — validateActionCredentials", () => {
-  const origTestApiKey = process.env.TEST_API_KEY;
-  const origTestSecret = process.env.TEST_SECRET;
-  const origMissingKeyA = process.env.MISSING_KEY_A;
-  const origMissingKeyB = process.env.MISSING_KEY_B;
-  const origPresentKey = process.env.PRESENT_KEY;
-
-  afterEach(() => {
-    if (origTestApiKey !== undefined) process.env.TEST_API_KEY = origTestApiKey; else delete process.env.TEST_API_KEY;
-    if (origTestSecret !== undefined) process.env.TEST_SECRET = origTestSecret; else delete process.env.TEST_SECRET;
-    if (origMissingKeyA !== undefined) process.env.MISSING_KEY_A = origMissingKeyA; else delete process.env.MISSING_KEY_A;
-    if (origMissingKeyB !== undefined) process.env.MISSING_KEY_B = origMissingKeyB; else delete process.env.MISSING_KEY_B;
-    if (origPresentKey !== undefined) process.env.PRESENT_KEY = origPresentKey; else delete process.env.PRESENT_KEY;
+describe("the action-tool name contract (manifest ↔ barrel ↔ warning copy)", () => {
+  // `validateActionCredentials` lived here until ADR-0046's cleanup pass —
+  // three fixture tests for a validator whose every live subject declares
+  // `requiredCredentials: []`. What replaced it is the drift these suites
+  // actually need to catch: the warning copy is built from the
+  // dependency-free manifest (readable when the action modules fail to
+  // load), and registration iterates the barrel's ACTION_TOOLS — so the two
+  // lists agreeing IS the contract, and target #6 has to be named in both
+  // before it ships.
+  it("ACTION_TOOLS registers exactly the names the manifest promises, in order", async () => {
+    const { ACTION_TOOLS, ACTION_TOOL_NAMES } = await import("@atlas/api/lib/tools/actions");
+    expect(ACTION_TOOLS.map((a) => a.name)).toEqual([...ACTION_TOOL_NAMES]);
   });
 
-  it("returns empty array when no actions", () => {
-    const registry = new ToolRegistry();
-    expect(registry.validateActionCredentials()).toEqual([]);
+  it("the unavailable-warning names every manifest tool, verbatim", async () => {
+    const { ACTION_TOOLS_UNAVAILABLE_WARNING } = await import("@atlas/api/lib/tools/registry");
+    const { ACTION_TOOL_NAMES } = await import("@atlas/api/lib/tools/actions/manifest");
+    for (const name of ACTION_TOOL_NAMES) {
+      expect(ACTION_TOOLS_UNAVAILABLE_WARNING).toContain(name);
+    }
   });
 
-  it("returns empty array when all credentials present", () => {
-    process.env.TEST_API_KEY = "key-123";
-    process.env.TEST_SECRET = "secret-456";
-
-    const registry = new ToolRegistry();
-    registry.register(
-      makeAction("myAction", { requiredCredentials: ["TEST_API_KEY", "TEST_SECRET"] }),
-    );
-
-    expect(registry.validateActionCredentials()).toEqual([]);
-  });
-
-  it("returns missing credentials for each action", () => {
-    delete process.env.MISSING_KEY_A;
-    delete process.env.MISSING_KEY_B;
-    process.env.PRESENT_KEY = "exists";
-
-    const registry = new ToolRegistry();
-    registry.register(
-      makeAction("actionA", { requiredCredentials: ["MISSING_KEY_A", "PRESENT_KEY"] }),
-    );
-    registry.register(
-      makeAction("actionB", { requiredCredentials: ["MISSING_KEY_B"] }),
-    );
-
-    const result = registry.validateActionCredentials();
-    expect(result).toHaveLength(2);
-    expect(result[0]).toEqual({ action: "actionA", missing: ["MISSING_KEY_A"] });
-    expect(result[1]).toEqual({ action: "actionB", missing: ["MISSING_KEY_B"] });
+  it("every operator action declares requiredCredentials: [] (per-workspace targets, ADR-0046)", async () => {
+    const { ACTION_TOOLS } = await import("@atlas/api/lib/tools/actions");
+    for (const action of ACTION_TOOLS) {
+      expect(action.requiredCredentials).toEqual([]);
+    }
   });
 });
 

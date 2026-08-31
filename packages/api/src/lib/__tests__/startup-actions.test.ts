@@ -53,19 +53,12 @@ void mock.module("@atlas/api/lib/auth/migrate", () => ({
   getMigrationError: () => null,
 }));
 
-// Mock the tool registry so we can control validateActionCredentials()
-let mockValidateActionCredentials: () => { action: string; missing: string[] }[] = () => [];
-
+// Mock the tool registry: startup's action diagnostics no longer consult it
+// (validateActionCredentials is gone, ADR-0046 cleanup), but other startup
+// paths may still import the module — keep an inert stand-in.
 void mock.module("@atlas/api/lib/tools/registry", () => ({
-  defaultRegistry: {
-    validateActionCredentials: () => mockValidateActionCredentials(),
-  },
-  buildRegistry: async () => ({
-    registry: {
-      validateActionCredentials: () => mockValidateActionCredentials(),
-    },
-    warnings: [],
-  }),
+  defaultRegistry: {},
+  buildRegistry: async () => ({ registry: {}, warnings: [] }),
 }));
 
 // Mock the config module so we can control getConfig()
@@ -132,7 +125,6 @@ beforeEach(() => {
   process.env.ATLAS_PROVIDER = "ollama"; // No API key required
 
   // Reset mock defaults
-  mockValidateActionCredentials = () => [];
   mockConfig = null;
 });
 
@@ -260,105 +252,12 @@ describe("action diagnostics — auth satisfied", () => {
 // ATLAS_ACTIONS_ENABLED=true — missing credentials for registered actions
 // ---------------------------------------------------------------------------
 
-describe("action diagnostics — missing credentials", () => {
-  beforeEach(() => {
-    process.env.ATLAS_ACTIONS_ENABLED = "true";
-    process.env.ATLAS_API_KEY = "test-key-123"; // satisfy auth requirement
-  });
-
-  it("reports missing credentials as startup warnings when registry reports missing creds", async () => {
-    mockValidateActionCredentials = () => [
-      { action: "email:send", missing: ["SMTP_HOST", "SMTP_USER"] },
-    ];
-
-    await validateEnvironment();
-    const warnings = getStartupWarnings();
-    const credWarnings = warnings.filter((w) => w.includes("missing credentials"));
-    expect(credWarnings).toHaveLength(1);
-    expect(credWarnings[0]).toContain("email:send");
-    expect(credWarnings[0]).toContain("SMTP_HOST");
-    expect(credWarnings[0]).toContain("SMTP_USER");
-  });
-
-  it("reports multiple missing credentials as startup warnings for multiple actions", async () => {
-    mockValidateActionCredentials = () => [
-      { action: "email:send", missing: ["SMTP_HOST"] },
-      { action: "salesforce:update", missing: ["SF_TOKEN"] },
-    ];
-
-    await validateEnvironment();
-    const warnings = getStartupWarnings();
-    const credWarnings = warnings.filter((w) => w.includes("missing credentials"));
-    expect(credWarnings).toHaveLength(2);
-    expect(credWarnings[0]).toContain("email:send");
-    expect(credWarnings[1]).toContain("salesforce:update");
-  });
-
-  it("no credential warnings when all credentials are present", async () => {
-    mockValidateActionCredentials = () => [];
-
-    await validateEnvironment();
-    const warnings = getStartupWarnings();
-    const credWarnings = warnings.filter((w) => w.includes("missing credentials"));
-    expect(credWarnings).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// #3905 — global action-credential check is deploy-mode-gated.
-// Per the #3766 config model, action targets are per-workspace-only on SaaS —
-// there is no platform/global default env credential. Warning on a missing
-// *global* JIRA_* on SaaS reported a credential model SaaS doesn't use and
-// surfaced as a spurious /api/health warning. Self-host is unchanged.
-// ---------------------------------------------------------------------------
-
-describe("action diagnostics — deploy-mode gate (#3905)", () => {
-  beforeEach(() => {
-    process.env.ATLAS_ACTIONS_ENABLED = "true";
-    process.env.ATLAS_API_KEY = "test-key-123"; // satisfy auth requirement
-    mockValidateActionCredentials = () => [
-      { action: "createJiraTicket", missing: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"] },
-    ];
-  });
-
-  it("suppresses missing global action-credential warnings on SaaS", async () => {
-    mockConfig = { deployMode: "saas" };
-
-    await validateEnvironment();
-    const warnings = getStartupWarnings();
-    expect(warnings.filter((w) => w.includes("missing credentials"))).toHaveLength(0);
-    // The skip is narrow: unrelated, non-action startup warnings still fire on
-    // SaaS (proves we suppressed only the global action-cred check — DATABASE_URL
-    // is unset in this suite's beforeEach, so its warning must still appear).
-    expect(
-      warnings.some((w) => w.includes("Action framework requires DATABASE_URL")),
-    ).toBe(true);
-  });
-
-  it("still warns on self-hosted when a registered action lacks its global creds", async () => {
-    mockConfig = { deployMode: "self-hosted" };
-
-    await validateEnvironment();
-    const warnings = getStartupWarnings();
-    const credWarnings = warnings.filter((w) => w.includes("missing credentials"));
-    expect(credWarnings).toHaveLength(1);
-    expect(credWarnings[0]).toContain("createJiraTicket");
-    expect(credWarnings[0]).toContain("JIRA_BASE_URL");
-  });
-
-  it("validates (warns) when the resolved config has no deploy mode set", async () => {
-    // checkConfigFile() runs loadConfig() before checkActionFramework(), so by
-    // the gate getConfig() returns a resolved config (the mock's loadConfig
-    // sets `{ source: "env" }`, deployMode unset). A config without a deployMode
-    // (`undefined !== "saas"`) must fail open to validating — the self-host
-    // default — never silently suppress a real self-host misconfiguration.
-    mockConfig = { source: "env" };
-
-    await validateEnvironment();
-    const warnings = getStartupWarnings();
-    expect(warnings.filter((w) => w.includes("missing credentials"))).toHaveLength(1);
-  });
-});
+// The "missing credentials" and "#3905 deploy-mode gate" describes lived here
+// until ADR-0046's cleanup pass: they scripted validateActionCredentials(),
+// the process-wide env diagnostic whose every live subject now declares
+// `requiredCredentials: []`. The validator and its startup block are deleted
+// — per-workspace configuration status is `getActionTargetStatus`'s job,
+// covered in credentials/__tests__/resolver.test.ts.
 
 // ---------------------------------------------------------------------------
 // ATLAS_ACTIONS_ENABLED=true without DATABASE_URL — persistent tracking warning
@@ -542,15 +441,4 @@ describe("action diagnostics — edge cases", () => {
     ).toBe(false);
   });
 
-  it("no credential check when actions are disabled even if registry would fail", async () => {
-    delete process.env.ATLAS_ACTIONS_ENABLED;
-    mockValidateActionCredentials = () => [
-      { action: "email:send", missing: ["SMTP_HOST"] },
-    ];
-
-    const errors = await validateEnvironment();
-    expect(
-      actionErrors(errors).some((e) => e.code === "ACTIONS_MISSING_CREDENTIALS"),
-    ).toBe(false);
-  });
 });

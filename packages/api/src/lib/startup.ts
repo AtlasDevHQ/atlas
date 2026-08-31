@@ -720,51 +720,14 @@ async function checkActionFramework(errors: DiagnosticError[], authMode: string)
     });
   }
 
-  // Check required credentials for registered actions (warnings only —
-  // missing optional action credentials should not block chat queries).
-  //
-  // SaaS skips this check: per the #3766 config model, action targets
-  // (Jira, Linear, GitHub, Salesforce, …) are per-workspace-only on SaaS —
-  // there is no platform/global default env credential.
-  // `validateActionCredentials()` checks each *registered* action's required
-  // keys against the global env, so on SaaS it would report those globals
-  // (e.g. a registered Jira action's JIRA_*) missing and surface them as
-  // spurious /api/health warnings for a credential model SaaS isn't supposed
-  // to use (#3905). Read the *resolved* deploy mode (not raw env): a `saas`
-  // request that downgraded to self-hosted because enterprise wasn't enabled
-  // resolves to `self-hosted` here and is still validated. Core/platform
-  // globals (AI gateway, sandbox) are unaffected — they aren't action
-  // credentials. Self-host behavior is unchanged.
-  //
-  // #3766 landed the per-workspace seam, and with it the action targets
-  // migrated to it declare `requiredCredentials: []` — their configuration is
-  // per-workspace and is reported by `getActionTargetStatus`, not by this
-  // process-wide env check. So this block is now a diagnostic for whatever
-  // env-only actions remain, and it stays deploy-mode-gated for them.
-  try {
-    const { getConfig } = await import("@atlas/api/lib/config");
-    if (getConfig()?.deployMode !== "saas") {
-      const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
-      const { registry: actionRegistry } = await buildRegistry({ includeActions: true });
-      const missingCreds = actionRegistry.validateActionCredentials();
-      for (const { action, missing } of missingCreds) {
-        const msg = `Action "${action}" missing credentials: ${missing.join(", ")}`;
-        if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
-        log.warn(msg);
-      }
-    }
-  } catch (err) {
-    // #4940 — this catch used to be one of five that made `buildRegistry`'s
-    // "fatal misconfiguration" throws non-fatal in practice. The Python-without-
-    // sandbox case no longer reaches it on a guarded boot (`PythonSandboxGuardLive`
-    // fails the boot Layer first), so what lands here is a genuinely unexpected
-    // registry failure — and warning rather than aborting startup is right for a
-    // credential DIAGNOSTIC, which is all this block is.
-    log.warn(
-      { err: errorMessage(err) },
-      "Could not validate action credentials at startup",
-    );
-  }
+  // Until ADR-0046's cleanup pass, a block here ran
+  // `ToolRegistry.validateActionCredentials()` — each registered action's
+  // `requiredCredentials` against the global `process.env`, deploy-mode-gated
+  // per #3905. Every action in the repo now declares that list empty (action
+  // targets are per-workspace; status lives on the Admin surface via
+  // `getActionTargetStatus`), so the check had zero live subjects and was
+  // deleted along with the validator. An env-only action would have to argue
+  // its way past ADR-0046 before this diagnostic could mean anything again.
 
   // Warn if no internal DB for persistent tracking
   if (!process.env.DATABASE_URL) {

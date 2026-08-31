@@ -1,5 +1,6 @@
 import type { ToolSet } from "ai";
 import { type AtlasAction, isAction } from "@atlas/api/lib/action-types";
+import { ACTION_TOOL_NAMES } from "./actions/manifest";
 import { explore } from "./explore";
 import { executeSQL } from "./sql";
 import {
@@ -42,7 +43,17 @@ export class ToolRegistry {
   private tools = new Map<string, AtlasTool>();
   private frozen = false;
 
-  register(entry: AtlasTool): void {
+  /**
+   * Register a tool or an action. `AtlasAction` is accepted natively — its
+   * `tool: unknown` exists only because `action-types.ts` cannot import
+   * `ToolSet`, and every call site used to paper over that with its own
+   * `as unknown as AtlasTool` cast (six of them, across two files). The one
+   * assertion now lives here, where the structural claim it makes ("an
+   * action's `tool` is an AI-SDK tool") is this class's own contract:
+   * `getAll()` hands the stored value to the SDK, and `getActions()` reads
+   * the action metadata straight back off the stored entry.
+   */
+  register(entry: AtlasTool | AtlasAction): void {
     if (this.frozen) {
       throw new Error("Cannot register tools on a frozen registry");
     }
@@ -52,7 +63,7 @@ export class ToolRegistry {
     if (!entry.description.trim()) {
       throw new Error("Tool description must not be empty");
     }
-    this.tools.set(entry.name, entry);
+    this.tools.set(entry.name, entry as AtlasTool);
   }
 
   /** Freeze the registry, preventing further registrations. */
@@ -144,23 +155,14 @@ export class ToolRegistry {
     return Array.from(this.tools.values()).filter(isAction) as AtlasAction[];
   }
 
-  /**
-   * Check that all required credentials for registered actions are present
-   * in the environment. Returns an array of `{ action, missing }` for each
-   * action with missing credentials (empty array means all good).
-   */
-  validateActionCredentials(): { action: string; missing: string[] }[] {
-    const results: { action: string; missing: string[] }[] = [];
-    for (const action of this.getActions()) {
-      const missing = action.requiredCredentials.filter(
-        (key) => !process.env[key],
-      );
-      if (missing.length > 0) {
-        results.push({ action: action.name, missing });
-      }
-    }
-    return results;
-  }
+  // `validateActionCredentials()` lived here until ADR-0046's cleanup pass:
+  // it checked each action's `requiredCredentials` against the GLOBAL
+  // `process.env`, and every action in the repo now declares that list empty
+  // — action-target credentials are per-workspace, reported by
+  // `getActionTargetStatus` on the Admin surface. A validator with zero live
+  // subjects was dead interface surface, so it is gone rather than kept
+  // "just in case"; a future env-only action would need a recorded reason to
+  // exist at all under ADR-0046.
 }
 
 // --- Workflow descriptions ---
@@ -582,20 +584,29 @@ const NEVER_DISOWN_A_VISIBLE_TOOL =
   "unavailable and suggest they retry or contact their Atlas administrator.";
 
 /**
- * The warning for "the operator action tools did not load", authored by
- * {@link buildRegistry} and relayed by every surface that requested them.
+ * The operator action tools, named for warning copy. DERIVED from
+ * `actions/manifest.ts` — the dependency-free name list that stays readable
+ * when importing the action modules themselves has failed, which is exactly
+ * when these warnings fire. Until the manifest existed this parenthetical was
+ * hand-typed in three places (two warning constants and a log line), which is
+ * three ways for the copy to drift from what actually registers.
  *
- * Names each tool by its registry name rather than "JIRA, GitHub, Linear,
- * Salesforce and email": `sendEmailReport` is gone, the core `sendEmail` is
+ * Registry names rather than "JIRA, GitHub, Linear, Salesforce and email"
+ * on purpose: `sendEmailReport` may be gone while the core `sendEmail` is
  * not, and the model has to be able to tell them apart. Same for
  * `createLinearTicket` (#5554) against the core `createLinearIssue`, and
  * `createSalesforceRecord` (#5556) against the core `querySalesforce` — both
  * of those SURVIVE this failure, so naming the category would disown a tool
  * still in the list.
  */
+const ACTION_TOOL_NAME_LIST = ACTION_TOOL_NAMES.join(", ");
+
+/**
+ * The warning for "the operator action tools did not load", authored by
+ * {@link buildRegistry} and relayed by every surface that requested them.
+ */
 export const ACTION_TOOLS_UNAVAILABLE_WARNING =
-  "The operator action tools (createJiraTicket, createGitHubIssue, createLinearTicket, " +
-  "sendEmailReport, createSalesforceRecord) failed to load and are unavailable for this " +
+  `The operator action tools (${ACTION_TOOL_NAME_LIST}) failed to load and are unavailable for this ` +
   "session. " +
   NEVER_DISOWN_A_VISIBLE_TOOL;
 
@@ -615,9 +626,7 @@ export const ACTION_TOOLS_UNAVAILABLE_WARNING =
 export function registryBuildFailedWarning(): string {
   const lost: string[] = [];
   if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
-    lost.push(
-      "the operator action tools (createJiraTicket, createGitHubIssue, createLinearTicket, sendEmailReport, createSalesforceRecord)",
-    );
+    lost.push(`the operator action tools (${ACTION_TOOL_NAME_LIST})`);
   }
   if (isPythonToolRequested()) {
     lost.push("Python execution (executePython)");
@@ -721,24 +730,16 @@ export async function buildRegistry(options?: {
 
   if (options?.includeActions) {
     try {
-      const {
-        createJiraTicket,
-        createGitHubIssue,
-        createLinearTicket,
-        sendEmailReport,
-        createSalesforceRecord,
-      } = await import("./actions");
-      registry.register(createJiraTicket as unknown as AtlasTool);
-      registry.register(createGitHubIssue as unknown as AtlasTool);
-      registry.register(createLinearTicket as unknown as AtlasTool);
-      registry.register(sendEmailReport as unknown as AtlasTool);
-      registry.register(createSalesforceRecord as unknown as AtlasTool);
+      const { ACTION_TOOLS } = await import("./actions");
+      for (const action of ACTION_TOOLS) {
+        registry.register(action);
+      }
     } catch (err) {
       const { createLogger } = await import("@atlas/api/lib/logger");
       const actionLog = createLogger("registry");
       actionLog.error(
         { err: err instanceof Error ? err : new Error(String(err)) },
-        "Failed to load action tools — JIRA, GitHub, Linear, email and Salesforce actions will be unavailable",
+        `Failed to load action tools — ${ACTION_TOOL_NAME_LIST} will be unavailable`,
       );
       warnings.push(ACTION_TOOLS_UNAVAILABLE_WARNING);
     }

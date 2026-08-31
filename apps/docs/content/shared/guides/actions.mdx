@@ -14,8 +14,9 @@ The action framework lets the Atlas agent perform write operations -- sending em
 - For email actions: `RESEND_API_KEY`
 - For JIRA actions: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`
 - For GitHub actions: `GITHUB_ACTION_APP_ID`, `GITHUB_ACTION_INSTALLATION_ID`, `GITHUB_ACTION_PRIVATE_KEY`
+- For Linear actions: `LINEAR_API_KEY`
 
-Credentials for JIRA and GitHub can also be set per workspace under **Admin > Action Credentials**, which takes precedence over these variables.
+Credentials for JIRA, GitHub and Linear can also be set per workspace under **Admin > Action Credentials**, which takes precedence over these variables.
 </Callout>
 </WhenSelfHosted>
 
@@ -282,11 +283,36 @@ Issues only: Atlas does not open pull requests. A PR needs a branch and commits,
   These environment variables are the **self-hosted** fallback only, and they are deliberately not the `GITHUB_APP_*` variables used elsewhere for Atlas's own GitHub App. Credentials are configured per workspace under **Admin > Action Credentials**; see [Per-workspace action credentials](#per-workspace-action-credentials).
 </Callout>
 
+### Linear (`linear:create`)
+
+Create Linear issues from data insights, gated on approval.
+
+Distinct from the `createLinearIssue` agent tool, which posts immediately through the workspace's Linear **integration** install (**Admin > Integrations**). This action uses the workspace's Linear **action credentials** and goes through the approval queue; the two hold separate credentials and neither reads the other's.
+
+**Default approval:** `manual`
+
+**Required credentials:**
+- `LINEAR_API_KEY` -- Linear personal API key (Linear > Settings > Security & access > Personal API keys)
+
+**Optional:**
+- `LINEAR_DEFAULT_TEAM_KEY` -- Default team key when not specified
+
+**Input:**
+- `title` -- Issue title (max 255 chars)
+- `description` -- Issue description (markdown)
+- `teamKey` -- Team key such as `ENG` (optional, falls back to `LINEAR_DEFAULT_TEAM_KEY`)
+- `priority` -- `0`=none, `1`=urgent, `2`=high, `3`=medium, `4`=low (optional)
+- `labelIds` -- Optional Linear label ids
+
+A named team that does not resolve is an **error**, not a fallback: the approver read a card naming that team, so filing elsewhere would not be the action they approved.
+
+This action is **reversible** -- on rollback, Atlas records the created issue for archival (best-effort; the rollback handler is not wired yet, the same standing as JIRA's transition).
+
 ---
 
 ## Per-workspace action credentials
 
-Action targets — JIRA and GitHub today — resolve their credentials **per workspace**, from an encrypted row a workspace admin sets under **Admin > Action Credentials** (`PUT /api/v1/admin/action-credentials/{target}`).
+Action targets — JIRA, GitHub and Linear today — resolve their credentials **per workspace**, from an encrypted row a workspace admin sets under **Admin > Action Credentials** (`PUT /api/v1/admin/action-credentials/{target}`).
 
 The ladder is short, and what is missing from it is deliberate:
 

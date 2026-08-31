@@ -208,6 +208,11 @@ mock.module("@atlas/api/lib/tools/actions", () => ({
     actionType: "jira:create", reversible: true, defaultApproval: "manual",
     requiredCredentials: ["JIRA_BASE_URL"],
   },
+  createLinearTicket: {
+    name: "createLinearTicket", description: "Mock", tool: { type: "function" },
+    actionType: "linear:create", reversible: true, defaultApproval: "manual",
+    requiredCredentials: [],
+  },
   sendEmailReport: {
     name: "sendEmailReport", description: "Mock", tool: { type: "function" },
     actionType: "email:send", reversible: false, defaultApproval: "admin-only",

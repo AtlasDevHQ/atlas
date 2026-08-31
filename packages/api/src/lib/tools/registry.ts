@@ -585,14 +585,18 @@ const NEVER_DISOWN_A_VISIBLE_TOOL =
  * The warning for "the operator action tools did not load", authored by
  * {@link buildRegistry} and relayed by every surface that requested them.
  *
- * Names each tool by its registry name rather than "JIRA, GitHub, Salesforce
- * and email": `sendEmailReport` is gone, the core `sendEmail` is not, and the
- * model has to be able to tell them apart. `createSalesforceRecord` is the
- * same trap one integration over — `querySalesforce` stays live.
+ * Names each tool by its registry name rather than "JIRA, GitHub, Linear,
+ * Salesforce and email": `sendEmailReport` is gone, the core `sendEmail` is
+ * not, and the model has to be able to tell them apart. Same for
+ * `createLinearTicket` (#5554) against the core `createLinearIssue`, and
+ * `createSalesforceRecord` (#5556) against the core `querySalesforce` — both
+ * of those SURVIVE this failure, so naming the category would disown a tool
+ * still in the list.
  */
 export const ACTION_TOOLS_UNAVAILABLE_WARNING =
-  "The operator action tools (createJiraTicket, createGitHubIssue, sendEmailReport, " +
-  "createSalesforceRecord) failed to load and are unavailable for this session. " +
+  "The operator action tools (createJiraTicket, createGitHubIssue, createLinearTicket, " +
+  "sendEmailReport, createSalesforceRecord) failed to load and are unavailable for this " +
+  "session. " +
   NEVER_DISOWN_A_VISIBLE_TOOL;
 
 /**
@@ -612,7 +616,7 @@ export function registryBuildFailedWarning(): string {
   const lost: string[] = [];
   if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
     lost.push(
-      "the operator action tools (createJiraTicket, createGitHubIssue, sendEmailReport, createSalesforceRecord)",
+      "the operator action tools (createJiraTicket, createGitHubIssue, createLinearTicket, sendEmailReport, createSalesforceRecord)",
     );
   }
   if (isPythonToolRequested()) {
@@ -717,10 +721,16 @@ export async function buildRegistry(options?: {
 
   if (options?.includeActions) {
     try {
-      const { createJiraTicket, createGitHubIssue, sendEmailReport, createSalesforceRecord } =
-        await import("./actions");
+      const {
+        createJiraTicket,
+        createGitHubIssue,
+        createLinearTicket,
+        sendEmailReport,
+        createSalesforceRecord,
+      } = await import("./actions");
       registry.register(createJiraTicket as unknown as AtlasTool);
       registry.register(createGitHubIssue as unknown as AtlasTool);
+      registry.register(createLinearTicket as unknown as AtlasTool);
       registry.register(sendEmailReport as unknown as AtlasTool);
       registry.register(createSalesforceRecord as unknown as AtlasTool);
     } catch (err) {
@@ -728,7 +738,7 @@ export async function buildRegistry(options?: {
       const actionLog = createLogger("registry");
       actionLog.error(
         { err: err instanceof Error ? err : new Error(String(err)) },
-        "Failed to load action tools — JIRA, GitHub, email and Salesforce actions will be unavailable",
+        "Failed to load action tools — JIRA, GitHub, Linear, email and Salesforce actions will be unavailable",
       );
       warnings.push(ACTION_TOOLS_UNAVAILABLE_WARNING);
     }

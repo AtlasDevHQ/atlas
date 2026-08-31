@@ -339,7 +339,11 @@ describe("source cleanup — refused alias edges (#5112)", () => {
     // UNKNOWN and "nothing was refused" are different sentences, and only one of
     // them this column can make for a pre-0204 row. Coercing to `0` would have the
     // audit trail assert that an old migration lost nothing, which it cannot know.
-    eligible({ edges: { refused: undefined } });
+    // `{}`, not `{ refused: undefined }`: `refused` is an exact optional, so
+    // "the count column is ABSENT" — which is exactly what this pre-0204 row is
+    // — has to be an omitted key. `eligible`'s `put` reads `s.refused` as
+    // `undefined` either way, so the row it builds is unchanged (#5522).
+    eligible({ edges: {} });
     await run();
 
     const audit = auditEvent();

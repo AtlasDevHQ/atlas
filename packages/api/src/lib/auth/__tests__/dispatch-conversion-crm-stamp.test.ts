@@ -382,10 +382,10 @@ describe("planConversionStamp — onSubscriptionUpdate trigger", () => {
     type: "customer.subscription.updated",
     data: {
       ...(previous === undefined ? {} : { previous_attributes: { status: previous } }),
-      // `status` is a required `string | null` on the object arm — a test that
-      // wants "no status" passes `null`, so normalise `undefined` here rather
-      // than widening the event shape (#5522).
-      object: { status: current ?? null },
+      // `status` is an exact optional on the object arm (`status?: string | null`),
+      // so "Stripe sent no status" is an omitted key — the same shape the
+      // `previous_attributes` spread above builds (#5522).
+      ...(current !== undefined ? { object: { status: current } } : { object: {} }),
     },
   });
 

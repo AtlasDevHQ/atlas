@@ -50,7 +50,14 @@ void mock.module("@atlas/api/lib/github/installation-token", () => ({
     installationId: string,
     deps: { appId?: string; privateKey?: string },
   ) => {
-    mintCalls.push({ installationId, appId: deps?.appId, privateKey: deps?.privateKey });
+    mintCalls.push({
+      installationId,
+      // Spread on presence: both are exact optionals on the capture, and a call
+      // that supplied neither must record their absence, not an `undefined`
+      // (#5522).
+      ...(deps?.appId !== undefined ? { appId: deps.appId } : {}),
+      ...(deps?.privateKey !== undefined ? { privateKey: deps.privateKey } : {}),
+    });
     return mintImpl();
   },
 }));

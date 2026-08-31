@@ -604,7 +604,22 @@ authed.openapi(listAllRunsRoute, async (c) => {
     const dateFrom = dateFromParam && ISO_DATE_RE.test(dateFromParam) ? dateFromParam : undefined;
     const dateTo = dateToParam && ISO_DATE_RE.test(dateToParam) ? dateToParam : undefined;
 
-    const runs = yield* Effect.promise(() => listAllRuns({ ...(orgId !== undefined ? { orgId } : {}), ...(taskId !== undefined ? { taskId } : {}), ...(status !== undefined ? { status } : {}), ...(dateFrom !== undefined ? { dateFrom } : {}), ...(dateTo !== undefined ? { dateTo } : {}), limit, offset }));
+    // Each filter is spread only when it survived validation: the query options
+    // declare them as exact optionals, so an invalid or absent filter is an
+    // omitted key rather than one holding `undefined`. `listAllRuns` guards each
+    // with `!== undefined` before adding its WHERE clause, so the SQL is
+    // unchanged either way (#5522).
+    const runs = yield* Effect.promise(() =>
+      listAllRuns({
+        ...(orgId !== undefined ? { orgId } : {}),
+        ...(taskId !== undefined ? { taskId } : {}),
+        ...(status !== undefined ? { status } : {}),
+        ...(dateFrom !== undefined ? { dateFrom } : {}),
+        ...(dateTo !== undefined ? { dateTo } : {}),
+        limit,
+        offset,
+      }),
+    );
     return c.json(runs, 200);
   }), { label: "list all runs" });
 });

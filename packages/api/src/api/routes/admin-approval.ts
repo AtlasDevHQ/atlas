@@ -20,6 +20,7 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { APPROVAL_STATUSES, APPROVAL_RULE_ORIGINS } from "@useatlas/types";
 import type { CreateApprovalRuleRequest } from "@useatlas/types";
+import type { WithLooseOptionals } from "@useatlas/schemas";
 import { ApprovalRuleSchema, ApprovalRequestSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { resolveApprovalPark } from "@atlas/api/lib/durable-resume";
@@ -379,7 +380,7 @@ adminApproval.openapi(createRuleRoute, async (c) => {
     // Annotated rather than inferred: the two arms disagree on `pattern`, so an
     // inferred union gives the cost arm `pattern?: never`, which no longer
     // matches the request type's `pattern?: "" | undefined` (#5522).
-    const input: CreateApprovalRuleRequest = body.ruleType === "cost"
+    const input: WithLooseOptionals<CreateApprovalRuleRequest> = body.ruleType === "cost"
       ? { ruleType: "cost" as const, name: body.name, threshold: body.threshold, enabled: body.enabled, origin: body.origin }
       : { ruleType: body.ruleType, name: body.name, pattern: body.pattern, enabled: body.enabled, origin: body.origin };
 

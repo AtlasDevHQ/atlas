@@ -30,19 +30,6 @@ import type {
 } from "@useatlas/types";
 import type { Adapter } from "chat";
 
-/**
- * `Adapter`, with the one field the vendor's own adapter classes contradict.
- *
- * `chat`'s `Adapter` declares `botUserId?: string` (an exact optional), while
- * every `@chat-adapter/*` class exposes it as `get botUserId(): string |
- * undefined`. Under `exactOptionalPropertyTypes` those stop being compatible,
- * so a concrete adapter no longer satisfies the interface it implements — a
- * contradiction inside the dependency, not in this repo. Loosening the one
- * field here keeps the builders typed against the real classes instead of
- * dropping to `unknown`; drop this alias when `chat` ships types that agree
- * with themselves (#5522).
- */
-export type VendorAdapter = Omit<Adapter, "botUserId"> & { readonly botUserId?: string | undefined };
 import { createSlackAdapter } from "./adapters/slack";
 import { createTelegramAdapter } from "./adapters/telegram";
 import { createDiscordAdapter } from "./adapters/discord";
@@ -57,6 +44,22 @@ import type {
   TelegramAdapterConfig,
   WhatsAppAdapterConfig,
 } from "./config";
+
+/**
+ * `Adapter`, with the one field the vendor's own adapter classes contradict.
+ *
+ * `chat` declares `Adapter.botUserId?: string` (an exact optional), while the
+ * `@chat-adapter/*` classes that expose the field at all expose it as
+ * `get botUserId(): string | undefined`. Under `exactOptionalPropertyTypes`
+ * those stop being compatible, so such a class no longer satisfies the
+ * interface it implements — a contradiction inside the dependency, not here.
+ *
+ * Only the builders whose factory returns the CONCRETE class need this
+ * (`TELEGRAM_BUILDER`, `WHATSAPP_BUILDER`); Discord, GChat and Teams keep bare
+ * `Adapter` because their factories already return it. Drop this alias when
+ * `chat` ships types that agree with themselves (#5522).
+ */
+export type VendorAdapter = Omit<Adapter, "botUserId"> & { readonly botUserId?: string | undefined };
 
 // ---------------------------------------------------------------------------
 // Public types

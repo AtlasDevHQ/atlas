@@ -28,6 +28,7 @@ import type {
   OrgPoolSettings,
 } from "@atlas/api/lib/db/connection";
 import type { PoolMetrics, OrgPoolMetrics } from "@useatlas/types";
+import type { WithLooseOptionals } from "@useatlas/schemas";
 import type { LeadEvent } from "@useatlas/twenty/lead-normalizer";
 import type { ToolRegistry as ToolRegistryClass } from "@atlas/api/lib/tools/registry";
 import type { RecordRunCheckpointArgs, RecordTerminalRunArgs } from "@atlas/api/lib/durable-session";
@@ -1684,14 +1685,22 @@ export interface ApprovalGateShape {
   readonly listApprovalRules: (
     orgId: string,
   ) => Effect.Effect<ApprovalRule[], EnterpriseErrorForApproval>;
+  // `WithLooseOptionals` on the INPUT, not a widened request type (#5522).
+  // The routes build these from a Zod-validated body, where `.optional()` infers
+  // `T | undefined`; the implementations read every optional through an
+  // `if (x !== undefined)` guard before adding its SET clause, so absent and
+  // present-and-`undefined` take the same branch by construction. Widening here
+  // rather than in `@useatlas/types` keeps the published request types exact —
+  // constructing one with an explicit `undefined` stays a compile error for
+  // every other consumer, which is what `exact-optional.ts` insists on.
   readonly createApprovalRule: (
     orgId: string,
-    input: CreateApprovalRuleRequest,
+    input: WithLooseOptionals<CreateApprovalRuleRequest>,
   ) => Effect.Effect<ApprovalRule, ApprovalError | EnterpriseErrorForApproval | Error>;
   readonly updateApprovalRule: (
     orgId: string,
     ruleId: string,
-    input: UpdateApprovalRuleRequest,
+    input: WithLooseOptionals<UpdateApprovalRuleRequest>,
   ) => Effect.Effect<ApprovalRule, ApprovalError | EnterpriseErrorForApproval | Error>;
   readonly deleteApprovalRule: (
     orgId: string,

@@ -196,33 +196,18 @@ export type ApprovalRequest = ApprovalRequestBase & (
  * a cost rule without a threshold is a compile-time error, not a 400 from
  * runtime validation alone.
  */
-// Loose-optional (`| undefined`) like `UpdateApprovalRuleRequest` below, and for
-// the same reason: a REST input contract fed by a Zod-validated body, whose
-// consumers read every optional through an `if (x !== undefined)` guard (#5522).
 export type CreateApprovalRuleRequest =
-  | { ruleType: "cost"; threshold: number; name: string; pattern?: "" | undefined; enabled?: boolean | undefined; origin?: ApprovalRuleOrigin | undefined }
-  | { ruleType: "table"; pattern: string; name: string; threshold?: null | undefined; enabled?: boolean | undefined; origin?: ApprovalRuleOrigin | undefined }
-  | { ruleType: "column"; pattern: string; name: string; threshold?: null | undefined; enabled?: boolean | undefined; origin?: ApprovalRuleOrigin | undefined }
-  | { ruleType: "datasource"; pattern: string; name: string; threshold?: null | undefined; enabled?: boolean | undefined; origin?: ApprovalRuleOrigin | undefined };
+  | { ruleType: "cost"; threshold: number; name: string; pattern?: ""; enabled?: boolean; origin?: ApprovalRuleOrigin }
+  | { ruleType: "table"; pattern: string; name: string; threshold?: null; enabled?: boolean; origin?: ApprovalRuleOrigin }
+  | { ruleType: "column"; pattern: string; name: string; threshold?: null; enabled?: boolean; origin?: ApprovalRuleOrigin }
+  | { ruleType: "datasource"; pattern: string; name: string; threshold?: null; enabled?: boolean; origin?: ApprovalRuleOrigin };
 
-/**
- * Loose-optional (`| undefined`) throughout — a REST INPUT contract, not a
- * domain value (#5522).
- *
- * Every field arrives from a Zod-validated request body, where `.optional()`
- * infers `T | undefined`, and every consumer below reads it through an
- * `if (x !== undefined)` guard: absent and present-and-`undefined` take the
- * same branch by construction, so the exact optional rejects a call it would
- * treat identically. The bug class `exactOptionalPropertyTypes` exists to catch
- * — an explicit `undefined` overwriting a stored value — cannot occur here,
- * because the guard skips that field's SET clause entirely.
- */
 export interface UpdateApprovalRuleRequest {
-  name?: string | undefined;
-  pattern?: string | undefined;
-  threshold?: number | null | undefined;
-  enabled?: boolean | undefined;
-  origin?: ApprovalRuleOrigin | undefined;
+  name?: string;
+  pattern?: string;
+  threshold?: number | null;
+  enabled?: boolean;
+  origin?: ApprovalRuleOrigin;
 }
 
 export interface ReviewApprovalRequest {

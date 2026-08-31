@@ -43,6 +43,9 @@ function providerResponse(
   // explicit absence marker instead of an omitted key.
   const projected: Record<string, string | null> = {};
   for (const [k, v] of Object.entries(config)) projected[k] = v ?? null;
+  // Not redundant with the loop: when the SP fields are ABSENT from the stored
+  // config there is no entry to iterate, so this is what puts the keys on the
+  // wire at all. The loop only covers the case where they are present.
   if (provider.type === "saml") {
     projected.spEntityId = provider.config.spEntityId ?? null;
     projected.spAcsUrl = provider.config.spAcsUrl ?? null;

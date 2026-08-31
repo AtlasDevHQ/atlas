@@ -888,8 +888,18 @@ export type RedispatchActionOutcome =
  * it hours later, after a deploy, with nobody watching, and the approver
  * cannot know it happened. So the state stays stuck until a person looks at
  * the row and says run it, on the triage re-queue's posture
- * (`lib/brain/triage-requeue.ts`): the backlog is VISIBLE — `GET /?status=approved`
- * lists it — and clearing it is deliberate.
+ * (`lib/brain/triage-requeue.ts`): a stranded row is VISIBLE — the approval
+ * that stranded it returned `approved_not_executed` and logged at error level,
+ * and the row sits at `approved` for anyone reading it — and clearing it is
+ * deliberate.
+ *
+ * ⚠️ Visible is not the same as ENUMERABLE, and this verb does not close that
+ * gap: `GET /api/v1/actions?status=approved` is scoped to the rows the caller
+ * requested, so there is no workspace-wide stranded-row listing today. An
+ * admin reaches someone else's stranded action by id. A backlog surface
+ * belongs beside the triage backlog's `GET /` if the residual window ever
+ * proves wide enough to need one — it should not, since the registry is now
+ * populated at boot on every instance.
  *
  * ## The CAS, and why it claims `executed_at`
  *

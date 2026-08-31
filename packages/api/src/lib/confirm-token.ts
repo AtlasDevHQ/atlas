@@ -4,7 +4,7 @@
  *
  * It was written once, for the REST write gate (#3007,
  * `lib/openapi/rest-write-confirm.ts`). #5496 added a second gate on the same
- * shape — `correct_fact` staging a brain correction (`lib/brain/correction-confirm.ts`)
+ * shape — `correct_fact` staging a brain correction (`lib/brain/staged-correct.ts`)
  * — and the issue's instruction was *mirror it; do not re-derive it*. This module
  * is how that instruction is kept honest: there is now exactly ONE derivation of
  * the HMAC scheme, the canonicalization, the binding check and the nonce burn,

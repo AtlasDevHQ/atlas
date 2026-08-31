@@ -164,9 +164,10 @@ void mock.module("@atlas/api/lib/brain/proposal", () => ({
 // Import after mocks.
 const { Hono } = await import("hono");
 const { createBrainProposalsRoute } = await import("../brain-proposals");
-const { mintProposalConfirmToken } = await import("@atlas/api/lib/brain/proposal-confirm");
+const { PROPOSAL_STAGED_VERB } = await import("@atlas/api/lib/brain/staged-propose");
+const { mintStagedConfirmToken } = await import("@atlas/api/lib/brain/staged-write");
 const { _resetConfirmNonces } = await import("@atlas/api/lib/confirm-token");
-const { mintCorrectionConfirmToken } = await import("@atlas/api/lib/brain/correction-confirm");
+const { CORRECTION_STAGED_VERB } = await import("@atlas/api/lib/brain/staged-correct");
 
 const CLAIM = { subject: "Ana", predicate: "is the DRI for", object: "billing" };
 
@@ -202,7 +203,7 @@ function stagedBody(
     ...(overrides.validFrom !== undefined ? { validFrom: overrides.validFrom } : {}),
     ...(overrides.reason !== undefined ? { reason: overrides.reason } : {}),
   };
-  const token = mintProposalConfirmToken({
+  const token = mintStagedConfirmToken(PROPOSAL_STAGED_VERB, {
     workspaceId: "ws-1",
     claim,
     ...(overrides.session !== undefined ? { session: overrides.session } : {}),
@@ -386,7 +387,7 @@ describe("the confirm token gate", () => {
   });
 
   it("rejects a token minted for another workspace", async () => {
-    const token = mintProposalConfirmToken({ workspaceId: "ws-other", claim: CLAIM });
+    const token = mintStagedConfirmToken(PROPOSAL_STAGED_VERB, { workspaceId: "ws-other", claim: CLAIM });
     const res = await app().fetch(post({ ...CLAIM, token }));
     expect(res.status).toBe(400);
     expectNoWrite();
@@ -396,7 +397,7 @@ describe("the confirm token gate", () => {
     // Both gates sign with the same keyset, so the `typ` domain separator is the
     // only thing standing between them. A human agreeing to change an existing
     // claim must not have that consent spent on asserting a new one.
-    const token = mintCorrectionConfirmToken({
+    const token = mintStagedConfirmToken(CORRECTION_STAGED_VERB, {
       workspaceId: "ws-1",
       factId: "6f2c0000-0000-4000-8000-000000000000",
       verb: "retract",
@@ -408,7 +409,7 @@ describe("the confirm token gate", () => {
   });
 
   it("rejects an expired token", async () => {
-    const token = mintProposalConfirmToken(
+    const token = mintStagedConfirmToken(PROPOSAL_STAGED_VERB, 
       { workspaceId: "ws-1", claim: CLAIM },
       { nowSeconds: Math.floor(Date.now() / 1000) - 7200 },
     );

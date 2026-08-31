@@ -13,10 +13,11 @@ import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import {
   mintRestConfirmToken,
   verifyRestConfirmToken,
-  burnRestConfirmNonce,
-  _resetRestConfirmNonces,
   type RestConfirmBinding,
 } from "@atlas/api/lib/openapi/rest-write-confirm";
+// The nonce store is the core's, shared by every gate — #5571 removed the
+// `Rest`-prefixed re-exports that suggested otherwise.
+import { burnConfirmNonce, _resetConfirmNonces } from "@atlas/api/lib/confirm-token";
 import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
 
 const SECRET = "test-confirm-token-signing-secret-not-a-real-key";
@@ -60,7 +61,7 @@ describe("rest confirm token — mint/verify", () => {
   });
   afterAll(() => {
     restoreKeyEnv();
-    _resetRestConfirmNonces();
+    _resetConfirmNonces();
   });
 
   it("round-trips a freshly minted token", () => {
@@ -179,24 +180,24 @@ describe("rest confirm token — mint/verify", () => {
 });
 
 describe("rest confirm nonce — single-use store", () => {
-  beforeAll(() => _resetRestConfirmNonces());
-  afterAll(() => _resetRestConfirmNonces());
+  beforeAll(() => _resetConfirmNonces());
+  afterAll(() => _resetConfirmNonces());
 
   it("burns a nonce exactly once (replay returns false)", () => {
-    _resetRestConfirmNonces();
+    _resetConfirmNonces();
     const exp = Math.floor(Date.now() / 1000) + 600;
-    expect(burnRestConfirmNonce("nonce-A", exp)).toBe(true);
-    expect(burnRestConfirmNonce("nonce-A", exp)).toBe(false); // replay
-    expect(burnRestConfirmNonce("nonce-B", exp)).toBe(true); // a different nonce is independent
+    expect(burnConfirmNonce("nonce-A", exp)).toBe(true);
+    expect(burnConfirmNonce("nonce-A", exp)).toBe(false); // replay
+    expect(burnConfirmNonce("nonce-B", exp)).toBe(true); // a different nonce is independent
   });
 
   it("evicts an expired burned nonce so its slot is reclaimed", () => {
-    _resetRestConfirmNonces();
+    _resetConfirmNonces();
     // Burn a nonce that expires at t=1000; at a later 'now' the eviction sweep drops
     // it. (A token with that nonce would already be rejected by the expiry check.)
-    expect(burnRestConfirmNonce("ephemeral", 1_000, 900)).toBe(true);
+    expect(burnConfirmNonce("ephemeral", 1_000, 900)).toBe(true);
     // Re-burning the same nonce at a 'now' past its exp succeeds — it was evicted.
-    expect(burnRestConfirmNonce("ephemeral", 5_000, 2_000)).toBe(true);
+    expect(burnConfirmNonce("ephemeral", 5_000, 2_000)).toBe(true);
   });
 });
 

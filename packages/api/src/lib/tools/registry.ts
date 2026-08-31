@@ -322,7 +322,7 @@ function registerCoreTools(
   // than re-globalizing this tool." They diverged, and this is that split.
   //
   // What diverged: `correct_fact` now STAGES a correction for a human to
-  // confirm on a card (`lib/brain/correction-confirm.ts`), so it belongs only
+  // confirm on a card (`lib/brain/staged-correct.ts`), so it belongs only
   // where that card is RENDERED. `dashboardUrlResolver` cannot answer that.
   // It is non-null for `POST /api/v1/chat`, and the embeddable widget
   // (`@useatlas/react`) reaches the very same route — same resolver, same

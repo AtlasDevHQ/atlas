@@ -82,9 +82,12 @@ const { Hono } = await import("hono");
 const { buildOperationGraph } = await import("@atlas/api/lib/openapi/spec");
 const { createRestOperationsRoute } = await import("../rest-operations");
 const { _resetRestRateLimits } = await import("@atlas/api/lib/openapi/validate-rest-operation");
-const { mintRestConfirmToken, confirmRequestToParams, _resetRestConfirmNonces } = await import(
+const { mintRestConfirmToken, confirmRequestToParams } = await import(
   "@atlas/api/lib/openapi/rest-write-confirm"
 );
+// One nonce store across every confirm gate — imported from the core rather than
+// through a per-gate re-export (#5571).
+const { _resetConfirmNonces } = await import("@atlas/api/lib/confirm-token");
 const { startTwentyMockServer } = await import(
   "@atlas/api/lib/openapi/__tests__/twenty-acceptance/mock-server"
 );
@@ -125,7 +128,7 @@ afterAll(async () => {
 beforeEach(() => {
   twentyMock.reset();
   _resetRestRateLimits();
-  _resetRestConfirmNonces();
+  _resetConfirmNonces();
   mockLogQueryAudit.mockClear();
 });
 

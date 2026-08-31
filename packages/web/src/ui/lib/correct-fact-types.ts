@@ -4,7 +4,7 @@
  *
  * A deliberate local mirror, not a `@useatlas/types` import, for the reason
  * `rest-operation-types.ts` states one file over: the wire shape is produced by
- * `packages/api/src/lib/brain/correction-confirm.ts`, but pulling a new VALUE
+ * `packages/api/src/lib/brain/staged-correct.ts`, but pulling a new VALUE
  * export through `@useatlas/types` needs the publish-then-bump dance, and a new
  * value export trips Scaffold CI before it is published. The two shapes must
  * stay in sync; promote both mirrors together when a types release is cut for

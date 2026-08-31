@@ -63,52 +63,112 @@ void mock.module("@atlas/api/lib/tools/actions/credentials/store", () => ({
 }));
 void mock.module("@atlas/api/lib/db/internal", () => ({ hasInternalDB: () => true }));
 
-// jsforce — mocked so no test touches a real org. Captures the OAuth2 config,
-// the grant, the Connection args and the created record.
-let lastOAuth2Config: Record<string, unknown> | null = null;
-let lastGrant: Record<string, unknown> | null = null;
-let lastConnectionArgs: Record<string, unknown> | null = null;
-let lastCreate: { object: string; fields: Record<string, unknown> } | null = null;
+// The Salesforce wire, mocked at `fetch`, so no test touches a real org.
+//
+// #5572 replaced `jsforce` on the ACTION path with two hand-rolled calls, so
+// what a test drives here is the token POST and the create POST — the wire
+// itself — rather than an SDK's method names. That is a strictly better thing
+// to pin: `lastCreateRequest.accessToken` is the header Salesforce would
+// actually receive, where the old `lastConnectionArgs` was an SDK argument we
+// trusted jsforce to turn into one.
 
-let tokenResponse: unknown = {
+interface TokenRequestCapture {
+  loginUrl: string;
+  clientId: string;
+  clientSecret: string;
+  grantType: string;
+}
+
+interface CreateRequestCapture {
+  instanceUrl: string;
+  apiVersion: string;
+  object: string;
+  accessToken: string;
+  fields: Record<string, unknown>;
+}
+
+let lastTokenRequest: TokenRequestCapture | null = null;
+let lastCreateRequest: CreateRequestCapture | null = null;
+
+/**
+ * Every `AbortSignal` handed to `fetch`, in order.
+ *
+ * The point of the list is identity, not length: ONE budget across the token
+ * mint and the create means both legs get the SAME signal object. Two signals
+ * would mean two 15-second budgets and a 30-second worst case — the thing
+ * `SALESFORCE_TIMEOUT_MS`'s header says it is not.
+ */
+let seenSignals: Array<AbortSignal | undefined> = [];
+
+let tokenStatus = 200;
+let tokenBody: unknown = {
   access_token: "sf-access-token",
   instance_url: "https://tenant.my.salesforce.com",
 };
-let tokenError: Error | null = null;
-let createResponse: unknown = { id: "00Q000000000001AAA", success: true, errors: [] };
-let createError: Error | null = null;
+/** Set to make the token leg reject at the transport, e.g. with an abort. */
+let tokenThrows: (() => never) | null = null;
 
-class MockOAuth2 {
-  constructor(config: Record<string, unknown>) {
-    lastOAuth2Config = config;
-  }
-  async requestToken(grant: Record<string, unknown>) {
-    lastGrant = grant;
-    if (tokenError) throw tokenError;
-    return tokenResponse;
-  }
+let createStatus = 201;
+let createBody: unknown = { id: "00Q000000000001AAA", success: true, errors: [] };
+/** Set to make the create leg reject at the transport, e.g. with an abort. */
+let createThrows: (() => never) | null = null;
+
+function jsonResponse(body: unknown, status: number): Response {
+  return new Response(typeof body === "string" ? body : JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
-class MockConnection {
-  constructor(args: Record<string, unknown>) {
-    lastConnectionArgs = args;
-  }
-  sobject(object: string) {
-    return {
-      create: async (fields: Record<string, unknown>) => {
-        lastCreate = { object, fields };
-        if (createError) throw createError;
-        return createResponse;
-      },
-    };
-  }
+const CREATE_URL =
+  /^(?<instance>https:\/\/[^/]+)\/services\/data\/(?<version>v[\d.]+)\/sobjects\/(?<object>\w+)$/;
+
+const realFetch = globalThis.fetch;
+
+function installFetchMock(): void {
+  globalThis.fetch = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = typeof input === "string" ? input : input.toString();
+    seenSignals.push(init?.signal ?? undefined);
+
+    if (url.endsWith("/services/oauth2/token")) {
+      if (tokenThrows) tokenThrows();
+      const form = new URLSearchParams(String(init?.body ?? ""));
+      lastTokenRequest = {
+        loginUrl: url.slice(0, -"/services/oauth2/token".length),
+        clientId: form.get("client_id") ?? "",
+        clientSecret: form.get("client_secret") ?? "",
+        grantType: form.get("grant_type") ?? "",
+      };
+      return jsonResponse(tokenBody, tokenStatus);
+    }
+
+    const create = CREATE_URL.exec(url);
+    if (create?.groups) {
+      if (createThrows) createThrows();
+      const headers = new Headers(init?.headers);
+      lastCreateRequest = {
+        instanceUrl: create.groups.instance ?? "",
+        apiVersion: create.groups.version ?? "",
+        object: create.groups.object ?? "",
+        accessToken: (headers.get("Authorization") ?? "").replace(/^Bearer /, ""),
+        fields: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+      };
+      return jsonResponse(createBody, createStatus);
+    }
+
+    // A URL neither leg recognises is a test bug, not a vendor condition —
+    // fail loudly rather than returning a plausible 200.
+    throw new Error(`Unexpected fetch in test: ${url}`);
+  }) as typeof globalThis.fetch;
 }
 
-void mock.module("jsforce", () => ({
-  default: { OAuth2: MockOAuth2, Connection: MockConnection },
-  OAuth2: MockOAuth2,
-  Connection: MockConnection,
-}));
+/** The abort a deadline produces: a DOMException, which is why the module duck-types it. */
+function abortRejection(): never {
+  throw new DOMException("The operation was aborted.", "AbortError");
+}
 
 const {
   executeSalesforceCreate,
@@ -148,17 +208,19 @@ const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   for (const key of ENV_KEYS) saved[key] = process.env[key];
   lastHandleActionCall = null;
-  lastOAuth2Config = null;
-  lastGrant = null;
-  lastConnectionArgs = null;
-  lastCreate = null;
-  tokenError = null;
-  createError = null;
-  tokenResponse = {
+  lastTokenRequest = null;
+  lastCreateRequest = null;
+  seenSignals = [];
+  tokenThrows = null;
+  createThrows = null;
+  tokenStatus = 200;
+  tokenBody = {
     access_token: "sf-access-token",
     instance_url: "https://tenant.my.salesforce.com",
   };
-  createResponse = { id: "00Q000000000001AAA", success: true, errors: [] };
+  createStatus = 201;
+  createBody = { id: "00Q000000000001AAA", success: true, errors: [] };
+  installFetchMock();
   mockRead.mockReset();
   mockRead.mockResolvedValue(null);
 });
@@ -168,6 +230,7 @@ afterEach(() => {
     if (saved[key] !== undefined) process.env[key] = saved[key];
     else delete process.env[key];
   }
+  globalThis.fetch = realFetch;
 });
 
 // ---------------------------------------------------------------------------
@@ -230,18 +293,18 @@ describe("executeSalesforceCreate", () => {
       creds(),
     );
 
-    expect(lastOAuth2Config).toEqual({
+    expect(lastTokenRequest).toEqual({
       loginUrl: "https://tenant.my.salesforce.com",
       clientId: "tenant-consumer-key",
       clientSecret: "tenant-consumer-secret",
+      grantType: "client_credentials",
     });
-    expect(lastGrant).toEqual({ grant_type: "client_credentials" });
-    expect(lastConnectionArgs).toEqual({
+    expect(lastCreateRequest).toEqual({
       instanceUrl: "https://tenant.my.salesforce.com",
-      accessToken: "sf-access-token",
-    });
-    expect(lastCreate).toEqual({
+      apiVersion: "v60.0",
       object: "Lead",
+      // The bearer header Salesforce actually receives, not an SDK argument.
+      accessToken: "sf-access-token",
       fields: { LastName: "Reyes", Company: "Acme" },
     });
     expect(result.id).toBe("00Q000000000001AAA");
@@ -268,10 +331,10 @@ describe("executeSalesforceCreate", () => {
       SALESFORCE_ACTION_DEFAULT_OBJECT: "Lead",
     }));
 
-    expect(lastOAuth2Config?.loginUrl).toBe("https://tenant.my.salesforce.com");
-    expect(lastOAuth2Config?.clientId).toBe("tenant-consumer-key");
-    expect(lastOAuth2Config?.clientSecret).toBe("tenant-consumer-secret");
-    expect(lastCreate?.object).toBe("Lead");
+    expect(lastTokenRequest?.loginUrl).toBe("https://tenant.my.salesforce.com");
+    expect(lastTokenRequest?.clientId).toBe("tenant-consumer-key");
+    expect(lastTokenRequest?.clientSecret).toBe("tenant-consumer-secret");
+    expect(lastCreateRequest?.object).toBe("Lead");
   });
 
   it("falls back to the credential set's default object when the agent names none", async () => {
@@ -279,7 +342,7 @@ describe("executeSalesforceCreate", () => {
       { fields: { Subject: "Churn risk" } },
       creds({ SALESFORCE_ACTION_DEFAULT_OBJECT: "case" }),
     );
-    expect(lastCreate?.object).toBe("Case");
+    expect(lastCreateRequest?.object).toBe("Case");
   });
 
   it("throws when no object is named and the credential set carries no default", async () => {
@@ -292,7 +355,7 @@ describe("executeSalesforceCreate", () => {
     await expect(
       executeSalesforceCreate({ object: "User", fields: { Username: "x" } }, creds()),
     ).rejects.toThrow(/not one this action may create/);
-    expect(lastCreate).toBeNull();
+    expect(lastCreateRequest).toBeNull();
   });
 
   it("rejects a field name that is not a Salesforce API name", async () => {
@@ -305,7 +368,7 @@ describe("executeSalesforceCreate", () => {
         creds(),
       ),
     ).rejects.toThrow(/not a valid Salesforce field API name/);
-    expect(lastCreate).toBeNull();
+    expect(lastCreateRequest).toBeNull();
   });
 
   it("rejects an empty field set", async () => {
@@ -321,7 +384,7 @@ describe("executeSalesforceCreate", () => {
         creds({ SALESFORCE_ACTION_INSTANCE_URL: "http://tenant.my.salesforce.com" }),
       ),
     ).rejects.toThrow(/must use https/);
-    expect(lastOAuth2Config).toBeNull();
+    expect(lastTokenRequest).toBeNull();
   });
 
   it("refuses an internal instance URL before the consumer secret leaves the process", async () => {
@@ -340,29 +403,32 @@ describe("executeSalesforceCreate", () => {
     // Never reached the network, and the refusal names no internal detail —
     // repeating the guard's verdict back would make the form a scanner with a
     // readout.
-    expect(lastOAuth2Config).toBeNull();
+    expect(lastTokenRequest).toBeNull();
+    expect(seenSignals).toEqual([]);
   });
 
   it("re-validates the instance URL Salesforce echoes back", async () => {
     // The echo decides where the record POST goes and what host the approval
     // card links to, so it gets the same guard the configured URL got.
-    tokenResponse = {
+    tokenBody = {
       access_token: "sf-access-token",
       instance_url: "http://169.254.169.254",
     };
     await expect(
       executeSalesforceCreate({ object: "Lead", fields: { LastName: "Reyes" } }, creds()),
     ).rejects.toThrow(/Salesforce returned/);
-    expect(lastCreate).toBeNull();
+    expect(lastCreateRequest).toBeNull();
   });
 
   it("surfaces a token rejection without echoing the consumer secret", async () => {
     // Salesforce does not normally echo the secret; the redaction is the
     // belt-and-braces that keeps an unreviewed vendor error path from
     // becoming the one place a secret reaches a response.
-    tokenError = new Error(
-      "invalid_client: bad secret tenant-consumer-secret for this app",
-    );
+    tokenStatus = 400;
+    tokenBody = {
+      error: "invalid_client",
+      error_description: "bad secret tenant-consumer-secret for this app",
+    };
     try {
       await executeSalesforceCreate(
         { object: "Lead", fields: { LastName: "Reyes" } },
@@ -378,7 +444,10 @@ describe("executeSalesforceCreate", () => {
   });
 
   it("surfaces an API failure without echoing the access token", async () => {
-    createError = new Error("Session sf-access-token is invalid");
+    createStatus = 401;
+    createBody = [
+      { errorCode: "INVALID_SESSION_ID", message: "Session sf-access-token is invalid" },
+    ];
     try {
       await executeSalesforceCreate(
         { object: "Lead", fields: { LastName: "Reyes" } },
@@ -393,16 +462,18 @@ describe("executeSalesforceCreate", () => {
   });
 
   it("throws with Salesforce's own reason when the save is refused", async () => {
-    createResponse = {
-      success: false,
-      errors: [
-        {
-          statusCode: "REQUIRED_FIELD_MISSING",
-          message: "Required fields are missing: [Company]",
-          fields: ["Company"],
-        },
-      ],
-    };
+    // The REST create endpoint refuses with a non-2xx whose body is an ARRAY
+    // of `{ errorCode, message, fields }` — where `jsforce` surfaced a 200
+    // `SaveResult` carrying `statusCode`. `describeSaveErrors` reads both keys
+    // so this copy did not change when #5572 changed the wire under it.
+    createStatus = 400;
+    createBody = [
+      {
+        errorCode: "REQUIRED_FIELD_MISSING",
+        message: "Required fields are missing: [Company]",
+        fields: ["Company"],
+      },
+    ];
     await expect(
       executeSalesforceCreate({ object: "Lead", fields: { LastName: "Reyes" } }, creds()),
     ).rejects.toThrow(/REQUIRED_FIELD_MISSING: Required fields are missing/);
@@ -412,16 +483,14 @@ describe("executeSalesforceCreate", () => {
     // A refusal body is no more trustworthy than a thrown one; leaving this
     // path unguarded is how a file ends up guarding only the paths someone
     // happened to think about.
-    createResponse = {
-      success: false,
-      errors: [
-        {
-          statusCode: "INSUFFICIENT_ACCESS",
-          message: "App tenant-consumer-secret cannot create this record",
-        },
-        "raw string error mentioning sf-access-token",
-      ],
-    };
+    createStatus = 403;
+    createBody = [
+      {
+        errorCode: "INSUFFICIENT_ACCESS",
+        message: "App tenant-consumer-secret cannot create this record",
+      },
+      "raw string error mentioning sf-access-token",
+    ];
     try {
       await executeSalesforceCreate(
         { object: "Lead", fields: { LastName: "Reyes" } },
@@ -437,21 +506,21 @@ describe("executeSalesforceCreate", () => {
   });
 
   it("throws when the token response carries no access token", async () => {
-    tokenResponse = { instance_url: "https://tenant.my.salesforce.com" };
+    tokenBody = { instance_url: "https://tenant.my.salesforce.com" };
     await expect(
       executeSalesforceCreate({ object: "Lead", fields: { LastName: "Reyes" } }, creds()),
     ).rejects.toThrow(/no access token/);
   });
 
   it("throws when a successful save carries no record id", async () => {
-    createResponse = { success: true, errors: [] };
+    createBody = { success: true, errors: [] };
     await expect(
       executeSalesforceCreate({ object: "Lead", fields: { LastName: "Reyes" } }, creds()),
     ).rejects.toThrow(/carried no record id/);
   });
 
   it("prefers the org's echoed instance_url for the session and the record link", async () => {
-    tokenResponse = {
+    tokenBody = {
       access_token: "sf-access-token",
       instance_url: "https://tenant--sandbox.sandbox.my.salesforce.com/",
     };
@@ -459,7 +528,7 @@ describe("executeSalesforceCreate", () => {
       { object: "Case", fields: { Subject: "Churn risk" } },
       creds(),
     );
-    expect(lastConnectionArgs?.instanceUrl).toBe(
+    expect(lastCreateRequest?.instanceUrl).toBe(
       "https://tenant--sandbox.sandbox.my.salesforce.com",
     );
     expect(result.url).toBe(
@@ -472,9 +541,122 @@ describe("executeSalesforceCreate", () => {
       { object: "Lead", fields: { LastName: "Reyes" } },
       creds({ SALESFORCE_ACTION_INSTANCE_URL: "https://tenant.my.salesforce.com/" }),
     );
-    expect(lastOAuth2Config?.loginUrl).toBe("https://tenant.my.salesforce.com");
+    expect(lastTokenRequest?.loginUrl).toBe("https://tenant.my.salesforce.com");
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// The bound (#5572) — the half of the defence pair Salesforce could not have
+// while it drove jsforce
+// ---------------------------------------------------------------------------
+
+describe("executeSalesforceCreate — the 15s bound", () => {
+  // Every case here pins the bound WITHOUT waiting it out: the runtime's
+  // abort rejection is injected directly, exactly as the jira suite does it.
+  // A test that actually slept 15 seconds would be the slowest suite in the
+  // package and would still only prove `setTimeout` works.
+
+  it("⭐ threads ONE budget through the token mint and the create", async () => {
+    // The property the copy in `SALESFORCE_TIMEOUT_MS` claims. Two controllers
+    // would be two 15-second budgets and a 30-second worst case on a
+    // half-hung org — which is not "a fixed bound", and is invisible to any
+    // test that only checks each leg times out.
+    await executeSalesforceCreate(
+      { object: "Lead", fields: { LastName: "Reyes", Company: "Acme" } },
+      creds(),
+    );
+
+    expect(seenSignals).toHaveLength(2);
+    expect(seenSignals[0]).toBeInstanceOf(AbortSignal);
+    // Identity, not equality: the SAME controller's signal reached both legs.
+    expect(seenSignals[1]).toBe(seenSignals[0]);
+  });
+
+  it("⭐ classifies a timeout on the token leg as a timeout, and says no record exists", async () => {
+    // Before #5572 there was no bound at all on this path: jsforce exposes no
+    // AbortSignal, and `executeWithTimeout(fn, undefined)` is unguarded on a
+    // default deployment, so a hung org held the agent turn open indefinitely.
+    tokenThrows = abortRejection;
+
+    try {
+      await executeSalesforceCreate(
+        { object: "Lead", fields: { LastName: "Reyes" } },
+        creds(),
+      );
+      expect(true).toBe(false); // should not reach here
+    } catch (err) {
+      const message = (err as Error).message;
+      // Distinct from an upstream failure: not "rejected the credentials".
+      expect(message).toMatch(/did not respond within 15s while authenticating/);
+      expect(message).not.toMatch(/rejected the connected app/);
+      // A timeout before the token was minted provably created nothing.
+      expect(message).toMatch(/No Lead was created/);
+    }
+  });
+
+  it("⭐ says the record MAY exist when the deadline fires on the create leg", async () => {
+    // The distinction the leg tracking exists for. Aborting our own request
+    // says nothing about whether Salesforce had already committed the record,
+    // and on a write that is the difference between "retry" and "go look".
+    createThrows = abortRejection;
+
+    try {
+      await executeSalesforceCreate(
+        { object: "Case", fields: { Subject: "Churn risk" } },
+        creds(),
+      );
+      expect(true).toBe(false); // should not reach here
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).toMatch(/did not respond within 15s/);
+      expect(message).toMatch(/may or may not have been created/);
+      // And it must NOT claim the create was safe — the token-leg copy would
+      // be an outright false statement here.
+      expect(message).not.toMatch(/No Case was created/);
+    }
+  });
+
+  it("the timeout copy names no credential and no host", async () => {
+    // Same copy discipline as jira/github: a timeout reaches the model's
+    // context, the approval card and `action_log.error`.
+    const messages: string[] = [];
+    for (const leg of ["token", "create"] as const) {
+      tokenThrows = leg === "token" ? abortRejection : null;
+      createThrows = leg === "create" ? abortRejection : null;
+      try {
+        await executeSalesforceCreate(
+          { object: "Lead", fields: { LastName: "Reyes" } },
+          creds(),
+        );
+        expect(true).toBe(false); // should not reach here
+      } catch (err) {
+        messages.push((err as Error).message);
+      }
+    }
+
+    expect(messages).toHaveLength(2);
+    for (const message of messages) {
+      expect(message).not.toContain("tenant-consumer-secret");
+      expect(message).not.toContain("tenant-consumer-key");
+      expect(message).not.toContain("sf-access-token");
+      expect(message).not.toContain("tenant.my.salesforce.com");
+    }
+  });
+
+  it("an unreachable host is NOT reported as a timeout", async () => {
+    // The other side of the classification: a transport failure that is not
+    // an abort must keep its own actionable copy. The module's `isAbortError`
+    // re-throw is what keeps these two apart, and dropping it would make
+    // every DNS failure read as a 15-second hang.
+    tokenThrows = () => {
+      throw new TypeError("fetch failed");
+    };
+
+    await expect(
+      executeSalesforceCreate({ object: "Lead", fields: { LastName: "Reyes" } }, creds()),
+    ).rejects.toThrow(/Could not reach the Salesforce token endpoint/);
+  });
 });
 
 // ---------------------------------------------------------------------------

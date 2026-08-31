@@ -18,8 +18,10 @@
  * It is emphatically **not** a secrecy control. If an upstream ever reflected
  * the request headers back, truncation would not save us — the rule that does
  * is that these modules never put a credential into a string in the first
- * place (Salesforce goes further and redacts, because `jsforce` hands it
- * vendor text it did not compose). Do not reach for a bigger number here
+ * place (Salesforce goes further and redacts every vendor string it did not
+ * compose — a habit it kept when #5572 moved it off `jsforce`, since the
+ * error bodies are just as much the vendor's now). Do not reach for a bigger
+ * number here
  * because a message got clipped: read the log, which carries the same detail
  * under the same bound and is not in the agent's context.
  *

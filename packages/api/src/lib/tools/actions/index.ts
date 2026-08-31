@@ -21,6 +21,7 @@ export {
 export { logActionAudit, type ActionAuditEntry } from "./audit";
 
 export { createJiraTicket } from "./jira";
+export { createGitHubIssue } from "./github";
 export { sendEmailReport } from "./email";
 export {
   createSalesforceRecord,

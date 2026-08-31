@@ -101,10 +101,11 @@ async function withEnv(
 /**
  * The warning is asserted BY REFERENCE, not by an inlined copy. The file
  * header already said that was the rule; a hand-typed copy lived here anyway
- * and drifted a second time when a third action tool joined the set (#5556).
- * The relay is what this file proves — that the seam passes the registry's own
- * warning through — so referencing the constant is the assertion, and the copy
- * itself is `registry.test.ts`'s to pin.
+ * and drifted twice in one day — once when GitHub joined the set (#5555) and
+ * again when Salesforce did (#5556), from two lanes that then conflicted on
+ * this very line. The relay is what this file proves — that the seam passes
+ * the registry's own warning through — so referencing the constant is the
+ * assertion, and the copy itself is `registry.test.ts`'s to pin.
  */
 const ACTION_WARNING = ACTION_TOOLS_UNAVAILABLE_WARNING;
 

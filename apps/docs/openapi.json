@@ -85181,6 +85181,10 @@
                                   "type": "boolean",
                                   "description": "True ⇒ the target does not resolve without it."
                                 },
+                                "multiline": {
+                                  "type": "boolean",
+                                  "description": "True ⇒ the value spans several lines (e.g. a PEM private key), so the form should render a textarea rather than a single-line input."
+                                },
                                 "present": {
                                   "type": "boolean",
                                   "description": "True ⇒ resolved to a non-empty value from the winning rung."
@@ -85201,6 +85205,7 @@
                                 "hint",
                                 "secret",
                                 "required",
+                                "multiline",
                                 "present",
                                 "source"
                               ]
@@ -85401,6 +85406,10 @@
                             "type": "boolean",
                             "description": "True ⇒ the target does not resolve without it."
                           },
+                          "multiline": {
+                            "type": "boolean",
+                            "description": "True ⇒ the value spans several lines (e.g. a PEM private key), so the form should render a textarea rather than a single-line input."
+                          },
                           "present": {
                             "type": "boolean",
                             "description": "True ⇒ resolved to a non-empty value from the winning rung."
@@ -85421,6 +85430,7 @@
                           "hint",
                           "secret",
                           "required",
+                          "multiline",
                           "present",
                           "source"
                         ]
@@ -85608,6 +85618,10 @@
                             "type": "boolean",
                             "description": "True ⇒ the target does not resolve without it."
                           },
+                          "multiline": {
+                            "type": "boolean",
+                            "description": "True ⇒ the value spans several lines (e.g. a PEM private key), so the form should render a textarea rather than a single-line input."
+                          },
                           "present": {
                             "type": "boolean",
                             "description": "True ⇒ resolved to a non-empty value from the winning rung."
@@ -85628,6 +85642,7 @@
                           "hint",
                           "secret",
                           "required",
+                          "multiline",
                           "present",
                           "source"
                         ]

@@ -737,7 +737,7 @@ export async function loadFactCandidates(
     table: "brain_facts",
     alias: "f",
     paramIndex: 1,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (acl.decision === "deny-all") {
     throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, REVIEW_SURFACE);
@@ -813,13 +813,13 @@ export async function loadFactCandidates(
     const { tokens, readable } = grantTokens(row.visible_to, {
       rowId: row.id,
       workspaceId: ctx.workspaceId,
-      requestId,
+      ...(requestId !== undefined ? { requestId } : {}),
     });
     const parsed = logGrantAnomalies(tokens, {
       table: "brain_facts",
       rowId: row.id,
       workspaceId: ctx.workspaceId,
-      requestId,
+      ...(requestId !== undefined ? { requestId } : {}),
     });
     grants.set(row.id, {
       tokens,
@@ -827,7 +827,7 @@ export async function loadFactCandidates(
       malformed: malformedIndices(tokens, parsed.malformed, {
         rowId: row.id,
         workspaceId: ctx.workspaceId,
-        requestId,
+        ...(requestId !== undefined ? { requestId } : {}),
       }),
     });
   }
@@ -950,7 +950,7 @@ async function loadEpisodes(
     table: "brain_episodes",
     alias: "e",
     paramIndex: 1,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (acl.decision === "deny-all") {
     // Unreachable — the caller already threw on the same decision against
@@ -969,13 +969,13 @@ async function loadEpisodes(
     const { tokens } = grantTokens(r.visible_to, {
       rowId: id,
       workspaceId: ctx.workspaceId,
-      requestId,
+      ...(requestId !== undefined ? { requestId } : {}),
     });
     logGrantAnomalies(tokens, {
       table: "brain_episodes",
       rowId: id,
       workspaceId: ctx.workspaceId,
-      requestId,
+      ...(requestId !== undefined ? { requestId } : {}),
     });
     const body = typeof r.body === "string" ? r.body : null;
     const truncated = body !== null && body.length > EPISODE_BODY_MAX_CHARS;
@@ -1018,7 +1018,7 @@ async function loadTensions(
   const { clusters, truncated } = await loadTensionClusters(
     db,
     rows.map((r) => r.id),
-    { ctx, cap: TENSION_FANOUT_CAP, surface: REVIEW_SURFACE, log, requestId },
+    { ctx, cap: TENSION_FANOUT_CAP, surface: REVIEW_SURFACE, log, ...(requestId !== undefined ? { requestId } : {})},
   );
 
   // A counterpart is a fact in its own right, so its actor is resolved off its
@@ -1096,7 +1096,7 @@ export async function loadFactCandidateSummary(
     table: "brain_facts",
     alias: "f",
     paramIndex: 1,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (acl.decision === "deny-all") {
     throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, REVIEW_SURFACE);

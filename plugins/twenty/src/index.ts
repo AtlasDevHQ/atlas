@@ -159,7 +159,7 @@ export const twentyPlugin = createPlugin<
     const clientConfig: TwentyClientConfig = {
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
-      timeoutMs: config.timeoutMs,
+      ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
     };
 
     const upsertPersonTool = tool({
@@ -180,11 +180,17 @@ export const twentyPlugin = createPlugin<
         const customFields: { atlasIp?: string } = {};
         if (atlasIp) customFields.atlasIp = atlasIp;
         const name =
-          firstName || lastName ? { firstName, lastName } : undefined;
+          firstName || lastName
+            ? {
+                ...(firstName !== undefined ? { firstName } : {}),
+                ...(lastName !== undefined ? { lastName } : {}),
+              }
+            : undefined;
         const result = await upsertPerson(clientConfig, {
           email,
           eventSource,
-          name,
+          // Exact optional: a call with neither name part omits the key.
+          ...(name !== undefined ? { name } : {}),
           customFields,
         });
         return { id: result.id, email: result.emails?.primaryEmail };

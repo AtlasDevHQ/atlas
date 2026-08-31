@@ -34,6 +34,7 @@ import {
   listConversations,
   generateTitle,
   persistAssistantSteps,
+  conversationResponse,
 } from "@atlas/api/lib/conversations";
 import { setStreamWriter, clearStreamWriter } from "@atlas/api/lib/tools/python-stream";
 import { corsResponseHeaders } from "@atlas/api/lib/cors";
@@ -658,7 +659,7 @@ demo.openapi(demoChatRoute, async (c) => {
         const agentResult = await runAgent({
           messages,
           tools: nonDashboardRegistry,
-          conversationId,
+          ...(conversationId !== undefined ? { conversationId } : {}),
           maxSteps: getDemoMaxSteps(),
           ...demoRunAgentModelParams(),
         });
@@ -788,7 +789,7 @@ demo.openapi(getDemoConversationRoute, async (c) => {
       return c.json({ error: "not_found", message: "Conversation not found.", requestId }, 404);
     }
 
-    return c.json(conv.data, 200);
+    return c.json(conversationResponse(conv.data), 200);
   }), { label: "get demo conversation" });
 });
 

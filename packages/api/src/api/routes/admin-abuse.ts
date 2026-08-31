@@ -293,11 +293,16 @@ adminAbuse.openapi(listFlaggedRoute, async (c) => {
       });
     });
 
-    return c.json({
-      workspaces: enriched,
-      total: enriched.length,
-      ...(warnings.length > 0 ? { warnings } : {}),
-    }, 200);
+    // Two literals rather than one carrying an OPTIONAL `warnings`: Hono's
+    // `c.json()` refuses a payload with any optional property under
+    // `exactOptionalPropertyTypes`, and emitting `warnings: []` unconditionally
+    // would not be a shape-only change — the admin UI keys its banner on the
+    // field's PRESENCE, so a clean call would start carrying one. Branching keeps
+    // the wire exactly as it was (#5522).
+    const listBody = { workspaces: enriched, total: enriched.length };
+    return warnings.length > 0
+      ? c.json({ ...listBody, warnings }, 200)
+      : c.json(listBody, 200);
   }), { label: "list flagged workspaces" });
 });
 
@@ -363,15 +368,23 @@ adminAbuse.openapi(reinstateRoute, async (c) => {
       );
     }
 
-    return c.json({
+    // Two literals rather than one carrying an OPTIONAL `warnings`: Hono's
+    // `c.json()` refuses a payload with any optional property under
+    // `exactOptionalPropertyTypes`, and emitting `warnings: []` unconditionally
+    // would not be a shape-only change — the admin UI keys its banner on the
+    // field's PRESENCE, so a clean call would start carrying one. Branching keeps
+    // the wire exactly as it was (#5522).
+    const reinstateBody = {
       success: true,
       workspaceId,
       auditPersisted,
       message: auditPersisted
         ? "Workspace reinstated successfully."
         : "Workspace reinstated, but audit trail could not be written — see warnings.",
-      ...(warnings.length > 0 ? { warnings } : {}),
-    }, 200);
+    };
+    return warnings.length > 0
+      ? c.json({ ...reinstateBody, warnings }, 200)
+      : c.json(reinstateBody, 200);
   }), { label: "reinstate workspace" });
 });
 
@@ -422,10 +435,17 @@ adminAbuse.openapi(getDetailRoute, async (c) => {
     const enriched = {
       ...detail,
       workspaceName: nameMap.get(workspaceId) ?? null,
-      ...(warnings.length > 0 ? { warnings } : {}),
     };
 
-    return c.json(enriched, 200);
+    // Two literals rather than one carrying an OPTIONAL `warnings`: Hono's
+    // `c.json()` refuses a payload with any optional property under
+    // `exactOptionalPropertyTypes`, and emitting `warnings: []` unconditionally
+    // would not be a shape-only change — the admin UI keys its banner on the
+    // field's PRESENCE, so a clean call would start carrying one. Branching keeps
+    // the wire exactly as it was (#5522).
+    return warnings.length > 0
+      ? c.json({ ...enriched, warnings }, 200)
+      : c.json(enriched, 200);
   }), { label: "read abuse detail" });
 });
 

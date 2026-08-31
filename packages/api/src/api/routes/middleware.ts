@@ -251,7 +251,7 @@ async function rateLimitAndIPCheck(
 ): Promise<{ body: Record<string, unknown>; status: 403 | 429 | 503; headers?: Record<string, string> } | null> {
   const ip = getClientIP(req);
   const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-  const rateCheck = checkRateLimit(rateLimitKey, { bucket, orgId: authResult.user?.activeOrganizationId });
+  const rateCheck = checkRateLimit(rateLimitKey, { bucket, ...(authResult.user?.activeOrganizationId !== undefined ? { orgId: authResult.user?.activeOrganizationId } : {})});
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return {
@@ -834,7 +834,7 @@ export const requestContext = createMiddleware<AuthEnv>(async (c, next) => {
   const atlasMode = c.get("atlasMode");
   const trustDeviceIdentifier = c.get("trustDeviceIdentifier");
   await withRequestContext(
-    { requestId, user: authResult.user, atlasMode, trustDeviceIdentifier },
+    { requestId, ...(authResult.user !== undefined ? { user: authResult.user } : {}), atlasMode, ...(trustDeviceIdentifier !== undefined ? { trustDeviceIdentifier } : {})},
     () => next(),
   );
 });
@@ -861,5 +861,5 @@ export const withRequestId = createMiddleware<AuthEnv>(async (c, next) => {
   const trustDeviceIdentifier =
     extractTrustDeviceIdentifier(cookieHeader) ?? undefined;
   c.set("trustDeviceIdentifier", trustDeviceIdentifier);
-  await withRequestContext({ requestId, trustDeviceIdentifier }, () => next());
+  await withRequestContext({ requestId, ...(trustDeviceIdentifier !== undefined ? { trustDeviceIdentifier } : {})}, () => next());
 });

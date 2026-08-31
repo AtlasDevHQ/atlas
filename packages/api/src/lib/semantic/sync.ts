@@ -746,7 +746,7 @@ export async function importFromDisk(
         entityType: "glossary",
         name: "glossary",
         yamlContent: content,
-        connectionId: options?.connectionId,
+        ...(options?.connectionId !== undefined ? { connectionId: options?.connectionId } : {}),
       });
     } catch (err) {
       errors.push({ file: "glossary.yml", reason: `Invalid YAML: ${errorMessage(err)}` });
@@ -834,7 +834,7 @@ async function _scanYamlDir(
         }
       }
 
-      out.push({ entityType, name, yamlContent: content, connectionId });
+      out.push({ entityType, name, yamlContent: content, ...(connectionId !== undefined ? { connectionId } : {})});
     } catch (err) {
       errors.push({ file, reason: errorMessage(err) });
     }
@@ -909,7 +909,7 @@ async function _scanEntityDirs(
         if (origin === "flat") {
           // Flat default group — preserve the install-id resolution path so
           // demo/wizard scoping is unchanged.
-          out.push({ entityType: "entity", name, yamlContent: content, connectionId: defaultConnectionId });
+          out.push({ entityType: "entity", name, yamlContent: content, ...(defaultConnectionId !== undefined ? { connectionId: defaultConnectionId } : {})});
         } else {
           // Group-scoped (canonical `groups/<group>/` or legacy `<source>/`):
           // the directory is the group, set connection_group_id directly.

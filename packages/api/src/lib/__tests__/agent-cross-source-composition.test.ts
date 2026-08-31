@@ -29,7 +29,7 @@ const COMPOSITION_HEADING = "## Cross-source composition";
 
 /** Build with just the catalog (and optionally memory), leaving the rest defaulted. */
 function withCatalog(sourceCatalog: string | undefined, memoryBlock?: string) {
-  return promptText(buildSystemParam("openai", { memoryBlock, sourceCatalog }));
+  return promptText(buildSystemParam("openai", { ...(memoryBlock !== undefined ? { memoryBlock } : {}), ...(sourceCatalog !== undefined ? { sourceCatalog } : {})}));
 }
 
 describe("buildSystemParam — cross-source composition guidance (#3909)", () => {

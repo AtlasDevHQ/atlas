@@ -115,8 +115,8 @@ export function requireAdminAuth(
   if ("error" in preamble) {
     throw new HTTPException(preamble.status, {
       res: Response.json(preamble.error, {
-        status: preamble.status,
-        headers: preamble.headers,
+        ...(preamble.status !== undefined ? { status: preamble.status } : {}),
+        ...(preamble.headers !== undefined ? { headers: preamble.headers } : {}),
       }),
     });
   }

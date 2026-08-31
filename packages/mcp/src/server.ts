@@ -147,7 +147,7 @@ export async function createAtlasMcpServer(
     },
   );
 
-  registerTools(server, { actor, transport, clientId, ...(scopes && { scopes }) });
+  registerTools(server, { actor, transport, ...(clientId !== undefined ? { clientId } : {}), ...(scopes && { scopes }) });
 
   // #4094 — the high-level NL-agent `query` tool (Shape A). Separate file
   // because it dispatches into the whole `runAgent` graph (lazy-imported), so
@@ -238,8 +238,8 @@ export async function createAtlasMcpServer(
     // `actor.activeOrganizationId` may be undefined for trusted-transport
     // (system:mcp) — gating falls back to the platform-level demo signal
     // (`ATLAS_DEMO_INDUSTRY`) in that case.
-    workspaceId: actor.activeOrganizationId,
-    clientId,
+    ...(actor.activeOrganizationId !== undefined ? { workspaceId: actor.activeOrganizationId } : {}),
+    ...(clientId !== undefined ? { clientId } : {}),
     transport,
     deployMode: getConfig()?.deployMode ?? "self-hosted",
     authMode: actor.mode,

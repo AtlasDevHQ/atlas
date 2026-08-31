@@ -98,7 +98,7 @@ export function requireAuth(
     throw new HTTPException(preamble.status, {
       res: Response.json(preamble.error, {
         status: preamble.status,
-        headers: preamble.headers,
+        ...(preamble.headers !== undefined ? { headers: preamble.headers } : {}),
       }),
     });
   }

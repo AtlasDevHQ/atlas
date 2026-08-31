@@ -147,7 +147,9 @@ describe("correction confirm token — mint/verify", () => {
     expect(
       verifyCorrectionConfirmToken(
         token,
-        binding({ verb: "retract", payload: { reason: undefined, replacement: undefined } }),
+        // Neither `reason` nor `replacement` supplied — both are exact optionals,
+        // so the payload that omits them IS the empty object (#5522).
+        binding({ verb: "retract", payload: {} }),
       ).ok,
     ).toBe(true);
   });

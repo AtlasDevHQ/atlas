@@ -1460,7 +1460,7 @@ export async function runAgent({
                 connectionGroupId: connectionGroupId ?? null,
                 mode: atlasMode,
                 question,
-                requestId: reqCtx?.requestId,
+                ...(reqCtx?.requestId !== undefined ? { requestId: reqCtx?.requestId } : {}),
                 // #4573 — attribute each injected pattern to this turn.
                 conversationId: conversationId ?? null,
               });
@@ -1812,7 +1812,7 @@ export async function runAgent({
   // reaches `execute` and so emits no tool span at all. See
   // docs/development/telemetry.md § Boundaries of the seam span.
   const registryTools = activeRegistry.getAll();
-  const hookedTools = wrapToolsWithHooks(registryTools, { userId: userId ?? undefined, conversationId });
+  const hookedTools = wrapToolsWithHooks(registryTools, { ...(userId != null ? { userId: userId } : {}), ...(conversationId !== undefined ? { conversationId } : {})});
   const tools = wrapToolsWithDurableState(hookedTools, memoryStore);
 
   // #3755 — render the deterministic working-memory block from the slots loaded
@@ -1850,16 +1850,17 @@ export async function runAgent({
   // glossary AND the durable memory block (#3755), and is passed to the model
   // separately, so neither ever enters the message array compaction rewrites
   // (#3759).
+  const resolvedAnswerStyle = answerStyle ?? resolveWorkspaceDefaultAnswerStyle(orgId);
   const systemParam = buildSystemParam(providerType, {
     registry: activeRegistry,
-    warnings,
-    persona,
-    briefing,
-    orgSemanticIndex,
-    orgKnowledgeToc,
-    learnedPatternsSection,
-    routingContext: scopeRoutingContext,
-    boundDashboardContext,
+    ...(warnings !== undefined ? { warnings } : {}),
+    ...(persona !== undefined ? { persona } : {}),
+    ...(briefing !== undefined ? { briefing } : {}),
+    ...(orgSemanticIndex !== undefined ? { orgSemanticIndex } : {}),
+    ...(orgKnowledgeToc !== undefined ? { orgKnowledgeToc } : {}),
+    ...(learnedPatternsSection !== undefined ? { learnedPatternsSection } : {}),
+    ...(scopeRoutingContext !== undefined ? { routingContext: scopeRoutingContext } : {}),
+    ...(boundDashboardContext !== undefined ? { boundDashboardContext } : {}),
     // #4303 — answer-style precedence: the caller's explicit style (the
     // #4302 per-conversation pick, or a chat-platform surface's explicit
     // "conversational") > the workspace default from the settings registry
@@ -1867,11 +1868,15 @@ export async function runAgent({
     // `buildSystemParam` when this resolves to undefined). Re-read per turn
     // through the settings cache, so an admin's change (or clear) takes
     // effect on the next turn without a restart.
-    answerStyle: answerStyle ?? resolveWorkspaceDefaultAnswerStyle(orgId),
-    restRepresentation,
+    // Read once into a local: both arms can be undefined, and the option is an
+    // exact optional, so the resolved style has to be spread rather than
+    // assigned. `buildSystemParam` applies `DEFAULT_ANSWER_STYLE` when the key
+    // is absent, which is exactly what "neither resolved" should mean (#5522).
+    ...(resolvedAnswerStyle !== undefined ? { answerStyle: resolvedAnswerStyle } : {}),
+    ...(restRepresentation !== undefined ? { restRepresentation } : {}),
     modelId: resolvedModelId,
-    memoryBlock,
-    sourceCatalog,
+    ...(memoryBlock !== undefined ? { memoryBlock } : {}),
+    ...(sourceCatalog !== undefined ? { sourceCatalog } : {}),
     dialectSpecialists,
   });
 
@@ -2077,8 +2082,9 @@ export async function runAgent({
       temperature: 0.2,
       maxOutputTokens: 4096,
       // #4294 — explicit user stop (see the option doc above). Absent for every
-      // caller that doesn't wire a Stop control; `streamText` ignores undefined.
-      abortSignal,
+      // caller that doesn't wire a Stop control. `CallSettings.abortSignal` is an
+      // exact optional, so absence is spread rather than passed as `undefined`.
+      ...(abortSignal !== undefined ? { abortSignal } : {}),
       // #3747 — this cap is PER-`streamText`: `stepCountIs` counts the AI-SDK
       // internal `stepNumber`, which restarts at 0 on a resumed run, so a resumed
       // turn gets a fresh full N-step per-request budget here. That is intentional

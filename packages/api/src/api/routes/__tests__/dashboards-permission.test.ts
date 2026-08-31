@@ -347,7 +347,11 @@ describe("#5189 — no dashboards route may exist without a permission decision"
     const doc = app.getOpenAPI31Document({
       openapi: "3.1.0",
       info: { title: "t", version: "0" },
-    }) as {
+      // `as unknown as`: `PathItemObject` has no string index signature, so the
+      // direct assertion is not a subtype relation in either direction. This
+      // test only reads `paths[p][method].description`, which the narrowed shape
+      // states exactly (#5522).
+    }) as unknown as {
       paths?: Record<string, Record<string, { description?: string }>>;
     };
 
@@ -400,7 +404,9 @@ describe("#5189 — no dashboards route may exist without a permission decision"
     const doc = app.getOpenAPI31Document({
       openapi: "3.1.0",
       info: { title: "t", version: "0" },
-    }) as { paths?: Record<string, Record<string, { responses?: Record<string, { description?: string }> }>> };
+      // `as unknown as`, same reason as the assertion above: `PathItemObject`
+      // carries no string index signature (#5522).
+    }) as unknown as { paths?: Record<string, Record<string, { responses?: Record<string, { description?: string }> }>> };
 
     const wrong: string[] = [];
     for (const r of ROUTES) {

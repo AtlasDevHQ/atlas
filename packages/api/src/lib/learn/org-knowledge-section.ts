@@ -234,8 +234,8 @@ export async function resolveOrgKnowledgeSection(
     patterns,
     favorites,
     suggestions,
-    maxFavorites: params.maxFavorites,
-    maxSuggestions: params.maxSuggestions,
+    ...(params.maxFavorites !== undefined ? { maxFavorites: params.maxFavorites } : {}),
+    ...(params.maxSuggestions !== undefined ? { maxSuggestions: params.maxSuggestions } : {}),
   });
 }
 

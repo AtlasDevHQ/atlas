@@ -143,8 +143,8 @@ export async function decideAmendment(params: {
       rawPayload: claimed.amendment_payload,
       requestId,
       label: id,
-      disambiguationGroup: group,
-      expectedBaselineHash,
+      ...(group !== undefined ? { disambiguationGroup: group } : {}),
+      ...(expectedBaselineHash !== undefined ? { expectedBaselineHash } : {}),
     });
   } catch (applyErr) {
     // #4511 — a stale baseline is NOT an apply failure: the entity changed

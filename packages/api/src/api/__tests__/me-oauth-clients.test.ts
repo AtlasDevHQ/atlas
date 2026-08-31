@@ -115,7 +115,7 @@ let queryHandler: (sql: string, params?: unknown[]) => Promise<{ rows: Record<st
 function makeMockClient(): MockClient {
   return {
     query: async (sql: string, params?: unknown[]) => {
-      clientQueries.push({ sql, params });
+      clientQueries.push({ sql, ...(params !== undefined ? { params } : {})});
       return queryHandler(sql, params);
     },
     release: (err?: unknown) => {
@@ -814,7 +814,7 @@ describe("me oauth-clients — POST /:id/workspace-scope (#2073)", () => {
     // Capture transactional writes.
     const writes: { sql: string; params?: unknown[] }[] = [];
     queryHandler = async (sql, params) => {
-      writes.push({ sql, params });
+      writes.push({ sql, ...(params !== undefined ? { params } : {})});
       return { rows: [] };
     };
 

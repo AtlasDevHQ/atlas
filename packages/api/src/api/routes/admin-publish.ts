@@ -26,6 +26,7 @@
  * Any failure rolls back the entire transaction — no partial state.
  */
 
+import type { WithLooseOptionals } from "@useatlas/schemas";
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import type { PublishPromotedCounts, PublishResult } from "@useatlas/types";
@@ -166,7 +167,13 @@ export type PublishResponse = z.infer<typeof PublishResponseSchema>;
 // the core). The REST schema itself stays local hono-`z` because
 // `@useatlas/schemas` carries no `.openapi()` metadata. Mirrors the guard idiom
 // in `packages/mcp/src/structured-output.ts`.
-const _assertPublishResponseIsShared = (r: PublishResponse): PublishResult => r;
+// `WithLooseOptionals` per the stage-1 precedent: `PublishResponse` is a Zod
+// inference, so its optionals carry `| undefined` while `PublishResult`'s are
+// exact. Widening only the optional side keeps every drift this guard exists to
+// catch — a renamed or missing REQUIRED field still breaks here (#5522).
+const _assertPublishResponseIsShared = (
+  r: PublishResponse,
+): WithLooseOptionals<PublishResult> => r;
 
 // ---------------------------------------------------------------------------
 // Route definition

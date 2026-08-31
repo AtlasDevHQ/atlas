@@ -47,6 +47,10 @@ import {
   type McpCallToolResult,
   type McpToolContextShape,
 } from "@atlas/api/lib/plugins/mcp-tools";
+import type {
+  McpDispatchGateContext,
+  McpDispatchGateRequirements,
+} from "@atlas/api/lib/mcp/dispatch-gate-contract";
 
 type McpLogger = McpToolContextShape["logger"];
 import { PluginRegistry, type PluginLike } from "@atlas/api/lib/plugins/registry";
@@ -536,7 +540,7 @@ describe("registerPluginMcpTools (MCP server registration)", () => {
           const reqCtx = getRequestContext();
           observed = {
             actor: reqCtx?.actor,
-            requestId: reqCtx?.requestId,
+            ...(reqCtx?.requestId !== undefined ? { requestId: reqCtx?.requestId } : {}),
           };
           return {
             ctx: {
@@ -1024,14 +1028,15 @@ describe("registerPluginMcpTools — ADR-0016 gates 1/3/4 (#3571)", () => {
   let server: FakeMcpServer;
 
   // Gate-call capture. Each test injects this as `runDispatchGate`.
+  //
+  // Typed against the REAL contract rather than a hand-rolled narrower mirror:
+  // the runner sits in a contravariant position, so a narrower `ctx` here is
+  // not a supertype of what `PluginDispatchGateRunner` passes and the injection
+  // stops compiling (#5522). Mirroring the contract also means a field added to
+  // it can't drift past this capture unnoticed.
   interface GateCall {
-    ctx: { orgId?: string; requesterId?: string };
-    reqs: {
-      toolName: string;
-      actionCategory?: string;
-      minRole?: string;
-      destructive?: { resource: string; description: string };
-    };
+    ctx: McpDispatchGateContext;
+    reqs: McpDispatchGateRequirements;
   }
   let gateCalls: GateCall[] = [];
   let gateReturn: McpCallToolResult | null = null;

@@ -41,7 +41,7 @@ void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () =>
     Promise.resolve({ authenticated: true, mode: "managed", user: authUser }),
   checkRateLimit: (key: string, options?: { bucket?: string; orgId?: string }) => {
-    checkRateLimitCalls.push({ key, options });
+    checkRateLimitCalls.push({ key, ...(options !== undefined ? { options } : {})});
     return { allowed: true };
   },
   getClientIP: () => "10.0.0.1",

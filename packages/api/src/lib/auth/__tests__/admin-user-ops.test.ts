@@ -22,7 +22,7 @@ let internalDbAvailable = true;
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mock((sql: string, params?: unknown[]) => {
-    queries.push({ sql, params });
+    queries.push({ sql, ...(params !== undefined ? { params } : {})});
     return queryImpl(sql, params);
   }),
   hasInternalDB: mock(() => internalDbAvailable),

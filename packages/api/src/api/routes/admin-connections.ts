@@ -791,8 +791,7 @@ adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test c
   try {
     connections.register(tempId, {
       url,
-      description: undefined,
-      schema: typeof schema === "string" ? schema : undefined,
+      ...(typeof schema === "string" ? { schema } : {}),
     });
     const result = await connections.healthCheck(tempId);
     logAdminAction({
@@ -877,7 +876,12 @@ adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c,
     },
   });
 
-  return c.json(result, 200);
+  // `message` is optional on the health-check result, and Hono's `c.json()`
+  // rejects an optional-bearing payload under `exactOptionalPropertyTypes` — its
+  // response type widens the slot back to `T | undefined`, which is not a
+  // `JSONValue`. Project it onto `| null`, the convention this repo already uses
+  // at the same seam (`admin-openapi-datasources.ts`) (#5522).
+  return c.json({ ...result, message: result.message ?? null }, 200);
 }));
 
 // POST / — create connection scoped to active org
@@ -1011,8 +1015,8 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   try {
     connections.register(id, {
       url,
-      description: typeof description === "string" ? description : undefined,
-      schema: typeof schema === "string" ? schema : undefined,
+      ...(typeof description === "string" ? { description } : {}),
+      ...(typeof schema === "string" ? { schema } : {}),
     });
     await connections.healthCheck(id);
   } catch (err) {
@@ -1369,12 +1373,20 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     }
   } else if (urlChanged) {
     try {
-      connections.register(id, { url: newUrl, description: newDescription ?? undefined, schema: newSchema ?? undefined });
+      connections.register(id, {
+            url: newUrl,
+            ...(newDescription != null ? { description: newDescription } : {}),
+            ...(newSchema != null ? { schema: newSchema } : {}),
+          });
       await connections.healthCheck(id);
     } catch (err) {
       let rollbackFailed = false;
       try {
-        connections.register(id, { url: currentUrl, description: currentDescription ?? undefined, schema: currentSchema ?? undefined });
+        connections.register(id, {
+            url: currentUrl,
+            ...(currentDescription != null ? { description: currentDescription } : {}),
+            ...(currentSchema != null ? { schema: currentSchema } : {}),
+          });
       } catch (restoreErr) {
         rollbackFailed = true;
         log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
@@ -1388,7 +1400,11 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     }
   } else {
     try {
-      connections.register(id, { url: newUrl, description: newDescription ?? undefined, schema: newSchema ?? undefined });
+      connections.register(id, {
+            url: newUrl,
+            ...(newDescription != null ? { description: newDescription } : {}),
+            ...(newSchema != null ? { schema: newSchema } : {}),
+          });
     } catch (err) {
       log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to re-register connection with updated metadata");
       return c.json({ error: "internal_error", message: "Failed to update connection.", requestId }, 500);
@@ -1442,7 +1458,11 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
           currentDecryptedConfig,
         );
       } else {
-        connections.register(id, { url: currentUrl, description: currentDescription ?? undefined, schema: currentSchema ?? undefined });
+        connections.register(id, {
+            url: currentUrl,
+            ...(currentDescription != null ? { description: currentDescription } : {}),
+            ...(currentSchema != null ? { schema: currentSchema } : {}),
+          });
       }
     } catch (restoreErr) {
       rollbackFailed = true;

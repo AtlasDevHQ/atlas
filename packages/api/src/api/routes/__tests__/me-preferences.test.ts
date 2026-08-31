@@ -8,6 +8,7 @@
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
+import type { AtlasRole } from "@useatlas/types";
 
 // ── Auth mock ──────────────────────────────────────────────────────────────
 
@@ -138,7 +139,7 @@ void mock.module("@atlas/api/lib/db/internal", () => {
 
 const { mePreferences } = await import("../me-preferences");
 
-function userAuth(role: string | undefined): AuthResult & { authenticated: true } {
+function userAuth(role: AtlasRole | undefined): AuthResult & { authenticated: true } {
   return {
     authenticated: true,
     mode: "managed",
@@ -146,7 +147,7 @@ function userAuth(role: string | undefined): AuthResult & { authenticated: true 
       id: `user-${role ?? "none"}`,
       mode: "managed",
       label: `${role ?? "member"}@test.dev`,
-      role: role as "admin" | "owner" | "platform_admin" | "member" | undefined,
+      ...(role !== undefined ? { role } : {}),
       activeOrganizationId: "org-1",
     },
   };

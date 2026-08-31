@@ -2260,7 +2260,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         subject: "alice",
         object: "bob",
         status: "published",
-        provenance: publishedProvenance,
+        ...(publishedProvenance !== undefined ? { provenance: publishedProvenance } : {}),
       });
       const draft = await seedFact({
         workspaceId: ws,

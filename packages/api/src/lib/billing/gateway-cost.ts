@@ -60,7 +60,11 @@ export function parseGatewayCostUsd(raw: unknown): number | null {
 
 /** A turn step, narrowed to the provider-metadata shape this module reads. */
 export interface StepProviderMetadata {
-  readonly providerMetadata?: Record<string, Record<string, unknown> | undefined> | null;
+  // Loose-optional (`| undefined`) deliberately: the callers pass the AI SDK's
+  // `StepResult`, whose `providerMetadata` really is `T | undefined`. This
+  // interface exists to NARROW a third-party step to the one field this module
+  // reads, so it has to accept the shape that type actually has (#5522).
+  readonly providerMetadata?: Record<string, Record<string, unknown> | undefined> | null | undefined;
 }
 
 /** Whether a raw cost value is PRESENT (not absent / empty-string) regardless of parseability. */

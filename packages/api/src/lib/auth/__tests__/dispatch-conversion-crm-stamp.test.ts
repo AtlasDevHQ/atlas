@@ -367,18 +367,25 @@ describe("planConversionStamp — onSubscriptionComplete trigger", () => {
     expect(
       planConversionStamp({
         trigger: "complete",
-        subscription: { status: "active", stripeCustomerId: undefined },
+        subscription: { status: "active"},
       }),
     ).toEqual({ kind: "log-and-skip", reason: "no-stripe-customer-id" });
   });
 });
 
 describe("planConversionStamp — onSubscriptionUpdate trigger", () => {
+  // `previous_attributes` is an exact optional on the event shape, so
+  // "Stripe sent no previous_attributes" is an ABSENT key here, not one holding
+  // `undefined` — which is exactly the distinction the non-transition arms
+  // below exercise (#5522).
   const updateEvent = (current: string | null | undefined, previous: string | null | undefined) => ({
     type: "customer.subscription.updated",
     data: {
-      previous_attributes: previous === undefined ? undefined : { status: previous },
-      object: { status: current },
+      ...(previous === undefined ? {} : { previous_attributes: { status: previous } }),
+      // `status` is an exact optional on the object arm (`status?: string | null`),
+      // so "Stripe sent no status" is an omitted key — the same shape the
+      // `previous_attributes` spread above builds (#5522).
+      ...(current !== undefined ? { object: { status: current } } : { object: {} }),
     },
   });
 
@@ -439,7 +446,7 @@ describe("planConversionStamp — onSubscriptionUpdate trigger", () => {
     expect(
       planConversionStamp({
         trigger: "update",
-        subscription: { stripeCustomerId: undefined },
+        subscription: {},
         event: updateEvent("active", "trialing"),
       }),
     ).toEqual({ kind: "skip", reason: "non-transition" });

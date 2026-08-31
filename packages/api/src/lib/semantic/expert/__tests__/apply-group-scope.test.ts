@@ -111,7 +111,7 @@ function amendment(entityName: string, group: string | undefined): AnalysisResul
   return {
     category: "coverage_gaps",
     entityName,
-    group,
+    ...(group !== undefined ? { group } : {}),
     amendmentType: "add_dimension",
     amendment: { name: "region", sql: "region", type: "string" },
     rationale: "add region dimension",

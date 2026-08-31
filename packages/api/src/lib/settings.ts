@@ -2872,7 +2872,27 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
         ({ value: platformValue, source: platformSource } = resolvePlatformTier(def));
       }
 
-      return { ...def, requiresRestart, saasImmutable, currentValue, source, platformValue, platformSource };
+      // ⚠️ `requiresRestart` is destructured OFF `def` first. It is a SUPPRESSION
+      // override, not an addition: the registry entry carries
+      // `requiresRestart: true`, and the local computed above is `undefined`
+      // exactly when SaaS hot-reloads the key and the hint must NOT be shown.
+      // A conditional spread alone would leave `def`'s `true` standing and put a
+      // false restart warning on every hot-reloaded key in SaaS (#5522).
+      const { requiresRestart: _registryRequiresRestart, ...defWithoutRestartHint } = def;
+      return {
+        ...defWithoutRestartHint,
+        ...(requiresRestart !== undefined ? { requiresRestart } : {}),
+        // Spread on presence: `saasImmutable` is an exact optional, and a key
+        // that is not SaaS-immutable must be absent rather than hold
+        // `undefined` (#5522).
+        ...(saasImmutable !== undefined ? { saasImmutable } : {}),
+        currentValue,
+        source,
+        // Both are exact optionals: a setting with no platform-tier value must
+        // omit the keys rather than hold `undefined` (#5522).
+        ...(platformValue !== undefined ? { platformValue } : {}),
+        ...(platformSource !== undefined ? { platformSource } : {}),
+      };
     });
 }
 

@@ -221,15 +221,20 @@ function withRequestId(message: string, requestId: string | undefined): string {
  * nothing" is indistinguishable from an empty brain.
  */
 export interface SearchBrainInput {
-  query?: string;
-  include?: string[];
-  type?: string;
-  tags?: string[];
-  collection?: string;
-  since?: string;
-  asOf?: string;
-  limit?: number;
-  expand?: boolean;
+  // Loose-optional (`| undefined`) throughout, deliberately: this is the tool's
+  // INPUT contract, and its main caller hands it a Zod-parsed value whose
+  // `.optional()` fields are `T | undefined`. `normalizeSearchInput` below is
+  // the seam that turns this into the exact shape the core consumes, so the
+  // exactness that matters is on its RETURN type, not here (#5522).
+  query?: string | undefined;
+  include?: string[] | undefined;
+  type?: string | undefined;
+  tags?: string[] | undefined;
+  collection?: string | undefined;
+  since?: string | undefined;
+  asOf?: string | undefined;
+  limit?: number | undefined;
+  expand?: boolean | undefined;
 }
 
 /**
@@ -307,18 +312,23 @@ export function normalizeSearchInput(input: SearchBrainInput): {
       "searchBrain: dropped unrecognized `include` entries",
     );
   }
+  // Read each trimmed value once: the conditional-spread idiom evaluates its
+  // subject twice, so an inline `input.x?.trim()` would trim twice (#5522).
+  const trimmedType = input.type?.trim();
+  const trimmedCollection = input.collection?.trim();
+  const trimmedSince = input.since?.trim();
   return {
-    query: input.query,
-    include: include && include.length > 0 ? include : undefined,
-    type: input.type?.trim() || undefined,
-    tags: tags && tags.length > 0 ? tags : undefined,
-    collection: input.collection?.trim() || undefined,
-    since: input.since?.trim() || undefined,
-    // Passed through VERBATIM, deliberately unlike `since` above: `'   '.trim()
-    // || undefined` would silently turn an explicit-but-blank asOf into the
-    // as-of-now read — exactly the fall-through #4916 forbids. The core's
+    ...(input.query !== undefined ? { query: input.query } : {}),
+    ...(include && include.length > 0 ? { include } : {}),
+    ...(trimmedType ? { type: trimmedType } : {}),
+    ...(tags && tags.length > 0 ? { tags } : {}),
+    ...(trimmedCollection ? { collection: trimmedCollection } : {}),
+    ...(trimmedSince ? { since: trimmedSince } : {}),
+    // Passed through VERBATIM, deliberately unlike `since` above: a blank
+    // `asOf` must NOT fall through to the as-of-now read — exactly what #4916
+    // forbids — so it is spread on presence, not on truthiness. The core's
     // parseBrainAsOf owns the judgment and REJECTS a blank instead.
-    asOf: input.asOf,
+    ...(input.asOf !== undefined ? { asOf: input.asOf } : {}),
     limit,
     expand: input.expand ?? true,
   };

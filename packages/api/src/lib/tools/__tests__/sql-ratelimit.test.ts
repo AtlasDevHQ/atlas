@@ -82,7 +82,7 @@ void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
         message: slotReason,
         sourceId: _sourceId,
         limit: 0,
-        retryAfterMs: slotRetryAfterMs,
+        ...(slotRetryAfterMs !== undefined ? { retryAfterMs: slotRetryAfterMs } : {}),
       }));
     }
     return effect;
@@ -108,7 +108,7 @@ let auditInserts: Array<{ sql: string; params?: unknown[] }> = [];
 
 const mockPool: InternalPool = {
   query: async (sql: string, params?: unknown[]) => {
-    auditInserts.push({ sql, params });
+    auditInserts.push({ sql, ...(params !== undefined ? { params } : {})});
     return { rows: [] };
   },
   async connect() {

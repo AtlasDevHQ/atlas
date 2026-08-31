@@ -79,7 +79,7 @@ describe("resolveBriefingAnchor — group", () => {
   });
 
   it("resolves the flat `default` group from entities with no group/connection", () => {
-    const entities = [entity({ name: "orders", connection: undefined, group: undefined })];
+    const entities = [entity({ name: "orders",})];
     const anchor = resolveBriefingAnchor({ kind: "group", group: "default" }, entities, []);
     if (anchor?.kind !== "group") throw new Error("expected a group anchor");
     expect(anchor.entities.map((e) => e.name)).toEqual(["orders"]);

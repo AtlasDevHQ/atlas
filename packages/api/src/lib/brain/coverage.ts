@@ -292,7 +292,7 @@ export async function loadCoverage(
     ),
   );
 
-  return composeCoverage({ workspaceId, requestId, authority, snapshots, rosters, at: new Date() });
+  return composeCoverage({ workspaceId, ...(requestId !== undefined ? { requestId } : {}), authority, snapshots, rosters, at: new Date() });
 }
 
 /** Everything the composition needs, with the reads already done. */

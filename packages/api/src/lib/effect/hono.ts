@@ -741,7 +741,7 @@ function classifyError(
     return new HTTPException(mapped.status, {
       res: Response.json(
         responseBody,
-        { status: mapped.status, headers: mapped.headers },
+        { status: mapped.status, ...(mapped.headers !== undefined ? { headers: mapped.headers } : {})},
       ),
     });
   }
@@ -973,5 +973,5 @@ export function runHandler<T>(
   // before delegating; that double-provide was redundant and would now
   // also need to layer in EnterpriseLayer to type-check, so we hand the
   // raw program through and let runEffect's single provide handle it.
-  return runEffect(c, program, { label, domainErrors: options?.domainErrors });
+  return runEffect(c, program, { label, ...(options?.domainErrors !== undefined ? { domainErrors: options?.domainErrors } : {})});
 }

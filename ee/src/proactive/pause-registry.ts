@@ -211,7 +211,7 @@ export async function isPaused(input: IsPausedInput): Promise<PauseDecision> {
     const rows = await fetchCandidateRows({
       workspaceId: input.workspaceId,
       channelId: input.channelId,
-      userId: input.userId,
+      ...(input.userId !== undefined ? { userId: input.userId } : {}),
     });
     return decidePauseFromRows(rows, now);
   } catch (err) {

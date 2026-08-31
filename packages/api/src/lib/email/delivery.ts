@@ -930,7 +930,7 @@ async function deliverResend(message: EmailMessage, from: string, apiKey?: strin
 
     const data = await resp.json().catch(() => ({})) as { id?: string };
     log.info({ to: message.to, subject: message.subject, messageId: data.id }, "Email sent via Resend");
-    return { success: true, provider: "resend", messageId: data.id };
+    return { success: true, provider: "resend", ...(data.id !== undefined ? { messageId: data.id } : {})};
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     log.error({ to: message.to, err: error }, "Resend delivery error");

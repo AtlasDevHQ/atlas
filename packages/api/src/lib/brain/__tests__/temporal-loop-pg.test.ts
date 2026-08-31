@@ -664,7 +664,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
     return searchBrainCore(pool, {
       ctx,
       mode: options.mode ?? "published",
-      query: options.query,
+      ...(options.query !== undefined ? { query: options.query } : {}),
       include: ["attested", "on-record"],
       expand: false,
       limit: 25,
@@ -731,7 +731,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
         throw new Error(
           `fixture: unstubbed AudienceSyncDeps.query — a new consumer appeared: ${sql.slice(0, 120)}`,
         );
-      }) as AudienceSyncDeps["query"],
+      }) as NonNullable<AudienceSyncDeps["query"]>,
       resolveToken: () => Promise.resolve("xoxb-test"),
       resolve: (workspaceId, principals) =>
         resolvePrincipals(workspaceId, principals, { query: poolQuery }),

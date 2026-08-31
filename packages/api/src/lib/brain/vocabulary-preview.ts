@@ -1257,7 +1257,7 @@ function assertReaderResolvable(ctx: BrainPrincipalContext, requestId?: string):
     table: "brain_facts",
     alias: "d",
     paramIndex: 1,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (probe.decision === "deny-all") {
     throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, PREVIEW_SURFACE);
@@ -1441,14 +1441,15 @@ async function planCounterfactual(
         // rather than a batch scope. `vocabulary-preview-pg.test.ts` asserts
         // this statement and the delta agree on a real corpus, so the reuse is
         // CHECKED rather than claimed.
-        armingTotalOverride:
-          request.kind === "cardinality-flip"
-            ? {
+        ...(request.kind === "cardinality-flip"
+          ? {
+              armingTotalOverride: {
                 sql: cardinalityHeldBackCountSql("d.predicate_key = $2"),
                 params: [canonicalKey],
                 column: "held_back",
-              }
-            : undefined,
+              },
+            }
+          : {}),
       };
     }
   }
@@ -1762,7 +1763,7 @@ async function loadBlastRadiusSide(
     table: "brain_facts",
     alias: "d",
     paramIndex: aclBase,
-    requestId: opts.requestId,
+    ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
   });
   if (draftAcl.decision === "deny-all") {
     throw new BrainReaderUnresolvedError(workspaceId, ctx.origin, PREVIEW_SURFACE);
@@ -1771,7 +1772,7 @@ async function loadBlastRadiusSide(
     table: "brain_facts",
     alias: "p",
     paramIndex: draftAcl.nextParamIndex,
-    requestId: opts.requestId,
+    ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
   });
   if (publishedAcl.decision === "deny-all") {
     // Unreachable — same context, same table, and the first clause resolved.

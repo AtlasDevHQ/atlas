@@ -62,7 +62,7 @@ export const profileTable = tool({
     return withSpan(
       "atlas.profile.table",
       { "atlas.profile.table": table, "atlas.profile.connection_id": connId },
-      () => profileTableImpl({ table, columns, connId }),
+      () => profileTableImpl({ table, ...(columns !== undefined ? { columns } : {}), connId }),
     );
   },
 });

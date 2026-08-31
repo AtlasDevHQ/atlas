@@ -312,7 +312,7 @@ export async function listMcpPrompts(
   opts: ListMcpPromptsOptions,
 ): Promise<PromptListing> {
   const canonicalGate = await evaluateCanonicalGate({
-    workspaceId: opts.workspaceId,
+    ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
   });
 
   const prompts: PromptListEntry[] = [];

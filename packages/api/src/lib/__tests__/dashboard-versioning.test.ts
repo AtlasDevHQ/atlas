@@ -878,7 +878,7 @@ let releaseCalls = 0;
 const mockClient: InternalPoolClient = {
   query: async (sql: string, params?: unknown[]) => {
     if (clientThrow) throw clientThrow;
-    clientCalls.push({ sql, params });
+    clientCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     const result = clientResults[clientResultIndex] ?? { rows: [] };
     clientResultIndex++;
     return result;
@@ -891,7 +891,7 @@ const mockClient: InternalPoolClient = {
 const mockPool: InternalPool = {
   query: async (sql: string, params?: unknown[]) => {
     if (queryThrow) throw queryThrow;
-    queryCalls.push({ sql, params });
+    queryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     const result = queryResults[queryResultIndex] ?? { rows: [] };
     queryResultIndex++;
     return result;
@@ -1441,7 +1441,7 @@ describe("dashboard-versioning DB helpers", () => {
         query: async (sql: string, params?: unknown[]) => {
           call++;
           if (call === 1) {
-            queryCalls.push({ sql, params });
+            queryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
             return { rows: [draftRow({ draft: snap })] }; // loadDraft
           }
           // 2nd pool query is loadDashboardUpdatedAtPrecise → simulate a blip.
@@ -1659,7 +1659,7 @@ describe("dashboard-versioning DB helpers", () => {
       clientCalls = [];
       const customClient: InternalPoolClient = {
         query: async (sql: string, params?: unknown[]) => {
-          clientCalls.push({ sql, params });
+          clientCalls.push({ sql, ...(params !== undefined ? { params } : {})});
           serviced++;
           // 1. BEGIN
           if (serviced === 1) return { rows: [] };

@@ -364,7 +364,7 @@ describe("the per-channel cursor", () => {
     const calls2: SlackHistoryPageParams[] = [];
     const api2 = fakeApi({ channels: { C1: channel() }, pages: {}, calls: calls2 });
     await fetchWith(api2, ["C1"], {
-      cursor: first.cursor,
+      ...(first.cursor !== undefined ? { cursor: first.cursor } : {}),
       maxEpisodes: HISTORY_PAGE_LIMIT,
     });
     // Cycle 2 resumes strictly below cycle 1's ceiling.
@@ -812,7 +812,7 @@ describe("gaplessness across cycles (end to end)", () => {
       calls,
     });
     await fetchWith(api2, ["C1", "C2"], {
-      cursor: first.cursor,
+      ...(first.cursor !== undefined ? { cursor: first.cursor } : {}),
       maxEpisodes: HISTORY_PAGE_LIMIT,
     });
     // Cycle 2 starts where cycle 1 stopped, so C2 is read first this time.

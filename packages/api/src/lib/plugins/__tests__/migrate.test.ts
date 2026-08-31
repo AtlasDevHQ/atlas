@@ -36,7 +36,7 @@ function makeMockDB(opts?: {
   return {
     queries,
     async query(sql: string, params?: unknown[]) {
-      queries.push({ sql, params });
+      queries.push({ sql, ...(params !== undefined ? { params } : {})});
 
       if (opts?.failOnCreate && sql.includes("CREATE TABLE") && !sql.includes("plugin_migrations")) {
         throw new Error("permission denied for schema public");
@@ -840,7 +840,7 @@ describe("runPluginMigrations", () => {
       return {
         queries,
         async query(sql: string, params?: unknown[]) {
-          queries.push({ sql, params });
+          queries.push({ sql, ...(params !== undefined ? { params } : {})});
           if (sql.includes("CREATE TABLE") && sql.includes("plugin_bad_")) {
             throw new Error("syntax error at or near \"GARBAGE\"");
           }

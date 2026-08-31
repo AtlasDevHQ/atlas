@@ -167,7 +167,10 @@ export const getBackupConfig = (): Effect.Effect<BackupConfigRow, EnterpriseErro
   });
 
 export const updateBackupConfig = (
-  config: { schedule?: string; retentionDays?: number; storagePath?: string },
+  // Loose-optional, matching `BackupsManagerShape.updateBackupConfig`: a REST
+  // input contract fed by a Zod PATCH body, with each field read through an
+  // `!== undefined` guard before its SET clause is added (#5522).
+  config: { schedule?: string | undefined; retentionDays?: number | undefined; storagePath?: string | undefined },
 ): Effect.Effect<void, EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* ensureTable();

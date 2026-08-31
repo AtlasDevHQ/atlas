@@ -557,7 +557,7 @@ describe("sendTransactionalEmail", () => {
       {
         send: async () => ({ success: false, provider: "resend", error: "503" }),
         enqueueFailed: async (_m, o) => {
-          captured.push({ emailType: o.emailType, ttlMs: o.ttlMs });
+          captured.push({ emailType: o.emailType, ...(o.ttlMs !== undefined ? { ttlMs: o.ttlMs } : {})});
           return true;
         },
       },

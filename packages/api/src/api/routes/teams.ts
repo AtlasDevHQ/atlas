@@ -154,7 +154,7 @@ teams.openapi(installRoute, async (c) => {
 
   const nonce = crypto.randomUUID();
   try {
-    await saveOAuthState(nonce, { orgId, provider: "teams" });
+    await saveOAuthState(nonce, { ...(orgId !== undefined ? { orgId } : {}), provider: "teams" });
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err) },

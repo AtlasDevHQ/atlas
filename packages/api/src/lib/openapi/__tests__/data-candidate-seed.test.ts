@@ -27,7 +27,7 @@ function captureDb(returnRowsPerCall: (callIndex: number) => Array<{ slug: strin
   const db: OpenApiDatasourceCatalogSeedDb = {
     async query<T = unknown>(sql: string, params?: unknown[]) {
       const rows = returnRowsPerCall(calls.length);
-      calls.push({ sql, params });
+      calls.push({ sql, ...(params !== undefined ? { params } : {})});
       return { rows: rows as T[] };
     },
   };

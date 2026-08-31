@@ -28,7 +28,7 @@ let errorLogs: Array<{ ctx: unknown; msg: unknown }> = [];
 
 const mockPool = {
   query: mock((sql: string, params?: unknown[]) => {
-    queryCalls.push({ sql, params });
+    queryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     const result = queryResults.shift();
     return Promise.resolve({ rows: result ?? [] });
   }),
@@ -39,11 +39,11 @@ const mockPool = {
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalExecute: (sql: string, params?: unknown[]) => {
-    queryCalls.push({ sql, params });
+    queryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
   },
   internalQuery: async (sql: string, params?: unknown[]) => {
     if (mockQueryShouldThrow) throw new Error("connection refused");
-    queryCalls.push({ sql, params });
+    queryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     const result = queryResults.shift();
     return result ?? [];
   },

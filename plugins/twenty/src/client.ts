@@ -288,7 +288,7 @@ async function readErrorDetail(response: Response): Promise<{ message: string; c
     }
   }
   const message = upstreamMessage ? upstreamMessage : `HTTP ${response.status}`;
-  return { message, code: upstreamCode };
+  return { message, ...(upstreamCode !== undefined ? { code: upstreamCode } : {}) };
 }
 
 /**
@@ -322,12 +322,13 @@ async function findPersonByEmail(
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `findPersonByEmail failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "findPersonByEmail",
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -413,12 +414,13 @@ async function createPerson(
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `createPerson failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "createPerson",
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -454,12 +456,13 @@ async function updatePerson(
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `updatePerson failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "updatePerson",
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -530,12 +533,13 @@ export async function createNote(
 
   if (!noteResponse.ok) {
     const detail = await readErrorDetail(noteResponse);
+    const retryAfterMs = parseRetryAfterMs(noteResponse.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `createNote failed: ${detail.message}`,
       status: noteResponse.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "createNote",
-      retryAfterMs: parseRetryAfterMs(noteResponse.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -580,12 +584,13 @@ export async function createNote(
 
   if (!linkResponse.ok) {
     const detail = await readErrorDetail(linkResponse);
+    const retryAfterMs = parseRetryAfterMs(linkResponse.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `createNoteTarget failed (note=${noteId}): ${detail.message}`,
       status: linkResponse.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "createNoteTarget",
-      retryAfterMs: parseRetryAfterMs(linkResponse.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
       orphanedNoteId: noteId,
     });
   }
@@ -742,12 +747,13 @@ export async function getPersonMetadata(
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `getPersonMetadata failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "getPersonMetadata",
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -823,12 +829,13 @@ export async function getPersonRestSchema(
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `getPersonRestSchema failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "getPersonRestSchema",
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -1018,12 +1025,13 @@ export async function listPeople(
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `listPeople failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "listPeople",
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -1063,12 +1071,13 @@ export async function getPerson(
   if (response.status === 404) return undefined;
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `getPerson failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "getPerson",
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -1148,7 +1157,11 @@ export async function searchPeople(
   const filter = `filter=${clauses.join(",")}`;
   const url = buildRestUrl(
     config.baseUrl,
-    `people${buildListQuery({ limit: input.limit, startingAfter: input.startingAfter, endingBefore: input.endingBefore }, filter)}`,
+    `people${buildListQuery({
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.startingAfter !== undefined ? { startingAfter: input.startingAfter } : {}),
+      ...(input.endingBefore !== undefined ? { endingBefore: input.endingBefore } : {}),
+    }, filter)}`,
   );
   const response = await fetchImpl(url, {
     method: "GET",
@@ -1158,12 +1171,13 @@ export async function searchPeople(
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `searchPeople failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "searchPeople",
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -1202,12 +1216,13 @@ export async function listNotes(
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `listNotes failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "listNotes",
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -1248,12 +1263,13 @@ export async function listCompanies(
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `listCompanies failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "listCompanies",
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -1308,7 +1324,11 @@ export async function searchCompanies(
   const filter = `filter=${clauses.join(",")}`;
   const url = buildRestUrl(
     config.baseUrl,
-    `companies${buildListQuery({ limit: input.limit, startingAfter: input.startingAfter, endingBefore: input.endingBefore }, filter)}`,
+    `companies${buildListQuery({
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.startingAfter !== undefined ? { startingAfter: input.startingAfter } : {}),
+      ...(input.endingBefore !== undefined ? { endingBefore: input.endingBefore } : {}),
+    }, filter)}`,
   );
   const response = await fetchImpl(url, {
     method: "GET",
@@ -1318,12 +1338,13 @@ export async function searchCompanies(
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `searchCompanies failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation: "searchCompanies",
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -1380,12 +1401,13 @@ async function deleteRecord(
   if (response.status === 404) return; // already gone — idempotent
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     throw new TwentyClientError({
       message: `${operation} failed: ${detail.message}`,
       status: response.status,
-      upstreamCode: detail.code,
+      ...(detail.code !== undefined ? { upstreamCode: detail.code } : {}),
       operation,
-      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 }

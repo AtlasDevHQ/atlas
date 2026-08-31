@@ -19,6 +19,7 @@
  * a safe default (false, 0, or empty) while re-throwing unexpected errors.
  */
 
+import type { WithLooseOptionals } from "@useatlas/schemas";
 import { Effect, Layer } from "effect";
 import { requireEnterpriseEffect } from "../index";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
@@ -265,7 +266,7 @@ function rowToRequest(row: ApprovalQueueRow): ApprovalRequest | null {
 
 // ── Validation ──────────────────────────────────────────────────────
 
-function validateRuleInput(input: CreateApprovalRuleRequest): Effect.Effect<void, ApprovalError> {
+function validateRuleInput(input: WithLooseOptionals<CreateApprovalRuleRequest>): Effect.Effect<void, ApprovalError> {
   if (!input.name || input.name.trim().length === 0) {
     return Effect.fail(new ApprovalError({ message: "Rule name is required.", code: "validation" }));
   }
@@ -360,7 +361,7 @@ export const getApprovalRule = (orgId: string, ruleId: string): Effect.Effect<Ap
 /** Create a new approval rule. */
 export const createApprovalRule = (
   orgId: string,
-  input: CreateApprovalRuleRequest,
+  input: WithLooseOptionals<CreateApprovalRuleRequest>,
 ): Effect.Effect<ApprovalRule, ApprovalError | EnterpriseError | Error> =>
   eeWrite("approval-workflows", "approval rules", Effect.gen(function* () {
     yield* validateRuleInput(input);
@@ -396,7 +397,7 @@ export const createApprovalRule = (
 export const updateApprovalRule = (
   orgId: string,
   ruleId: string,
-  input: UpdateApprovalRuleRequest,
+  input: WithLooseOptionals<UpdateApprovalRuleRequest>,
 ): Effect.Effect<ApprovalRule, ApprovalError | EnterpriseError | Error> =>
   eeWrite("approval-workflows", "approval rules", Effect.gen(function* () {
     // Check the rule exists

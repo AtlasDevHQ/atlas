@@ -441,7 +441,7 @@ describe("getOwnerVerification — the row-shape owner read", () => {
   function poolReturning(rows: Array<Record<string, unknown>>): InternalPool {
     return {
       query: async (sql: string, params?: unknown[]) => {
-        queries.push({ sql, params });
+        queries.push({ sql, ...(params !== undefined ? { params } : {})});
         return { rows, rowCount: rows.length };
       },
     } as unknown as InternalPool;

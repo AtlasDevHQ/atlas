@@ -17,10 +17,41 @@ import { SSOError, SSOEnforcementError } from "@atlas/api/lib/auth/auth-errors";
 import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import type {
   CreateSSOProviderRequest,
+  SSOProvider,
   UpdateSSOProviderRequest,
 } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
+
+/**
+ * Project a provider onto its wire shape (#5522).
+ *
+ * `SSOSamlConfig.spEntityId` / `.spAcsUrl` are optional, and Hono's `c.json()`
+ * refuses a payload carrying ANY optional property under
+ * `exactOptionalPropertyTypes` — its response type widens the slot back to
+ * `T | undefined`, which is not a `JSONValue`. Projecting them onto `| null` is
+ * the convention this repo already uses at the same seam
+ * (`admin-openapi-datasources.ts`), and nothing reads them off this response:
+ * the admin SSO page derives both URLs from its own origin.
+ */
+function providerResponse(
+  provider: SSOProvider,
+): Omit<SSOProvider, "config"> & { config: Record<string, string | null> } {
+  const { config, ...rest } = provider;
+  // Every value in either config arm is a string; the SAML arm's two SP fields
+  // are the only optional ones. `?? null` keeps them on the wire with an
+  // explicit absence marker instead of an omitted key.
+  const projected: Record<string, string | null> = {};
+  for (const [k, v] of Object.entries(config)) projected[k] = v ?? null;
+  // Not redundant with the loop: when the SP fields are ABSENT from the stored
+  // config there is no entry to iterate, so this is what puts the keys on the
+  // wire at all. The loop only covers the case where they are present.
+  if (provider.type === "saml") {
+    projected.spEntityId = provider.config.spEntityId ?? null;
+    projected.spAcsUrl = provider.config.spAcsUrl ?? null;
+  }
+  return { ...rest, config: projected };
+}
 
 const ssoDomainError = domainError(SSOError, { not_found: 404, conflict: 409, validation: 400 });
 const ssoEnforcementDomainError = domainError(SSOEnforcementError, { no_provider: 400, not_enterprise: 400 });
@@ -652,7 +683,7 @@ adminSso.openapi(getProviderRoute, async (c) => {
     if (!provider) {
       return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
     }
-    return c.json({ provider: sso.redactProvider(provider) }, 200);
+    return c.json({ provider: providerResponse(sso.redactProvider(provider)) }, 200);
   }), { label: "get SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
@@ -679,7 +710,7 @@ adminSso.openapi(createProviderRoute, async (c) => {
       metadata: { providerType: body.type },
     });
 
-    return c.json({ provider: sso.redactProvider(provider) }, 201);
+    return c.json({ provider: providerResponse(sso.redactProvider(provider)) }, 201);
   }), { label: "create SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
@@ -707,7 +738,7 @@ adminSso.openapi(updateProviderRoute, async (c) => {
       metadata: { providerType: provider.type },
     });
 
-    return c.json({ provider: sso.redactProvider(provider) }, 200);
+    return c.json({ provider: providerResponse(sso.redactProvider(provider)) }, 200);
   }), { label: "update SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 

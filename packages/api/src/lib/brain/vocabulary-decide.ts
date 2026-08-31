@@ -1745,7 +1745,7 @@ export async function removeInForceAliasEdge(
       position,
       remover,
       { fromNorm, toNorm },
-      { requestId: deps.requestId },
+      { ...(deps.requestId !== undefined ? { requestId: deps.requestId } : {})},
     );
     if (!visible) {
       log.warn(

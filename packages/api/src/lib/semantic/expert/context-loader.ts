@@ -50,12 +50,16 @@ function projectParsedEntity(
   return {
     name,
     table: String((parsed.table ?? opts.fallbackName) as string),
-    description: typeof parsed.description === "string" ? parsed.description : undefined,
+    ...(typeof parsed.description === "string" ? { description: parsed.description } : {}),
     dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions as ParsedEntity["dimensions"] : [],
     measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
     joins: Array.isArray(parsed.joins) ? parsed.joins as ParsedEntity["joins"] : [],
     query_patterns: Array.isArray(parsed.query_patterns) ? parsed.query_patterns as ParsedEntity["query_patterns"] : [],
-    connection: typeof parsed.connection === "string" ? parsed.connection : (opts.fallbackConnection ?? undefined),
+    ...(typeof parsed.connection === "string"
+      ? { connection: parsed.connection }
+      : opts.fallbackConnection != null
+        ? { connection: opts.fallbackConnection }
+        : {}),
   };
 }
 
@@ -117,12 +121,16 @@ export async function loadEntitiesFromDB(
       entities.push({
         name: String((parsed.table ?? row.name) as string),
         table: String((parsed.table ?? row.name) as string),
-        description: typeof parsed.description === "string" ? parsed.description : undefined,
+        ...(typeof parsed.description === "string" ? { description: parsed.description } : {}),
         dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions as ParsedEntity["dimensions"] : [],
         measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
         joins: Array.isArray(parsed.joins) ? parsed.joins as ParsedEntity["joins"] : [],
         query_patterns: Array.isArray(parsed.query_patterns) ? parsed.query_patterns as ParsedEntity["query_patterns"] : [],
-        connection: typeof parsed.connection === "string" ? parsed.connection : (row.connection_group_id ?? undefined),
+        ...(typeof parsed.connection === "string"
+          ? { connection: parsed.connection }
+          : row.connection_group_id != null
+            ? { connection: row.connection_group_id }
+            : {}),
       });
     } catch (err) {
       parseFailures++;
@@ -323,12 +331,12 @@ export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {
     entities.push({
       name: path.basename(filePath).replace(/\.ya?ml$/, ""),
       table: raw.table,
-      description: typeof raw.description === "string" ? raw.description : undefined,
+      ...(typeof raw.description === "string" ? { description: raw.description } : {}),
       dimensions: Array.isArray(raw.dimensions) ? raw.dimensions as ParsedEntity["dimensions"] : [],
       measures: Array.isArray(raw.measures) ? raw.measures as ParsedEntity["measures"] : [],
       joins: Array.isArray(raw.joins) ? raw.joins as ParsedEntity["joins"] : [],
       query_patterns: Array.isArray(raw.query_patterns) ? raw.query_patterns as ParsedEntity["query_patterns"] : [],
-      connection: typeof raw.connection === "string" ? raw.connection : undefined,
+      ...(typeof raw.connection === "string" ? { connection: raw.connection } : {}),
       group,
     });
   }

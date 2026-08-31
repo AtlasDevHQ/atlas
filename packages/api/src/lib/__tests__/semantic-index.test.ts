@@ -197,9 +197,7 @@ describe("buildSemanticIndex", () => {
           measures: [
             { name: `count_${i}`, type: "count" },
           ],
-          joins: i > 0
-            ? [{ target_entity: `table_${i - 1}`, relationship: "many_to_one" }]
-            : undefined,
+          ...(i > 0 ? { joins: [{ target_entity: `table_${i - 1}`, relationship: "many_to_one" }] } : {}),
         }),
       );
     }

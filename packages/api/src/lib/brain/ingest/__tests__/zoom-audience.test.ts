@@ -400,7 +400,12 @@ describe("reverifyZoomMeetingAudiences", () => {
     // A re-verifier that quietly no-ops lets every meeting audience age past
     // the staleness bound while the cycle reports success — the exact failure
     // this module exists to prevent.
-    const out = await reverifyZoomMeetingAudiences({ ...deps(), resolveToken: undefined });
+    // The resolver is OMITTED, not set to `undefined`: `resolveToken` is an
+    // exact optional, so "the caller wired no resolver" is an absent key. Built
+    // by destructuring it away so the override cannot silently become a no-op —
+    // which is exactly what a plain `{ ...deps() }` would be (#5522).
+    const { resolveToken: _noResolver, ...depsWithoutResolver } = deps();
+    const out = await reverifyZoomMeetingAudiences(depsWithoutResolver);
     expect(out.failed).toBe(1);
   });
 });

@@ -66,8 +66,8 @@ export function registerPluginTools(
       transport,
       workspaceId: opts.workspaceId,
       deployMode: opts.deployMode,
-      ...(opts.clientId && { clientId: opts.clientId }),
-      ...(opts.scopes && { scopes: opts.scopes }),
+      ...(opts.clientId ? { clientId: opts.clientId } : {}),
+      ...(opts.scopes ? { scopes: opts.scopes } : {}),
       // The api-side dispatch always resolves the wrapper with an
       // `McpCallToolResult` (structurally a `CallToolResult`). Cast
       // to/from `Promise<CallToolResult>` so `traceMcpToolCall` (which
@@ -90,7 +90,9 @@ export function registerPluginTools(
       // projected `McpCallToolResult`, and the extra optional `deps` param is
       // absent here (the gate uses its production defaults). Both are safe on
       // the short-circuit path.
-      runDispatchGate: runMcpDispatchGate as Parameters<typeof registerPluginMcpToolsCore>[1]["runDispatchGate"],
+      runDispatchGate: runMcpDispatchGate as NonNullable<
+        Parameters<typeof registerPluginMcpToolsCore>[1]["runDispatchGate"]
+      >,
     },
   );
 

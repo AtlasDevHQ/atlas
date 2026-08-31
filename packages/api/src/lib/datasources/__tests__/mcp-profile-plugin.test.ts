@@ -149,7 +149,7 @@ function oneTable(): ProfilingResult {
 function liveProfileSpy() {
   const fn = Object.assign(
     (opts: { schema?: string }) => {
-      fn.calls.push({ schema: opts.schema });
+      fn.calls.push({ ...(opts.schema !== undefined ? { schema: opts.schema } : {})});
       return Promise.resolve(oneTable());
     },
     { calls: [] as Array<{ schema?: string }> },

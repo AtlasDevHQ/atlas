@@ -168,7 +168,7 @@ async function computeSnapshotHash(
 ): Promise<{ ok: true; hash: string } | { ok: false; reason: ScreenshotFailReason }> {
   // #4320 — the requesting user's id gates never-published boards: a teammate
   // can't screenshot a board they can't read.
-  const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: viewerId ?? undefined });
+  const dash = await getDashboard(dashboardId, { orgId: orgId ?? null, viewerId: viewerId ?? null });
   if (!dash.ok) {
     if (dash.reason === "no_db") return { ok: false, reason: "no_db" };
     if (dash.reason === "not_found") return { ok: false, reason: "dashboard_not_found" };
@@ -941,8 +941,8 @@ export async function exportDashboard(opts: ExportOpts): Promise<ExportResult> {
   // failure is infra (`dashboard_unavailable` → 503), never a 404. #4320 — the
   // exporting user's id gates never-published boards.
   const dash = await getDashboard(opts.dashboardId, {
-    orgId: opts.orgId ?? undefined,
-    viewerId: opts.userId ?? undefined,
+    orgId: opts.orgId ?? null,
+    viewerId: opts.userId ?? null,
   });
   if (!dash.ok) {
     if (dash.reason === "no_db") {
@@ -1000,7 +1000,7 @@ export async function exportDashboard(opts: ExportOpts): Promise<ExportResult> {
           orgId: opts.orgId,
           cookieHeader: opts.cookieHeader ?? null,
           baseUrl,
-          apiBaseUrl: opts.apiBaseUrl,
+          ...(opts.apiBaseUrl !== undefined ? { apiBaseUrl: opts.apiBaseUrl } : {}),
           format: opts.format,
           parameters: opts.parameters ?? null,
           title,

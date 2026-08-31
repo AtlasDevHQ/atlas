@@ -505,7 +505,7 @@ export async function profilePostgres(opts: NativeProfileOptions): Promise<Profi
   // black-box (#3684). No-op when OTel is uninitialized (zero overhead).
   return withSpan(
     "atlas.profile.postgres",
-    profileSpanAttributes("postgres", { schema: opts.schema ?? "public", selectedTables: opts.selectedTables }),
+    profileSpanAttributes("postgres", { schema: opts.schema ?? "public", ...(opts.selectedTables !== undefined ? { selectedTables: opts.selectedTables } : {})}),
     () => profilePostgresImpl(opts),
     profileResultAttributes,
   );
@@ -976,7 +976,7 @@ export async function profileMySQL(opts: NativeProfileOptions): Promise<Profilin
   // (#3684). No-op when OTel is uninitialized (zero overhead).
   return withSpan(
     "atlas.profile.mysql",
-    profileSpanAttributes("mysql", { selectedTables: opts.selectedTables }),
+    profileSpanAttributes("mysql", { ...(opts.selectedTables !== undefined ? { selectedTables: opts.selectedTables } : {})}),
     () => profileMySQLImpl(opts),
     profileResultAttributes,
   );

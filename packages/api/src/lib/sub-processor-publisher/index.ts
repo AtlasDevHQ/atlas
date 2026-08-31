@@ -252,7 +252,7 @@ export async function deliver(
   const outcome = await deliverWebhook({
     url: subscription.url,
     payload: event,
-    sign: timestamped({ secret: token, timestampSeconds: options.nowSeconds }),
+    sign: timestamped({ secret: token, ...(options.nowSeconds !== undefined ? { timestampSeconds: options.nowSeconds } : {})}),
     retry: {
       maxAttempts: DELIVERY_MAX_ATTEMPTS,
       delaysMs: cappedExponentialDelays({
@@ -261,8 +261,8 @@ export async function deliver(
       }),
     },
     timeoutMs: DELIVERY_TIMEOUT_MS,
-    fetcher: options.fetcher,
-    sleep: options.sleep,
+    ...(options.fetcher !== undefined ? { fetcher: options.fetcher } : {}),
+    ...(options.sleep !== undefined ? { sleep: options.sleep } : {}),
   });
 
   // deliverWebhook does no logging of its own (and neither did the old loop

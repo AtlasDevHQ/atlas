@@ -542,7 +542,7 @@ async function checkSSOEnforcement(
       mode: authMode,
       status: 403,
       error: "SSO is required for this workspace. Please sign in via your identity provider.",
-      ssoRedirectUrl: enforcement.ssoRedirectUrl,
+      ...(enforcement.ssoRedirectUrl !== undefined ? { ssoRedirectUrl: enforcement.ssoRedirectUrl } : {}),
     };
   } catch (err) {
     log.error(

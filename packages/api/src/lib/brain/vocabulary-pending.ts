@@ -439,7 +439,7 @@ export async function loadPendingQueue(
       decision: result.decision,
       aclDecision: result.aclDecision,
       userId: ctx.userId,
-      requestId: opts.requestId,
+      ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
     });
   }
 
@@ -490,7 +490,7 @@ export async function loadPendingQueue(
       decision: cardinalityResult.decision,
       aclDecision: null,
       userId: ctx.userId,
-      requestId: opts.requestId,
+      ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
     });
   }
 
@@ -560,7 +560,7 @@ async function loadAliasProposals(
   const visible = visibleNormsSql(position, ctx, {
     paramIndex: 1,
     alias: "vf",
-    requestId: opts.requestId,
+    ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
   });
 
   const total = await loadPendingAliasTotal(db, ctx.workspaceId, position, opts.requestId);
@@ -774,13 +774,13 @@ function buildEvidenceClauses(
     table: "brain_facts",
     alias: leftAlias,
     paramIndex,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   const right = aclVisibilityClause(ctx, {
     table: "brain_facts",
     alias: rightAlias,
     paramIndex: left.nextParamIndex,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   // Anything the statement binds BETWEEN the reader's clauses and the sample
   // bound — the correction half's episode-source filter. Passed in rather than
@@ -1099,7 +1099,7 @@ async function loadCardinalityProposals(
   const scope = positionalScopeClause("predicate", ctx, {
     paramIndex: 1,
     alias: "vf",
-    requestId: opts.requestId,
+    ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
   });
   // The workspace-wide count runs even on the DENIED path — content-free, and it
   // is what lets the empty state say "there are N you cannot see" instead of

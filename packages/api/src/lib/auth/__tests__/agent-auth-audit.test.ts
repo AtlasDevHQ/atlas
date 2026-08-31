@@ -26,8 +26,8 @@ function harness(
   const auditor = createAgentAuthAuditor({
     emit: (entry) => rows.push(entry),
     isEnabled: async () => overrides.enabled ?? true,
-    executeSummaryInterval: overrides.interval,
-    maxTrackedKeys: overrides.maxTrackedKeys,
+    ...(overrides.interval !== undefined ? { executeSummaryInterval: overrides.interval } : {}),
+    ...(overrides.maxTrackedKeys !== undefined ? { maxTrackedKeys: overrides.maxTrackedKeys } : {}),
   });
   return { auditor, rows };
 }

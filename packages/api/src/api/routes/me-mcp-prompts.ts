@@ -106,7 +106,7 @@ meMcpPrompts.openapi(listMcpPromptsRoute, async (c) => {
         loadListingModule(),
       );
       const result = yield* Effect.promise(() =>
-        listMcpPrompts({ workspaceId }),
+        listMcpPrompts({ ...(workspaceId !== undefined ? { workspaceId } : {})}),
       );
 
       // Two concerns combined in this rebuild:

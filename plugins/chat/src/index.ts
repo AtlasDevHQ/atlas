@@ -834,7 +834,14 @@ function buildChatPlugin(
         // are left `undefined` (the bridge tolerates this — see
         // `createChatBridge`).
         bridge = createChatBridge(config, ctx.logger, stateAdapter, {
-          slack: slackAdapterInstance,
+          // Cast for the same reason the sibling assignments above carry one:
+          // `chat` declares `Adapter.botUserId?: string` (an exact optional)
+          // while every `@chat-adapter/*` class exposes it as
+          // `get botUserId(): string | undefined`, so under
+          // `exactOptionalPropertyTypes` a concrete adapter no longer satisfies
+          // the interface it implements. The contradiction is inside the
+          // dependency; the instance IS an Adapter at runtime (#5522).
+          slack: slackAdapterInstance as Adapter | null,
           telegram: telegramAdapterInstance,
           discord: discordAdapterInstance,
           whatsapp: whatsappAdapterInstance,

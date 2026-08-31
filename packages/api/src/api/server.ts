@@ -126,7 +126,11 @@ if (config.plugins?.length) {
   pluginWiring = {
     plugins: config.plugins as unknown as PluginWiringConfig["plugins"],
     context: pluginContext,
-    app: app as unknown as PluginWiringConfig["app"],
+    // `NonNullable`, not a presence guard: `app` is a static import at the top of
+    // this file, so it is never absent — only the CAST's target needed narrowing,
+    // because `PluginWiringConfig["app"]` reads as `T | undefined` off an exact
+    // optional (#5522).
+    app: app as unknown as NonNullable<PluginWiringConfig["app"]>,
     toolRegistry: pluginToolRegistry,
     // Plugin schema migrations — run by the wired layer BEFORE initialize() so
     // plugins can use their tables. #3681 — migrations are isolated per plugin:

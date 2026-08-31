@@ -286,7 +286,7 @@ function buildSaasClientConfig(
     apiKey: creds.apiKey,
     baseUrl: creds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
     timeoutMs: SAAS_TIMEOUT_MS,
-    allowedPersonFields,
+    ...(allowedPersonFields !== undefined ? { allowedPersonFields } : {}),
   };
 }
 
@@ -542,7 +542,7 @@ function classifyTwentyError(err: unknown, op: string): DispatchOutcome {
         kind: "transient",
         message,
         httpStatus: err.status,
-        retryAfterMs: err.retryAfterMs,
+        ...(err.retryAfterMs !== undefined ? { retryAfterMs: err.retryAfterMs } : {}),
       };
     }
     return { kind: "permanent", message, httpStatus: err.status };

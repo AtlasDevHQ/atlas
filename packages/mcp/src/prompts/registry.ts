@@ -297,7 +297,7 @@ function canonicalDescriptor(
     description: cp.description,
     source: "canonical",
     args: [],
-    gate: () => shouldExposeCanonicalPrompts({ workspaceId }),
+    gate: () => shouldExposeCanonicalPrompts({ ...(workspaceId !== undefined ? { workspaceId } : {})}),
     resolve: () => promptResult(cp.question, cp.description),
   };
 }
@@ -369,9 +369,12 @@ export async function registerPrompts(
 
     server.registerPrompt(
       d.name,
+      // `description` is spread on presence: the SDK declares it as an exact
+      // optional, so a prompt that declares none must omit the key rather than
+      // pass `undefined` (#5522).
       Object.keys(argsSchema).length > 0
-        ? { description: d.description, argsSchema }
-        : { description: d.description },
+        ? { ...(d.description !== undefined ? { description: d.description } : {}), argsSchema }
+        : { ...(d.description !== undefined ? { description: d.description } : {}) },
       async (args: Record<string, string>) => {
         const start = performance.now();
         let success = true;

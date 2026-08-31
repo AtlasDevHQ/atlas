@@ -36,7 +36,7 @@ function makeMockPool(opts: {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const pool = {
     query: async (sql: string, params?: unknown[]) => {
-      queries.push({ sql, params });
+      queries.push({ sql, ...(params !== undefined ? { params } : {})});
       if (opts.updateThrows) throw new Error("UPDATE failed");
       const ids = /plan_tier = 'locked'/.test(sql)
         ? opts.lockedIds ?? []
@@ -162,7 +162,7 @@ describe("backfillSaasTrial", () => {
     const queries: Array<{ sql: string; params?: unknown[] }> = [];
     const pool = {
       query: async (sql: string, params?: unknown[]) => {
-        queries.push({ sql, params });
+        queries.push({ sql, ...(params !== undefined ? { params } : {})});
         if (/plan_tier = 'locked'/.test(sql) || /INSERT INTO user_trial_grants/.test(sql)) {
           return { rows: [], rowCount: 0 };
         }

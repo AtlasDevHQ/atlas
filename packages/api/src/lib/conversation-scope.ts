@@ -137,7 +137,12 @@ export interface ConversationScope {
  * `null` groupReach widens to All sources, an omitted one inherits the row.
  */
 export type ConversationScopePatch = {
-  -readonly [K in keyof ConversationScope]?: ConversationScope[K];
+  // Loose-optional (`| undefined`) because the sentence above says so: "a key
+  // that is absent (OR `undefined`) is untouched". Every consumer implements
+  // exactly that with `if (source[k] !== undefined)`, and the distinction the
+  // type does care about — present-with-`null` clears the axis — is preserved
+  // untouched by this widening (#5522).
+  -readonly [K in keyof ConversationScope]?: ConversationScope[K] | undefined;
 };
 
 /** The scope axes, in persisted column order. Drives the INSERT and the UPDATE. */

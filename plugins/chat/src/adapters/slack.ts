@@ -19,10 +19,10 @@ import { DEFAULT_BOT_USER_NAME, type SlackAdapterConfig } from "../config";
  */
 export function createSlackAdapter(config: SlackAdapterConfig) {
   return createChatSlackAdapter({
-    botToken: config.botToken,
+    ...(config.botToken !== undefined ? { botToken: config.botToken } : {}),
     signingSecret: config.signingSecret,
-    clientId: config.clientId,
-    clientSecret: config.clientSecret,
+    ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
+    ...(config.clientSecret !== undefined ? { clientSecret: config.clientSecret } : {}),
     // Without this the adapter defaults to the literal "bot" and, being
     // truthy, shadows `chat.userName` in `detectMention` — so @-mentions
     // that arrive as a plain `message` event (rather than `app_mention`)
@@ -32,6 +32,6 @@ export function createSlackAdapter(config: SlackAdapterConfig) {
     // Per-tenant AES-GCM envelope for installation bot tokens (#2634).
     // Pass-through when configured; the chat-adapter falls back to its
     // own `SLACK_ENCRYPTION_KEY` env lookup when undefined.
-    encryptionKey: config.encryptionKey,
+    ...(config.encryptionKey !== undefined ? { encryptionKey: config.encryptionKey } : {}),
   });
 }

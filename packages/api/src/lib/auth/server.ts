@@ -2189,9 +2189,20 @@ export function buildStripePluginOptions(deps: {
             { orgId, subscriptionId: subscription.id },
             "Suppressing Stripe checkout trial — org already consumed the Atlas pre-checkout trial",
           );
-          return {
-            params: { subscription_data: { trial_period_days: undefined } },
+          // ⚠️ The explicit `undefined` is the MECHANISM, not an oversight, and
+          // it is the one place in this rollout where `exactOptionalPropertyTypes`
+          // cannot express what the code has to do (#5522). Per the note above,
+          // the plugin spreads our `subscription_data` OVER its own `freeTrial`
+          // computation: a present key holding `undefined` overrides the trial
+          // it computed, and the Stripe SDK then drops the key from the wire.
+          // OMITTING the key — what an exact optional would force — leaves the
+          // plugin's `trial_period_days` standing and grants the second 14-day
+          // trial #3426 exists to prevent. So the value is built with the key
+          // present and the assertion records why.
+          const suppressTrial = { trial_period_days: undefined } as unknown as {
+            trial_period_days?: number;
           };
+          return { params: { subscription_data: suppressTrial } };
         }
         return {};
       },

@@ -847,7 +847,7 @@ async function loadTensions(
     cap: TENSION_FANOUT_CAP,
     surface: SEARCH_SURFACE,
     log,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
 
   // Resolved off each counterpart's OWN provenance, for the reason
@@ -1013,18 +1013,18 @@ export async function searchBrainCore(
     table: "brain_facts",
     alias: "f",
     paramIndex: 1,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (factAcl.decision === "deny-all") {
     throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, SEARCH_SURFACE);
   }
 
   const documentFilters: KnowledgeSearchFilters = {
-    query: options.query,
-    type: options.type,
-    tags: options.tags,
-    collection: options.collection,
-    since: options.since,
+    ...(options.query !== undefined ? { query: options.query } : {}),
+    ...(options.type !== undefined ? { type: options.type } : {}),
+    ...(options.tags !== undefined ? { tags: options.tags } : {}),
+    ...(options.collection !== undefined ? { collection: options.collection } : {}),
+    ...(options.since !== undefined ? { since: options.since } : {}),
     limit,
     expand: options.expand,
   };
@@ -1036,11 +1036,11 @@ export async function searchBrainCore(
     wantFacts
       ? (async (acl: typeof factAcl) => {
           const built = buildFactQuery(mode, {
-            query: options.query,
+            ...(options.query !== undefined ? { query: options.query } : {}),
             limit,
             aclSql: acl.sql,
             aclParams: acl.params,
-            asOf,
+            ...(asOf !== undefined ? { asOf } : {}),
           });
           const result = await db.query(built.sql, built.params);
           return result.rows as FactRow[];
@@ -1054,13 +1054,13 @@ export async function searchBrainCore(
             table: "brain_episodes",
             alias: "e",
             paramIndex: 1,
-            requestId,
+            ...(requestId !== undefined ? { requestId } : {}),
           });
           if (acl.decision === "deny-all") {
             throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, SEARCH_SURFACE);
           }
           const built = buildEpisodeQuery({
-            query: options.query,
+            ...(options.query !== undefined ? { query: options.query } : {}),
             limit,
             aclSql: acl.sql,
             aclParams: acl.params,
@@ -1111,7 +1111,7 @@ export async function searchBrainCore(
           ctx,
           cap: LINEAGE_FANOUT_CAP,
           log,
-          requestId,
+          ...(requestId !== undefined ? { requestId } : {}),
         })
       : Promise.resolve({ lineage: new Map<string, FactLineage>(), truncated: false }),
     // The NAME behind each claim's `actor` handle (#5440). One query for the
@@ -1134,7 +1134,7 @@ export async function searchBrainCore(
         table: "brain_facts",
         rowId: row.id,
         workspaceId: ctx.workspaceId,
-        requestId,
+        ...(requestId !== undefined ? { requestId } : {}),
       });
     } else {
       // `visible_to text[] NOT NULL`, so a non-array is drift on the ACL's own
@@ -1173,7 +1173,7 @@ export async function searchBrainCore(
         table: "brain_episodes",
         rowId: id,
         workspaceId: ctx.workspaceId,
-        requestId,
+        ...(requestId !== undefined ? { requestId } : {}),
       });
     } else {
       log.warn(

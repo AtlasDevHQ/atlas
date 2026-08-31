@@ -346,7 +346,7 @@ const fakeStaticBotHandler: StaticBotInstallHandler = {
   // WhatsApp). The OAuth-shaped rejection suite registers a separate handler
   // WITH applicationId under the "discord" slug.
   confirmInstall: async (workspaceId, routingIdentifier, verificationProof, extras) => {
-    confirmArgs = { workspaceId: workspaceId as string, routingIdentifier, verificationProof, extras };
+    confirmArgs = { workspaceId: workspaceId as string, routingIdentifier, ...(verificationProof !== undefined ? { verificationProof } : {}), ...(extras !== undefined ? { extras } : {})};
     return confirmInstallImpl();
   },
 };
@@ -1291,7 +1291,9 @@ describe("POST /install-form — F-04 SaaS-mode-none guard", () => {
       mode: "none",
       // Even with a user object present, mode=none under SaaS is a
       // misconfig — the route refuses without consulting it.
-      user: { id: "anon", role: "admin", activeOrganizationId: undefined },
+      // No active org — an ABSENT key under `exactOptionalPropertyTypes`, not
+      // one holding `undefined` (#5522).
+      user: { id: "anon", role: "admin" },
     });
   });
 
@@ -1321,7 +1323,9 @@ describe("POST /install-form — managed mode missing activeOrganizationId", () 
     authResultImpl = async () => ({
       authenticated: true,
       mode: "managed",
-      user: { id: "admin-1", role: "admin", activeOrganizationId: undefined },
+      // The arm under test IS "missing activeOrganizationId" — under
+      // `exactOptionalPropertyTypes` that is an ABSENT key (#5522).
+      user: { id: "admin-1", role: "admin" },
     });
   });
 
@@ -1907,7 +1911,6 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     authResultImpl = async () => ({
       authenticated: true,
       mode: "none",
-      user: undefined,
     });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
@@ -2037,7 +2040,6 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     authResultImpl = async () => ({
       authenticated: true,
       mode: "none",
-      user: undefined,
     });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });

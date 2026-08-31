@@ -234,11 +234,11 @@ adminBranding.openapi(setBrandingRoute, async (c) => {
     const brandingSvc = yield* Branding;
 
     const branding = yield* brandingSvc.setWorkspaceBranding(orgId!, {
-      logoUrl: body.logoUrl,
-      logoText: body.logoText,
-      primaryColor: body.primaryColor,
-      faviconUrl: body.faviconUrl,
-      hideAtlasBranding: body.hideAtlasBranding,
+      ...(body.logoUrl !== undefined ? { logoUrl: body.logoUrl } : {}),
+      ...(body.logoText !== undefined ? { logoText: body.logoText } : {}),
+      ...(body.primaryColor !== undefined ? { primaryColor: body.primaryColor } : {}),
+      ...(body.faviconUrl !== undefined ? { faviconUrl: body.faviconUrl } : {}),
+      ...(body.hideAtlasBranding !== undefined ? { hideAtlasBranding: body.hideAtlasBranding } : {}),
     });
     // Metadata mirrors the request body so compliance review can distinguish a
     // cosmetic tweak (primaryColor) from a white-label takeover

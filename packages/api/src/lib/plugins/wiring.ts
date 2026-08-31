@@ -134,8 +134,12 @@ export async function wireDatasourcePlugins(
     }
     try {
       const conn = await createConn();
-      const meta = (plugin.connection.parserDialect || plugin.connection.forbiddenPatterns)
-        ? { parserDialect: plugin.connection.parserDialect, forbiddenPatterns: plugin.connection.forbiddenPatterns }
+      const { parserDialect, forbiddenPatterns } = plugin.connection;
+      const meta = (parserDialect || forbiddenPatterns)
+        ? {
+            ...(parserDialect !== undefined ? { parserDialect } : {}),
+            ...(forbiddenPatterns !== undefined ? { forbiddenPatterns } : {}),
+          }
         : undefined;
       connRegistry.registerDirect(
         plugin.id,

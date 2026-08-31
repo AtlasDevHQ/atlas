@@ -25,7 +25,7 @@ import {
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { ComplianceError, ReportError } from "@atlas/api/lib/compliance/errors";
-import type { PIICategory, MaskingStrategy } from "@useatlas/types";
+import type { MaskingStrategy } from "@useatlas/types";
 import { PIIColumnClassificationSchema as PIIClassificationSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -148,10 +148,12 @@ adminCompliance.openapi(updateRoute, async (c) => {
     const masking = yield* MaskingPolicy;
 
     const updated = yield* masking.updatePIIClassification(orgId!, id, {
-      category: body.category as PIICategory | undefined,
-      maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
-      dismissed: body.dismissed,
-      reviewed: body.reviewed,
+      ...(body.category !== undefined ? { category: body.category } : {}),
+      ...(body.maskingStrategy !== undefined
+        ? { maskingStrategy: body.maskingStrategy as MaskingStrategy }
+        : {}),
+      ...(body.dismissed !== undefined ? { dismissed: body.dismissed } : {}),
+      ...(body.reviewed !== undefined ? { reviewed: body.reviewed } : {}),
     });
     masking.invalidateClassificationCache(orgId!);
     // Metadata mirrors only the request-body fields that were actually set —
@@ -315,9 +317,9 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
     const report = yield* reports.generateDataAccessReport(orgId!, {
       startDate: query.startDate,
       endDate: query.endDate,
-      userId: query.userId,
-      role: query.role,
-      table: query.table,
+      ...(query.userId !== undefined ? { userId: query.userId } : {}),
+      ...(query.role !== undefined ? { role: query.role } : {}),
+      ...(query.table !== undefined ? { table: query.table } : {}),
     });
 
     if (query.format === "csv") {
@@ -351,9 +353,9 @@ adminCompliance.openapi(userActivityReportRoute, async (c) => {
     const report = yield* reports.generateUserActivityReport(orgId!, {
       startDate: query.startDate,
       endDate: query.endDate,
-      userId: query.userId,
-      role: query.role,
-      table: query.table,
+      ...(query.userId !== undefined ? { userId: query.userId } : {}),
+      ...(query.role !== undefined ? { role: query.role } : {}),
+      ...(query.table !== undefined ? { table: query.table } : {}),
     });
 
     if (query.format === "csv") {

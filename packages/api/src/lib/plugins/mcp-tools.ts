@@ -232,9 +232,9 @@ export class PluginMcpToolRegistry {
       qualifiedName,
       localName: tool.name,
       description: tool.description,
-      errorCodes: tool.errorCodes,
+      ...(tool.errorCodes !== undefined ? { errorCodes: tool.errorCodes } : {}),
       inputSchema: tool.inputSchema,
-      outputSchema: tool.outputSchema,
+      ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
       // #3520 — carry the read/write annotation through so the dispatch
       // wrapper can decide whether a hosted call needs `mcp:write`.
       ...(tool.annotations && { annotations: tool.annotations }),
@@ -351,7 +351,7 @@ export function wireMcpToolPlugins(
         const toolName = tool && typeof tool === "object" ? (tool as { name?: unknown }).name : undefined;
         failed.push({
           pluginId: plugin.id,
-          tool: typeof toolName === "string" ? toolName : undefined,
+          ...(typeof toolName === "string" ? { tool: toolName } : {}),
           error: msg,
         });
         log.error(

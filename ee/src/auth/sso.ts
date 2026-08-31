@@ -687,8 +687,8 @@ export async function testOidcProvider(provider: SSOProvider & { type: "oidc" })
     success: errors.length === 0,
     testedAt: new Date().toISOString(),
     details,
-    errors: errors.length > 0 ? errors : undefined,
-    warnings: warnings.length > 0 ? warnings : undefined,
+    ...(errors.length > 0 ? { errors } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 
@@ -772,8 +772,8 @@ export async function testSamlProvider(provider: SSOProvider & { type: "saml" })
     success: details.certValid,
     testedAt: new Date().toISOString(),
     details,
-    errors: errors.length > 0 ? errors : undefined,
-    warnings: warnings.length > 0 ? warnings : undefined,
+    ...(errors.length > 0 ? { errors } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 

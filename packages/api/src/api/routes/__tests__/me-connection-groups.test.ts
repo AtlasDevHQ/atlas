@@ -155,7 +155,7 @@ function userAuth(
       mode: "managed",
       label: "user@test.dev",
       role: "member",
-      activeOrganizationId: opts.orgId ?? undefined,
+      ...(opts.orgId != null ? { activeOrganizationId: opts.orgId } : {}),
     },
   };
 }

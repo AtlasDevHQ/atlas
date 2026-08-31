@@ -157,7 +157,14 @@ export function tableWhitelistKeys(rawTable: string, opts?: { opaque?: boolean }
 }
 
 /** True when an entity declares its `table` is an opaque (non-SQL) identifier. */
-function isOpaqueIdentifier(entity: { identifier_style?: "sql" | "opaque" }): boolean {
+/**
+ * Read-only predicate over a parsed entity. `identifier_style` is declared
+ * loose-optional (`| undefined`) because every caller hands it a Zod-inferred
+ * entity, whose `.optional()` fields are `T | undefined` — and the single `===`
+ * below cannot tell absent from present-and-undefined. Widening the PARAMETER
+ * of a predicate buys back nothing an exact optional would have caught (#5522).
+ */
+function isOpaqueIdentifier(entity: { identifier_style?: "sql" | "opaque" | undefined }): boolean {
   return entity.identifier_style === "opaque";
 }
 
@@ -263,7 +270,7 @@ function loadEntitiesFromDir(
             toTable: j.target_table,
             on: j.on,
             relationship: j.relationship,
-            description: j.description,
+            ...(j.description !== undefined ? { description: j.description } : {}),
           });
         }
       }

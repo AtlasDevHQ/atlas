@@ -195,7 +195,10 @@ function userAuth(
       mode: "managed",
       label: "user@test.dev",
       role: opts.role ?? "member",
-      activeOrganizationId: opts.orgId === null ? undefined : opts.orgId ?? "org-1",
+      // `orgId: null` in the fixture means "no active org", which under
+      // `exactOptionalPropertyTypes` is an ABSENT key, not one holding
+      // `undefined` (#5522).
+      ...(opts.orgId === null ? {} : { activeOrganizationId: opts.orgId ?? "org-1" }),
       ...(Object.keys(claims).length > 0 ? { claims } : {}),
     },
   };
@@ -624,7 +627,7 @@ describe("POST /api/v1/execute-sql — audit origin (ADR-0027 §6)", () => {
   });
 
   it("does NOT mislabel a non-cli session as cli (origin derived from claims, not hardcoded)", async () => {
-    fakeAuth = userAuth({ origin: undefined }); // e.g. a web session
+    fakeAuth = userAuth({}); // e.g. a web session
     await post({ sql: "SELECT 1" });
     const sqlCtx = capturedContexts.find((c) => c.actor !== undefined);
     expect(sqlCtx?.agentOrigin).toBeUndefined();

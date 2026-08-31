@@ -190,7 +190,7 @@ export const proposeFactTool = tool({
         workspaceId,
         mode: detectAuthMode(),
         user: reqCtx?.user,
-        requestId,
+        ...(requestId !== undefined ? { requestId } : {}),
       });
     } catch (err) {
       if (err instanceof BrainReaderIdentityError) {

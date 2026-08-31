@@ -38,23 +38,41 @@ const DB_SQL_LIMIT = 2000;
  * and `id` defaulted by the database (`gen_random_uuid()` via the
  * column default).
  */
+/**
+ * The INPUT shape of an audit write — deliberately loose-optional (#5522).
+ *
+ * Every optional below is consumed exactly once, by `?? null` or a truthiness
+ * guard, on its way to a log field or a NULL-able column: absent and
+ * present-with-`undefined` are indistinguishable to this writer by
+ * construction. Its callers, meanwhile, assemble entries from values that are
+ * naturally `T | undefined` — a `targetHost` only some connection kinds carry,
+ * a `parentAuditId` only a fanout leg has. Forcing a conditional spread at each
+ * of those ~20 call sites would buy no invariant, so the `| undefined` is
+ * declared here, where the reason is visible, rather than being widened
+ * silently at each caller.
+ *
+ * This is an input DTO only. Nothing constructs an `AuditEntry` to store,
+ * compare or round-trip, so the bug class `exactOptionalPropertyTypes` exists
+ * to catch — an explicit `undefined` overwriting a persisted value — has no
+ * reach here. Do NOT copy this widening onto a domain type.
+ */
 interface AuditEntryCommon {
   sql: string;
   durationMs: number;
-  sourceId?: string;
-  sourceType?: DBType;
-  targetHost?: string;
-  tablesAccessed?: string[];
-  columnsAccessed?: string[];
+  sourceId?: string | undefined;
+  sourceType?: DBType | undefined;
+  targetHost?: string | undefined;
+  tablesAccessed?: string[] | undefined;
+  columnsAccessed?: string[] | undefined;
   /** Optional pre-generated row id. Used to stamp the parent of a fanout (#2519). */
-  id?: string;
+  id?: string | undefined;
   /** Parent audit row id for fanned-out children. NULL on parent + single-env rows (#2519). */
-  parentAuditId?: string;
+  parentAuditId?: string | undefined;
 }
 
 export type AuditEntry =
   | (AuditEntryCommon & { rowCount: number; success: true })
-  | (AuditEntryCommon & { rowCount: number | null; success: false; error?: string });
+  | (AuditEntryCommon & { rowCount: number | null; success: false; error?: string | undefined });
 
 function scrubError(error: string | undefined): string | undefined {
   if (!error) return undefined;
@@ -113,7 +131,7 @@ export function logQueryAudit(entry: AuditEntry): void {
   if (orgId) {
     recordQueryEvent(orgId, {
       success: entry.success,
-      tablesAccessed: entry.tablesAccessed,
+      ...(entry.tablesAccessed !== undefined ? { tablesAccessed: entry.tablesAccessed } : {}),
     });
   }
 

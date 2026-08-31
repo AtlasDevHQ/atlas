@@ -60,6 +60,7 @@ import {
   analyzeTableProfiles,
   generateSemanticLayer,
 } from "@atlas/api/lib/semantic/generate";
+import type { TableProfile } from "@useatlas/types";
 import { SAFE_TABLE_NAME, safeSemanticRowName } from "@atlas/api/lib/semantic/shapes";
 // Phase-2 enrichment is the same shared engine (issue #3236, § D); the in-memory
 // variant lets the wizard enrich a YAML string per table without touching disk.
@@ -235,6 +236,32 @@ const TableProfileSchema = z.object({
     children: z.array(z.string()),
   }).optional(),
 });
+
+/**
+ * Make absence real on profiles submitted through `SaveRequestSchema` (#5522).
+ *
+ * Zod's `.optional()` infers `T | undefined`, while `TableProfile` /
+ * `ColumnProfile` declare exact optionals. Rebuilding here drops the optional
+ * slots that hold `undefined`, so a submitted profile matches the shape
+ * `generateSemanticLayer` already receives from the CLI — without widening the
+ * profiler's own types, which every other producer satisfies exactly.
+ */
+function toTableProfiles(
+  parsed: readonly z.infer<typeof TableProfileSchema>[],
+): TableProfile[] {
+  return parsed.map((t): TableProfile => {
+    const { matview_populated, partition_info, columns, ...restTable } = t;
+    return {
+      ...restTable,
+      columns: columns.map((c): TableProfile["columns"][number] => {
+        const { semantic_type, ...restCol } = c;
+        return { ...restCol, ...(semantic_type !== undefined ? { semantic_type } : {}) };
+      }),
+      ...(matview_populated !== undefined ? { matview_populated } : {}),
+      ...(partition_info !== undefined ? { partition_info } : {}),
+    };
+  });
+}
 
 const SaveRequestSchema = z.object({
   connectionId: z.string().min(1),
@@ -758,7 +785,7 @@ wizard.openapi(generateRoute, async (c) => {
         const generated = generateSemanticLayer(analyzedProfiles, {
           dbType,
           ...(querySchema !== undefined ? { schema: querySchema } : {}),
-          sourceId,
+          ...(sourceId !== undefined ? { sourceId } : {}),
         });
         const entityYamlByTable = new Map(generated.entities.map((e) => [e.table, e.yaml]));
         const entities = analyzedProfiles.map((profile) => {
@@ -903,13 +930,20 @@ wizard.openapi(enrichRoute, async (c) => {
         { requestId, orgId, errorCode: gateCheck.errorCode },
         "Wizard enrich blocked by billing enforcement",
       );
+      // Both extras are projected onto `| null` rather than spread on presence.
+      // Hono's `c.json()` refuses a payload carrying ANY optional property under
+      // `exactOptionalPropertyTypes` — `JSONRespondReturn` widens the slot back
+      // to `T | undefined`, which is not a `JSONValue` — and here that rejection
+      // collapsed the whole 403/404/429 arm of the response union. `Retry-After`
+      // still rides the header below, and the 4xx/5xx bodies are declared as
+      // free-form records in this route's OpenAPI responses (#5522).
       const blockBody = {
         error: gateCheck.errorCode,
         message: gateCheck.errorMessage,
         retryable: gateCheck.retryable,
         requestId,
-        ...(gateCheck.retryAfterSeconds !== undefined && { retryAfterSeconds: gateCheck.retryAfterSeconds }),
-        ...(gateCheck.usage && { usage: gateCheck.usage }),
+        retryAfterSeconds: gateCheck.retryAfterSeconds ?? null,
+        usage: gateCheck.usage ?? null,
       };
       if (gateCheck.retryAfterSeconds !== undefined) {
         return c.json(blockBody, {
@@ -1350,7 +1384,7 @@ wizard.openapi(saveRoute, async (c) => {
         // and the SemanticGenerator service can't drift. Entities are supplied
         // by the frontend, so only the catalog/glossary/metric artifacts are
         // consumed here.
-        const generated = generateSemanticLayer(profiles, {
+        const generated = generateSemanticLayer(toTableProfiles(profiles), {
           dbType: resolvedDbType,
           schema: resolvedSchema,
         });

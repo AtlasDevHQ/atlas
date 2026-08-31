@@ -226,7 +226,7 @@ export async function loadEnrollableDimensions(
     name: entityName,
     orgId,
     mode: "published",
-    connectionGroupId,
+    ...(connectionGroupId !== undefined ? { connectionGroupId } : {}),
   });
   if (detail === null) return null;
   const raw = detail.entity as Record<string, unknown>;

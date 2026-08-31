@@ -4,6 +4,7 @@
  * Tests: GET /settings, PUT /settings/:key, DELETE /settings/:key.
  */
 
+import type { WithLooseOptionals } from "@useatlas/schemas";
 import {
   describe,
   it,
@@ -343,10 +344,12 @@ type SchemaMatchesResponseType = Equal<
   // two plain property bags rather than an object and an `A & B`.
   AllReadonly<z.infer<typeof settingUpdateResponseSchema>>,
   AllReadonly<
-    Omit<SettingUpdateResponse, "success" | "value"> & {
-      success: boolean;
-      value: string;
-    }
+    WithLooseOptionals<
+      Omit<SettingUpdateResponse, "success" | "value"> & {
+        success: boolean;
+        value: string;
+      }
+    >
   >
 >;
 const _schemaMatchesResponseType: SchemaMatchesResponseType = true;

@@ -221,7 +221,7 @@ export async function loadBriefingInputs(
     pending,
     recentDecisions,
     rejectionMemoryCount: ctx.rejectedKeys.size,
-    anchor: resolvedAnchor ?? undefined,
+    ...(resolvedAnchor != null ? { anchor: resolvedAnchor } : {}),
   };
 }
 

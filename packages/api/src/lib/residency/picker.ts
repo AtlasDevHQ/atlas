@@ -110,7 +110,7 @@ export function buildAvailableRegions(
     id,
     label: cfg.label,
     isDefault: collapsedToHome ? true : id === defaultRegion,
-    apiUrl: cfg.apiUrl,
+    ...(cfg.apiUrl !== undefined ? { apiUrl: cfg.apiUrl } : {}),
   }));
 }
 

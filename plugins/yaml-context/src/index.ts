@@ -87,10 +87,7 @@ export function readEntitySummaries(semanticDir: string, logger?: { warn(msg: st
 
       summaries.push({
         table: doc.table,
-        description:
-          typeof doc.description === "string"
-            ? doc.description.trim()
-            : undefined,
+        ...(typeof doc.description === "string" ? { description: doc.description.trim() } : {}),
         dimensionCount:
           doc.dimensions && typeof doc.dimensions === "object"
             ? Object.keys(doc.dimensions as object).length
@@ -116,9 +113,11 @@ export function readGlossaryTerms(semanticDir: string, logger?: { warn(msg: stri
       .filter((t) => typeof t.term === "string")
       .map((t) => ({
         term: t.term as string,
-        status: typeof t.status === "string" ? (t.status as GlossaryTerm["status"]) : undefined,
-        definition:
-          typeof t.definition === "string" ? t.definition.trim() : undefined,
+        // Spread on presence: `GlossaryTerm` declares both as exact optionals,
+        // so a term whose YAML omits them yields a value without those keys
+        // rather than one holding `undefined` (#5522).
+        ...(typeof t.status === "string" ? { status: t.status as NonNullable<GlossaryTerm["status"]> } : {}),
+        ...(typeof t.definition === "string" ? { definition: t.definition.trim() } : {}),
       }));
   } catch (err) {
     (logger ?? console).warn(`[context-yaml] Failed to read glossary ${glossaryPath}: ${err instanceof Error ? err.message : err}`);
@@ -154,11 +153,8 @@ export function readMetricSummaries(semanticDir: string, logger?: { warn(msg: st
         if (typeof m.name === "string") {
           summaries.push({
             name: m.name,
-            description:
-              typeof m.description === "string"
-                ? m.description.trim()
-                : undefined,
-            entity,
+            ...(typeof m.description === "string" ? { description: m.description.trim() } : {}),
+            ...(entity !== undefined ? { entity } : {}),
           });
         }
       }

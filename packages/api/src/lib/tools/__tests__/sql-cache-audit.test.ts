@@ -108,7 +108,7 @@ let auditInserts: Array<{ sql: string; params?: unknown[] }> = [];
 
 const mockPool: InternalPool = {
   query: async (sql: string, params?: unknown[]) => {
-    auditInserts.push({ sql, params });
+    auditInserts.push({ sql, ...(params !== undefined ? { params } : {})});
     return { rows: [] };
   },
   async connect() {

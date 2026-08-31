@@ -326,8 +326,15 @@ export interface InternalPoolClient {
    * The seam is `runMigrations`' one production caller below, which asserts them
    * at runtime rather than degrading quietly — see `migrationPool`.
    */
-  on?(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
-  off?(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
+  // `message` is `?: string | undefined`, not the exact `?: string`, because
+  // this is a structural mirror of `pg`'s own `NoticeMessage` — and pg declares
+  // it that way. The listener sits in a CONTRAVARIANT position, so an exact
+  // optional here would make the real `pg.PoolClient` fail to satisfy this
+  // interface: our narrower notice type is not a supertype of pg's. Matching
+  // the driver's declared contract is the fix; narrowing it is what broke
+  // (#5522).
+  on?(event: "notice", listener: (notice: { readonly message?: string | undefined }) => void): unknown;
+  off?(event: "notice", listener: (notice: { readonly message?: string | undefined }) => void): unknown;
 }
 
 /**
@@ -3305,7 +3312,8 @@ export async function setWorkspaceRegion(
     [orgId],
   );
   if (existing.length === 0) return { assigned: false };
-  return { assigned: false, existing: existing[0].region ?? undefined };
+  const existingRegion = existing[0].region;
+    return { assigned: false, ...(existingRegion != null ? { existing: existingRegion } : {}) };
 }
 
 /**

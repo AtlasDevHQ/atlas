@@ -1654,7 +1654,7 @@ admin.openapi(overviewRoute, async (c) => {
   let entityWarnings: string[];
   try {
     const entityList = await listAdminEntities({
-      orgId: orgId ?? undefined,
+      ...(orgId != null ? { orgId } : {}),
       mode,
     });
     // Include REST-derived entities (#3628) so Overview and the Semantic page
@@ -1734,7 +1734,13 @@ admin.openapi(overviewRoute, async (c) => {
     plugins: pluginList.length,
     queriesLast24h,
     workspace: workspaceBlock,
-    ...(entityWarnings.length > 0 && { warnings: entityWarnings }),
+    // Always emitted, empty when there is nothing to report. Hono's `c.json()`
+    // rejects a payload carrying any OPTIONAL property under
+    // `exactOptionalPropertyTypes` — `JSONRespondReturn` widens the slot back to
+    // `T | undefined`, which is not a `JSONValue`. Every consumer already reads
+    // this through `?.` / `?? []`, so `[]` and "absent" are the same signal to
+    // them (#5522).
+    warnings: entityWarnings,
   }, 200);
 });
 
@@ -1751,7 +1757,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
   // entities (invisible in published mode) still appear.
   const mode = includeDrafts === "true" || atlasMode === "developer" ? "developer" : "published";
   try {
-    const result = await listAdminEntities({ orgId, mode });
+    const result = await listAdminEntities({ ...(orgId !== undefined ? { orgId } : {}), mode });
 
     // REST/OpenAPI datasources converge onto this surface read-only (#3628):
     // derived live from the cached snapshot, never persisted to
@@ -1770,7 +1776,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
       const warnings = [...result.warnings, ...restWarnings];
       return c.json({
         entities: [...result.entities, ...restList.entities],
-        ...(warnings.length > 0 && { warnings }),
+        warnings,
       }, 200);
     }
 
@@ -1789,12 +1795,12 @@ admin.openapi(listEntitiesRoute, async (c) => {
         ],
         noIntrospectedTables: true,
         requestId,
-        ...(warnings.length > 0 && { warnings }),
+        warnings,
       }, 200);
     }
 
     try {
-      const driftDiff = await runDriftDiff(connectionId, { orgId, atlasMode });
+      const driftDiff = await runDriftDiff(connectionId, { ...(orgId !== undefined ? { orgId } : {}), atlasMode });
       const noIntrospectedTables = driftDiff.introspectedTableCount === 0;
       const envelope = attachDrift(result.entities, driftDiff.diff, { noIntrospectedTables });
       const mergedWarnings = [...result.warnings, ...driftDiff.warnings, ...restWarnings];
@@ -1805,7 +1811,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
         ],
         noIntrospectedTables: envelope.noIntrospectedTables,
         requestId,
-        ...(mergedWarnings.length > 0 && { warnings: mergedWarnings }),
+        warnings: mergedWarnings,
       }, 200);
     } catch (err) {
       // Connection-side failure: don't fail the entire list — drift is a
@@ -1873,7 +1879,7 @@ admin.openapi(getEntityRoute, async (c) => {
     // admins see drafts overlaying published, published-mode (the default)
     // sees only the published row. Aligns admin detail with admin list and
     // with the public route's mode gate (#2481).
-    result = await getAdminEntity({ name, orgId, requestId, connectionGroupId, mode });
+    result = await getAdminEntity({ name, ...(orgId !== undefined ? { orgId } : {}), requestId, ...(connectionGroupId !== undefined ? { connectionGroupId } : {}), mode });
   } catch (err) {
     if (err instanceof AmbiguousEntityError) {
       return c.json(
@@ -2062,7 +2068,7 @@ admin.openapi(getSemanticStatsRoute, async (c) => {
       noColumns,
       noJoins,
     },
-    ...(warnings.length > 0 && { warnings }),
+    warnings,
   }, 200);
 });
 
@@ -2112,8 +2118,13 @@ admin.openapi(getSemanticDiffRoute, async (c) => {
   }
 
   try {
-    const result = await runDiff(connectionId, { orgId, atlasMode });
-    return c.json(result, 200);
+    const result = await runDiff(connectionId, { ...(orgId !== undefined ? { orgId } : {}), atlasMode });
+    // `warnings` is optional on `SemanticDiffResponse`, and Hono's `c.json()`
+    // rejects an optional-bearing payload under `exactOptionalPropertyTypes`
+    // (`JSONRespondReturn` widens the slot back to `T | undefined`). Restate it
+    // as always-present-possibly-empty; every consumer already reads it through
+    // `?.` / `?? []`, so `[]` and "absent" are the same signal (#5522).
+    return c.json({ ...result, warnings: result.warnings ?? [] }, 200);
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err : new Error(String(err)), connectionId, orgId, atlasMode, requestId },
@@ -2409,7 +2420,7 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
     result = await importFromDisk(orgId, { connectionId: "__demo__", sourceDir: semanticDir });
     resolvedSource = "demo-seed";
   } else {
-    result = await importFromDisk(orgId, { connectionId: body.connectionId });
+    result = await importFromDisk(orgId, { ...(body.connectionId !== undefined ? { connectionId: body.connectionId } : {})});
     resolvedSource = body.connectionId ? `disk:${body.connectionId}` : "disk:all";
 
     if (result.imported === 0 && result.total === 0 && !body.connectionId) {
@@ -3077,7 +3088,7 @@ admin.openapi(changeUserRoleRoute, async (c) => {
     targetType: "user",
     targetId: userId,
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-    metadata: { previousRole: outcome.previousRole, newRole, orgId, ...(scimOverride && { scim_override: true }) },
+    metadata: { previousRole: outcome.previousRole, newRole, orgId, ...(scimOverride ? { scim_override: true } : {}) },
   });
 
   return c.json({ success: true }, 200);
@@ -3121,6 +3132,10 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
   // for this user; matches the global blast-radius of the mutation.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
+    // Explicit, not omitted: `undefined` is the marker for the cross-provider
+    // scan described above. `evaluateSCIMGuardAsync` keeps `orgId` a LOOSE
+    // optional so it stays writable under `exactOptionalPropertyTypes`, and
+    // `scim-provenance-enforcement.test.ts` pins the explicit pass (#5522).
     orgId: undefined,
     requestId,
   });
@@ -3159,7 +3174,7 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
     actionType: ADMIN_ACTIONS.user.ban,
     targetType: "user",
     targetId: userId,
-    metadata: { reason, expiresIn, ...(scimOverride && { scim_override: true }) },
+    metadata: { reason, expiresIn, ...(scimOverride ? { scim_override: true } : {}) },
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
   });
 
@@ -3305,7 +3320,7 @@ admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user fro
     actionType: ADMIN_ACTIONS.user.removeFromWorkspace,
     targetType: "user",
     targetId: userId,
-    metadata: { orgId, previousRole: outcome.previousRole, ...(scimOverride && { scim_override: true }) },
+    metadata: { orgId, previousRole: outcome.previousRole, ...(scimOverride ? { scim_override: true } : {}) },
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
   });
 
@@ -3359,6 +3374,10 @@ admin.openapi(deleteUserRoute, async (c) => {
   // the guard searches across ALL SCIM providers for this user.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
+    // Explicit, not omitted: `undefined` is the marker for the cross-provider
+    // scan described above. `evaluateSCIMGuardAsync` keeps `orgId` a LOOSE
+    // optional so it stays writable under `exactOptionalPropertyTypes`, and
+    // `scim-provenance-enforcement.test.ts` pins the explicit pass (#5522).
     orgId: undefined,
     requestId,
   });
@@ -3508,7 +3527,7 @@ admin.openapi(deleteUserRoute, async (c) => {
     targetType: "user",
     targetId: userId,
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-    ...(scimOverride && { metadata: { scim_override: true } }),
+    ...(scimOverride ? { metadata: { scim_override: true } } : {}),
   });
 
   return c.json({ success: true }, 200);
@@ -3625,9 +3644,9 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
       ipAddress,
       metadata: {
         targetUserId: userId,
-        ...(count !== null && { count }),
-        ...(countLookupFailed && { countLookupFailed: true }),
-        ...(scimOverride && { scim_override: true }),
+        ...(count !== null ? { count } : {}),
+        ...(countLookupFailed ? { countLookupFailed: true } : {}),
+        ...(scimOverride ? { scim_override: true } : {}),
       },
     });
     return c.json({ success: true }, 200);
@@ -3642,8 +3661,8 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
       metadata: {
         targetUserId: userId,
         error: errorMessage(err),
-        ...(countLookupFailed && { countLookupFailed: true }),
-        ...(scimOverride && { scim_override: true }),
+        ...(countLookupFailed ? { countLookupFailed: true } : {}),
+        ...(scimOverride ? { scim_override: true } : {}),
       },
     });
     return c.json({ error: "internal_error", message: "Failed to revoke sessions.", requestId }, 500);

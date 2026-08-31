@@ -250,7 +250,7 @@ export function createS3BackupStorage(
       let startAfter: string | undefined;
       // Page through — retention windows can exceed one 1000-key page.
       for (;;) {
-        const page = await getClient().list({ prefix: keyPrefix, maxKeys: 1000, startAfter });
+        const page = await getClient().list({ prefix: keyPrefix, maxKeys: 1000, ...(startAfter !== undefined ? { startAfter } : {})});
         const contents = page.contents ?? [];
         for (const obj of contents) {
           if (obj.key.endsWith(".sql.gz")) names.push(basename(obj.key));

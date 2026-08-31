@@ -233,7 +233,7 @@ describe("wireDatasourcePlugins metadata passthrough", () => {
     return {
       registered: [] as { id: string; conn: unknown; dbType: string; description?: string; validate?: unknown; meta?: unknown }[],
       async registerDirect(id: string, conn: unknown, dbType: string, description?: string, validate?: unknown, meta?: unknown) {
-        this.registered.push({ id, conn, dbType, description, validate, meta });
+        this.registered.push({ id, conn, dbType, ...(description !== undefined ? { description } : {}), validate, meta });
       },
     };
   }

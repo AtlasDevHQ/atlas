@@ -93,7 +93,7 @@ function glossaryAmendment(
     category: "glossary_gaps",
     // The host entity the term was found under — NOT the write target.
     entityName: "orders",
-    group,
+    ...(group !== undefined ? { group } : {}),
     amendmentType: type,
     amendment,
     rationale: "define the term",

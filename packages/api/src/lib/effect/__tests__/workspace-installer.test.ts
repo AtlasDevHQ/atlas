@@ -42,7 +42,7 @@ const internalQueryCalls: Array<{ sql: string; params?: unknown[] }> = [];
 
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
   async (sql: string, params?: unknown[]) => {
-    internalQueryCalls.push({ sql, params });
+    internalQueryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     for (let i = 0; i < internalQueryResponses.length; i++) {
       const entry = internalQueryResponses[i];
       if (entry.match(sql, params)) {

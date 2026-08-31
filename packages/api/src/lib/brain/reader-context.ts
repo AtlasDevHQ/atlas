@@ -218,7 +218,7 @@ export async function resolveBrainReaderContext(
       mode,
       userId,
       resolvedRole: undefined,
-      requestId,
+      ...(requestId !== undefined ? { requestId } : {}),
     });
   }
 
@@ -260,5 +260,5 @@ export async function resolveBrainReaderContext(
     }
   }
 
-  return resolvePrincipalContext(db, { workspaceId, mode, userId, resolvedRole, requestId });
+  return resolvePrincipalContext(db, { workspaceId, mode, userId, resolvedRole, ...(requestId !== undefined ? { requestId } : {})});
 }

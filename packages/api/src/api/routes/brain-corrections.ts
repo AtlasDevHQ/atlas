@@ -269,7 +269,19 @@ export function createBrainCorrectionsRoute() {
         verb: input.verb,
         payload: {
           ...(input.reason !== undefined ? { reason: input.reason } : {}),
-          ...(input.replacement !== undefined ? { replacement: input.replacement } : {}),
+          // Rebuilt rather than passed through: Zod types the nested
+          // `validFrom` as `string | undefined`, while `CorrectionConfirmPayload`
+          // declares it as an exact optional (#5522).
+          ...(input.replacement !== undefined
+            ? {
+                replacement: {
+                  object: input.replacement.object,
+                  ...(input.replacement.validFrom !== undefined
+                    ? { validFrom: input.replacement.validFrom }
+                    : {}),
+                },
+              }
+            : {}),
         },
       });
       if (!verification.ok) {
@@ -334,15 +346,17 @@ export function createBrainCorrectionsRoute() {
           ctx,
           factId: input.factId,
           verb: input.verb,
-          reason: input.reason,
-          replacement: input.replacement
+          ...(input.reason !== undefined ? { reason: input.reason } : {}),
+          ...(input.replacement
             ? {
-                object: input.replacement.object,
-                validFrom: input.replacement.validFrom
-                  ? new Date(input.replacement.validFrom)
-                  : null,
+                replacement: {
+                  object: input.replacement.object,
+                  validFrom: input.replacement.validFrom
+                    ? new Date(input.replacement.validFrom)
+                    : null,
+                },
               }
-            : undefined,
+            : {}),
           // #5496 — a human clicked Confirm and the server verified a
           // single-use, workspace-bound token before this line ran. That is the
           // strongest intent evidence the system can produce, and the audit row

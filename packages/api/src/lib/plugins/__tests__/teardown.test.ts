@@ -116,7 +116,7 @@ function fakeQueryFn(opts?: {
 }) {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
   const fn = async <T = unknown>(sql: string, params?: unknown[]): Promise<T[]> => {
-    calls.push({ sql, params });
+    calls.push({ sql, ...(params !== undefined ? { params } : {})});
     if (sql.includes("FROM workspace_plugins")) {
       if (opts?.rejectLookup) throw new Error("internal db unavailable (lookup)");
       return (opts?.installRow ? [opts.installRow] : []) as T[];

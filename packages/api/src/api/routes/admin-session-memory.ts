@@ -119,7 +119,7 @@ adminSessionMemory.openapi(resetRoute, async (c) => {
     const cleared = await resetSessionMemory({
       conversationId,
       orgId,
-      namespace,
+      ...(namespace !== undefined ? { namespace } : {}),
     });
 
     // A reset is a destructive admin action on another user's accumulated

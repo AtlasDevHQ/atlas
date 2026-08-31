@@ -886,21 +886,21 @@ export class ConnectionRegistry {
     const entry: RegistryEntry = {
       conn: newConn,
       dbType: baseDbType,
-      description: baseDescription,
+      ...(baseDescription !== undefined ? { description: baseDescription } : {}),
       lastQueryAt: Date.now(),
       config: orgConfig,
       targetHost: baseTargetHost,
       consecutiveFailures: 0,
       lastHealth: null,
       firstFailureAt: null,
-      validate: baseValidate,
-      pluginMeta: basePluginMeta,
+      ...(baseValidate !== undefined ? { validate: baseValidate } : {}),
+      ...(basePluginMeta !== undefined ? { pluginMeta: basePluginMeta } : {}),
       totalQueries: 0,
       totalErrors: 0,
       totalQueryTimeMs: 0,
       lastDrainAt: null,
       consecutiveQueryFailures: 0,
-      region,
+      ...(region !== undefined ? { region } : {}),
     };
 
     this.orgEntries.set(key, entry);
@@ -1073,7 +1073,7 @@ export class ConnectionRegistry {
     this.entries.set(id, {
       conn: newConn,
       dbType,
-      description: config.description,
+      ...(config.description !== undefined ? { description: config.description } : {}),
       lastQueryAt: Date.now(),
       config,
       targetHost,
@@ -1189,10 +1189,10 @@ export class ConnectionRegistry {
       installId,
       conn,
       dbType,
-      description,
+      ...(description !== undefined ? { description } : {}),
       targetHost,
-      validate,
-      pluginMeta: meta,
+      ...(validate !== undefined ? { validate } : {}),
+      ...(meta !== undefined ? { pluginMeta: meta } : {}),
     });
     if (existing) {
       existing.conn.close().catch((err) => {
@@ -1240,14 +1240,14 @@ export class ConnectionRegistry {
     this.entries.set(id, {
       conn,
       dbType,
-      description,
+      ...(description !== undefined ? { description } : {}),
       lastQueryAt: Date.now(),
       targetHost: "(direct)",
       consecutiveFailures: 0,
       lastHealth: null,
       firstFailureAt: null,
-      validate,
-      pluginMeta: meta,
+      ...(validate !== undefined ? { validate } : {}),
+      ...(meta !== undefined ? { pluginMeta: meta } : {}),
       totalQueries: 0,
       totalErrors: 0,
       totalQueryTimeMs: 0,
@@ -1489,7 +1489,7 @@ export class ConnectionRegistry {
       }
       this.register("default", {
         url,
-        schema: process.env.ATLAS_SCHEMA,
+        ...(process.env.ATLAS_SCHEMA !== undefined ? { schema: process.env.ATLAS_SCHEMA } : {}),
       });
     }
     const entry = this.entries.get("default")!;
@@ -1511,7 +1511,7 @@ export class ConnectionRegistry {
     return Array.from(this.entries.entries()).map(([id, entry]) => ({
       id,
       dbType: entry.dbType,
-      description: entry.description,
+      ...(entry.description !== undefined ? { description: entry.description } : {}),
       ...(entry.lastHealth ? { health: entry.lastHealth } : {}),
     }));
   }

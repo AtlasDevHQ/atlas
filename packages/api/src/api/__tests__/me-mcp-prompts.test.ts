@@ -64,7 +64,7 @@ let mockListThrow: Error | null = null;
 // share the loader cache.
 void mock.module("@atlas/mcp/prompts/listing", () => ({
   listMcpPrompts: async (opts: { workspaceId?: string }) => {
-    listCalls.push({ workspaceId: opts.workspaceId });
+    listCalls.push({ ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {})});
     if (mockListThrow) throw mockListThrow;
     return mockListResult;
   },

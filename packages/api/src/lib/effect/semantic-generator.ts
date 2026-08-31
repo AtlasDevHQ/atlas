@@ -387,7 +387,7 @@ function profileImpl(
   // OTel is uninitialized.
   return withEffectSpan(
     "atlas.profile.connection",
-    profileSpanAttributes(opts.dbType, { schema: opts.schema, selectedTables: opts.selectedTables }),
+    profileSpanAttributes(opts.dbType, { ...(opts.schema !== undefined ? { schema: opts.schema } : {}), ...(opts.selectedTables !== undefined ? { selectedTables: opts.selectedTables } : {})}),
     profileImplInner(opts),
     (result) => ({
       "atlas.profile.profiled_count": result.profiles.length,
@@ -436,11 +436,11 @@ function profileImplInner(
       try: () =>
         profiler({
           url: opts.url,
-          schema,
-          selectedTables: opts.selectedTables,
-          prefetchedObjects: opts.prefetchedObjects,
-          progress: opts.progress,
-          logger: opts.logger,
+          ...(schema !== undefined ? { schema } : {}),
+          ...(opts.selectedTables !== undefined ? { selectedTables: opts.selectedTables } : {}),
+          ...(opts.prefetchedObjects !== undefined ? { prefetchedObjects: opts.prefetchedObjects } : {}),
+          ...(opts.progress !== undefined ? { progress: opts.progress } : {}),
+          ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
           // Decrypted tenant config for separate-field-credential / non-url-shaped
           // plugins (Elasticsearch's apiKey, BigQuery's service_account_json +
           // project — #3664). The in-core pg/mysql profilers and url-embedded
@@ -717,8 +717,8 @@ function profileAndGenerateImpl(
     const sourceId = connectionId === "default" ? undefined : connectionId;
     const generated = generateImpl(profiles, {
       dbType: opts.dbType,
-      schema: opts.schema,
-      sourceId,
+      ...(opts.schema !== undefined ? { schema: opts.schema } : {}),
+      ...(sourceId !== undefined ? { sourceId } : {}),
     });
 
     if (opts.registerWhitelist !== false) {

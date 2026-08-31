@@ -1373,9 +1373,28 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.python ? { python: config.python } : {}),
     ...(config.session ? { session: config.session } : {}),
     ...(config.semanticIndex ? { semanticIndex: config.semanticIndex } : {}),
-    ...(config.pool ? { pool: config.pool } : {}),
+    // Rebuilt rather than passed through: `pool.perOrg` is optional on the Zod
+    // output as `T | undefined`, while `ResolvedConfig` declares it exact, so
+    // the nested slot has to be spread on presence too (#5522).
+    ...(config.pool
+      ? {
+          pool: (({ perOrg, ...restPool }) => ({
+            ...restPool,
+            ...(perOrg !== undefined ? { perOrg } : {}),
+          }))(config.pool),
+        }
+      : {}),
     ...(config.starterPrompts ? { starterPrompts: config.starterPrompts } : {}),
-    ...(config.enterprise ? { enterprise: config.enterprise } : {}),
+    // Rebuilt, not passed through: `licenseKey` is optional on the Zod output as
+    // `string | undefined`, while `ResolvedConfig` declares it exact (#5522).
+    ...(config.enterprise
+      ? {
+          enterprise: (({ licenseKey, ...restEnterprise }) => ({
+            ...restEnterprise,
+            ...(licenseKey !== undefined ? { licenseKey } : {}),
+          }))(config.enterprise),
+        }
+      : {}),
     ...(config.residency ? { residency: config.residency } : {}),
     ...(config.catalog && config.catalog.length > 0
       ? { catalog: config.catalog }
@@ -1646,10 +1665,10 @@ export async function applyDatasources(
       log.info({ connectionId: id }, "Registering datasource from config");
       connRegistry.register(id, {
         url: ds.url,
-        schema: ds.schema,
-        description: ds.description,
-        maxConnections: ds.maxConnections,
-        idleTimeoutMs: ds.idleTimeoutMs,
+        ...(ds.schema !== undefined ? { schema: ds.schema } : {}),
+        ...(ds.description !== undefined ? { description: ds.description } : {}),
+        ...(ds.maxConnections !== undefined ? { maxConnections: ds.maxConnections } : {}),
+        ...(ds.idleTimeoutMs !== undefined ? { idleTimeoutMs: ds.idleTimeoutMs } : {}),
       });
 
       // Fire initial health check — logs on failure but does not block startup.

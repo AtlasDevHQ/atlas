@@ -60,8 +60,15 @@ interface MigrationClient extends Queryable {
    * `MigrationClientContractError` is what turns a future driver swap into a loud
    * boot failure rather than a silently deaf migration.
    */
-  on(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
-  off(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
+  // `message` is `?: string | undefined`, not the exact `?: string`, because
+  // this is a structural mirror of `pg`'s own `NoticeMessage` — and pg declares
+  // it that way. The listener sits in a CONTRAVARIANT position, so an exact
+  // optional here would make the real `pg.PoolClient` fail to satisfy this
+  // interface: our narrower notice type is not a supertype of pg's. Matching
+  // the driver's declared contract is the fix; narrowing it is what broke
+  // (#5522).
+  on(event: "notice", listener: (notice: { readonly message?: string | undefined }) => void): unknown;
+  off(event: "notice", listener: (notice: { readonly message?: string | undefined }) => void): unknown;
 }
 
 /**
@@ -203,7 +210,7 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
   // files. Noise was the wrong thing to optimize against here — the failure this
   // closes is a deliberate breadcrumb reaching nobody.
   const noticeFrom: NoticeAttribution = { migration: "(before any migration)" };
-  const onNotice = (notice: { readonly message?: string }): void => {
+  const onNotice = (notice: { readonly message?: string | undefined }): void => {
     log.info(
       { migration: noticeFrom.migration, notice: notice.message ?? "(no message)" },
       "Migration notice",

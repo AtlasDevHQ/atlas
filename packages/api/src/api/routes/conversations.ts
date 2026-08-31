@@ -571,9 +571,9 @@ conversations.openapi(listConversationsRoute, async (c) => {
     const starredParam = c.req.valid("query").starred;
     const starred = starredParam === "true" ? true : starredParam === "false" ? false : undefined;
     const items = yield* Effect.promise(() => listConversations({
-      userId: user?.id,
-      orgId: user?.activeOrganizationId,
-      starred,
+      ...(user?.id !== undefined ? { userId: user?.id } : {}),
+      ...(user?.activeOrganizationId !== undefined ? { orgId: user?.activeOrganizationId } : {}),
+      ...(starred !== undefined ? { starred } : {}),
       limit,
       offset,
     }));
@@ -715,9 +715,9 @@ conversations.openapi(shareConversationRoute, async (c) => {
 
     const opts = parsed.data;
     const shareResult = yield* Effect.promise(() => shareConversation(id, user?.id, {
-      orgId: user?.activeOrganizationId,
-      expiresIn: opts?.expiresIn,
-      shareMode: opts?.shareMode,
+      ...(user?.activeOrganizationId !== undefined ? { orgId: user?.activeOrganizationId } : {}),
+      ...(opts?.expiresIn !== undefined ? { expiresIn: opts?.expiresIn } : {}),
+      ...(opts?.shareMode !== undefined ? { shareMode: opts?.shareMode } : {}),
     }));
     if (!shareResult.ok) {
       if (shareResult.reason === "invalid_org_scope") {
@@ -810,7 +810,7 @@ conversations.openapi(getConversationMemoryRoute, async (c) => {
     // soft-delete guard, mirroring the unscoped conversations CRUD helpers.) No
     // internal DB → [] (the helper short-circuits) — empty, not an error.
     const slots = yield* Effect.promise(() =>
-      readSessionMemorySlots({ conversationId: id, userId: user?.id, orgId: user?.activeOrganizationId }),
+      readSessionMemorySlots({ conversationId: id, ...(user?.id !== undefined ? { userId: user?.id } : {}), ...(user?.activeOrganizationId !== undefined ? { orgId: user?.activeOrganizationId } : {})}),
     );
     return c.json({ slots }, 200);
   }), { label: "read conversation memory" });
@@ -832,7 +832,7 @@ conversations.openapi(resetConversationMemoryRoute, async (c) => {
     // fire-and-forget commit path) so the next turn loads + threads nothing. No
     // internal DB → 0 cleared, a clean no-op.
     const cleared = yield* Effect.promise(() =>
-      resetSessionMemory({ conversationId: id, userId: user?.id, orgId: user?.activeOrganizationId }),
+      resetSessionMemory({ conversationId: id, ...(user?.id !== undefined ? { userId: user?.id } : {}), ...(user?.activeOrganizationId !== undefined ? { orgId: user?.activeOrganizationId } : {})}),
     );
     return c.json({ cleared }, 200);
   }), { label: "reset conversation memory" });

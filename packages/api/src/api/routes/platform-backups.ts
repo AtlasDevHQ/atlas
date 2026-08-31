@@ -443,7 +443,7 @@ platformBackups.openapi(updateConfigRoute, async (c) => {
       scope: "platform",
       metadata: {
         previousConfig: {
-          schedule: oldConfig.schedule,
+          ...(oldConfig.schedule !== undefined ? { schedule: oldConfig.schedule } : {}),
           retentionDays: oldConfig.retention_days,
           storagePath: oldConfig.storage_path,
         },

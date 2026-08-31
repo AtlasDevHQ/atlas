@@ -297,12 +297,8 @@ export function analyzeTableProfiles(profiles: readonly TableProfile[]): TablePr
       const { indexed: _indexed, index_position: _pos, ...rest } = col;
       return { ...rest, profiler_notes: [] };
     }),
-    indexes: p.indexes
-      ? p.indexes.map((idx) => ({ ...idx, columns: [...idx.columns] }))
-      : undefined,
-    partition_info: p.partition_info
-      ? { ...p.partition_info, children: [...p.partition_info.children] }
-      : undefined,
+    ...(p.indexes ? { indexes: p.indexes.map((idx) => ({ ...idx, columns: [...idx.columns] })) } : {}),
+    ...(p.partition_info ? { partition_info: { ...p.partition_info, children: [...p.partition_info.children] } } : {}),
   }));
 
   inferForeignKeys(analyzed);

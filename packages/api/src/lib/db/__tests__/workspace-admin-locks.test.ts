@@ -38,7 +38,7 @@ function makeRecordingPool(): {
   const releases: Array<Error | undefined> = [];
   const client: InternalPoolClient = {
     query: async (sql: string, params?: unknown[]) => {
-      queries.push({ sql, params });
+      queries.push({ sql, ...(params !== undefined ? { params } : {})});
       return { rows: [] as Record<string, unknown>[] };
     },
     release: (err?: Error) => {

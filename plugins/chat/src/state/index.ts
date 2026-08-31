@@ -41,7 +41,7 @@ export function createStateAdapter(
             "Either configure DATABASE_URL or use the 'memory' state backend.",
         );
       }
-      return createPgAdapter(db, { tablePrefix: config?.tablePrefix });
+      return createPgAdapter(db, { ...(config?.tablePrefix !== undefined ? { tablePrefix: config?.tablePrefix } : {})});
     }
 
     case "redis":

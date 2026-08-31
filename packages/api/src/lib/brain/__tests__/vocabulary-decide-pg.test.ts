@@ -479,7 +479,7 @@ describeIfPg("the alias decision seam (#5023)", () => {
       workspaceId,
       decision: "approved",
       approver: { kind: "human", ctx },
-      direction,
+      ...(direction !== undefined ? { direction } : {}),
     });
 
   /** Reject — or, on an approved row, REMOVE. One verb, by design. */

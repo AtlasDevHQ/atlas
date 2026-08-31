@@ -795,8 +795,8 @@ adminBrainVocabulary.openapi(surfacesRoute, async (c) => {
         try: () =>
           loadObservedSurfaces(getInternalDB(), ctx, {
             position: query.position,
-            filter: query.q,
-            limit: query.limit,
+            ...(query.q !== undefined ? { filter: query.q } : {}),
+            ...(query.limit !== undefined ? { limit: query.limit } : {}),
             requestId,
           }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
@@ -889,9 +889,9 @@ adminBrainVocabulary.openapi(pendingRoute, async (c) => {
         try: () =>
           loadPendingQueue(getInternalDB(), ctx, {
             requestId,
-            kind: query.kind,
-            position: query.position,
-            limit: query.limit,
+            ...(query.kind !== undefined ? { kind: query.kind } : {}),
+            ...(query.position !== undefined ? { position: query.position } : {}),
+            ...(query.limit !== undefined ? { limit: query.limit } : {}),
           }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
@@ -1078,7 +1078,7 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
                   // order here would be exactly the "implicit first norm wins"
                   // that refusal exists to prevent — spelled in the route body,
                   // where no test of the seam would ever see it.
-                  direction: body.direction,
+                  ...(body.direction !== undefined ? { direction: body.direction } : {}),
                 }
               : {
                   id: body.proposalId,

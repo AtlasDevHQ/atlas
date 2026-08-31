@@ -25,7 +25,7 @@ let queryThrow: Error | null = null;
 const mockPool: InternalPool = {
   query: async (sql: string, params?: unknown[]) => {
     if (queryThrow) throw queryThrow;
-    queryCalls.push({ sql, params });
+    queryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     const result = queryResults[queryResultIndex] ?? { rows: [] };
     queryResultIndex++;
     return result;

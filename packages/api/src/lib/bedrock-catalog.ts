@@ -139,10 +139,12 @@ function buildClient(
   });
 }
 
+/** Loose-optional for the same reason as `normalizeModel` below: this mirrors
+ *  the AWS SDK's `FoundationModelSummary`, and that is how the SDK declares it. */
 function isTextGenModel(model: {
-  outputModalities?: string[];
-  inferenceTypesSupported?: string[];
-  modelLifecycle?: { status?: string };
+  outputModalities?: string[] | undefined;
+  inferenceTypesSupported?: string[] | undefined;
+  modelLifecycle?: { status?: string | undefined } | undefined;
 }): boolean {
   // Only surface text-out models — image / video generation in Bedrock
   // returns a different invocation shape and wouldn't drive the agent
@@ -153,13 +155,18 @@ function isTextGenModel(model: {
   return out.includes("TEXT");
 }
 
+/**
+ * Loose-optional (`| undefined`) throughout: this is a structural mirror of the
+ * AWS SDK's `FoundationModelSummary`, and that is how the SDK declares it. A
+ * narrower mirror stops accepting the value it exists to read (#5522).
+ */
 function normalizeModel(model: {
-  modelId?: string;
-  modelName?: string;
-  providerName?: string;
-  outputModalities?: string[];
-  inferenceTypesSupported?: string[];
-  modelLifecycle?: { status?: string };
+  modelId?: string | undefined;
+  modelName?: string | undefined;
+  providerName?: string | undefined;
+  outputModalities?: string[] | undefined;
+  inferenceTypesSupported?: string[] | undefined;
+  modelLifecycle?: { status?: string | undefined } | undefined;
 }): GatewayCatalogModel | null {
   if (!model.modelId) return null;
   if (!isTextGenModel(model)) return null;

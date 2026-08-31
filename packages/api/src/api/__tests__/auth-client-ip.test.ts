@@ -133,7 +133,7 @@ describe("withClientIpHeader", () => {
     // Better Auth will log a warn and skip rate limiting for this
     // request — preferable to writing "unknown" which would make one
     // attacker exhaust every other caller's bucket.
-    const ctx = makeCtx({ serverIp: undefined });
+    const ctx = makeCtx({});
     const out = withClientIpHeader(ctx as never);
     expect(out.headers.get("x-atlas-client-ip")).toBeNull();
   });
@@ -211,7 +211,7 @@ describe("withClientIpHeader", () => {
     // On Vercel, `app.fetch(req)` is called without the Bun server,
     // so getConnInfo has nothing to read. The middleware must not
     // 500 the request — it falls back to leaving the header unset.
-    const ctx = makeCtx({ serverIp: undefined });
+    const ctx = makeCtx({});
     expect(() => withClientIpHeader(ctx as never)).not.toThrow();
   });
 });

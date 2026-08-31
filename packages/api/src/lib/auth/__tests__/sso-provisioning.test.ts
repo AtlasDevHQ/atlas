@@ -254,7 +254,7 @@ describe("_autoProvisionSsoMember", () => {
   });
 
   it("skips when no SSO provider matches the domain", async () => {
-    setupQueryResponses({ ssoProvider: undefined });
+    setupQueryResponses({});
 
     await _autoProvisionSsoMember({ id: "user-5", email: "eve@unknown.com" });
 

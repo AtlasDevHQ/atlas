@@ -932,12 +932,15 @@ export async function registerProactiveListener(
         log,
       });
 
+      const recentActivity = recent.get(cooldownKey);
       const decision = decideInterjection({
         classification,
         workspace: workspaceConfig,
-        channel: channelConfig,
+        ...(channelConfig !== undefined ? { channel: channelConfig } : {}),
         channelAllowed,
-        recentActivity: recent.get(cooldownKey),
+        // Read once into a local above: the conditional-spread idiom evaluates
+        // its subject twice, and this one is a Map lookup (#5522).
+        ...(recentActivity !== undefined ? { recentActivity } : {}),
       });
 
       log.debug(
@@ -1408,7 +1411,7 @@ export async function registerProactiveListener(
           answerMessageId,
           asker,
           outcome: "wrong-data",
-          context: text || undefined,
+          ...(text ? { context: text } : {}),
           source: "modal",
         },
         config,

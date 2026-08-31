@@ -132,8 +132,12 @@ describe("conversationScopePatchFrom()", () => {
   it("keeps explicitly-null axes and drops undefined ones (#3073)", () => {
     expect(
       conversationScopePatchFrom({
-        groupReach: null,
+        // The `undefined` axis is the half of this test's name that needs it:
+        // `ConversationScopePatch` is loose-optional by its own contract ("a key
+        // that is absent OR `undefined` is untouched"), so this stays legal and
+        // the drop is still exercised.
         restFocusDatasourceId: undefined,
+        groupReach: null,
         answerStyle: "executive",
       }),
     ).toEqual({ groupReach: null, answerStyle: "executive" });

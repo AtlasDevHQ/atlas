@@ -52,7 +52,7 @@ describe("executeOperation — vendor quirk application", () => {
       "GetCustomers",
       { query: { expand: ["data.subscriptions"], limit: 3 } },
       { kind: "bearer", token: "sk_test_x" },
-      { baseUrl: "https://api.stripe.com", fetchImpl, quirk: STRIPE_DATA_CANDIDATE.quirk },
+      { baseUrl: "https://api.stripe.com", fetchImpl, ...(STRIPE_DATA_CANDIDATE.quirk !== undefined ? { quirk: STRIPE_DATA_CANDIDATE.quirk } : {})},
     );
     const url = calls[0].url;
     // The expand array is emitted under expand[] (Stripe form-encoding), limit untouched.
@@ -125,7 +125,7 @@ describe("executeOperationPaged — Stripe cursor walk (headline AC)", () => {
         baseUrl: "https://api.stripe.com",
         fetchImpl,
         pagination: strategy,
-        quirk: STRIPE_DATA_CANDIDATE.quirk,
+        ...(STRIPE_DATA_CANDIDATE.quirk !== undefined ? { quirk: STRIPE_DATA_CANDIDATE.quirk } : {}),
         maxPages: 10,
       },
     );
@@ -204,7 +204,7 @@ describe("executeOperation — Notion required Notion-Version header (slice 6b, 
       "get-users",
       { query: { page_size: 2 } },
       { kind: "bearer", token: "secret_ntn_x" },
-      { baseUrl: "https://api.notion.com", fetchImpl, quirk: NOTION_DATA_CANDIDATE.quirk },
+      { baseUrl: "https://api.notion.com", fetchImpl, ...(NOTION_DATA_CANDIDATE.quirk !== undefined ? { quirk: NOTION_DATA_CANDIDATE.quirk } : {})},
     );
     expect(calls[0].headers["notion-version"]).toBe("2025-09-03");
     expect(calls[0].headers["authorization"]).toBe("Bearer secret_ntn_x");
@@ -223,7 +223,7 @@ describe("executeOperation — Notion required Notion-Version header (slice 6b, 
       "post-search",
       { body: { query: "roadmap" } },
       { kind: "bearer", token: "secret_ntn_x" },
-      { baseUrl: "https://api.notion.com", fetchImpl, quirk: NOTION_DATA_CANDIDATE.quirk },
+      { baseUrl: "https://api.notion.com", fetchImpl, ...(NOTION_DATA_CANDIDATE.quirk !== undefined ? { quirk: NOTION_DATA_CANDIDATE.quirk } : {})},
     );
     expect(calls[0].headers["notion-version"]).toBe("2025-09-03");
     expect(calls[0].headers["authorization"]).toBe("Bearer secret_ntn_x");
@@ -291,7 +291,7 @@ describe("executeOperationPaged — Notion cursor walk carries Notion-Version on
         baseUrl: "https://api.notion.com",
         fetchImpl,
         pagination: strategy,
-        quirk: NOTION_DATA_CANDIDATE.quirk,
+        ...(NOTION_DATA_CANDIDATE.quirk !== undefined ? { quirk: NOTION_DATA_CANDIDATE.quirk } : {}),
         maxPages: 10,
       },
     );

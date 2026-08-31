@@ -105,7 +105,7 @@ function makeFetch(opts: {
     state.authHeaders.push(new Headers(init?.headers).get("authorization"));
     if (opts.failFirst && !failed) {
       failed = true;
-      return new Response("", { status: opts.failFirst.status, headers: opts.failFirst.headers });
+      return new Response("", { status: opts.failFirst.status, ...(opts.failFirst.headers !== undefined ? { headers: opts.failFirst.headers } : {})});
     }
     const url = new URL(raw);
     if (url.pathname === "/me") {

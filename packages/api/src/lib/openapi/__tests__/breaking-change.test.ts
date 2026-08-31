@@ -238,7 +238,10 @@ describe("classifyBreakingChanges — operation set + attributes", () => {
 
   it("a method change under a stable operationId is breaking (routing moved)", () => {
     const next = clone(BASE_DOC);
-    next.paths["/people"].put = next.paths["/people"].get; // listPeople GET -> PUT
+    // Read once into a local so the move is a plain assignment of a defined
+    // value: the operation slots are exact optionals (#5522).
+    const listPeopleGet = next.paths["/people"].get!;
+    next.paths["/people"].put = listPeopleGet; // listPeople GET -> PUT
     delete next.paths["/people"].get;
     const a = classify(next);
     expect(a.breaking).toBe(true);

@@ -105,14 +105,19 @@ export async function loadSourceCatalog(
       loadEntityNamesByGroup(orgId, mode),
     ]);
 
-    sqlSources = reachableGroups.map((grp) => ({
-      kind: "sql",
+    sqlSources = reachableGroups.map((grp) => {
+      // Read once into a local: the conditional-spread idiom evaluates its
+      // subject twice, and this one is a Map lookup (#5522).
+      const groupDescription = descriptions.get(grp.id);
+      return {
+      kind: "sql" as const,
       id: grp.id,
       // Groups have no separate display name post-0096 — the id IS the name.
       name: grp.id,
-      description: descriptions.get(grp.id) ?? undefined,
+      ...(groupDescription !== undefined ? { description: groupDescription } : {}),
       entities: entityNamesByGroup.get(grp.id) ?? [],
-    }));
+      };
+    });
   } catch (err) {
     // Degrade to REST-only rather than dropping the whole turn's catalog.
     log.warn(
@@ -184,7 +189,7 @@ async function loadEntityNamesByGroup(
   mode: "published" | "developer" | undefined,
 ): Promise<Map<string, string[]>> {
   const { listEntities } = await import("@atlas/api/lib/semantic/entities");
-  const entries = await listEntities({ orgId, mode });
+  const entries = await listEntities({ orgId, ...(mode !== undefined ? { mode } : {})});
   const byGroup = new Map<string, string[]>();
   for (const entry of entries) {
     const list = byGroup.get(entry.source) ?? [];

@@ -1779,8 +1779,8 @@ export function createChatBridge(
                 killSwitch: config.proactive.killSwitch,
                 feedback: config.proactive.feedback,
                 installGate: config.proactive.installGate,
-                linkUrl: config.proactive.linkUrl,
-                platform: config.proactive.platform,
+                ...(config.proactive.linkUrl !== undefined ? { linkUrl: config.proactive.linkUrl } : {}),
+                ...(config.proactive.platform !== undefined ? { platform: config.proactive.platform } : {}),
               },
               log,
               recentAnswers: proactiveRecentAnswers,
@@ -2059,7 +2059,7 @@ export function createChatBridge(
         // payload) — that's the closest thing to a "message" we have here.
         const result = await config.executeQuery(question, {
           threadId,
-          priorMessages,
+          ...(priorMessages !== undefined ? { priorMessages } : {}),
           adapter: { name: event.adapter.name as ChatAdapterName },
           rawMessage: event.raw,
         });
@@ -2152,7 +2152,7 @@ export function createChatBridge(
 
       const result = await config.executeQuery(question, {
         threadId,
-        priorMessages,
+        ...(priorMessages !== undefined ? { priorMessages } : {}),
         adapter: { name: event.adapter.name as ChatAdapterName },
         rawMessage: event.raw,
       });
@@ -2316,21 +2316,26 @@ export function createChatBridge(
           answerFlow: proactiveConfig.answerFlow,
           killSwitch: proactiveConfig.killSwitch,
           feedback: proactiveConfig.feedback,
-          linkUrl: proactiveConfig.linkUrl,
-          platform: proactiveConfig.platform,
+          ...(proactiveConfig.linkUrl !== undefined ? { linkUrl: proactiveConfig.linkUrl } : {}),
+          ...(proactiveConfig.platform !== undefined ? { platform: proactiveConfig.platform } : {}),
           // AnswerMeter (#2296) — shared callback also covers
           // public_refused emissions added in #2297.
-          onMeterEvent: proactiveConfig.onMeterEvent,
+          ...(proactiveConfig.onMeterEvent !== undefined ? { onMeterEvent: proactiveConfig.onMeterEvent } : {}),
           // Monthly quota cap (#2301).
-          getQuotaStatus: proactiveConfig.getQuotaStatus,
+          ...(proactiveConfig.getQuotaStatus !== undefined
+            ? { getQuotaStatus: proactiveConfig.getQuotaStatus }
+            : {}),
           // WorkspaceInstallGate (#2655) — outermost workspace-scoped
           // check, runs before classify / meter / quota / kill-switch.
           // Discriminated union; the `enabled: false` branch keeps the
           // listener at pre-#2655 behaviour.
           installGate: proactiveConfig.installGate,
-          refusalCopy: proactiveConfig.refusalCopy,
-          allowAnswerWhenEntitiesUnknown:
-            proactiveConfig.allowAnswerWhenEntitiesUnknown,
+          ...(proactiveConfig.refusalCopy !== undefined
+            ? { refusalCopy: proactiveConfig.refusalCopy }
+            : {}),
+          ...(proactiveConfig.allowAnswerWhenEntitiesUnknown !== undefined
+            ? { allowAnswerWhenEntitiesUnknown: proactiveConfig.allowAnswerWhenEntitiesUnknown }
+            : {}),
         });
         proactiveRecentAnswers = handle.recentAnswers;
       })

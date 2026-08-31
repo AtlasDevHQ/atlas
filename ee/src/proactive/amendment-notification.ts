@@ -140,5 +140,5 @@ export async function notifyAmendmentsPending(
     { workspaceId, channelId, count, messageId: result.messageId ?? null },
     "Posted amendments-pending proactive notice",
   );
-  return { posted: true, messageId: result.messageId };
+  return { posted: true, ...(result.messageId !== undefined ? { messageId: result.messageId } : {})};
 }

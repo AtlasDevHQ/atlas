@@ -113,11 +113,18 @@ function workspaceIdFromSession(session: AgentSession): string | undefined {
  * agents (out of scope for this slice, but the fallback keeps the mapping total).
  */
 function toIdentity(session: AgentSession): AgentAuthIdentity {
+  // Both optional slots are spread on presence: `AgentAuthIdentity` declares
+  // them exact, so a session carrying neither yields keys that are absent
+  // rather than keys holding `undefined` (#5522).
+  const requestedWorkspaceId = workspaceIdFromSession(session);
+  const label = session.agent.name || session.user.name;
   return {
     userId: session.userId ?? session.user.id,
-    requestedWorkspaceId: workspaceIdFromSession(session),
+    // Required on `AgentAuthIdentity` (declared `string | undefined`), so it is
+    // assigned, not spread — only `label` is an exact optional here.
+    requestedWorkspaceId,
     agentId: session.agentId,
-    label: session.agent.name || session.user.name || undefined,
+    ...(label ? { label } : {}),
   };
 }
 

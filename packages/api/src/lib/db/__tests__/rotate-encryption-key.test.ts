@@ -28,7 +28,7 @@ function createMockClient(selectRows: Array<{ pk: string; encrypted: unknown }>)
     queries,
     client: {
       query: async (sql: string, params?: unknown[]) => {
-        queries.push({ sql, params });
+        queries.push({ sql, ...(params !== undefined ? { params } : {})});
         if (sql.startsWith("SELECT")) return { rows: selectRows };
         return { rows: [] };
       },
@@ -248,7 +248,7 @@ describe("rotateTable (F-47 re-encryption)", () => {
     const queries: Array<{ sql: string; params?: unknown[] }> = [];
     const client = {
       query: async (sql: string, params?: unknown[]) => {
-        queries.push({ sql, params });
+        queries.push({ sql, ...(params !== undefined ? { params } : {})});
         if (sql.startsWith("SELECT")) {
           return {
             rows: [{
@@ -303,7 +303,7 @@ function createJsonbMockClient(
     queries,
     client: {
       query: async (sql: string, params?: unknown[]) => {
-        queries.push({ sql, params });
+        queries.push({ sql, ...(params !== undefined ? { params } : {})});
         if (sql.startsWith("SELECT")) return { rows: selectRows };
         return { rows: [] };
       },
@@ -603,7 +603,7 @@ describe("rotateJsonbSelectiveField (F-47 JSONB selective-field rotation)", () =
     const queries: Array<{ sql: string; params?: unknown[] }> = [];
     const client = {
       query: async (sql: string, params?: unknown[]) => {
-        queries.push({ sql, params });
+        queries.push({ sql, ...(params !== undefined ? { params } : {})});
         if (sql.startsWith("SELECT")) {
           return {
             rows: [{

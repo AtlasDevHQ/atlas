@@ -30,7 +30,7 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => internalDbAvailable,
   internalQuery: async (sql: string, params?: unknown[]) => {
-    internalQueryCalls.push({ sql, params });
+    internalQueryCalls.push({ sql, ...(params !== undefined ? { params } : {})});
     if (queryThrows) throw new Error("simulated DB failure");
     return [{ exists: existsResult }];
   },

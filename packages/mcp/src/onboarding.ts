@@ -165,7 +165,11 @@ function provisioningErrorResult(
  */
 async function resolveSignupInput(
   server: McpServer,
-  args: { email?: string; orgName?: string },
+  // Loose-optional: the caller hands this the Zod `ShapeOutput` of the tool's
+  // own argument schema, where `.optional()` infers `T | undefined`. This
+  // function's job IS to resolve those into the required pair it returns, so
+  // the exactness that matters is on the return type (#5522).
+  args: { email?: string | undefined; orgName?: string | undefined },
   requestId: string,
 ): Promise<{ email: string; orgName: string } | null> {
   let email = args.email?.trim();

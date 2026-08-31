@@ -451,13 +451,13 @@ async function loadSide(
     table: "brain_facts",
     alias: "a",
     paramIndex: aclBase,
-    requestId: opts.requestId,
+    ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
   });
   const rightAcl = aclVisibilityClause(ctx, {
     table: "brain_facts",
     alias: "b",
     paramIndex: leftAcl.nextParamIndex,
-    requestId: opts.requestId,
+    ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
   });
   if (leftAcl.decision === "deny-all" || rightAcl.decision === "deny-all") {
     // ⚠️ NOT a throw, and the asymmetry with `loadBlastRadiusSide` is deliberate.

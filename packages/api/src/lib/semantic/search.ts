@@ -607,17 +607,21 @@ function loadEntities(semanticRoot: string): ParsedEntity[] {
       // never unscoped. The default group stays unlabeled.
       const group = resolveEntityGroup(sourceName, origin, readGroupField(raw)).group;
       return {
-        name: raw.name as string | undefined,
+        ...(raw.name !== undefined ? { name: raw.name as string } : {}),
         table: raw.table as string,
-        type: raw.type as string | undefined,
-        connection: group !== "default" ? group : undefined,
-        grain: raw.grain as string | undefined,
-        description: raw.description as string | undefined,
-        dimensions: Array.isArray(raw.dimensions) ? (raw.dimensions as EntityDimension[]) : undefined,
-        measures: Array.isArray(raw.measures) ? (raw.measures as EntityMeasure[]) : undefined,
-        joins: Array.isArray(raw.joins) ? (raw.joins as EntityJoin[]) : undefined,
-        query_patterns: Array.isArray(raw.query_patterns) ? (raw.query_patterns as EntityQueryPattern[]) : undefined,
-        indexes: Array.isArray(raw.indexes) ? (raw.indexes as EntityIndex[]) : undefined,
+        // Every slot below is an exact optional on `ParsedEntity`, so a key the
+        // YAML omits has to be absent rather than present-and-`undefined`. The
+        // `raw` object is a plain parsed record, so re-reading it in the guard
+        // is free (#5522).
+        ...(raw.type !== undefined ? { type: raw.type as string } : {}),
+        ...(group !== "default" ? { connection: group } : {}),
+        ...(raw.grain !== undefined ? { grain: raw.grain as string } : {}),
+        ...(raw.description !== undefined ? { description: raw.description as string } : {}),
+        ...(Array.isArray(raw.dimensions) ? { dimensions: raw.dimensions as EntityDimension[] } : {}),
+        ...(Array.isArray(raw.measures) ? { measures: raw.measures as EntityMeasure[] } : {}),
+        ...(Array.isArray(raw.joins) ? { joins: raw.joins as EntityJoin[] } : {}),
+        ...(Array.isArray(raw.query_patterns) ? { query_patterns: raw.query_patterns as EntityQueryPattern[] } : {}),
+        ...(Array.isArray(raw.indexes) ? { indexes: raw.indexes as EntityIndex[] } : {}),
       };
     });
 }
@@ -657,10 +661,10 @@ function loadMetricsFromDir(dir: string, displayGroup: string | undefined, out: 
       // metric, keyed by the canonical `id:` (current shape) or legacy `name:`.
       if (Array.isArray(raw.metrics)) {
         for (const m of raw.metrics as ParsedMetric[]) {
-          if (m && typeof m === "object") out.push({ ...m, group: displayGroup });
+          if (m && typeof m === "object") out.push({ ...m, ...(displayGroup !== undefined ? { group: displayGroup } : {})});
         }
       } else if (raw.name || raw.id) {
-        out.push({ ...(raw as ParsedMetric), group: displayGroup });
+        out.push({ ...(raw as ParsedMetric), ...(displayGroup !== undefined ? { group: displayGroup } : {})});
       }
     } catch (err) {
       log.warn({ file, dir, err: err instanceof Error ? err.message : String(err) }, "Skipping metric file in semantic index — failed to read or parse");
@@ -695,11 +699,11 @@ function loadGlossaryFile(filePath: string, displayGroup: string | undefined, ou
     // common case for grouped glossaries, so the index must handle it too.
     if (Array.isArray(raw.terms)) {
       for (const t of raw.terms as GlossaryTerm[]) {
-        if (t && typeof t === "object") out.push({ ...t, group: displayGroup });
+        if (t && typeof t === "object") out.push({ ...t, ...(displayGroup !== undefined ? { group: displayGroup } : {})});
       }
     } else if (raw.terms && typeof raw.terms === "object") {
       for (const [term, value] of Object.entries(raw.terms as Record<string, unknown>)) {
-        if (value && typeof value === "object") out.push({ term, ...(value as GlossaryTerm), group: displayGroup });
+        if (value && typeof value === "object") out.push({ term, ...(value as GlossaryTerm), ...(displayGroup !== undefined ? { group: displayGroup } : {})});
       }
     }
   } catch (err) {
@@ -742,5 +746,5 @@ function loadCatalog(semanticRoot: string): ParsedCatalog | null {
   }
 
   if (!found) return null;
-  return { version, entities: merged };
+  return { ...(version !== undefined ? { version } : {}), entities: merged };
 }

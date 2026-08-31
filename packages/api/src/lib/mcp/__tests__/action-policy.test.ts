@@ -29,7 +29,7 @@ function queryReturning(rows: Record<string, unknown>[]): {
 } {
   const calls: { sql: string; params?: unknown[] }[] = [];
   const query: ActionPolicyQuery = async (sql, params) => {
-    calls.push({ sql, params });
+    calls.push({ sql, ...(params !== undefined ? { params } : {})});
     return rows as never;
   };
   return { query, calls };

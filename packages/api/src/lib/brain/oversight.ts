@@ -657,7 +657,7 @@ export async function loadFactOversight(
     table: "brain_facts",
     alias: "f",
     paramIndex: 1,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (acl.decision === "deny-all") {
     throw new BrainReaderUnresolvedError(workspaceId, ctx.origin, OVERSIGHT_SURFACE);
@@ -715,7 +715,7 @@ export async function loadFactOversight(
     );
   }
 
-  const countMeta: CountMeta = { workspaceId, requestId };
+  const countMeta: CountMeta = { workspaceId, ...(requestId !== undefined ? { requestId } : {})};
   const degraded: DegradedCounters = { hit: false };
   const raw: RawBucket[] = [];
   // A drifted row is DROPPED, not coerced — and counted, because a dropped
@@ -1017,7 +1017,7 @@ export async function loadSupersessionPreview(
     table: "brain_facts",
     alias: "d",
     paramIndex: 1,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (draftAcl.decision === "deny-all") {
     throw new BrainReaderUnresolvedError(workspaceId, ctx.origin, OVERSIGHT_SURFACE);
@@ -1026,7 +1026,7 @@ export async function loadSupersessionPreview(
     table: "brain_facts",
     alias: "p",
     paramIndex: draftAcl.nextParamIndex,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (publishedAcl.decision === "deny-all") {
     // Unreachable — same context, same table, and the first clause already
@@ -1376,7 +1376,7 @@ export async function loadWideningPreview(
     table: "brain_facts",
     alias: "f",
     paramIndex: 1,
-    requestId,
+    ...(requestId !== undefined ? { requestId } : {}),
   });
   if (factAcl.decision === "deny-all") {
     throw new BrainReaderUnresolvedError(workspaceId, ctx.origin, OVERSIGHT_SURFACE);

@@ -449,7 +449,7 @@ export const deliverAlert = (
     const secret = options.secret ?? process.env.ATLAS_SLA_WEBHOOK_SECRET;
     if (!secret) warnUnsignedOnce();
     const sign: SignStrategy = secret
-      ? timestamped({ secret, timestampSeconds: options.nowSeconds })
+      ? timestamped({ secret, ...(options.nowSeconds !== undefined ? { timestampSeconds: options.nowSeconds } : {})})
       : unsignedStrategy;
 
     const outcome = yield* Effect.tryPromise({
@@ -467,8 +467,8 @@ export const deliverAlert = (
             delaysMs: cappedExponentialDelays({ baseMs: 1000, count: 2 }),
           },
           timeoutMs: 10_000,
-          fetcher: options.fetcher,
-          sleep: options.sleep,
+          ...(options.fetcher !== undefined ? { fetcher: options.fetcher } : {}),
+          ...(options.sleep !== undefined ? { sleep: options.sleep } : {}),
         }),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });

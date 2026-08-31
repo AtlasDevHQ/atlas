@@ -541,7 +541,7 @@ describe("runSourceCleanupSweep", () => {
 
   it("fails closed when organization.region is NULL: no deletes, no stamp, row stays due", async () => {
     setDue([DUE_MIGRATION]);
-    setEligible({ orgRegion: undefined });
+    setEligible({});
     // Override the organization responder: row exists with region NULL.
     clientResponders.pop();
     clientResponders.push({ pattern: "FROM organization", rows: [{ region: null }] });

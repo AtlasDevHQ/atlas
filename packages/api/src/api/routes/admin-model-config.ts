@@ -401,9 +401,9 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
     const config = yield* router.setWorkspaceModelConfig(orgId, {
       provider: body.provider,
       model: body.model,
-      apiKey: body.apiKey,
-      baseUrl: body.baseUrl,
-      bedrockRegion: body.bedrockRegion,
+      ...(body.apiKey !== undefined ? { apiKey: body.apiKey } : {}),
+      ...(body.baseUrl !== undefined ? { baseUrl: body.baseUrl } : {}),
+      ...(body.bedrockRegion !== undefined ? { bedrockRegion: body.bedrockRegion } : {}),
     }).pipe(
       Effect.tapError((err) =>
         Effect.sync(() =>
@@ -501,9 +501,9 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
     const result = yield* router.testModelConfig({
       provider: body.provider,
       model: body.model,
-      apiKey: body.apiKey,
-      baseUrl: body.baseUrl,
-      bedrockRegion: body.bedrockRegion,
+      ...(body.apiKey !== undefined ? { apiKey: body.apiKey } : {}),
+      ...(body.baseUrl !== undefined ? { baseUrl: body.baseUrl } : {}),
+      ...(body.bedrockRegion !== undefined ? { bedrockRegion: body.bedrockRegion } : {}),
     }).pipe(
       Effect.tapError((err) =>
         Effect.sync(() =>

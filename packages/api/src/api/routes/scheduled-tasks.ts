@@ -115,6 +115,29 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * preflight is best-effort and must never turn a successful create/update
  * into a 500.
  */
+/**
+ * Make absence real on recipients parsed by `RecipientSchema` (#5522).
+ *
+ * Zod's `.optional()` infers `teamId?: string | undefined`, while the
+ * `SlackRecipient` / `WebhookRecipient` domain types declare the exact
+ * `teamId?: string` / `headers?: Record<string, string>`. Rebuilding here drops
+ * the optional slots that hold `undefined`, so a parsed value matches the domain
+ * shape without widening the domain interfaces. Each subject is read once.
+ */
+function toRecipients(parsed: readonly z.infer<typeof RecipientSchema>[]): Recipient[] {
+  return parsed.map((r): Recipient => {
+    if (r.type === "slack") {
+      const { channel, teamId } = r;
+      return { type: "slack", channel, ...(teamId !== undefined ? { teamId } : {}) };
+    }
+    if (r.type === "webhook") {
+      const { url, headers } = r;
+      return { type: "webhook", url, ...(headers !== undefined ? { headers } : {}) };
+    }
+    return { type: "email", address: r.address };
+  });
+}
+
 function recipientsForChannel(
   recipients: Recipient[] | undefined,
   channel: DeliveryChannel | undefined,
@@ -130,10 +153,10 @@ function crudFailResponse(reason: CrudFailReason, requestId?: string) {
     case "not_found":
       return { body: { error: "not_found", message: "Scheduled task not found." }, status: 404 as const };
     case "error":
-      return { body: { error: "internal_error", message: "A database error occurred. Please try again.", ...(requestId && { requestId }) }, status: 500 as const };
+      return { body: { error: "internal_error", message: "A database error occurred. Please try again.", ...(requestId ? { requestId } : {}) }, status: 500 as const };
     default: {
       const _exhaustive: never = reason;
-      return { body: { error: "internal_error", message: `Unexpected failure: ${String(_exhaustive)}`, ...(requestId && { requestId }) }, status: 500 as const };
+      return { body: { error: "internal_error", message: `Unexpected failure: ${String(_exhaustive)}`, ...(requestId ? { requestId } : {}) }, status: 500 as const };
     }
   }
 }
@@ -317,8 +340,8 @@ authed.openapi(listTasksRoute, async (c) => {
     const connectionGroupId = c.req.query("connectionGroupId") ?? undefined;
 
     const items = yield* Effect.promise(() => listScheduledTasks({
-      orgId,
-      enabled,
+      ...(orgId !== undefined ? { orgId } : {}),
+      ...(enabled !== undefined ? { enabled } : {}),
       ...(connectionGroupId !== undefined ? { connectionGroupId } : {}),
       limit,
       offset,
@@ -389,13 +412,16 @@ authed.openapi(
 
       const createOpts = {
         ownerId: user?.id ?? "anonymous",
-        orgId,
+        // `orgId` / `connectionGroupId` are `?: string | null` on the callee, and
+        // its SQL builder collapses null and absent identically — so `?? null`
+        // is exact here, not a widening (#5522).
+        orgId: orgId ?? null,
         name: parsed.name,
         question: parsed.question,
         cronExpression: parsed.cronExpression,
         deliveryChannel: parsed.deliveryChannel,
-        recipients: parsed.recipients,
-        connectionGroupId: parsed.connectionGroupId,
+        recipients: toRecipients(parsed.recipients),
+        connectionGroupId: parsed.connectionGroupId ?? null,
         approvalMode: parsed.approvalMode,
       };
       const createResult = yield* Effect.promise(() => createScheduledTask(createOpts));
@@ -418,7 +444,7 @@ authed.openapi(
       // way; the admin can configure the sender afterwards.
       const warnings = yield* Effect.promise(() =>
         checkDeliverySenders(
-          recipientsForChannel(parsed.recipients, parsed.deliveryChannel),
+          recipientsForChannel(toRecipients(parsed.recipients), parsed.deliveryChannel),
           orgId,
         ),
       );
@@ -529,7 +555,30 @@ scheduledTasks.openapi(tickRoute, async (c) => {
         failures: successOutcome.tasksFailed,
       },
     });
-    return c.json(successOutcome, 200);
+    // Hono's `c.json()` requires every value to be a `JSONValue`, and its
+    // `JSONRespondReturn` widens an optional slot back to `T | undefined` on the
+    // way through — so a payload carrying ANY optional property is rejected
+    // under `exactOptionalPropertyTypes`, however the literal is written.
+    //
+    // Project each optional onto `| null`, the convention this repo already uses
+    // at the same seam (`admin-openapi-datasources.ts`). The 200 body is declared
+    // as a free-form record in this route's OpenAPI responses, so an explicit
+    // `null` is within contract, and it reads the same as the omission did: no
+    // dashboards were due this tick. Nothing asserts on the key's absence
+    // (#5522).
+    return c.json(
+      {
+        tasksFound: successOutcome.tasksFound,
+        tasksDispatched: successOutcome.tasksDispatched,
+        tasksCompleted: successOutcome.tasksCompleted,
+        tasksFailed: successOutcome.tasksFailed,
+        dashboardsRefreshed: successOutcome.dashboardsRefreshed ?? null,
+        dashboardsFailed: successOutcome.dashboardsFailed ?? null,
+        dashboardShellsCleaned: successOutcome.dashboardShellsCleaned ?? null,
+        error: successOutcome.error ?? null,
+      },
+      200,
+    );
   }), { label: "scheduler tick" });
 });
 
@@ -555,7 +604,22 @@ authed.openapi(listAllRunsRoute, async (c) => {
     const dateFrom = dateFromParam && ISO_DATE_RE.test(dateFromParam) ? dateFromParam : undefined;
     const dateTo = dateToParam && ISO_DATE_RE.test(dateToParam) ? dateToParam : undefined;
 
-    const runs = yield* Effect.promise(() => listAllRuns({ orgId, taskId, status, dateFrom, dateTo, limit, offset }));
+    // Each filter is spread only when it survived validation: the query options
+    // declare them as exact optionals, so an invalid or absent filter is an
+    // omitted key rather than one holding `undefined`. `listAllRuns` guards each
+    // with `!== undefined` before adding its WHERE clause, so the SQL is
+    // unchanged either way (#5522).
+    const runs = yield* Effect.promise(() =>
+      listAllRuns({
+        ...(orgId !== undefined ? { orgId } : {}),
+        ...(taskId !== undefined ? { taskId } : {}),
+        ...(status !== undefined ? { status } : {}),
+        ...(dateFrom !== undefined ? { dateFrom } : {}),
+        ...(dateTo !== undefined ? { dateTo } : {}),
+        limit,
+        offset,
+      }),
+    );
     return c.json(runs, 200);
   }), { label: "list all runs" });
 });
@@ -574,7 +638,7 @@ authed.openapi(getTaskRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const taskResult = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
+    const taskResult = yield* Effect.promise(() => getScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
     if (!taskResult.ok) {
       const fail = crudFailResponse(taskResult.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -646,14 +710,30 @@ authed.openapi(
         }
       }
 
-      const updateResult = yield* Effect.promise(() => updateScheduledTask(id, { orgId }, parsed));
+      // A PATCH body omits what it does not touch, and `updateScheduledTask`
+      // reads presence to mean "replace this". Zod types every optional as
+      // `T | undefined`, so rebuild the payload with absence made real (#5522).
+      const { name, question, cronExpression, deliveryChannel, recipients, connectionGroupId, approvalMode, enabled } = parsed;
+      const taskUpdates = {
+        ...(name !== undefined ? { name } : {}),
+        ...(question !== undefined ? { question } : {}),
+        ...(cronExpression !== undefined ? { cronExpression } : {}),
+        ...(deliveryChannel !== undefined ? { deliveryChannel } : {}),
+        ...(recipients !== undefined ? { recipients: toRecipients(recipients) } : {}),
+        ...(connectionGroupId !== undefined ? { connectionGroupId } : {}),
+        ...(approvalMode !== undefined ? { approvalMode } : {}),
+        ...(enabled !== undefined ? { enabled } : {}),
+      };
+      const updateResult = yield* Effect.promise(() =>
+        updateScheduledTask(id, { orgId: orgId ?? null }, taskUpdates),
+      );
       if (!updateResult.ok) {
         const fail = crudFailResponse(updateResult.reason, requestId);
         return c.json(fail.body, fail.status);
       }
 
       // Fetch updated task to return
-      const updated = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
+      const updated = yield* Effect.promise(() => getScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
 
       // Determine if this was a toggle (enabled field changed)
       const isToggle = parsed.enabled !== undefined && Object.keys(parsed).length === 1;
@@ -688,7 +768,7 @@ authed.openapi(
       const warnings = yield* Effect.promise(() =>
         checkDeliverySenders(
           recipientsForChannel(
-            parsed.recipients ?? updated.data.recipients,
+            parsed.recipients ? toRecipients(parsed.recipients) : updated.data.recipients,
             parsed.deliveryChannel ?? updated.data.deliveryChannel,
           ),
           orgId,
@@ -721,7 +801,7 @@ authed.openapi(deleteTaskRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const delResult = yield* Effect.promise(() => deleteScheduledTask(id, { orgId }));
+    const delResult = yield* Effect.promise(() => deleteScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
     if (!delResult.ok) {
       const fail = crudFailResponse(delResult.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -753,7 +833,7 @@ authed.openapi(triggerTaskRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const task = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
+    const task = yield* Effect.promise(() => getScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
     if (!task.ok) {
       const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -791,7 +871,7 @@ authed.openapi(previewTaskRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const task = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
+    const task = yield* Effect.promise(() => getScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
     if (!task.ok) {
       const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -812,7 +892,23 @@ authed.openapi(previewTaskRoute, async (c) => {
       metadata: { taskId: id, dryRun: true },
     });
 
-    return c.json(preview, 200);
+    // Each channel block is optional on the preview, and Hono's `c.json()`
+    // rejects an optional-bearing payload under `exactOptionalPropertyTypes` —
+    // `JSONRespondReturn` widens the slot back to `T | undefined`, which is not
+    // a `JSONValue`. Project each onto `| null`, the convention this repo
+    // already uses at the same seam (`admin-openapi-datasources.ts`): a preview
+    // for one channel now says "no email block" instead of omitting the key
+    // (#5522).
+    return c.json(
+      {
+        channel: preview.channel,
+        email: preview.email ?? null,
+        slack: preview.slack ?? null,
+        webhook: preview.webhook ?? null,
+        fallbackMessage: preview.fallbackMessage ?? null,
+      },
+      200,
+    );
   }), { label: "generate delivery preview" });
 });
 
@@ -831,7 +927,7 @@ authed.openapi(listTaskRunsRoute, async (c) => {
     }
 
     // Verify task belongs to this org
-    const task = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
+    const task = yield* Effect.promise(() => getScheduledTask(id, { ...(orgId !== undefined ? { orgId } : {})}));
     if (!task.ok) {
       const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);

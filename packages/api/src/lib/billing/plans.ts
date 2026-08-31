@@ -421,12 +421,13 @@ export function getStripePlans(): Array<{
   }> = [];
 
   const starterPriceId = getSettingAuto("STRIPE_STARTER_PRICE_ID");
+  const annualStarterPriceId = getSettingAuto("STRIPE_STARTER_ANNUAL_PRICE_ID");
   if (starterPriceId) {
     plans.push({
       name: "starter",
       priceId: starterPriceId,
       seatPriceId: starterPriceId,
-      annualDiscountPriceId: getSettingAuto("STRIPE_STARTER_ANNUAL_PRICE_ID"),
+      ...(annualStarterPriceId !== undefined ? { annualDiscountPriceId: annualStarterPriceId } : {}),
       limits: {
         tokenBudgetPerSeat: PLANS.starter.limits.tokenBudgetPerSeat,
         seats: PLANS.starter.limits.maxSeats,
@@ -438,12 +439,13 @@ export function getStripePlans(): Array<{
   }
 
   const proPriceId = getSettingAuto("STRIPE_PRO_PRICE_ID");
+  const annualProPriceId = getSettingAuto("STRIPE_PRO_ANNUAL_PRICE_ID");
   if (proPriceId) {
     plans.push({
       name: "pro",
       priceId: proPriceId,
       seatPriceId: proPriceId,
-      annualDiscountPriceId: getSettingAuto("STRIPE_PRO_ANNUAL_PRICE_ID"),
+      ...(annualProPriceId !== undefined ? { annualDiscountPriceId: annualProPriceId } : {}),
       limits: {
         tokenBudgetPerSeat: PLANS.pro.limits.tokenBudgetPerSeat,
         seats: PLANS.pro.limits.maxSeats,
@@ -455,12 +457,13 @@ export function getStripePlans(): Array<{
   }
 
   const businessPriceId = getSettingAuto("STRIPE_BUSINESS_PRICE_ID");
+  const annualBusinessPriceId = getSettingAuto("STRIPE_BUSINESS_ANNUAL_PRICE_ID");
   if (businessPriceId) {
     plans.push({
       name: "business",
       priceId: businessPriceId,
       seatPriceId: businessPriceId,
-      annualDiscountPriceId: getSettingAuto("STRIPE_BUSINESS_ANNUAL_PRICE_ID"),
+      ...(annualBusinessPriceId !== undefined ? { annualDiscountPriceId: annualBusinessPriceId } : {}),
       limits: {
         tokenBudgetPerSeat: PLANS.business.limits.tokenBudgetPerSeat,
         seats: PLANS.business.limits.maxSeats,

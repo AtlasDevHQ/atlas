@@ -717,7 +717,7 @@ chat.openapi(chatRoute, async (c) => {
     const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
     const rateCheck = checkRateLimit(rateLimitKey, {
       bucket: "chat",
-      orgId: authResult.user?.activeOrganizationId,
+      ...(authResult.user?.activeOrganizationId !== undefined ? { orgId: authResult.user?.activeOrganizationId } : {}),
     });
     if (!rateCheck.allowed) {
       log.warn(
@@ -871,7 +871,7 @@ chat.openapi(chatRoute, async (c) => {
     return withRequestContext(
       {
         requestId,
-        user: authResult.user,
+        ...(authResult.user !== undefined ? { user: authResult.user } : {}),
         atlasMode,
         agentOrigin: "chat",
         // #5495 — stamped only when true so the legacy context shape is
@@ -1387,7 +1387,7 @@ chat.openapi(chatRoute, async (c) => {
                 }
               }
               const created = await createConversation({
-                userId: authResult.user?.id,
+                ...(authResult.user?.id !== undefined ? { userId: authResult.user?.id } : {}),
                 title,
                 surface: "web",
                 connectionId: effectiveConnectionId ?? null,
@@ -1399,7 +1399,7 @@ chat.openapi(chatRoute, async (c) => {
                 routingMode: effectiveRoutingMode ?? null,
                 // #3066 — persist the exclude-set the user picked at
                 // creation. Undefined ⇒ column default '{}' (all in scope).
-                restExcludedDatasourceIds: effectiveRestExcluded,
+                ...(effectiveRestExcluded !== undefined ? { restExcludedDatasourceIds: effectiveRestExcluded } : {}),
                 // #3067 — persist REST-only focus the user picked at creation.
                 // Undefined / null ⇒ NULL (not focused). The transport sends
                 // null when the picker is in default mode, so `?? null` keeps a
@@ -1415,7 +1415,10 @@ chat.openapi(chatRoute, async (c) => {
                 // keeps tracking the live default at prompt assembly: the
                 // workspace default #4303 when set, else the surface default).
                 answerStyle: effectiveAnswerStyle ?? null,
-                orgId: authResult.user?.activeOrganizationId,
+                // The callee's `orgId` is `?: string | null` and its SQL builder
+                // collapses null and absent identically, so `?? null` is exact
+                // here rather than a widening (#5522).
+                orgId: authResult.user?.activeOrganizationId ?? null,
               });
               if (created) {
                 conversationId = created.id;
@@ -1435,7 +1438,7 @@ chat.openapi(chatRoute, async (c) => {
                     conversationId,
                     requestedBoundDashboardId,
                     {
-                      orgId: authResult.user?.activeOrganizationId,
+                      ...(authResult.user?.activeOrganizationId !== undefined ? { orgId: authResult.user?.activeOrganizationId } : {}),
                       // #4320 — gate the bind on first-publish visibility so a
                       // teammate can't bind (and read) a never-published board.
                       // Fail-closed sentinel (matches the dashboards routes):
@@ -1477,7 +1480,7 @@ chat.openapi(chatRoute, async (c) => {
         // `error` — the route never hard-fails on a binding lookup.
         if (conversationId) {
           const resolved = await resolveBoundDashboard(conversationId, {
-            orgId: authResult.user?.activeOrganizationId,
+            ...(authResult.user?.activeOrganizationId !== undefined ? { orgId: authResult.user?.activeOrganizationId } : {}),
             // #4320 — first-publish gate follows the binding read; fail-closed
             // sentinel matches the bind call and the dashboards routes.
             viewerId: authResult.user?.id ?? "anonymous",
@@ -1689,7 +1692,7 @@ chat.openapi(chatRoute, async (c) => {
           const agentResult = await withRequestContext(
             {
               requestId,
-              user: authResult.user,
+              ...(authResult.user !== undefined ? { user: authResult.user } : {}),
               atlasMode,
               agentOrigin: "chat",
               // #3615 — web-app chat is human-initiated; stamp the audit
@@ -1753,7 +1756,7 @@ chat.openapi(chatRoute, async (c) => {
               runAgent({
                 messages,
                 tools: resolvedToolRegistry,
-                conversationId,
+                ...(conversationId !== undefined ? { conversationId } : {}),
                 ...(warnings.length > 0 && { warnings }),
                 contextWarnings,
                 ...(boundDashboardForAgent && {
@@ -2048,7 +2051,7 @@ chat.openapi(chatResumeRoute, async (c) => {
     // Rate limit — share the chat carve-out bucket so a resume can't dodge it.
     const ip = getClientIP(req);
     const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-    const rateCheck = checkRateLimit(rateLimitKey, { bucket: "chat", orgId: authResult.user?.activeOrganizationId });
+    const rateCheck = checkRateLimit(rateLimitKey, { bucket: "chat", ...(authResult.user?.activeOrganizationId !== undefined ? { orgId: authResult.user?.activeOrganizationId } : {})});
     if (!rateCheck.allowed) {
       const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
       return c.json(
@@ -2104,7 +2107,7 @@ chat.openapi(chatResumeRoute, async (c) => {
     return withRequestContext(
       {
         requestId,
-        user: authResult.user,
+        ...(authResult.user !== undefined ? { user: authResult.user } : {}),
         atlasMode,
         agentOrigin: "chat",
         actor: { kind: "human" },

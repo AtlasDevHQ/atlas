@@ -51,7 +51,7 @@ let queryHandler: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[]
 function makeMockClient(): MockClient {
   return {
     query: async (sql: string, params?: unknown[]) => {
-      clientQueries.push({ sql, params });
+      clientQueries.push({ sql, ...(params !== undefined ? { params } : {})});
       return queryHandler(sql, params);
     },
     release: (err?: unknown) => {

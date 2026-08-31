@@ -18,13 +18,24 @@ import { ConnectorRateLimitError } from "@atlas/api/lib/knowledge/connectors";
 
 const BASE = "https://acme.zendesk.com";
 
+/**
+ * A Zendesk translation payload as the API may actually return it — any field
+ * may be missing.
+ *
+ * Loose-optional (`| undefined`) deliberately: `tr()` below spreads the
+ * overrides OVER its defaults, so `tr({ html_url: undefined })` is how a test
+ * says "this translation arrived WITHOUT an html_url". An exact optional cannot
+ * express that — the key would have to be omitted, which the spread reads as
+ * "no override" and silently hands back the default, turning the malformed-input
+ * tests into duplicates of the happy path (#5522).
+ */
 interface FixtureTranslation {
-  locale?: string;
-  title?: string;
-  body?: string;
-  draft?: boolean;
-  updated_at?: string;
-  html_url?: string;
+  locale?: string | undefined;
+  title?: string | undefined;
+  body?: string | undefined;
+  draft?: boolean | undefined;
+  updated_at?: string | undefined;
+  html_url?: string | undefined;
 }
 interface FixtureArticle {
   id?: number;
@@ -95,7 +106,7 @@ function makeFetch(opts: {
     state.authHeaders.push(new Headers(init?.headers).get("authorization"));
     if (opts.failFirst && !failed) {
       failed = true;
-      return new Response("", { status: opts.failFirst.status, headers: opts.failFirst.headers });
+      return new Response("", { status: opts.failFirst.status, ...(opts.failFirst.headers !== undefined ? { headers: opts.failFirst.headers } : {})});
     }
     const url = new URL(raw);
     const path = url.pathname;

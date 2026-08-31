@@ -56,8 +56,7 @@ function jsonResponse(body: unknown, status = 200) {
 const SYNTHETIC_TARGET = {
   target: "widgetron",
   label: "Widgetron",
-  configured: false,
-  resolvedFrom: null,
+  state: "unconfigured",
   fields: [
     {
       envVar: "WIDGETRON_URL",
@@ -68,6 +67,7 @@ const SYNTHETIC_TARGET = {
       multiline: false,
       present: false,
       source: "unset",
+      stored: false,
     },
     {
       envVar: "WIDGETRON_TOKEN",
@@ -78,6 +78,7 @@ const SYNTHETIC_TARGET = {
       multiline: false,
       present: false,
       source: "unset",
+      stored: false,
     },
     {
       envVar: "WIDGETRON_PROJECT",
@@ -88,6 +89,7 @@ const SYNTHETIC_TARGET = {
       multiline: false,
       present: false,
       source: "unset",
+      stored: false,
     },
     // The #5555 shape: a PEM-form secret. `multiline: true` is what tells the
     // form to render a textarea instead of a single-line password input.
@@ -100,26 +102,36 @@ const SYNTHETIC_TARGET = {
       multiline: true,
       present: false,
       source: "unset",
+      stored: false,
     },
   ],
 };
 
 const CONFIGURED_TARGET = {
   ...SYNTHETIC_TARGET,
-  configured: true,
-  resolvedFrom: "workspace",
+  state: "workspace",
   fields: SYNTHETIC_TARGET.fields.map((f, i) =>
-    i < 2 ? { ...f, present: true, source: "workspace" } : f,
+    i < 2 ? { ...f, present: true, source: "workspace", stored: true } : f,
   ),
 };
 
 const ENV_TARGET = {
   ...SYNTHETIC_TARGET,
-  configured: true,
-  resolvedFrom: "env",
+  state: "env",
   fields: SYNTHETIC_TARGET.fields.map((f, i) =>
     i < 2 ? { ...f, present: true, source: "env" } : f,
   ),
+};
+
+/**
+ * A stored row missing one required field (#5564). Nothing resolves, so every
+ * field reports `source: "unset"` — `stored` is the only thing left saying the
+ * row holds the base URL.
+ */
+const PARTIAL_TARGET = {
+  ...SYNTHETIC_TARGET,
+  state: "partial-row-shadowing-env",
+  fields: SYNTHETIC_TARGET.fields.map((f, i) => (i === 0 ? { ...f, stored: true } : f)),
 };
 
 interface Written {
@@ -221,7 +233,11 @@ describe("/admin/action-credentials renders any ACTION_TARGETS entry (#5553)", (
   });
 
   test("a pasted multi-line value reaches the PUT payload with its inner newlines intact", async () => {
-    const writes = mockApi({ deployMode: "saas", targets: [SYNTHETIC_TARGET] });
+    // CONFIGURED_TARGET, not the unconfigured one: this fills only the optional
+    // signing key, and Save is gated on the target's REQUIRED fields being
+    // answerable (#5564) — on an unconfigured target it would rightly stay
+    // disabled, which is a different test than this one.
+    const writes = mockApi({ deployMode: "saas", targets: [CONFIGURED_TARGET] });
     const pem = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY-----";
 
     render(<ActionCredentialsPage />, { wrapper: Wrapper });
@@ -350,28 +366,64 @@ describe("/admin/action-credentials renders any ACTION_TARGETS entry (#5553)", (
       }
     });
     expect(document.body.textContent).toContain("environment");
-    // `resolvedFrom: "env"` is reached only when no workspace row exists at
-    // all, so this is the one state where there is provably nothing to remove.
+    // `state: "env"` is reached only when no workspace row exists at all, so
+    // this is the one resolving state with nothing to remove.
     expect(
       Array.from(document.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Remove"),
     ).toBe(false);
   });
 
-  test("an unconfigured target still offers Remove — a partial row reads exactly like no row", async () => {
-    // The bug this pins: gating Remove on `resolvedFrom === "workspace"` hides
-    // the only escape hatch in the one state that needs it. A workspace row
-    // missing a required field reports `resolvedFrom: null` with every field
-    // `unset` — indistinguishable from no row — while shadowing the
-    // environment rung and making the target throw (ADR-0046).
+  test("an UNCONFIGURED target offers no Remove — the state says outright there is no row", async () => {
+    // `mayHaveStoredRow` answered `true` here, because the old response could
+    // not tell "no row" from "partial row" and had to offer removal on the
+    // "might". The discriminant answers it, so the page stops offering a
+    // destructive action that would do nothing (#5564).
     mockApi({ deployMode: "self-hosted", targets: [SYNTHETIC_TARGET] });
 
     render(<ActionCredentialsPage />, { wrapper: Wrapper });
 
-    await waitFor(() => findButton("Remove"));
-    expect(findButton("Remove").disabled).toBe(false);
+    await waitFor(() => input("WIDGETRON_URL"));
+    expect(
+      Array.from(document.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Remove"),
+    ).toBe(false);
   });
 
-  test("saving a partial entry warns before it breaks a working env fallback", async () => {
+  test("a PARTIAL row names its own state, offers Remove, and does not ask for what it already holds", async () => {
+    // The state the discriminant exists for. Under the old shape this rendered
+    // as "Not configured" with all four fields listed as missing — including
+    // the base URL the row holds and the admin cannot read back.
+    mockApi({ deployMode: "self-hosted", targets: [PARTIAL_TARGET] });
+
+    render(<ActionCredentialsPage />, { wrapper: Wrapper });
+
+    await waitFor(() => findButton("Remove"));
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Incomplete");
+    // Removal is the escape hatch from a row that is shadowing a working env.
+    expect(findButton("Remove").disabled).toBe(false);
+    // The stored field is not in the "still needed" list, and its own control
+    // says the value survives a blank submit.
+    expect(text).toContain("Still needed: API Token");
+    expect(input("WIDGETRON_URL").placeholder).toContain("leave blank to keep");
+  });
+
+  test("completing a partial row enables Save — one typed field, not four", async () => {
+    // The trap the `stored` signal removes: the warning gates Save, so a
+    // predicate that called a stored field unsatisfied would disable the very
+    // button that repairs the row.
+    mockApi({ deployMode: "self-hosted", targets: [PARTIAL_TARGET] });
+
+    render(<ActionCredentialsPage />, { wrapper: Wrapper });
+
+    await waitFor(() => input("WIDGETRON_TOKEN"));
+    await act(async () => {
+      fireEvent.change(input("WIDGETRON_TOKEN"), { target: { value: "tok_abc" } });
+    });
+
+    expect(findButton("Save").disabled).toBe(false);
+  });
+
+  test("saving a partial entry warns AND blocks the save that would break a working env fallback", async () => {
     mockApi({ deployMode: "self-hosted", targets: [ENV_TARGET] });
 
     render(<ActionCredentialsPage />, { wrapper: Wrapper });
@@ -379,7 +431,8 @@ describe("/admin/action-credentials renders any ACTION_TARGETS entry (#5553)", (
     await waitFor(() => input("WIDGETRON_URL"));
     // An env-resolved target has NOTHING stored, so filling one required field
     // and saving creates a row that is missing the other — which stops the
-    // environment fallback rather than topping it up.
+    // environment fallback rather than topping it up. The API returns 400 for
+    // exactly this, so the button holds rather than spending a round trip.
     await act(async () => {
       fireEvent.change(input("WIDGETRON_URL"), { target: { value: "https://widgets.acme.dev" } });
     });
@@ -389,6 +442,7 @@ describe("/admin/action-credentials renders any ACTION_TARGETS entry (#5553)", (
     expect(text).toContain("all-or-nothing");
     // Named the remaining field, not the one just filled in.
     expect(text).not.toContain("leaves Base URL unset");
+    expect(findButton("Save").disabled).toBe(true);
   });
 
   test("an env-sourced field is never told that leaving it blank keeps it working", async () => {

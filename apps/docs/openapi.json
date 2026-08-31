@@ -85348,21 +85348,16 @@
                           "label": {
                             "type": "string"
                           },
-                          "configured": {
-                            "type": "boolean",
-                            "description": "True ⇒ every required field resolves for this workspace."
-                          },
-                          "resolvedFrom": {
-                            "type": [
-                              "string",
-                              "null"
-                            ],
+                          "state": {
+                            "type": "string",
                             "enum": [
+                              "unconfigured",
                               "workspace",
                               "env",
-                              null
+                              "partial-row",
+                              "partial-row-shadowing-env"
                             ],
-                            "description": "The rung that would win at execution time, or null when unconfigured."
+                            "description": "This target's single configuration state for this workspace. `unconfigured` — no stored row, and no complete environment rung. `workspace` — a complete stored row resolves. `env` — no stored row, and a complete environment rung resolves (self-hosted only). `partial-row` — a stored row is missing a required field, so the target throws at execution time. `partial-row-shadowing-env` — the same, but a complete environment rung is being shadowed by that row, so a target that previously worked is now broken (self-hosted only). Replaces the former `configured` / `resolvedFrom` pair, which could not distinguish an incomplete stored row from no row at all."
                           },
                           "fields": {
                             "type": "array",
@@ -85403,6 +85398,10 @@
                                     "unset"
                                   ],
                                   "description": "Where the resolved value came from. `env` appears on self-hosted only, and only when no workspace row wins — the rungs are never mixed."
+                                },
+                                "stored": {
+                                  "type": "boolean",
+                                  "description": "True ⇒ this workspace's stored row carries a non-empty value for this field, whichever rung wins. Differs from `present` only in the two partial-row states, where nothing resolves and every field reports `source: \"unset\"` — this still says which of them the row holds. Presence only, never a value."
                                 }
                               },
                               "required": [
@@ -85413,7 +85412,8 @@
                                 "required",
                                 "multiline",
                                 "present",
-                                "source"
+                                "source",
+                                "stored"
                               ]
                             }
                           }
@@ -85421,8 +85421,7 @@
                         "required": [
                           "target",
                           "label",
-                          "configured",
-                          "resolvedFrom",
+                          "state",
                           "fields"
                         ]
                       }
@@ -85548,7 +85547,7 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "Env-var names to remove from the stored bundle. Blank values in `fields` deliberately PRESERVE a stored secret, so this is the only way to unset one — without it an optional field (e.g. a default project) could only be cleared by deleting the whole target and re-entering every credential. Required fields may be listed too; the target then reports unconfigured rather than resolving a partial row."
+                    "description": "Env-var names to remove from the stored bundle. Blank values in `fields` deliberately PRESERVE a stored secret, so this is the only way to unset one — without it an optional field (e.g. a default project) could only be cleared by deleting the whole target and re-entering every credential. Clearing a REQUIRED field is always rejected with 400 — removals apply after the merge, so naming one here leaves it unset even if the same request supplies a value, and the row that would leave behind shadows the environment rung instead of falling back to it. To replace a required value, send the new one in `fields`; to abandon the target, DELETE it, which clears the row outright and is not gated on completeness."
                   }
                 },
                 "required": [
@@ -85573,21 +85572,16 @@
                     "label": {
                       "type": "string"
                     },
-                    "configured": {
-                      "type": "boolean",
-                      "description": "True ⇒ every required field resolves for this workspace."
-                    },
-                    "resolvedFrom": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
+                    "state": {
+                      "type": "string",
                       "enum": [
+                        "unconfigured",
                         "workspace",
                         "env",
-                        null
+                        "partial-row",
+                        "partial-row-shadowing-env"
                       ],
-                      "description": "The rung that would win at execution time, or null when unconfigured."
+                      "description": "This target's single configuration state for this workspace. `unconfigured` — no stored row, and no complete environment rung. `workspace` — a complete stored row resolves. `env` — no stored row, and a complete environment rung resolves (self-hosted only). `partial-row` — a stored row is missing a required field, so the target throws at execution time. `partial-row-shadowing-env` — the same, but a complete environment rung is being shadowed by that row, so a target that previously worked is now broken (self-hosted only). Replaces the former `configured` / `resolvedFrom` pair, which could not distinguish an incomplete stored row from no row at all."
                     },
                     "fields": {
                       "type": "array",
@@ -85628,6 +85622,10 @@
                               "unset"
                             ],
                             "description": "Where the resolved value came from. `env` appears on self-hosted only, and only when no workspace row wins — the rungs are never mixed."
+                          },
+                          "stored": {
+                            "type": "boolean",
+                            "description": "True ⇒ this workspace's stored row carries a non-empty value for this field, whichever rung wins. Differs from `present` only in the two partial-row states, where nothing resolves and every field reports `source: \"unset\"` — this still says which of them the row holds. Presence only, never a value."
                           }
                         },
                         "required": [
@@ -85638,7 +85636,8 @@
                           "required",
                           "multiline",
                           "present",
-                          "source"
+                          "source",
+                          "stored"
                         ]
                       }
                     }
@@ -85646,8 +85645,7 @@
                   "required": [
                     "target",
                     "label",
-                    "configured",
-                    "resolvedFrom",
+                    "state",
                     "fields"
                   ]
                 }
@@ -85655,7 +85653,7 @@
             }
           },
           "400": {
-            "description": "No active organization",
+            "description": "No active organization, or the merged result would leave a required field unset. In the latter case nothing is persisted and the message names the unsatisfied fields.",
             "content": {
               "application/json": {
                 "schema": {
@@ -85785,21 +85783,16 @@
                     "label": {
                       "type": "string"
                     },
-                    "configured": {
-                      "type": "boolean",
-                      "description": "True ⇒ every required field resolves for this workspace."
-                    },
-                    "resolvedFrom": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
+                    "state": {
+                      "type": "string",
                       "enum": [
+                        "unconfigured",
                         "workspace",
                         "env",
-                        null
+                        "partial-row",
+                        "partial-row-shadowing-env"
                       ],
-                      "description": "The rung that would win at execution time, or null when unconfigured."
+                      "description": "This target's single configuration state for this workspace. `unconfigured` — no stored row, and no complete environment rung. `workspace` — a complete stored row resolves. `env` — no stored row, and a complete environment rung resolves (self-hosted only). `partial-row` — a stored row is missing a required field, so the target throws at execution time. `partial-row-shadowing-env` — the same, but a complete environment rung is being shadowed by that row, so a target that previously worked is now broken (self-hosted only). Replaces the former `configured` / `resolvedFrom` pair, which could not distinguish an incomplete stored row from no row at all."
                     },
                     "fields": {
                       "type": "array",
@@ -85840,6 +85833,10 @@
                               "unset"
                             ],
                             "description": "Where the resolved value came from. `env` appears on self-hosted only, and only when no workspace row wins — the rungs are never mixed."
+                          },
+                          "stored": {
+                            "type": "boolean",
+                            "description": "True ⇒ this workspace's stored row carries a non-empty value for this field, whichever rung wins. Differs from `present` only in the two partial-row states, where nothing resolves and every field reports `source: \"unset\"` — this still says which of them the row holds. Presence only, never a value."
                           }
                         },
                         "required": [
@@ -85850,7 +85847,8 @@
                           "required",
                           "multiline",
                           "present",
-                          "source"
+                          "source",
+                          "stored"
                         ]
                       }
                     }
@@ -85858,8 +85856,7 @@
                   "required": [
                     "target",
                     "label",
-                    "configured",
-                    "resolvedFrom",
+                    "state",
                     "fields"
                   ]
                 }

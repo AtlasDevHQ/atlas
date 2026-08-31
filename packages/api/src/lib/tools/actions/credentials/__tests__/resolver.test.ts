@@ -339,17 +339,72 @@ describe("resolveActionCredentials — the all-or-nothing rule", () => {
   });
 });
 
-describe("getActionTargetStatus", () => {
-  it("reports presence + source and never a secret value", async () => {
+/**
+ * The status matrix (#5564). Every one of the five {@link ActionTargetState}
+ * values gets the situation that defines it, because the whole point of the
+ * discriminant is that the situations are distinguishable — a state that no
+ * arrangement of row and env produces is a state the UI branches on for
+ * nothing, and two situations that collapse onto one state is the bug this
+ * replaced.
+ */
+describe("getActionTargetStatus — the five-state matrix", () => {
+  /** A tenant row missing JIRA_API_TOKEN — complete enough to look configured, not enough to run. */
+  const PARTIAL_ROW = {
+    JIRA_BASE_URL: "https://tenant.atlassian.net",
+    JIRA_EMAIL: "admin@tenant.example",
+  };
+
+  it("`workspace` — a complete row resolves; presence + source only, never a value", async () => {
     mockRead.mockResolvedValue(TENANT_ROW);
     const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "saas", env: OPERATOR_ENV });
     expect(status).not.toBeNull();
-    expect(status?.configured).toBe(true);
-    expect(status?.resolvedFrom).toBe("workspace");
+    expect(status?.state).toBe("workspace");
     const serialized = JSON.stringify(status);
     expect(serialized).not.toContain("tenant-token");
     expect(serialized).not.toContain("operator-token");
     expect(serialized).not.toContain("admin@tenant.example");
+  });
+
+  it("`env` — no row, self-hosted, a complete environment", async () => {
+    mockRead.mockResolvedValue(null);
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV });
+    expect(status?.state).toBe("env");
+  });
+
+  it("`unconfigured` — no row and no rung that answers", async () => {
+    mockRead.mockResolvedValue(null);
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: {} });
+    expect(status?.state).toBe("unconfigured");
+  });
+
+  it("`partial-row` — an incomplete row with nothing behind it to shadow", async () => {
+    mockRead.mockResolvedValue(PARTIAL_ROW);
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: {} });
+    expect(status?.state).toBe("partial-row");
+  });
+
+  it("`partial-row-shadowing-env` — the same row, over an environment that WOULD have worked", async () => {
+    // The distinction the old shape could not draw, and the one that matters
+    // to an admin: this target was running off the operator's env until the
+    // half-finished row landed on top of it.
+    mockRead.mockResolvedValue(PARTIAL_ROW);
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV });
+    expect(status?.state).toBe("partial-row-shadowing-env");
+  });
+
+  it("an EMPTY row is still a row — `partial-row`, not `unconfigured`", async () => {
+    // `{}` decrypts to a bundle, so a row exists and shadows env exactly like
+    // any other partial one. Reporting it as `unconfigured` would send the
+    // admin looking for a row that is there.
+    mockRead.mockResolvedValue({});
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: {} });
+    expect(status?.state).toBe("partial-row");
+  });
+
+  it("a row whose only fields are OPTIONAL is partial — optional fields never satisfy required ones", async () => {
+    mockRead.mockResolvedValue({ JIRA_DEFAULT_PROJECT: "TEN" });
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV });
+    expect(status?.state).toBe("partial-row-shadowing-env");
   });
 
   it("marks env-only fields `unset` when a workspace row wins", async () => {
@@ -366,31 +421,189 @@ describe("getActionTargetStatus", () => {
     );
   });
 
-  it("an INCOMPLETE workspace row reports unconfigured, not env-configured", async () => {
-    // Mirrors the resolver: the incomplete row shadows env, so reporting
-    // `configured: true` here would promise an execution that will throw.
-    mockRead.mockResolvedValue({ JIRA_BASE_URL: "https://tenant.atlassian.net" });
-    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV });
-    expect(status?.configured).toBe(false);
-    expect(status?.resolvedFrom).toBeNull();
-  });
-
   it("on saas the env rung never shows as a source", async () => {
     mockRead.mockResolvedValue(null);
     const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "saas", env: OPERATOR_ENV });
-    expect(status?.configured).toBe(false);
+    expect(status?.state).toBe("unconfigured");
     expect(status?.fields.every((f) => f.source !== "env")).toBe(true);
   });
 
-  it("on self-hosted with no row, env is reported as the source", async () => {
+  it("on SaaS only `unconfigured`, `workspace` and `partial-row` are reachable — EVERY target", async () => {
+    // The env rung does not exist on SaaS (ADR-0046 — no operator tier), so
+    // neither state that names it can be produced there. Asserted over the
+    // whole arrangement space rather than by inspection — every combination of
+    // {no row, partial row, complete row} × {empty env, complete operator env}
+    // — and over the REGISTRY rather than the pilot target, so target #5 is
+    // covered the day it is added. Set EQUALITY, so an `env` state anywhere in
+    // the space fails this rather than passing unnoticed.
+    const { ACTION_TARGETS: targets } = await import("../targets");
+    for (const spec of targets) {
+      const fullRow: Record<string, string> = {};
+      const fullEnv: NodeJS.ProcessEnv = {};
+      for (const field of spec.fields) {
+        fullRow[field.envVar] = `row-${field.envVar}`;
+        fullEnv[field.envVar] = `env-${field.envVar}`;
+      }
+      const partialRow = { ...fullRow };
+      const firstRequired = spec.fields.find((f) => f.required);
+      if (firstRequired) delete partialRow[firstRequired.envVar];
+
+      const seen = new Set<string>();
+      for (const row of [null, partialRow, fullRow]) {
+        for (const env of [{}, fullEnv]) {
+          mockRead.mockResolvedValue(row);
+          const status = await getActionTargetStatus(spec.target, {
+            workspaceId: WS,
+            deployMode: "saas",
+            env,
+          });
+          if (status) seen.add(status.state);
+        }
+      }
+      expect([...seen].toSorted()).toEqual(["partial-row", "unconfigured", "workspace"]);
+    }
+  });
+
+  it("on self-hosted the two env-naming states ARE reachable — the SaaS assertion is about the rung, not the ladder", async () => {
+    // Without this, the assertion above would also pass if the two states were
+    // unreachable everywhere, which would make it vacuous.
+    mockRead.mockResolvedValue(null);
+    expect(
+      (await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV }))?.state,
+    ).toBe("env");
+    mockRead.mockResolvedValue({ JIRA_BASE_URL: "https://tenant.atlassian.net" });
+    expect(
+      (await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV }))?.state,
+    ).toBe("partial-row-shadowing-env");
+  });
+
+  it("`stored` tracks the ROW, so a shadowed field is not reported missing", async () => {
+    // The regression this exists for: under the winning-rung view every field
+    // of a partial row reads `unset`, which told the Admin form the admin had
+    // to re-type credentials that were already stored and unreadable.
+    mockRead.mockResolvedValue(PARTIAL_ROW);
+    const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV });
+    const byVar = new Map(status?.fields.map((f) => [f.envVar, f]));
+    expect(byVar.get("JIRA_BASE_URL")?.stored).toBe(true);
+    expect(byVar.get("JIRA_BASE_URL")?.present).toBe(false);
+    expect(byVar.get("JIRA_BASE_URL")?.source).toBe("unset");
+    expect(byVar.get("JIRA_API_TOKEN")?.stored).toBe(false);
+    // And it never reports a value the ENV holds as stored — the env is not
+    // the row, and conflating them would offer removal of something DELETE
+    // cannot touch.
+    expect(byVar.get("JIRA_DEFAULT_PROJECT")?.stored).toBe(false);
+  });
+
+  it("`stored` is false for every field when no row exists, whatever the env says", async () => {
     mockRead.mockResolvedValue(null);
     const status = await getActionTargetStatus("jira", { workspaceId: WS, deployMode: "self-hosted", env: OPERATOR_ENV });
-    expect(status?.configured).toBe(true);
-    expect(status?.resolvedFrom).toBe("env");
+    expect(status?.state).toBe("env");
+    expect(status?.fields.every((f) => !f.stored)).toBe(true);
   });
 
   it("returns null for an unmanaged target", async () => {
     expect(await getActionTargetStatus("not-a-target", { workspaceId: WS, deployMode: "saas", env: {} })).toBeNull();
+  });
+
+  it("no credential value is derivable from `state`, over EVERY registered target", async () => {
+    // A property over the registry rather than a per-target list, so target #5
+    // is covered the day it is added. `state` is one of five fixed strings; the
+    // assertion is that no arrangement of a tenant row and an operator env —
+    // complete, partial, or absent — can put either one's bytes into it.
+    const { ACTION_TARGETS: targets } = await import("../targets");
+    for (const spec of targets) {
+      const fullRow: Record<string, string> = {};
+      const fullEnv: NodeJS.ProcessEnv = {};
+      for (const field of spec.fields) {
+        fullRow[field.envVar] = `row-secret-${field.envVar}`;
+        fullEnv[field.envVar] = `env-secret-${field.envVar}`;
+      }
+      const partialRow = { ...fullRow };
+      const firstRequired = spec.fields.find((f) => f.required);
+      if (firstRequired) delete partialRow[firstRequired.envVar];
+
+      for (const row of [null, partialRow, fullRow]) {
+        for (const env of [{}, fullEnv]) {
+          for (const deployMode of ["saas", "self-hosted"] as const) {
+            mockRead.mockResolvedValue(row);
+            const status = await getActionTargetStatus(spec.target, {
+              workspaceId: WS,
+              deployMode,
+              env,
+            });
+            expect(status).not.toBeNull();
+            expect(status?.state).not.toContain("secret-");
+            // The whole status, not just `state` — `stored` is presence too,
+            // and the masked read-back contract covers every field of it.
+            expect(JSON.stringify(status)).not.toContain("row-secret-");
+            expect(JSON.stringify(status)).not.toContain("env-secret-");
+          }
+        }
+      }
+    }
+  });
+});
+
+/**
+ * The one path a partial row is still reachable by, now that the write path
+ * rejects incomplete saves: a target's field spec GAINS a required field after
+ * rows are stored, and every stored row for that target turns partial at once.
+ * `ACTION_TARGETS` is live code that gained three entries in a week, so this is
+ * the regression test the partial states are actually for (#5564).
+ */
+describe("spec evolution turns a stored row partial", () => {
+  it("the completeness predicate is asked of TODAY's spec, so yesterday's complete row goes partial", async () => {
+    // Stated at the predicate, where spec evolution is directly expressible: a
+    // bundle written when the spec had two required fields, re-asked under a
+    // spec that now has three. `getActionTargetStatus` reads its spec from the
+    // live registry, so this is the one place the evolved spec can be supplied
+    // rather than imitated.
+    const { unsatisfiedRequiredFields } = await import("../resolver");
+    const yesterdaysRow = { ACME_URL: "https://acme.example", ACME_KEY: "k" };
+    const todaysSpec = {
+      target: "acme",
+      label: "Acme",
+      fields: [
+        { envVar: "ACME_URL", label: "URL", hint: "", secret: false, required: true },
+        { envVar: "ACME_KEY", label: "Key", hint: "", secret: true, required: true },
+        { envVar: "ACME_REGION", label: "Region", hint: "", secret: false, required: true },
+      ],
+    };
+    expect(unsatisfiedRequiredFields(todaysSpec, (k) => yesterdaysRow[k as keyof typeof yesterdaysRow])).toEqual([
+      "ACME_REGION",
+    ]);
+  });
+
+  it("such a row reports partial, and still shows the fields it holds as stored", async () => {
+    // The stored state spec evolution produces is exactly this: a row missing a
+    // field the CURRENT spec requires. Whether it got there by the spec growing
+    // or by a field being cleared, the status must read the same — and it is
+    // the spec-growth path that is still reachable, because the write path now
+    // refuses to create the other.
+    const evolvedRow: Record<string, string> = { ...TENANT_ROW };
+    delete evolvedRow.JIRA_API_TOKEN;
+    mockRead.mockResolvedValue(evolvedRow);
+
+    const shadowing = await getActionTargetStatus("jira", {
+      workspaceId: WS,
+      deployMode: "self-hosted",
+      env: OPERATOR_ENV,
+    });
+    expect(shadowing?.state).toBe("partial-row-shadowing-env");
+
+    const alone = await getActionTargetStatus("jira", {
+      workspaceId: WS,
+      deployMode: "self-hosted",
+      env: {},
+    });
+    expect(alone?.state).toBe("partial-row");
+
+    // And the fields the row still holds stay visible as stored, so the admin
+    // is asked for the ONE new field rather than all of them.
+    const byVar = new Map(alone?.fields.map((f) => [f.envVar, f]));
+    expect(byVar.get("JIRA_BASE_URL")?.stored).toBe(true);
+    expect(byVar.get("JIRA_EMAIL")?.stored).toBe(true);
+    expect(byVar.get("JIRA_API_TOKEN")?.stored).toBe(false);
   });
 });
 

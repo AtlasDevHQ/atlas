@@ -4,8 +4,9 @@ import {
   EMPTY_DRAFT,
   buildUpdatePayload,
   fieldPlaceholder,
+  fieldSourceLabel,
+  hasStoredRow,
   isDraftDirty,
-  mayHaveStoredRow,
   missingRequiredFields,
   requiredFieldsUnsatisfied,
   setValue,
@@ -36,6 +37,7 @@ function field(over: Partial<FieldStatus> & { envVar: string }): FieldStatus {
     multiline: false,
     present: false,
     source: "unset",
+    stored: false,
     ...over,
   };
 }
@@ -43,11 +45,25 @@ function field(over: Partial<FieldStatus> & { envVar: string }): FieldStatus {
 const TARGET: TargetStatus = {
   target: "widgetron",
   label: "Widgetron",
-  configured: true,
-  resolvedFrom: "workspace",
+  state: "workspace",
   fields: [
-    field({ envVar: "WIDGETRON_URL", label: "Base URL", required: true, present: true, source: "workspace" }),
-    field({ envVar: "WIDGETRON_TOKEN", label: "Token", required: true, secret: true, present: true, source: "workspace" }),
+    field({ envVar: "WIDGETRON_URL", label: "Base URL", required: true, present: true, source: "workspace", stored: true }),
+    field({ envVar: "WIDGETRON_TOKEN", label: "Token", required: true, secret: true, present: true, source: "workspace", stored: true }),
+    field({ envVar: "WIDGETRON_PROJECT", label: "Project" }),
+  ],
+};
+
+/**
+ * The state the discriminant exists for: a row that EXISTS and misses a
+ * required field. Every field reads `unset` because nothing resolves — only
+ * `stored` still says which of them the row holds (#5564).
+ */
+const PARTIAL: TargetStatus = {
+  ...TARGET,
+  state: "partial-row",
+  fields: [
+    field({ envVar: "WIDGETRON_URL", label: "Base URL", required: true, stored: true }),
+    field({ envVar: "WIDGETRON_TOKEN", label: "Token", required: true, secret: true }),
     field({ envVar: "WIDGETRON_PROJECT", label: "Project" }),
   ],
 };
@@ -148,7 +164,7 @@ describe("summarizeTarget", () => {
 
   test("an env-resolved target names the environment rung (criterion 3)", () => {
     const summary = summarizeTarget(
-      { ...TARGET, resolvedFrom: "env", fields: TARGET.fields.map((f) => ({ ...f, source: "env" as const })) },
+      { ...TARGET, state: "env", fields: TARGET.fields.map((f) => ({ ...f, source: "env" as const, stored: false })) },
       "self-hosted",
     );
 
@@ -158,7 +174,7 @@ describe("summarizeTarget", () => {
 
   test("unconfigured on self-hosted explains the all-or-nothing rung rule", () => {
     const summary = summarizeTarget(
-      { ...TARGET, configured: false, resolvedFrom: null, fields: TARGET.fields.map((f) => ({ ...f, present: false, source: "unset" as const })) },
+      { ...TARGET, state: "unconfigured", fields: TARGET.fields.map((f) => ({ ...f, present: false, source: "unset" as const, stored: false })) },
       "self-hosted",
     );
 
@@ -169,7 +185,7 @@ describe("summarizeTarget", () => {
 
   test("unconfigured on SaaS never mentions environment variables — that rung does not exist", () => {
     const summary = summarizeTarget(
-      { ...TARGET, configured: false, resolvedFrom: null, fields: TARGET.fields.map((f) => ({ ...f, present: false, source: "unset" as const })) },
+      { ...TARGET, state: "unconfigured", fields: TARGET.fields.map((f) => ({ ...f, present: false, source: "unset" as const, stored: false })) },
       "saas",
     );
 
@@ -180,11 +196,10 @@ describe("summarizeTarget", () => {
     const summary = summarizeTarget(
       {
         ...TARGET,
-        configured: false,
-        resolvedFrom: null,
+        state: "unconfigured",
         fields: [
-          { ...TARGET.fields[0]!, present: false, source: "unset" },
-          { ...TARGET.fields[1]!, present: false, source: "unset" },
+          { ...TARGET.fields[0]!, present: false, source: "unset", stored: false },
+          { ...TARGET.fields[1]!, present: false, source: "unset", stored: false },
           TARGET.fields[2]!,
         ],
       },
@@ -193,8 +208,39 @@ describe("summarizeTarget", () => {
 
     expect(summary.detail).toContain("Base URL");
     expect(summary.detail).toContain("Token");
-    // Optional fields never block `configured`, so they are never listed.
+    // Optional fields never block resolution, so they are never listed.
     expect(summary.detail).not.toContain("Project");
+  });
+
+  test("a partial row reads as its own state, not as 'not configured'", () => {
+    // The distinction the whole discriminant is for. Under the old shape this
+    // fixture and an unconfigured one produced identical copy.
+    const summary = summarizeTarget(PARTIAL, "self-hosted");
+
+    expect(summary.tone).toBe("partial");
+    expect(summary.label).toBe("Incomplete");
+    expect(summary.detail).toContain("incomplete");
+  });
+
+  test("a partial row SHADOWING env says the target used to work", () => {
+    // The damaging state: the deployment's environment would answer, and the
+    // half-finished entry is what is stopping it. An admin who cannot read
+    // this off the page has no way to know their own save caused the outage.
+    const summary = summarizeTarget({ ...PARTIAL, state: "partial-row-shadowing-env" }, "self-hosted");
+
+    expect(summary.tone).toBe("partial");
+    expect(summary.label).toContain("blocking environment");
+    expect(summary.detail).toContain("environment variables would answer for them");
+  });
+
+  test("a partial row names only the required fields the row does NOT hold", () => {
+    // The over-warning this replaced: every field of a partial row reports
+    // `unset`, so listing "still needed" off `present` alone would tell the
+    // admin to re-enter a URL that is already stored and unreadable.
+    const summary = summarizeTarget(PARTIAL, "self-hosted");
+
+    expect(summary.detail).toContain("Token");
+    expect(summary.detail).not.toContain("Base URL");
   });
 });
 
@@ -204,18 +250,28 @@ describe("missingRequiredFields", () => {
       ...TARGET,
       fields: [
         { ...TARGET.fields[0]!, present: true },
-        { ...TARGET.fields[1]!, present: false },
+        { ...TARGET.fields[1]!, present: false, stored: false },
         { ...TARGET.fields[2]!, present: false },
       ],
     };
 
     expect(missingRequiredFields(target).map((f) => f.envVar)).toEqual(["WIDGETRON_TOKEN"]);
   });
+
+  test("a stored-but-shadowed field is not 'missing' — the admin has nothing to type", () => {
+    expect(missingRequiredFields(PARTIAL).map((f) => f.envVar)).toEqual(["WIDGETRON_TOKEN"]);
+  });
 });
 
 describe("fieldPlaceholder", () => {
   test("a saved field says the value is kept when left blank", () => {
-    expect(fieldPlaceholder(field({ envVar: "X", source: "workspace", present: true }))).toContain(
+    expect(
+      fieldPlaceholder(field({ envVar: "X", source: "workspace", present: true, stored: true })),
+    ).toContain("leave blank to keep");
+  });
+
+  test("a stored-but-shadowed field says the same — it is still there, still unreadable", () => {
+    expect(fieldPlaceholder(field({ envVar: "X", required: true, stored: true }))).toContain(
       "leave blank to keep",
     );
   });
@@ -236,29 +292,52 @@ describe("fieldPlaceholder", () => {
   });
 });
 
-describe("mayHaveStoredRow", () => {
+describe("hasStoredRow", () => {
   test("a workspace-resolved target has a row", () => {
-    expect(mayHaveStoredRow(TARGET)).toBe(true);
+    expect(hasStoredRow(TARGET)).toBe(true);
   });
 
-  test("an env-resolved target provably has none — that rung is only consulted when the row is absent", () => {
-    expect(mayHaveStoredRow({ ...TARGET, resolvedFrom: "env" })).toBe(false);
+  test("an env-resolved target has none — that rung is only consulted when the row is absent", () => {
+    expect(hasStoredRow({ ...TARGET, state: "env" })).toBe(false);
   });
 
-  test("an unconfigured target MIGHT have a partial row, so removal stays offered", () => {
-    // The state ADR-0046 warns about: a row missing a required field shadows
-    // the env rung and makes the target throw, while reporting exactly like no
-    // row at all. Hiding removal here would leave no way out of it.
-    expect(mayHaveStoredRow({ ...TARGET, configured: false, resolvedFrom: null })).toBe(true);
+  test("an unconfigured target has none, and is no longer confused with a partial one", () => {
+    // Under `mayHaveStoredRow` this answered `true`, because the old response
+    // could not tell the two apart and removal was offered on the "might".
+    expect(hasStoredRow({ ...TARGET, state: "unconfigured" })).toBe(false);
+  });
+
+  test("BOTH partial states keep removal offered — it is the only way out of them", () => {
+    // A row missing a required field shadows the env rung and makes the target
+    // throw. Hiding removal here would leave an admin with a broken target and
+    // nothing to press.
+    expect(hasStoredRow(PARTIAL)).toBe(true);
+    expect(hasStoredRow({ ...PARTIAL, state: "partial-row-shadowing-env" })).toBe(true);
+  });
+});
+
+describe("fieldSourceLabel", () => {
+  test("falls through to the source label whenever the field resolves", () => {
+    expect(fieldSourceLabel(field({ envVar: "X", source: "workspace", present: true, stored: true }))).toBe(
+      "Workspace",
+    );
+    expect(fieldSourceLabel(field({ envVar: "X", source: "env", present: true }))).toBe("Environment");
+  });
+
+  test("an unset field with nothing stored reads 'Not set'", () => {
+    expect(fieldSourceLabel(field({ envVar: "X" }))).toBe("Not set");
+  });
+
+  test("a stored-but-shadowed field does NOT read 'Not set' — it is set, just not in use", () => {
+    expect(fieldSourceLabel(field({ envVar: "X", stored: true }))).toBe("Saved (not in use)");
   });
 });
 
 describe("requiredFieldsUnsatisfied", () => {
   const unconfigured: TargetStatus = {
     ...TARGET,
-    configured: false,
-    resolvedFrom: null,
-    fields: TARGET.fields.map((f) => ({ ...f, present: false, source: "unset" as const })),
+    state: "unconfigured",
+    fields: TARGET.fields.map((f) => ({ ...f, present: false, source: "unset" as const, stored: false })),
   };
 
   test("an untouched target with nothing stored lists every required field", () => {
@@ -290,8 +369,12 @@ describe("requiredFieldsUnsatisfied", () => {
     // all-or-nothing rule then stops the env fallback entirely.
     const envTarget: TargetStatus = {
       ...TARGET,
-      resolvedFrom: "env",
-      fields: TARGET.fields.map((f) => ({ ...f, source: f.present ? ("env" as const) : ("unset" as const) })),
+      state: "env",
+      fields: TARGET.fields.map((f) => ({
+        ...f,
+        source: f.present ? ("env" as const) : ("unset" as const),
+        stored: false,
+      })),
     };
     const draft = setValue(EMPTY_DRAFT, "WIDGETRON_URL", "https://widgets.acme.dev");
 
@@ -316,6 +399,29 @@ describe("requiredFieldsUnsatisfied", () => {
 
   test("a fully stored target with an untouched draft is satisfied", () => {
     expect(requiredFieldsUnsatisfied(TARGET, EMPTY_DRAFT)).toEqual([]);
+  });
+
+  test("a stored-but-shadowed field satisfies its slot — this is what stopped the over-warning", () => {
+    // The old predicate tested `source === "workspace"`, which a partial row
+    // reports as `unset` for every field. It therefore called WIDGETRON_URL
+    // unsatisfied even though the row holds it — harmless when the result was
+    // only a warning, and a trap now that it gates Save: the admin completing
+    // a partial row types the ONE missing field, and the button has to enable.
+    expect(requiredFieldsUnsatisfied(PARTIAL, EMPTY_DRAFT).map((f) => f.envVar)).toEqual([
+      "WIDGETRON_TOKEN",
+    ]);
+
+    const completing = setValue(EMPTY_DRAFT, "WIDGETRON_TOKEN", "tok_abc");
+    expect(requiredFieldsUnsatisfied(PARTIAL, completing)).toEqual([]);
+  });
+
+  test("clearing a stored-but-shadowed field still makes it unsatisfied", () => {
+    const draft = toggleCleared(EMPTY_DRAFT, "WIDGETRON_URL", true);
+
+    expect(requiredFieldsUnsatisfied(PARTIAL, draft).map((f) => f.envVar)).toEqual([
+      "WIDGETRON_URL",
+      "WIDGETRON_TOKEN",
+    ]);
   });
 });
 

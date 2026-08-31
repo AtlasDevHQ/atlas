@@ -23,12 +23,32 @@ import { z } from "zod";
 // ── Wire shapes ───────────────────────────────────────────────────
 // Mirrors the response schemas in `admin-action-credentials.ts`. Enums that
 // the API may extend independently of the web bundle stay `z.string()` per
-// the admin-schemas convention; `source` and `resolvedFrom` are closed sets
-// the UI branches on, so they stay `z.enum` and a new member fails loudly
-// here rather than rendering as a blank chip.
+// the admin-schemas convention; `source` and `state` are closed sets the UI
+// branches on, so they stay `z.enum` and a new member fails loudly here rather
+// than rendering as a blank chip.
 
 export const FIELD_SOURCES = ["workspace", "env", "unset"] as const;
 export type FieldSource = (typeof FIELD_SOURCES)[number];
+
+/**
+ * The target's single configuration state (#5564) — see `ActionTargetState`
+ * in `credentials/resolver.ts` for what each one means and why there is one
+ * discriminant rather than the `configured` + `resolvedFrom` pair this
+ * replaced.
+ *
+ * The two partial states are the reason it exists: under ADR-0046's
+ * all-or-nothing rung rule a stored row that misses a required field shadows
+ * the environment rung instead of being topped up by it, and the old shape
+ * reported that byte-identically to having no row at all.
+ */
+export const TARGET_STATES = [
+  "unconfigured",
+  "workspace",
+  "env",
+  "partial-row",
+  "partial-row-shadowing-env",
+] as const;
+export type TargetState = (typeof TARGET_STATES)[number];
 
 export const FieldStatusSchema = z.object({
   envVar: z.string(),
@@ -39,13 +59,20 @@ export const FieldStatusSchema = z.object({
   multiline: z.boolean(),
   present: z.boolean(),
   source: z.enum(FIELD_SOURCES),
+  /**
+   * True ⇒ the workspace's stored row holds this field, whichever rung wins.
+   * In either partial state nothing resolves, so `source` reads `unset` for
+   * every field — this is what still says which of them the row actually has,
+   * and it is why the form can tell an admin to type one missing field rather
+   * than all four.
+   */
+  stored: z.boolean(),
 });
 
 export const TargetStatusSchema = z.object({
   target: z.string(),
   label: z.string(),
-  configured: z.boolean(),
-  resolvedFrom: z.enum(["workspace", "env"]).nullable(),
+  state: z.enum(TARGET_STATES),
   fields: z.array(FieldStatusSchema),
 });
 
@@ -149,12 +176,34 @@ export const SOURCE_LABEL: Record<FieldSource, string> = {
   unset: "Not set",
 };
 
-/** Required fields that do not currently resolve — what blocks `configured`. */
-export function missingRequiredFields(target: TargetStatus): FieldStatus[] {
-  return target.fields.filter((f) => f.required && !f.present);
+/**
+ * The badge text for one field.
+ *
+ * `SOURCE_LABEL[field.source]` alone is wrong in the two partial states: the
+ * row is not resolving, so a field it holds reports `unset` and would read
+ * "Not set" — flatly untrue to the admin who typed it, and the reading that
+ * would send them hunting for a value that is already there. "Saved (not in
+ * use)" says both halves: it is stored, and it is not what executes (#5564).
+ */
+export function fieldSourceLabel(field: FieldStatus): string {
+  if (field.source === "unset" && field.stored) return "Saved (not in use)";
+  return SOURCE_LABEL[field.source];
 }
 
-export type StatusTone = "configured" | "environment" | "unconfigured";
+/**
+ * Required fields the target has neither resolved nor stored — what the admin
+ * still has to type.
+ *
+ * `stored` is in the test, not just `present`, because of the partial states:
+ * there nothing resolves, so `present` is false for every field including the
+ * ones the row holds. Listing those as "still needed" would tell an admin to
+ * re-enter a secret they cannot read back (#5564).
+ */
+export function missingRequiredFields(target: TargetStatus): FieldStatus[] {
+  return target.fields.filter((f) => f.required && !f.present && !f.stored);
+}
+
+export type StatusTone = "configured" | "environment" | "partial" | "unconfigured";
 
 export interface TargetSummary {
   tone: StatusTone;
@@ -167,40 +216,63 @@ export interface TargetSummary {
 /**
  * Summarize a target's status for the card header.
  *
+ * One branch per {@link TargetState}, which is the reason the API sends a
+ * discriminant rather than a `configured` flag: the three failing states read
+ * identically under the old shape and need three different sentences.
+ *
  * The `environment` tone is deliberately distinct from `configured` rather than
- * folded into it. Acceptance criterion 3: on a self-hosted deploy an operator
- * who has set `JIRA_*` in the environment sees a target that works with no row
- * in this page's table, and without naming that rung the page reads as a bug.
- * On SaaS the rung does not exist at all (ADR-0046 — no operator tier), so the
- * unconfigured copy there never mentions environment variables.
+ * folded into it. Acceptance criterion 3 of #5553: on a self-hosted deploy an
+ * operator who has set `JIRA_*` in the environment sees a target that works
+ * with no row in this page's table, and without naming that rung the page reads
+ * as a bug. On SaaS the rung does not exist at all (ADR-0046 — no operator
+ * tier), so neither the environment nor the shadowing copy can be reached
+ * there, and the unconfigured copy never mentions environment variables.
  */
 export function summarizeTarget(target: TargetStatus, deployMode: DeployMode): TargetSummary {
-  if (target.resolvedFrom === "workspace") {
-    return {
-      tone: "configured",
-      label: "Configured",
-      detail: `${target.label} actions run with the credentials saved here for this workspace.`,
-    };
-  }
-  if (target.resolvedFrom === "env") {
-    return {
-      tone: "environment",
-      label: "From environment",
-      detail: `No credentials are saved for this workspace, so ${target.label} actions fall back to this deployment's environment variables. Saving credentials here overrides that for this workspace.`,
-    };
-  }
   const missing = missingRequiredFields(target)
     .map((f) => f.label)
     .join(", ");
   const blocked = missing.length > 0 ? ` Still needed: ${missing}.` : "";
-  return {
-    tone: "unconfigured",
-    label: "Not configured",
-    detail:
-      deployMode === "self-hosted"
-        ? `${target.label} actions will fail until every required field resolves — either saved here, or set as environment variables on this deployment. Credentials saved here are all-or-nothing: a partly-filled entry stops the environment fallback rather than topping it up.${blocked}`
-        : `${target.label} actions will fail until every required field is saved here.${blocked}`,
-  };
+
+  switch (target.state) {
+    case "workspace":
+      return {
+        tone: "configured",
+        label: "Configured",
+        detail: `${target.label} actions run with the credentials saved here for this workspace.`,
+      };
+    case "env":
+      return {
+        tone: "environment",
+        label: "From environment",
+        detail: `No credentials are saved for this workspace, so ${target.label} actions fall back to this deployment's environment variables. Saving credentials here overrides that for this workspace.`,
+      };
+    // The state this page exists to make visible. An admin looking at it has a
+    // stored entry that is actively suppressing a working environment rung —
+    // the target USED to run and now throws — and under the old response shape
+    // it was indistinguishable from having configured nothing at all.
+    case "partial-row-shadowing-env":
+      return {
+        tone: "partial",
+        label: "Incomplete — blocking environment",
+        detail: `The credentials saved here for ${target.label} are incomplete, and an incomplete entry stops the environment fallback rather than topping it up — so ${target.label} actions are failing even though this deployment's environment variables would answer for them. Complete the entry, or remove it to fall back to the environment.${blocked}`,
+      };
+    case "partial-row":
+      return {
+        tone: "partial",
+        label: "Incomplete",
+        detail: `The credentials saved here for ${target.label} are incomplete, so ${target.label} actions fail. Credentials saved here are all-or-nothing — complete every required field, or remove the entry.${blocked}`,
+      };
+    case "unconfigured":
+      return {
+        tone: "unconfigured",
+        label: "Not configured",
+        detail:
+          deployMode === "self-hosted"
+            ? `${target.label} actions will fail until every required field resolves — either saved here, or set as environment variables on this deployment. Credentials saved here are all-or-nothing: a partly-filled entry stops the environment fallback rather than topping it up.${blocked}`
+            : `${target.label} actions will fail until every required field is saved here.${blocked}`,
+      };
+  }
 }
 
 /**
@@ -218,31 +290,52 @@ export function summarizeTarget(target: TargetStatus, deployMode: DeployMode): T
  * instruction to create exactly the partial row that makes the target throw.
  */
 export function fieldPlaceholder(field: FieldStatus): string {
-  if (field.source === "workspace") return "Saved — leave blank to keep";
+  // `stored`, not `source === "workspace"`: in a partial state the row is not
+  // resolving, but a field it holds is still there and still unreadable, so
+  // "leave blank to keep" is exactly the right instruction (#5564).
+  if (field.stored) return "Saved — leave blank to keep";
   if (field.source === "env") return "Currently from the environment — enter a value to save it here";
   return field.required ? "Required" : "Optional";
 }
 
 /**
- * Whether this workspace could have a stored row for the target — i.e. whether
- * there is anything a "remove" could act on.
+ * Whether this workspace HAS a stored row for the target — i.e. whether there
+ * is anything a "remove" could act on.
  *
- * Read off the resolver's own precedence rather than guessed: `resolvedFrom`
- * is `"env"` ONLY when `bundle === null` (`getActionTargetStatus` consults the
- * env rung solely when no workspace row exists at all), so an env-resolved
- * target provably has nothing stored. Every other state might.
+ * Three of the five states are exactly the ones a row produces, so this is a
+ * projection of the discriminant, not an inference over an absence. It
+ * replaced `mayHaveStoredRow`, which could only ask the question backwards:
+ * the old response said `resolvedFrom: "env"` solely when no row existed, so
+ * that one value proved a row was absent and every other value merely allowed
+ * one. Removal was offered on the "might" — sound, but it meant the page
+ * offered a destructive action without being able to say whether it would do
+ * anything, and could not distinguish the state ADR-0046 warns about (#5564).
  *
- * That "might" is the point. A PARTIAL workspace row — one that exists but
- * misses a required field — reports `resolvedFrom: null` and every field as
- * `unset`, indistinguishable from having no row at all. It is also the single
- * state ADR-0046 warns about: it shadows the environment rung and makes the
- * target throw. Gating removal on `resolvedFrom === "workspace"` would hide
- * the only escape hatch in precisely that case, leaving the admin with a
- * broken target and no way to clear it. So removal is offered whenever a row
- * may exist; DELETE against no row is a no-op the route already handles.
+ * A partial row still keeps removal offered, and that is the case that matters:
+ * it is the only escape hatch from an entry that shadows the environment rung.
  */
-export function mayHaveStoredRow(target: TargetStatus): boolean {
-  return target.resolvedFrom !== "env";
+export function hasStoredRow(target: TargetStatus): boolean {
+  return (
+    target.state === "workspace" ||
+    target.state === "partial-row" ||
+    target.state === "partial-row-shadowing-env"
+  );
+}
+
+/**
+ * Whether an environment rung is standing behind this target — i.e. whether
+ * "falls back to the environment" is a true thing to say about it.
+ *
+ * Beside {@link hasStoredRow} rather than inline at the call site: "these two
+ * states have a complete env rung" is a fact about the discriminant, and the
+ * page had begun re-stating it in JSX where it could drift from the copy
+ * `summarizeTarget` writes from the same fact.
+ *
+ * Both members are self-hosted-only, so this is always false on SaaS — where
+ * the rung does not exist at all (ADR-0046).
+ */
+export function hasEnvFallback(target: TargetStatus): boolean {
+  return target.state === "env" || target.state === "partial-row-shadowing-env";
 }
 
 /**
@@ -251,17 +344,23 @@ export function mayHaveStoredRow(target: TargetStatus): boolean {
  * The all-or-nothing rung rule makes a partial save actively harmful rather
  * than merely incomplete: the workspace row it creates stops the environment
  * fallback instead of topping it up, so an admin who saves one field of a
- * target that was working from `process.env` breaks it. This is what the page
- * warns on before that save.
+ * target that was working from `process.env` breaks it. The API now REJECTS
+ * such a save with a 400 (#5564); this is the same predicate one step earlier,
+ * so the form can gate its own Save button rather than teaching the admin the
+ * rule through a failed request.
  *
  * A field survives the save if the admin typed a value, or if it is already
  * stored for the workspace and not being removed. An env-sourced value does
  * NOT count: it lives in the environment, not in the row being written.
  *
- * Conservative by construction — a stored-but-shadowed field of a partial row
- * reports `unset`, so this can warn about a field that turns out to be
- * present. Over-warning on a hazard the admin can check beats staying silent
- * on the one that throws.
+ * ⚠️ The membership test is `stored`, NOT `source === "workspace"`. Those agree
+ * everywhere except the two partial states, and disagreeing there was the bug:
+ * a partial row reports every field `unset`, so the old test called a stored
+ * field unsatisfied. That was tolerable when it only over-warned, and is not
+ * now that it gates Save — the one way a partial row is still reachable is a
+ * target's field spec gaining a required field after rows are stored, and in
+ * exactly that case the admin needs to save the ONE new field over the row
+ * they already have. Testing `source` would disable the button that fixes it.
  */
 export function requiredFieldsUnsatisfied(
   target: TargetStatus,
@@ -272,6 +371,6 @@ export function requiredFieldsUnsatisfied(
     if (!field.required) return false;
     if (cleared.has(field.envVar)) return true;
     if ((draft.values[field.envVar] ?? "").trim().length > 0) return false;
-    return field.source !== "workspace";
+    return !field.stored;
   });
 }

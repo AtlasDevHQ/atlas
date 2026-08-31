@@ -175,6 +175,32 @@ function missingRequired(
     .map((f) => f.envVar);
 }
 
+/**
+ * Required field names of `spec` that `read` does not answer with a non-empty
+ * value — the completeness question, asked once, for every caller.
+ *
+ * Composes {@link projectDeclaredFields} with {@link missingRequired} rather
+ * than exporting the predicate alone, because a caller outside this module
+ * that asked only the predicate would be asking half the question: the
+ * projection is what drops empty strings and keys the spec does not declare.
+ * A `""` skipped there reads as "present" to the predicate while the resolver
+ * counts it missing at execution time — the two disagreeing is exactly the
+ * drift this seam exists to make impossible.
+ *
+ * The WRITE path is the caller this exists for (#5564). Until then nothing on
+ * the write path asked the question at all, so a half-filled save persisted a
+ * row that shadows the env rung and makes the target throw — the
+ * all-or-nothing rule's own failure mode, reachable straight through the Admin
+ * form. `admin-action-credentials.ts` now asks it of the exact merged bundle
+ * it is about to persist.
+ */
+export function unsatisfiedRequiredFields(
+  spec: ActionTargetSpec,
+  read: (key: string) => string | undefined,
+): string[] {
+  return missingRequired(spec, projectDeclaredFields(spec, read));
+}
+
 function unconfiguredMessage(spec: ActionTargetSpec, deployMode: DeployMode): string {
   if (deployMode === "saas") {
     return (
@@ -320,15 +346,80 @@ export interface ActionTargetFieldStatus {
   readonly present: boolean;
   /** `"unset"` when neither the workspace row nor the (self-host) env has it. */
   readonly source: ActionCredentialSource | "unset";
+  /**
+   * True when THIS WORKSPACE'S ROW carries a non-empty value for this field —
+   * independently of which rung wins.
+   *
+   * `present` / `source` answer "what would execute". In either partial state
+   * nothing executes, so every field there reads `unset` even when the row
+   * holds it. That is right for `present` and useless for the one question the
+   * Admin form must answer before a save: which required fields does the admin
+   * still have to type? Without this the form could only assume "all of them",
+   * and would block a save that completes a partial row (#5564).
+   *
+   * Presence only, never a value — the same contract `present` carries, and it
+   * discloses nothing that `source: "workspace"` does not already disclose on
+   * the winning path.
+   *
+   * Yes, this is a third boolean-ish member beside `present` and `source`, and
+   * no, the field triple is not a discriminant the way {@link ActionTargetState}
+   * is. Worth being precise about what is and is not representable here:
+   * `present` is already exactly `source !== "unset"` — a redundancy that
+   * predates this field — and `stored` cannot contradict them, because when the
+   * workspace rung wins the winning values ARE the row's, so `present` implies
+   * `stored`. Collapsing the triple would reshape the per-field read-back
+   * contract, which #5564 puts out of scope; it is a fair follow-up, not a
+   * thing to smuggle into this change.
+   */
+  readonly stored: boolean;
 }
+
+/**
+ * What a target's credentials are, for one workspace — ONE discriminant over
+ * the five situations that are actually reachable (#5564).
+ *
+ * This replaced a `configured: boolean` + `resolvedFrom: rung | null` pair.
+ * Two fields span four combinations for what were three describable states,
+ * and neither could name the two that matter most: a workspace row that EXISTS
+ * but misses a required field reported `configured: false, resolvedFrom: null`,
+ * byte-identical to having no row at all. Under the all-or-nothing rung rule
+ * those are opposite situations — the second is fine, the first shadows the env
+ * rung and makes the target throw — and no consumer could tell them apart.
+ *
+ * One discriminant makes the illegal combinations unrepresentable rather than
+ * merely undocumented, which is the same call PR #5561 made when it declined a
+ * `kind` discriminant alongside `secret` on the field spec.
+ *
+ * - `unconfigured` — no workspace row; the env rung is absent or incomplete.
+ * - `workspace` — a complete workspace row resolves.
+ * - `env` — no workspace row, and a complete env rung resolves. Self-hosted
+ *   only; on SaaS the rung does not exist (ADR-0046).
+ * - `partial-row` — a workspace row exists and misses a required field.
+ *   Nothing is being shadowed, so the target was not working before either.
+ * - `partial-row-shadowing-env` — the same incomplete row, but the env rung IS
+ *   complete. This is the damaging one: execution throws, and a target that
+ *   was working from the deployment's environment is now broken by the row.
+ *   Self-hosted only, for the same reason `env` is.
+ *
+ * With the write path rejecting incomplete saves (#5564), an admin can no
+ * longer CREATE either partial state through the Admin form. They stay
+ * reachable by exactly one path — a target's field spec gaining a required
+ * field after rows are stored, which turns every stored row for that target
+ * partial at once. `ACTION_TARGETS` is live code that gained three entries in
+ * a week, so that path is real, and it is the one the tests pin.
+ */
+export type ActionTargetState =
+  | "unconfigured"
+  | "workspace"
+  | "env"
+  | "partial-row"
+  | "partial-row-shadowing-env";
 
 export interface ActionTargetStatus {
   readonly target: string;
   readonly label: string;
-  /** True when the target resolves to a complete set for this workspace. */
-  readonly configured: boolean;
-  /** The rung that would win, or `null` when unconfigured. */
-  readonly resolvedFrom: ActionCredentialSource | null;
+  /** The one discriminant — see {@link ActionTargetState}. */
+  readonly state: ActionTargetState;
   readonly fields: readonly ActionTargetFieldStatus[];
 }
 
@@ -346,6 +437,11 @@ export interface ActionTargetStatus {
  * `"env"`, because at execution time they would not be consulted. Reporting
  * them as `"env"` would tell a workspace admin their target is configured out
  * of a rung the resolver will never reach.
+ *
+ * {@link ActionTargetState} is the one thing this returns that the resolver
+ * does not: it separates "no row" from "an incomplete row", and separates an
+ * incomplete row that is shadowing a working env rung from one that is not.
+ * Per-field `stored` carries the same separation one level down.
  */
 export async function getActionTargetStatus(
   target: string,
@@ -373,16 +469,27 @@ export async function getActionTargetStatus(
     deployMode === "self-hosted" && missingRequired(spec, envValues).length === 0;
 
   // Mirror the resolver: a complete workspace row wins outright; otherwise the
-  // env rung is consulted only when it is itself complete. An INCOMPLETE
-  // workspace row shadows env (the resolver throws rather than degrading), so
-  // it must not report as env-configured here either.
-  const winner: ActionCredentialSource | null = workspaceComplete
+  // env rung is consulted only when no row exists at all AND it is itself
+  // complete. An INCOMPLETE workspace row shadows env (the resolver throws
+  // rather than degrading), so it never reports as env-configured here either.
+  //
+  // The one thing this ladder says that the resolver's cannot: whether the
+  // shadowed env rung was COMPLETE. The resolver throws either way, so the
+  // distinction is invisible to it — but to an admin it is the difference
+  // between "this target never worked" and "my half-finished entry broke a
+  // target that was working", which is the whole reason the status API exists.
+  const state: ActionTargetState = workspaceComplete
     ? "workspace"
     : bundle !== null
-      ? null
+      ? envComplete
+        ? "partial-row-shadowing-env"
+        : "partial-row"
       : envComplete
         ? "env"
-        : null;
+        : "unconfigured";
+
+  const winner: ActionCredentialSource | null =
+    state === "workspace" ? "workspace" : state === "env" ? "env" : null;
 
   const winningValues =
     winner === "workspace" ? workspaceValues : winner === "env" ? envValues : {};
@@ -400,14 +507,17 @@ export async function getActionTargetStatus(
       multiline: field.multiline === true,
       present,
       source: present && winner ? winner : "unset",
+      // Read off the ROW, not the winner — see the field's docblock. In the
+      // `workspace` state this equals `present`; in the two partial states it
+      // is the only thing that still tells the truth about the row.
+      stored: Boolean(workspaceValues[field.envVar]),
     };
   });
 
   return {
     target: spec.target,
     label: spec.label,
-    configured: winner !== null,
-    resolvedFrom: winner,
+    state,
     fields,
   };
 }

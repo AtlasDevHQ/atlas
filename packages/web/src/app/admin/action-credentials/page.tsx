@@ -4,11 +4,12 @@ import { useState } from "react";
 import {
   ActionCredentialsResponseSchema,
   EMPTY_DRAFT,
-  SOURCE_LABEL,
   buildUpdatePayload,
   fieldPlaceholder,
+  fieldSourceLabel,
+  hasEnvFallback,
+  hasStoredRow,
   isDraftDirty,
-  mayHaveStoredRow,
   requiredFieldsUnsatisfied,
   setValue,
   summarizeTarget,
@@ -235,10 +236,16 @@ function TargetCard({
 }: TargetCardProps) {
   const summary = summarizeTarget(target, deployMode);
   const dirty = isDraftDirty(draft);
-  const removable = mayHaveStoredRow(target);
+  const removable = hasStoredRow(target);
   // What would still be missing if this draft were saved as-is. Only worth
   // saying once the admin has actually typed something — before that, the
-  // card's status line already says the target is unconfigured.
+  // card's status line already says where the target stands.
+  //
+  // This also GATES Save, because the API rejects such a save with a 400
+  // (#5564): letting the button fire would spend a round trip to be told
+  // something the page already knows, and the admin would have to re-read the
+  // rule out of an error toast instead of the field list right in front of
+  // them.
   const unsatisfied = dirty ? requiredFieldsUnsatisfied(target, draft) : [];
 
   return (
@@ -255,6 +262,8 @@ function TargetCard({
                     "border-green-300 text-green-700 dark:border-green-700 dark:text-green-400",
                   summary.tone === "environment" &&
                     "border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-400",
+                  summary.tone === "partial" &&
+                    "border-red-300 text-red-700 dark:border-red-800 dark:text-red-400",
                   summary.tone === "unconfigured" && "text-muted-foreground",
                 )}
               >
@@ -264,9 +273,10 @@ function TargetCard({
             <p className="text-xs text-muted-foreground">{summary.detail}</p>
           </div>
           {/*
-            Offered whenever a row MAY exist, not only when one demonstrably
-            wins. A partial row reports as unconfigured and is exactly the
-            state that needs clearing — see `mayHaveStoredRow`.
+            Offered whenever a row exists, which the state discriminant answers
+            outright. A partial row is exactly the state that needs clearing —
+            it is the only way out of an entry that shadows the environment
+            rung — so removal must stay offered there. See `hasStoredRow`.
           */}
           {removable && (
             <Button
@@ -305,11 +315,12 @@ function TargetCard({
               aria-hidden
             />
             <p className="text-xs text-amber-800 dark:text-amber-300">
-              Saving now leaves {unsatisfied.map((f) => f.label).join(", ")} unset, and
-              credentials saved here are all-or-nothing — the incomplete entry will stop{" "}
+              Saving now would leave {unsatisfied.map((f) => f.label).join(", ")} unset, and
+              credentials saved here are all-or-nothing — the incomplete entry would stop{" "}
               {target.label} actions rather than falling back
-              {target.resolvedFrom === "env" ? " to the environment" : ""}. Fill in every
-              required field, or remove the entry entirely.
+              {hasEnvFallback(target) ? " to the environment" : ""}
+              , so the save is refused until every required field is answered. Fill them in,
+              or remove the entry entirely.
             </p>
           </div>
         )}
@@ -319,7 +330,12 @@ function TargetCard({
         )}
 
         <div className="flex items-center gap-3">
-          <Button type="button" size="sm" disabled={!dirty || busy} onClick={onSave}>
+          <Button
+            type="button"
+            size="sm"
+            disabled={!dirty || busy || unsatisfied.length > 0}
+            onClick={onSave}
+          >
             {busy && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
             Save
           </Button>
@@ -339,7 +355,7 @@ interface CredentialFieldProps {
   field: FieldStatus;
   draft: TargetDraft;
   onDraftChange: (next: TargetDraft) => void;
-  /** False when the target provably has no stored row — nothing to remove. */
+  /** False when the target has no stored row — nothing to remove. */
   removable: boolean;
   disabled: boolean;
 }
@@ -379,7 +395,7 @@ function CredentialField({
           )}
         </Label>
         <Badge variant="outline" className="text-[10px] text-muted-foreground">
-          {SOURCE_LABEL[field.source]}
+          {fieldSourceLabel(field)}
         </Badge>
       </div>
 
@@ -438,10 +454,12 @@ function CredentialField({
       </p>
 
       {/*
-        Hidden only when the target provably stores nothing (env-resolved).
-        Elsewhere the copy says "any value saved here" rather than asserting a
-        stored value exists: a partial row reports every field as unset, so the
-        status cannot tell the admin which of them are actually stored.
+        Hidden when the target stores nothing at all — the state discriminant
+        says so outright, so this is no longer inferred from the winning rung.
+        The copy still says "any value saved here" rather than naming this
+        field: a row can exist while this particular field is not in it, and
+        `field.stored` says which, but a per-field checkbox label that changed
+        wording between fields reads as noise rather than information.
       */}
       {removable && (
         <div className="flex items-center gap-2">

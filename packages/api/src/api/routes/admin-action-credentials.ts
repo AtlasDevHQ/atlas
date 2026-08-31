@@ -1,6 +1,17 @@
 /**
  * Workspace-tier action-target credential routes (#3766).
  *
+ * ⚠️ A PUT whose MERGED result would leave a required field unset is rejected
+ * with 400, and persists nothing (#5564). Under ADR-0046's all-or-nothing rung
+ * rule the row such a save would create does not degrade to `process.env` — it
+ * SHADOWS it, so on a self-hosted deploy a half-finished form entry silently
+ * breaks a target that was working from environment variables. The check lives
+ * here rather than in the schema because the bundle is one AES-GCM ciphertext
+ * column: Postgres cannot inspect the fields inside it, so no CHECK constraint
+ * can express completeness. That is a consequence of encryption at rest, not an
+ * oversight, and it is why this handler is the only thing standing between an
+ * admin and that row.
+ *
  * Mounted at /api/v1/admin/action-credentials. Workspace-admin + MFA (via
  * `createAdminRouter`) + `requireOrgContext`, so every read and write is
  * scoped to the caller's active workspace and a cross-workspace read is
@@ -24,6 +35,11 @@
  *     (`getActionTargetStatus`); the masked status carries no secret bytes.
  *   - PUT merges non-empty fields over the stored bundle (blank = preserve) so
  *     a partially-filled form can't blank a real secret.
+ *   - PUT validates the MERGED bundle before persisting it, so a save cannot
+ *     leave a required field unset. The validated value IS the persisted value
+ *     — the merge happens once and both the check and the write read that one
+ *     object, because a check that re-derives its own copy is a check that can
+ *     disagree with the write.
  *   - Unknown field keys in the body are DROPPED rather than persisted — the
  *     target's spec is the allowlist, so a client cannot smuggle an arbitrary
  *     env-var name into the encrypted bundle.
@@ -55,6 +71,7 @@ import {
 } from "@atlas/api/lib/tools/actions/credentials/targets";
 import {
   getActionTargetStatus,
+  unsatisfiedRequiredFields,
   resolveActionDeployMode,
   type ActionTargetStatus,
 } from "@atlas/api/lib/tools/actions/credentials/resolver";
@@ -87,15 +104,21 @@ const FieldStatusSchema = z.object({
     description:
       "Where the resolved value came from. `env` appears on self-hosted only, and only when no workspace row wins — the rungs are never mixed.",
   }),
+  stored: z.boolean().openapi({
+    description:
+      "True ⇒ this workspace's stored row carries a non-empty value for this field, whichever rung wins. Differs from `present` only in the two partial-row states, where nothing resolves and every field reports `source: \"unset\"` — this still says which of them the row holds. Presence only, never a value.",
+  }),
 });
 
 const TargetStatusSchema = z.object({
   target: z.string().openapi({ description: "Action-target slug (e.g. `jira`)." }),
   label: z.string(),
-  configured: z.boolean().openapi({ description: "True ⇒ every required field resolves for this workspace." }),
-  resolvedFrom: z.enum(["workspace", "env"]).nullable().openapi({
-    description: "The rung that would win at execution time, or null when unconfigured.",
-  }),
+  state: z
+    .enum(["unconfigured", "workspace", "env", "partial-row", "partial-row-shadowing-env"])
+    .openapi({
+      description:
+        "This target's single configuration state for this workspace. `unconfigured` — no stored row, and no complete environment rung. `workspace` — a complete stored row resolves. `env` — no stored row, and a complete environment rung resolves (self-hosted only). `partial-row` — a stored row is missing a required field, so the target throws at execution time. `partial-row-shadowing-env` — the same, but a complete environment rung is being shadowed by that row, so a target that previously worked is now broken (self-hosted only). Replaces the former `configured` / `resolvedFrom` pair, which could not distinguish an incomplete stored row from no row at all.",
+    }),
   fields: z.array(FieldStatusSchema),
 });
 
@@ -117,7 +140,7 @@ const UpdateBodySchema = z.object({
     .optional()
     .openapi({
       description:
-        "Env-var names to remove from the stored bundle. Blank values in `fields` deliberately PRESERVE a stored secret, so this is the only way to unset one — without it an optional field (e.g. a default project) could only be cleared by deleting the whole target and re-entering every credential. Required fields may be listed too; the target then reports unconfigured rather than resolving a partial row.",
+        "Env-var names to remove from the stored bundle. Blank values in `fields` deliberately PRESERVE a stored secret, so this is the only way to unset one — without it an optional field (e.g. a default project) could only be cleared by deleting the whole target and re-entering every credential. Clearing a REQUIRED field is always rejected with 400 — removals apply after the merge, so naming one here leaves it unset even if the same request supplies a value, and the row that would leave behind shadows the environment rung instead of falling back to it. To replace a required value, send the new one in `fields`; to abandon the target, DELETE it, which clears the row outright and is not gated on completeness.",
     }),
 });
 
@@ -136,8 +159,7 @@ function toStatusResponse(status: ActionTargetStatus) {
   return {
     target: status.target,
     label: status.label,
-    configured: status.configured,
-    resolvedFrom: status.resolvedFrom,
+    state: status.state,
     fields: status.fields.map((f) => ({
       envVar: f.envVar,
       label: f.label,
@@ -147,6 +169,7 @@ function toStatusResponse(status: ActionTargetStatus) {
       multiline: f.multiline,
       present: f.present,
       source: f.source,
+      stored: f.stored,
     })),
   };
 }
@@ -182,7 +205,11 @@ const updateTargetRoute = createRoute({
   },
   responses: {
     200: { description: "Updated status", content: { "application/json": { schema: TargetStatusSchema } } },
-    400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
+    400: {
+      description:
+        "No active organization, or the merged result would leave a required field unset. In the latter case nothing is persisted and the message names the unsatisfied fields.",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Unknown target, or internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
@@ -312,6 +339,44 @@ adminActionCredentials.openapi(updateTargetRoute, async (c) => {
     // `clearFields` ends up cleared — the explicit removal wins over a value
     // that may just be a stale form field.
     for (const key of cleared) delete merged[key];
+
+    // ── The completeness gate (#5564) ────────────────────────────────────
+    //
+    // Asked of `merged` — the exact object the next line persists — and asked
+    // through the resolver's own predicate, so "complete enough to save" and
+    // "complete enough to execute" cannot drift into two different questions.
+    // Re-reading the row to check it would be a check that races its own write.
+    //
+    // Strict, with no exception for "the admin will finish it later": the row a
+    // partial save creates does not sit inert, it SHADOWS the environment rung
+    // (ADR-0046), so on self-hosted it breaks a target that was working. The
+    // way out of a target an admin no longer wants is DELETE, which clears the
+    // row whole and is deliberately not gated on completeness — so refusing
+    // here traps nobody.
+    const unsatisfied = unsatisfiedRequiredFields(spec, (key) => merged[key]);
+    if (unsatisfied.length > 0) {
+      const labels = spec.fields
+        .filter((f) => unsatisfied.includes(f.envVar))
+        .map((f) => `${f.label} (${f.envVar})`);
+      log.warn(
+        { orgId, target: spec.target, unsatisfied, requestId },
+        "Rejected an action-credential save that would leave a partial row",
+      );
+      return c.json(
+        {
+          error: "incomplete_credentials",
+          // Names only — `unsatisfied` is a list of env-var names off the spec,
+          // never a stored or submitted value.
+          message:
+            `${spec.label} credentials are all-or-nothing: saving this would leave ${labels.join(", ")} unset, ` +
+            `and the incomplete entry stops ${spec.label} actions rather than falling back to this deployment's environment. ` +
+            `Supply every required field in one request, or clear the target entirely with DELETE /api/v1/admin/action-credentials/${spec.target}.`,
+          requestId,
+        },
+        400,
+      );
+    }
+
     await saveActionCredentials(orgId, spec.target, merged);
 
     await logAdminActionAwait({

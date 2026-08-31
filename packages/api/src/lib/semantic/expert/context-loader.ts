@@ -55,7 +55,11 @@ function projectParsedEntity(
     measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
     joins: Array.isArray(parsed.joins) ? parsed.joins as ParsedEntity["joins"] : [],
     query_patterns: Array.isArray(parsed.query_patterns) ? parsed.query_patterns as ParsedEntity["query_patterns"] : [],
-    connection: typeof parsed.connection === "string" ? parsed.connection : (opts.fallbackConnection ?? undefined),
+    ...(typeof parsed.connection === "string"
+      ? { connection: parsed.connection }
+      : opts.fallbackConnection != null
+        ? { connection: opts.fallbackConnection }
+        : {}),
   };
 }
 
@@ -122,7 +126,11 @@ export async function loadEntitiesFromDB(
         measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
         joins: Array.isArray(parsed.joins) ? parsed.joins as ParsedEntity["joins"] : [],
         query_patterns: Array.isArray(parsed.query_patterns) ? parsed.query_patterns as ParsedEntity["query_patterns"] : [],
-        connection: typeof parsed.connection === "string" ? parsed.connection : (row.connection_group_id ?? undefined),
+        ...(typeof parsed.connection === "string"
+          ? { connection: parsed.connection }
+          : row.connection_group_id != null
+            ? { connection: row.connection_group_id }
+            : {}),
       });
     } catch (err) {
       parseFailures++;

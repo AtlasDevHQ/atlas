@@ -224,12 +224,13 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
     // on the upstream ALS frame surviving the Effect bridge; the trust-device id
     // (which `logAdminAction` reads) is preserved from the same context.
     const authResult = c.get("authResult");
+    const trustDeviceIdentifier = c.get("trustDeviceIdentifier");
     return withRequestContext(
       {
         requestId,
         ...(authResult.user !== undefined ? { user: authResult.user } : {}),
         atlasMode: c.get("atlasMode"),
-        trustDeviceIdentifier: c.get("trustDeviceIdentifier"),
+        ...(trustDeviceIdentifier !== undefined ? { trustDeviceIdentifier } : {}),
         agentOrigin: "chat",
       },
       async () => {

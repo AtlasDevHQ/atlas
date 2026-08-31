@@ -269,7 +269,19 @@ export function createBrainCorrectionsRoute() {
         verb: input.verb,
         payload: {
           ...(input.reason !== undefined ? { reason: input.reason } : {}),
-          ...(input.replacement !== undefined ? { replacement: input.replacement } : {}),
+          // Rebuilt rather than passed through: Zod types the nested
+          // `validFrom` as `string | undefined`, while `CorrectionConfirmPayload`
+          // declares it as an exact optional (#5522).
+          ...(input.replacement !== undefined
+            ? {
+                replacement: {
+                  object: input.replacement.object,
+                  ...(input.replacement.validFrom !== undefined
+                    ? { validFrom: input.replacement.validFrom }
+                    : {}),
+                },
+              }
+            : {}),
         },
       });
       if (!verification.ok) {

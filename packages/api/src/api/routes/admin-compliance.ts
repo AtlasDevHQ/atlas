@@ -25,7 +25,7 @@ import {
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { ComplianceError, ReportError } from "@atlas/api/lib/compliance/errors";
-import type { PIICategory, MaskingStrategy } from "@useatlas/types";
+import type { MaskingStrategy } from "@useatlas/types";
 import { PIIColumnClassificationSchema as PIIClassificationSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";

@@ -48,8 +48,80 @@ import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("auth-migrate-preflight");
 
-/** Postgres column types, mirroring Better Auth's own `getType()`. */
-function postgresType(field: { type?: unknown; bigint?: unknown }): string | null {
+/**
+ * Better Auth's own field-attribute type, derived from the signature of
+ * `getMigrations` rather than restated structurally. `DBFieldAttribute` lives in
+ * `@better-auth/core`, which is a transitive dependency we do not declare, so
+ * reaching for it directly would couple us to a package we do not control the
+ * version of. Deriving it here gets the same compile-time coupling through the
+ * export we already use: if the plan's field shape changes, this stops
+ * compiling instead of silently routing every column into `skipped`.
+ */
+type PlanField = Awaited<ReturnType<typeof getMigrations>>["toBeAdded"][number]["fields"][string];
+
+/**
+ * Better Auth's own "is this change unsafe" predicate, mirrored exactly.
+ *
+ * `get-migration.mjs` asks:
+ *
+ *     field.required !== false && !hasTimestampColumnDefault(field, dbType)
+ *                              && !hasStaticColumnDefault(field)
+ *
+ * The two default tests are NARROWER than "has a defaultValue", and the gap is
+ * load-bearing. `hasStaticColumnDefault` holds only for string/number/boolean
+ * with a non-null, non-function default; `hasTimestampColumnDefault` only for a
+ * `date` with a FUNCTION default on postgres/mysql/mssql. So a required `json`
+ * field carrying a default — or a `string` with a function default — is UNSAFE
+ * to Better Auth while a naive `defaultValue !== undefined` check would wave it
+ * through. This module reading the predicate more loosely than the migrator
+ * that raises it is how the incident recurs silently from the module written to
+ * prevent it, so the predicate is copied rather than approximated.
+ */
+function betterAuthWouldRefuse(field: PlanField): boolean {
+  if (field.required === false) return false;
+
+  const hasTimestampDefault = field.type === "date" && typeof field.defaultValue === "function";
+  if (hasTimestampDefault) return false;
+
+  // Better Auth's `hasStaticColumnDefault` opens with `!(field.unique &&
+  // field.required === false)`. That term is UNREACHABLE here and is left out
+  // deliberately rather than by oversight: it is a standalone function there,
+  // called without narrowing, whereas this one has already returned above on
+  // `required === false`, so the guard can only ever evaluate true. Keeping it
+  // is a type error (TS2367 — `true | undefined` versus `false` do not
+  // overlap), which is the compiler making the same argument.
+  const hasStaticDefault =
+    (field.type === "string" || field.type === "number" || field.type === "boolean") &&
+    field.defaultValue !== undefined &&
+    field.defaultValue !== null &&
+    typeof field.defaultValue !== "function";
+  return !hasStaticDefault;
+}
+
+/**
+ * Postgres column type, mirroring Better Auth's own `getType()` — or `null`
+ * when this module must not attempt the column at all.
+ *
+ * `null` covers three distinct refusals, and all three are deliberate:
+ *
+ *  - **A type the map does not cover** (`id`, arrays, anything a release adds).
+ *    Guessing produces a wrongly-typed column that Better Auth then warns about
+ *    forever while the app reads the wrong shape.
+ *  - **A foreign key.** `getType()` returns its `foreignKeyId` type when
+ *    `field.references?.field === "id"` — `uuid` or `integer GENERATED ...`
+ *    depending on the instance's `useUUIDs`/`useNumberId`, neither of which is
+ *    visible from a plan entry. `text` would be wrong exactly where a wrong type
+ *    is hardest to undo.
+ *  - **An indexed or unique field.** Better Auth creates the index in the SAME
+ *    `toBeAdded` pass that adds the column. Pre-creating the column drops the
+ *    field out of the next plan, so the index would never be created — silently
+ *    and permanently. Refusing here keeps the column and its index together in
+ *    the migrator's hands.
+ */
+function postgresType(field: PlanField): string | null {
+  if (field.references) return null;
+  if (field.index || field.unique) return null;
+
   switch (field.type) {
     case "string":
       return "text";
@@ -62,8 +134,6 @@ function postgresType(field: { type?: unknown; bigint?: unknown }): string | nul
     case "json":
       return "jsonb";
     default:
-      // `id`, array types, and anything a future release adds. Not guessed —
-      // see the module header.
       return null;
   }
 }
@@ -135,14 +205,21 @@ export async function preflightUnsafeColumns(
   if (plan.unsafeChanges.length === 0) return result;
 
   for (const { table, fields } of plan.toBeAdded) {
-    for (const [name, attr] of Object.entries(fields)) {
-      const field = attr as { type?: unknown; bigint?: unknown; required?: unknown; defaultValue?: unknown };
-      // `required` defaults to true when absent, matching Better Auth's own
-      // reading. A column with a default is not unsafe — the existing rows have
-      // something to take.
-      if (field.required === false) continue;
-      if (field.defaultValue !== undefined) continue;
+    // Asked once per TABLE, not once per column: the answer cannot change
+    // within this loop (adding a column does not add rows), and a per-column
+    // query would be n round-trips on every boot for no new information.
+    // Resolved lazily so a table with no unsafe columns costs nothing.
+    let populated: boolean | undefined;
 
+    for (const [name, field] of Object.entries(fields)) {
+      // Better Auth's own predicate, not a looser paraphrase of it — see
+      // `betterAuthWouldRefuse`. A field it would accept needs no repair.
+      if (!betterAuthWouldRefuse(field)) continue;
+
+      // From here the field IS one Better Auth will refuse, so every path out
+      // of this block must record a disposition. A bare `continue` here is the
+      // silent drop this module exists to prevent: the migration would still
+      // fail and nothing would have said which column did it.
       const columnType = postgresType(field);
       if (!columnType) {
         result.skipped.push(`${table}.${name}`);
@@ -150,7 +227,10 @@ export async function preflightUnsafeColumns(
       }
 
       try {
-        if (!(await tableIsPopulated(table))) continue;
+        populated ??= await tableIsPopulated(table);
+        // Not populated: Better Auth creates or alters it safely on its own.
+        // Not a refusal, so not `skipped` — but the loop is done with it.
+        if (!populated) continue;
         await internalQuery(
           `ALTER TABLE ${quoteIdent(table)} ADD COLUMN IF NOT EXISTS ${quoteIdent(name)} ${columnType}`,
         );

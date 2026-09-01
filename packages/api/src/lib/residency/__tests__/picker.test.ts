@@ -7,7 +7,9 @@
 import { describe, it, expect } from "bun:test";
 import {
   buildAvailableRegions,
+  buildRequestableRegions,
   buildSignupRegions,
+  isRegionRequestable,
   isRegionSelectable,
   selectDeployRegionEntries,
   type RegionPickerOptions,
@@ -215,12 +217,19 @@ describe("buildSignupRegions — offered default ∈ picker list (#4131)", () =>
     // the step, so the out-of-list default never reaches a pre-select. Pins the
     // `!first` guard against a refactor that drops it (→ `first.id` on undefined).
     const empty: Regions = {};
-    expect(buildSignupRegions(empty, "us")).toEqual({ defaultRegion: "us", availableRegions: [] });
-    // Same when every configured region is non-selectable.
+    expect(buildSignupRegions(empty, "us")).toEqual({
+      defaultRegion: "us",
+      availableRegions: [],
+      requestableRegions: [],
+    });
+    // Same when every configured region is non-selectable. `staging` is
+    // non-selectable WITHOUT `requestable: true`, so it stays out of both lists
+    // — the internal-vs-parked split, asserted rather than assumed.
     const allNonSelectable: Regions = { staging: { label: "Staging", selectable: false } };
     expect(buildSignupRegions(allNonSelectable, "staging")).toEqual({
       defaultRegion: "staging",
       availableRegions: [],
+      requestableRegions: [],
     });
   });
 
@@ -263,5 +272,79 @@ describe("isRegionSelectable (#3948 — shared read/write predicate)", () => {
     // The write path looks up `regions[region]` which is undefined for an
     // unknown id — assignment must reject it, not treat it as selectable.
     expect(isRegionSelectable(undefined)).toBe(false);
+  });
+});
+
+describe("requestable regions — parked vs internal (region parking, 2026-09-01)", () => {
+  // The prod shape after parking: us selectable; eu/apac parked-and-advertisable;
+  // staging parked-and-internal.
+  const PARKED: Regions = {
+    us: { label: "United States", apiUrl: "https://api.useatlas.dev" },
+    eu: {
+      label: "Europe",
+      apiUrl: "https://api-eu.useatlas.dev",
+      selectable: false,
+      requestable: true,
+    },
+    apac: {
+      label: "Asia Pacific",
+      apiUrl: "https://api-apac.useatlas.dev",
+      selectable: false,
+      requestable: true,
+    },
+    staging: {
+      label: "Staging",
+      apiUrl: "https://api.staging.useatlas.dev",
+      selectable: false,
+    },
+  };
+
+  it("requires BOTH flags — non-selectable alone is internal, not requestable", () => {
+    // The load-bearing distinction. Inferring requestability from
+    // non-selectability alone would advertise `staging` — an internal hostname —
+    // in the customer signup funnel.
+    expect(isRegionRequestable(PARKED.staging)).toBe(false);
+    expect(isRegionRequestable(PARKED.eu)).toBe(true);
+    expect(isRegionRequestable(PARKED.apac)).toBe(true);
+  });
+
+  it("a selectable region is never requestable (the two are mutually exclusive)", () => {
+    expect(isRegionRequestable(PARKED.us)).toBe(false);
+    // Even if someone sets `requestable: true` on a region that is still on
+    // offer — it is already selectable, so "request access" would be nonsense.
+    expect(isRegionRequestable({ label: "US", requestable: true })).toBe(false);
+    expect(isRegionRequestable(undefined)).toBe(false);
+  });
+
+  it("partitions the map: no arm appears in both lists, staging in neither", () => {
+    const { availableRegions, requestableRegions } = buildSignupRegions(PARKED, "us");
+    expect(availableRegions.map((r) => r.id)).toEqual(["us"]);
+    expect(requestableRegions.map((r) => r.id)).toEqual(["eu", "apac"]);
+    const overlap = availableRegions
+      .map((r) => r.id)
+      .filter((id) => requestableRegions.some((r) => r.id === id));
+    expect(overlap).toEqual([]);
+    // Neither list may ever contain the internal arm.
+    expect([...availableRegions, ...requestableRegions].some((r) => r.id === "staging")).toBe(false);
+  });
+
+  it("never projects apiUrl for a requestable region", () => {
+    // The service behind that hostname is scaled down — emitting the URL would
+    // invite the exact misroute parking prevents.
+    for (const r of buildRequestableRegions(PARKED)) {
+      // Key-set, not shape: `toEqual({id: r.id, ...})` built from `r` itself
+      // is a tautology. The key set is what actually pins the absence.
+      expect(Object.keys(r).toSorted()).toEqual(["id", "label"]);
+    }
+  });
+
+  it("advertises nothing on the home-arm collapse (api-staging deploy)", () => {
+    // Collapse means collapse: a "request Europe" ask raised from the soak
+    // environment lands in Twenty indistinguishable from a real prod lead.
+    const opts: RegionPickerOptions = { apiRegion: "staging" };
+    expect(buildRequestableRegions(PARKED, opts)).toEqual([]);
+    const { availableRegions, requestableRegions } = buildSignupRegions(PARKED, "us", opts);
+    expect(availableRegions.map((r) => r.id)).toEqual(["staging"]);
+    expect(requestableRegions).toEqual([]);
   });
 });

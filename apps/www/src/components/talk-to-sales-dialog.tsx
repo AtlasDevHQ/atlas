@@ -28,6 +28,10 @@ export interface TalkToSalesDialogProps {
   triggerClassName?: string;
   /** Pre-select a plan in the dropdown (e.g. "Business" from /pricing). */
   initialPlanInterest?: string;
+  /** Pre-fill the message body — see `TalkToSalesFormProps.initialMessage`. */
+  initialMessage?: string;
+  /** Render the dialog already open (deep-link arrivals, e.g. ?residency=eu). */
+  defaultOpen?: boolean;
 }
 
 const DEFAULT_TRIGGER_CLASS =
@@ -38,8 +42,10 @@ export function TalkToSalesDialog({
   triggerIcon,
   triggerClassName,
   initialPlanInterest,
+  initialMessage,
+  defaultOpen = false,
 }: TalkToSalesDialogProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const headingId = useId();
@@ -107,6 +113,7 @@ export function TalkToSalesDialog({
 
             <TalkToSalesForm
               initialPlanInterest={initialPlanInterest}
+              initialMessage={initialMessage}
               onClose={() => setOpen(false)}
             />
           </div>

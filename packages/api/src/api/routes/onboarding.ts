@@ -1010,7 +1010,7 @@ onboarding.openapi(
 import { residencyDomainError } from "./shared-residency";
 import { ResidencyError } from "@atlas/api/lib/residency/errors";
 import { buildSignupRegions, isRegionSelectable } from "@atlas/api/lib/residency/picker";
-import { RegionPickerItemSchema } from "@useatlas/schemas";
+import { RegionPickerItemSchema, RequestableRegionItemSchema } from "@useatlas/schemas";
 
 // OnboardingRegionSchema previously duplicated this shape inline; the signup
 // page already imports RegionPickerItemSchema from @useatlas/schemas, so
@@ -1019,6 +1019,17 @@ const OnboardingRegionsResponseSchema = z.object({
   configured: z.boolean(),
   defaultRegion: z.string(),
   availableRegions: z.array(RegionPickerItemSchema),
+  /**
+   * Parked arms offered "on request" rather than as a choice — built and
+   * shippable, switched off to stop paying for an idle always-on process.
+   * Carries `id`/`label` only, never `apiUrl`: the browser must not point its
+   * API base at a region whose service is scaled down.
+   *
+   * Optional in the schema so an older web client (or the `configured: false`
+   * early returns below) stays valid without it; the page renders nothing when
+   * it is absent or empty.
+   */
+  requestableRegions: z.array(RequestableRegionItemSchema).optional(),
 });
 
 const AssignRegionBodySchema = z.object({
@@ -1169,7 +1180,7 @@ onboarding.openapi(getRegionsRoute, async (c) => {
       // `buildSignupRegions` also reports the OFFERED default (the collapsed arm),
       // not the config default, so the page pre-selects a region that is actually
       // in the list (the cross-field invariant the signup page relies on).
-      const { defaultRegion, availableRegions } = buildSignupRegions(regions, configDefault, { apiRegion });
+      const { defaultRegion, availableRegions, requestableRegions } = buildSignupRegions(regions, configDefault, { apiRegion });
       // Parity breadcrumb: when the config default itself isn't an offerable
       // region, `buildSignupRegions` promoted a fallback arm so signup still
       // completes — but the misconfig (a non-selectable/unknown `defaultRegion`)
@@ -1180,7 +1191,7 @@ onboarding.openapi(getRegionsRoute, async (c) => {
           "Configured default region is unknown or non-selectable — pre-selecting the first offered region",
         );
       }
-      return c.json({ configured: true, defaultRegion, availableRegions }, 200);
+      return c.json({ configured: true, defaultRegion, availableRegions, requestableRegions }, 200);
     } catch (err) {
       if (err instanceof ResidencyError && err.code === "not_configured") {
         return c.json({ configured: false, defaultRegion: "none", availableRegions: [] }, 200);

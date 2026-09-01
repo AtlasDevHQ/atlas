@@ -15182,6 +15182,24 @@
                           "isDefault"
                         ]
                       }
+                    },
+                    "requestableRegions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label"
+                        ]
+                      }
                     }
                   },
                   "required": [

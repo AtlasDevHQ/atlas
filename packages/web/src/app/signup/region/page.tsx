@@ -14,8 +14,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { RegionCardGrid } from "@/ui/components/region-picker";
-import { RegionPickerItemSchema } from "@/ui/lib/admin-schemas";
-import type { RegionPickerItem } from "@/ui/lib/types";
+import { RegionPickerItemSchema, RequestableRegionItemSchema } from "@/ui/lib/admin-schemas";
+import type { RegionPickerItem, RequestableRegionItem } from "@/ui/lib/types";
 import { Loader2, ShieldCheck } from "lucide-react";
 import { SignupShell } from "@/ui/components/signup/signup-shell";
 
@@ -34,11 +34,40 @@ const RegionsResponseSchema = z.object({
   configured: z.boolean(),
   defaultRegion: z.string(),
   availableRegions: z.array(RegionPickerItemSchema),
+  /**
+   * Parked arms — built and shippable, switched off to stop paying for an idle
+   * always-on process. `.optional()` because an API that predates the field (or
+   * any `configured: false` response) must still parse: this page renders
+   * nothing when the list is absent or empty, so the old single-region flow is
+   * unchanged.
+   *
+   * No `apiUrl` here by construction — the service behind a parked region is
+   * scaled down, so there is nothing for the browser to point at. The only
+   * affordance is the request link below.
+   */
+  requestableRegions: z.array(RequestableRegionItemSchema).optional(),
 });
+
+/**
+ * Where "Request access" sends a prospect. Absolute + hardcoded to match the
+ * `mailto:support@useatlas.dev` fallback already in this file: `packages/web`
+ * has no marketing-site base URL plumbed through, and inventing one for a
+ * single link would add config surface with no second consumer.
+ *
+ * The target is the existing Turnstile-protected talk-to-sales dialog, which
+ * already lands in the CRM outbox -> Twenty. That is why this is a link and not
+ * an inline POST: `/api/v1/contact` requires a Turnstile token, and minting one
+ * on the signup page would stand up a second bot-exposed surface to duplicate a
+ * form that already works.
+ */
+function requestAccessHref(regionId: string): string {
+  return `https://www.useatlas.dev/pricing?residency=${encodeURIComponent(regionId)}`;
+}
 
 export default function RegionPage() {
   const router = useRouter();
   const [regions, setRegions] = useState<RegionPickerItem[]>([]);
+  const [requestable, setRequestable] = useState<RequestableRegionItem[]>([]);
   const [defaultRegion, setDefaultRegion] = useState("");
   const [selected, setSelected] = useState("");
   const [loading, setLoading] = useState(true);
@@ -70,6 +99,7 @@ export default function RegionPage() {
           return;
         }
         setRegions(data.availableRegions);
+        setRequestable(data.requestableRegions ?? []);
         setDefaultRegion(data.defaultRegion);
         // Pre-select the default region
         setSelected(data.defaultRegion);
@@ -173,6 +203,40 @@ export default function RegionPage() {
             onSelect={setSelected}
             disabled={saving}
           />
+
+          {/* Parked regions. Rendered as plain rows, NOT as cards in the grid
+              above: a card is a selectable affordance, and these deliberately
+              are not selectable — the service behind them is scaled down. Being
+              honest that they exist (rather than hiding them) is what makes the
+              demand signal reach us; the alternative is a prospect who needed
+              EU quietly closing the tab. */}
+          {requestable.length > 0 && (
+            <div className="space-y-2 rounded-md border border-dashed p-3">
+              <p className="text-xs font-medium text-muted-foreground">
+                Also available on request
+              </p>
+              <ul className="space-y-1.5">
+                {requestable.map((r) => (
+                  <li key={r.id} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground">{r.label}</span>
+                    <a
+                      href={requestAccessHref(r.id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="shrink-0 text-xs font-medium text-primary underline-offset-4 hover:underline"
+                    >
+                      Request access
+                    </a>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-muted-foreground">
+                These regions are fully supported — we bring one online when a
+                customer needs it, and move your workspace across as part of
+                turning it on.
+              </p>
+            </div>
+          )}
 
           <div className="flex items-start gap-2 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
             <ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />

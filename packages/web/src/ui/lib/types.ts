@@ -226,6 +226,7 @@ export type {
   Region,
   RegionConfig,
   RegionPickerItem,
+  RequestableRegionItem,
   WorkspaceRegion,
   RegionStatus,
   MigrationStatus,

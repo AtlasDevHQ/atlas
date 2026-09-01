@@ -17,7 +17,7 @@
  * direct `POST /assign-region`.
  */
 import type { ResidencyConfig } from "@atlas/api/lib/config";
-import type { RegionPickerItem } from "@useatlas/types";
+import type { RegionPickerItem, RequestableRegionItem } from "@useatlas/types";
 
 type RegionConfig = ResidencyConfig["regions"][string];
 
@@ -28,6 +28,25 @@ type RegionConfig = ResidencyConfig["regions"][string];
  */
 export function isRegionSelectable(region: RegionConfig | undefined): boolean {
   return region !== undefined && region.selectable !== false;
+}
+
+/**
+ * Whether a region is parked-but-advertisable: switched off as a choice, yet
+ * offered to customers as available on request.
+ *
+ * Deliberately requires BOTH flags rather than treating "not selectable" as
+ * requestable. `staging` is non-selectable and must stay invisible — inferring
+ * requestability from non-selectability alone would advertise an internal
+ * hostname in the signup funnel the moment this predicate shipped. A region
+ * has to opt in by saying so.
+ *
+ * A selectable region is never requestable: it is already on offer, so
+ * surfacing "request access" beside it would be nonsense. That makes the two
+ * predicates mutually exclusive, which the picker relies on to partition the
+ * region map without double-listing an arm.
+ */
+export function isRegionRequestable(region: RegionConfig | undefined): boolean {
+  return region !== undefined && region.selectable === false && region.requestable === true;
 }
 
 /**
@@ -115,6 +134,35 @@ export function buildAvailableRegions(
 }
 
 /**
+ * The parked-but-advertisable arms this deploy should offer "on request"
+ * ({@link isRegionRequestable}), in config order.
+ *
+ * Returns EMPTY on the home-arm collapse. That is the same reasoning
+ * {@link selectDeployRegionEntries} applies to the selectable list: on the
+ * api-staging deploy every public arm's `apiUrl` points at a *different*
+ * deploy, so staging's funnel is collapsed to itself deliberately (#4131,
+ * #3958). Advertising "request Europe" from the staging signup page would put
+ * a prod-facing sales ask on a soak environment, where the resulting lead is
+ * indistinguishable from a real one in Twenty. Collapse means collapse.
+ *
+ * `apiUrl` is deliberately NOT projected. A requestable region is one the
+ * browser must never point its API base at — the whole point is that the
+ * service behind that hostname is scaled down. Emitting the URL would invite
+ * exactly the misroute the parking was meant to prevent, and the request path
+ * (a sales lead) has no use for it.
+ */
+export function buildRequestableRegions(
+  regions: ResidencyConfig["regions"],
+  opts?: RegionPickerOptions,
+): RequestableRegionItem[] {
+  const { collapsedToHome } = selectDeployRegionEntries(regions, opts?.apiRegion);
+  if (collapsedToHome) return [];
+  return Object.entries(regions)
+    .filter(([, cfg]) => isRegionRequestable(cfg))
+    .map(([id, cfg]) => ({ id, label: cfg.label }));
+}
+
+/**
  * The full signup region projection the `/regions` route returns: the picker
  * list AND the id the signup page should pre-select.
  *
@@ -137,10 +185,15 @@ export function buildSignupRegions(
   regions: ResidencyConfig["regions"],
   defaultRegion: string,
   opts?: RegionPickerOptions,
-): { defaultRegion: string; availableRegions: RegionPickerItem[] } {
+): {
+  defaultRegion: string;
+  availableRegions: RegionPickerItem[];
+  requestableRegions: RequestableRegionItem[];
+} {
   const availableRegions = buildAvailableRegions(regions, defaultRegion, opts);
+  const requestableRegions = buildRequestableRegions(regions, opts);
   const marked = availableRegions.find((r) => r.isDefault);
-  if (marked) return { defaultRegion: marked.id, availableRegions };
+  if (marked) return { defaultRegion: marked.id, availableRegions, requestableRegions };
   // No arm is marked default → the config `defaultRegion` is non-selectable or an
   // unknown id (the collapse path didn't fire). Echoing it would name a region
   // ABSENT from the list and re-create the #4131 pre-select dead-end, so promote
@@ -148,6 +201,10 @@ export function buildSignupRegions(
   // isDefault). The route emits `onboarding.default_region_unselectable` so the
   // misconfig is surfaced rather than silently corrected.
   const [first, ...rest] = availableRegions;
-  if (!first) return { defaultRegion, availableRegions };
-  return { defaultRegion: first.id, availableRegions: [{ ...first, isDefault: true }, ...rest] };
+  if (!first) return { defaultRegion, availableRegions, requestableRegions };
+  return {
+    defaultRegion: first.id,
+    availableRegions: [{ ...first, isDefault: true }, ...rest],
+    requestableRegions,
+  };
 }

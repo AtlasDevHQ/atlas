@@ -108,6 +108,7 @@ export {
   PlatformWorkspaceSchema,
   NoisyNeighborSchema,
   RegionPickerItemSchema,
+  RequestableRegionItemSchema,
   RegionStatusSchema,
   WorkspaceRegionSchema,
   RegionMigrationSchema,

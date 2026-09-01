@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowIcon, CheckIcon } from "../../components/shared";
 import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
 import {
@@ -101,7 +101,7 @@ const TIERS: Tier[] = [
       "BYOK for unlimited queries",
       "Dashboards",
       "1 chat integration",
-      "Data residency (3 regions)",
+      "Data residency (US; EU/APAC on request)",
       "Email support",
     ],
   },
@@ -124,7 +124,7 @@ const TIERS: Tier[] = [
       "Dashboards",
       "3 chat integrations",
       "Custom domain",
-      "Data residency (3 regions)",
+      "Data residency (US; EU/APAC on request)",
       "Priority email support",
     ],
   },
@@ -149,7 +149,7 @@ const TIERS: Tier[] = [
       "Automated backups",
       "White-label branding",
       "Custom domain",
-      "Data residency (3 regions)",
+      "Data residency (US; EU/APAC on request)",
       "Priority + Slack support",
     ],
   },
@@ -202,10 +202,23 @@ const SECTION_PREFIX_ROWS: Partial<Record<EntitlementSection, ComparisonRow[]>> 
 // `FeatureId` union — a misspelled key is a compile error, not a silent no-op —
 // and the override applies only where the entitlement is already true, so it
 // never widens what a tier unlocks beyond what the SSOT grants.
+//
+// ⚠️ Residency copy tracks what is actually SERVING, not what is built.
+// EU/APAC are built and shippable but parked (`selectable: false` +
+// `requestable: true` in deploy/api/atlas.config.ts) so we stop paying for two
+// idle always-on processes. While parked, the signup picker offers US only and
+// surfaces the other two as "Request access". "3 regions" here would therefore
+// promise a self-serve choice the funnel does not offer — the claim has to name
+// the request step, or the page is selling something the product refuses.
+// Un-parking a region means restoring its plain name here in the same change.
 const CELL_LABEL_OVERRIDES: Partial<
   Record<FeatureId, Partial<Record<PricingColumn, string>>>
 > = {
-  residency: { starter: "3 regions", pro: "3 regions", business: "3 regions" },
+  residency: {
+    starter: "US; EU/APAC on request",
+    pro: "US; EU/APAC on request",
+    business: "US; EU/APAC on request",
+  },
 };
 
 /**
@@ -533,11 +546,77 @@ function FAQCard({ faq }: { faq: FAQ }) {
 // Main export
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// Parked-region deep link (?residency=eu)
+// ---------------------------------------------------------------------------
+
+/**
+ * Labels for the regions the signup picker advertises as "on request". Kept as
+ * a small literal map rather than fetched from `/api/v1/onboarding/regions`:
+ * apps/www is a static marketing site with no API base configured, and a fetch
+ * here would make the pricing page's first paint depend on the API being up.
+ *
+ * Drift is bounded but not free. An id we don't know falls through to `null`
+ * and the page renders as it does today — that direction is safe. A RENAMED
+ * label is not covered by that fall-through: the banner would confidently show
+ * the old name. Renaming a region means editing here too.
+ */
+const REQUESTABLE_REGION_LABELS: Record<string, string> = {
+  eu: "Europe",
+  apac: "Asia Pacific",
+};
+
+/**
+ * Read `?residency=<id>` without `useSearchParams`, which would force this
+ * component (and therefore the whole pricing page) into a Suspense boundary
+ * under static export. Reads once on mount; SSR returns null.
+ */
+function useResidencyRequest(): { id: string; label: string } | null {
+  const [region, setRegion] = useState<{ id: string; label: string } | null>(null);
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("residency");
+    if (!id) return;
+    const label = REQUESTABLE_REGION_LABELS[id];
+    if (label) setRegion({ id, label });
+  }, []);
+  return region;
+}
+
 export function PricingContent() {
   const [billing, setBilling] = useState<BillingPeriod>("annual");
+  const residencyRequest = useResidencyRequest();
 
   return (
     <>
+      {/* Arrived from the signup picker's "Request access" on a parked region.
+          The dialog opens already filled in with the region named, so the
+          prospect confirms rather than retypes -- and the resulting Twenty Note
+          says which region, which is the signal that decides when we un-park
+          one. Rendered only on a recognised ?residency= id, so the default
+          pricing page is unchanged. */}
+      {residencyRequest && (
+        <section className="mx-auto max-w-6xl px-6 pb-8">
+          <div className="rounded-md border border-accent/40 bg-accent/5 p-4">
+            <h2 className="text-sm font-medium">
+              Request {residencyRequest.label} data residency
+            </h2>
+            <p className="mt-1 text-xs text-fg-muted">
+              {residencyRequest.label} is fully supported -- we bring the region
+              online for the customer who needs it. Tell us about your team and
+              we&apos;ll get it running.
+            </p>
+            <div className="mt-3">
+              <TalkToSalesDialog
+                triggerLabel={`Request ${residencyRequest.label}`}
+                initialPlanInterest="Not sure yet"
+                defaultOpen
+                initialMessage={`We need Atlas data residency in ${residencyRequest.label} (${residencyRequest.id}).`}
+              />
+            </div>
+          </div>
+        </section>
+      )}
       {/* Toggle + stat card + tier cards */}
       <section className="mx-auto max-w-6xl px-6 pb-16 md:pb-24">
         <BillingToggle billing={billing} onBillingChange={setBilling} />

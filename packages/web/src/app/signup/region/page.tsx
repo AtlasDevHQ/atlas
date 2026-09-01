@@ -14,8 +14,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { RegionCardGrid } from "@/ui/components/region-picker";
-import { RegionPickerItemSchema } from "@/ui/lib/admin-schemas";
-import type { RegionPickerItem } from "@/ui/lib/types";
+import { RegionPickerItemSchema, RequestableRegionItemSchema } from "@/ui/lib/admin-schemas";
+import type { RegionPickerItem, RequestableRegionItem } from "@/ui/lib/types";
 import { Loader2, ShieldCheck } from "lucide-react";
 import { SignupShell } from "@/ui/components/signup/signup-shell";
 
@@ -45,7 +45,7 @@ const RegionsResponseSchema = z.object({
    * scaled down, so there is nothing for the browser to point at. The only
    * affordance is the request link below.
    */
-  requestableRegions: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
+  requestableRegions: z.array(RequestableRegionItemSchema).optional(),
 });
 
 /**
@@ -61,13 +61,13 @@ const RegionsResponseSchema = z.object({
  * form that already works.
  */
 function requestAccessHref(regionId: string): string {
-  return `https://useatlas.dev/pricing?residency=${encodeURIComponent(regionId)}`;
+  return `https://www.useatlas.dev/pricing?residency=${encodeURIComponent(regionId)}`;
 }
 
 export default function RegionPage() {
   const router = useRouter();
   const [regions, setRegions] = useState<RegionPickerItem[]>([]);
-  const [requestable, setRequestable] = useState<Array<{ id: string; label: string }>>([]);
+  const [requestable, setRequestable] = useState<RequestableRegionItem[]>([]);
   const [defaultRegion, setDefaultRegion] = useState("");
   const [selected, setSelected] = useState("");
   const [loading, setLoading] = useState(true);
@@ -222,7 +222,7 @@ export default function RegionPage() {
                     <a
                       href={requestAccessHref(r.id)}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       className="shrink-0 text-xs font-medium text-primary underline-offset-4 hover:underline"
                     >
                       Request access
@@ -232,8 +232,8 @@ export default function RegionPage() {
               </ul>
               <p className="text-xs text-muted-foreground">
                 These regions are fully supported — we bring one online when a
-                customer needs it. Continue in {regions.find((r) => r.id === defaultRegion)?.label ?? "the available region"} now
-                and we can migrate you later from the admin console.
+                customer needs it, and move your workspace across as part of
+                turning it on.
               </p>
             </div>
           )}

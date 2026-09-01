@@ -174,6 +174,7 @@ function sliceRegionBody(parsed: ParsedRegions, id: string): string {
 }
 
 const SELECTABLE_FALSE = /selectable\s*:\s*false/;
+const REQUESTABLE_TRUE = /requestable\s*:\s*true/;
 
 describe("deploy config residency regions (#3948)", () => {
   it("prod config keeps us/eu/apac/staging — staging present so api-staging boots", () => {
@@ -213,9 +214,16 @@ describe("deploy config residency regions (#3948)", () => {
     // The reachability consequence of the arm above, pinned as a fact rather
     // than left implicit in a comment: `resolveRegion`
     // (packages/web/src/lib/login-frontdoor.ts) short-circuits on
-    // `map.regions.length === 1` and never operates the existence oracle. If a
-    // future change makes a second arm selectable, the fan-out comes back and
-    // every probed region must actually be running — otherwise a returning
+    // `map.regions.length === 1` and never operates the existence oracle.
+    //
+    // ⚠️ What that means for a dormant eu/apac account is a SILENT MISROUTE,
+    // not unavailability: the short-circuit returns
+    // `{outcome: "single", region: "us"}`, so the account is sent to US — where
+    // it does not exist — and fails as unknown. Migrate any real account to
+    // `us` BEFORE parking its region; afterwards no funnel can reach it.
+    //
+    // If a future change makes a second arm selectable, the fan-out comes back
+    // and every probed region must actually be RUNNING — otherwise a returning
     // user's login resolves to `error` ("Could not reach every region") on the
     // zero-hit path. That coupling is why this count is asserted here.
     const parsed = parseResidencyRegions(PROD_CONFIG);
@@ -223,5 +231,22 @@ describe("deploy config residency regions (#3948)", () => {
       (id) => !SELECTABLE_FALSE.test(sliceRegionBody(parsed, id)),
     );
     expect(selectable).toEqual(["us"]);
+  });
+
+  it("eu/apac are parked-and-ADVERTISED; staging is parked-and-internal", () => {
+    // `selectable: false` alone would park the regions and HIDE them — the
+    // exact failure the parking is meant to avoid, since the request path is
+    // the only signal that says when to bring one back. Pinning
+    // `requestable: true` here is what stops a well-meaning edit from dropping
+    // one flag and silently deleting the demand signal.
+    const parsed = parseResidencyRegions(PROD_CONFIG);
+    for (const id of ["eu", "apac"]) {
+      expect(sliceRegionBody(parsed, id)).toMatch(REQUESTABLE_TRUE);
+    }
+    // Staging must NEVER be advertised — it is non-selectable because it is
+    // internal, not because we switched it off to save money. Advertising it
+    // would leak an internal hostname into the customer signup funnel.
+    expect(sliceRegionBody(parsed, "staging")).not.toMatch(REQUESTABLE_TRUE);
+    expect(sliceRegionBody(parsed, "us")).not.toMatch(REQUESTABLE_TRUE);
   });
 });

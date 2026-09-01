@@ -1010,7 +1010,7 @@ onboarding.openapi(
 import { residencyDomainError } from "./shared-residency";
 import { ResidencyError } from "@atlas/api/lib/residency/errors";
 import { buildSignupRegions, isRegionSelectable } from "@atlas/api/lib/residency/picker";
-import { RegionPickerItemSchema } from "@useatlas/schemas";
+import { RegionPickerItemSchema, RequestableRegionItemSchema } from "@useatlas/schemas";
 
 // OnboardingRegionSchema previously duplicated this shape inline; the signup
 // page already imports RegionPickerItemSchema from @useatlas/schemas, so
@@ -1029,7 +1029,7 @@ const OnboardingRegionsResponseSchema = z.object({
    * early returns below) stays valid without it; the page renders nothing when
    * it is absent or empty.
    */
-  requestableRegions: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
+  requestableRegions: z.array(RequestableRegionItemSchema).optional(),
 });
 
 const AssignRegionBodySchema = z.object({

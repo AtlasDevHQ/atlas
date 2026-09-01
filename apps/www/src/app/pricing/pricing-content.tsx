@@ -557,9 +557,10 @@ function FAQCard({ faq }: { faq: FAQ }) {
  * apps/www is a static marketing site with no API base configured, and a fetch
  * here would make the pricing page's first paint depend on the API being up.
  *
- * Drift risk is bounded and one-directional -- an id we don't know falls
- * through to `null` and the page renders exactly as it does today, so the worst
- * case of a stale entry is a missing pre-fill, never a broken page.
+ * Drift is bounded but not free. An id we don't know falls through to `null`
+ * and the page renders as it does today — that direction is safe. A RENAMED
+ * label is not covered by that fall-through: the banner would confidently show
+ * the old name. Renaming a region means editing here too.
  */
 const REQUESTABLE_REGION_LABELS: Record<string, string> = {
   eu: "Europe",

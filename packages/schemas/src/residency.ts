@@ -29,6 +29,7 @@ import {
   MIGRATION_STATUSES,
   type RegionMigration,
   type RegionPickerItem,
+  type RequestableRegionItem,
   type RegionRoutingMap,
   type RegionRoutingMapEntry,
   type PredicateCardinalityRefusalDetail,
@@ -55,6 +56,15 @@ export const RegionPickerItemSchema = z.object({
   // base before it ever reaches `applyRegionSignal`'s own credential-safe check.
   apiUrl: z.string().url().optional(),
 }) satisfies z.ZodType<WithLooseOptionals<RegionPickerItem>>;
+
+// A parked region offered on request. No `apiUrl` by construction — the service
+// behind it is scaled down, so carrying the URL would hand the browser a base
+// it must never point at. See `RequestableRegionItem` for why this is a
+// separate shape rather than a `RegionPickerItem` with fields omitted.
+export const RequestableRegionItemSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+}) satisfies z.ZodType<RequestableRegionItem>;
 
 export const RegionStatusSchema = z.object({
   region: z.string(),

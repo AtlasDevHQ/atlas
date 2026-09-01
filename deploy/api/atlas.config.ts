@@ -1143,7 +1143,15 @@ export default defineConfig({
       // it is the same seam #3948 established for staging: existence ≠
       // selectability. Both arms stay in the map, so `RegionGuardLive` still
       // boots an `ATLAS_API_REGION=eu|apac` process and residency routing still
-      // resolves them — parking is one flag, and un-parking is deleting it.
+      // resolves them.
+      //
+      // ⚠️ Un-parking is NOT just deleting the flag — it is six steps, two of
+      // them ordering constraints that break prod if reversed (scale the
+      // service UP before shipping the config; when parking, ship the config
+      // BEFORE scaling down). The procedure, the copy sites that have to change
+      // with it, and the reachability caveat are in
+      // docs/development/parked-regions.md. Read it before touching these two
+      // flags in either direction.
       //
       // Why park them: measured 2026-09-01 against prod. `api-eu` + `api-apac`
       // + their int-postgres + their backup-scratch cost $16.65/mo — 43% of a
@@ -1161,14 +1169,23 @@ export default defineConfig({
       // customer is one flag + a redeploy away, which is the property the ADR
       // was protecting.
       //
-      // The reachability consequence, stated plainly: with both arms
-      // non-selectable the US deploy's region-map has ONE entry, so
-      // `resolveRegion` (packages/web/src/lib/login-frontdoor.ts) takes the
-      // `map.regions.length === 1` short-circuit and never fans out a probe.
-      // The two dormant accounts above therefore cannot reach the login
-      // front-door while parked. That is acceptable ONLY because neither has
-      // any data (0 conversations in both regions); re-check before parking a
-      // region that does.
+      // The reachability consequence, stated precisely — an earlier draft of
+      // this comment got it wrong in the direction that matters, so the exact
+      // behaviour is written out rather than summarised:
+      //
+      // With both arms non-selectable the US deploy's region-map has ONE entry,
+      // so `resolveRegion` (packages/web/src/lib/login-frontdoor.ts) takes its
+      // `map.regions.length === 1` short-circuit and returns
+      // `{outcome: "single", region: "us"}` WITHOUT probing. A dormant eu/apac
+      // account is therefore not told "unavailable" — it is silently ROUTED TO
+      // US, where it does not exist, and fails sign-in as an unknown account.
+      // A wrong answer, not an outage, which is the worse of the two to leave
+      // undocumented.
+      //
+      // Acceptable ONLY because neither region holds any data (0 conversations
+      // in both, verified 2026-09-01). Re-check before parking a region that
+      // does — and if one ever holds a real account, migrate it to `us` BEFORE
+      // parking, because after parking there is no funnel that can reach it.
       "eu": {
         label: "Europe",
         databaseUrl: process.env.ATLAS_REGION_EU_DB_URL!,

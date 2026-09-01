@@ -157,7 +157,7 @@ function CloudCard() {
       <ul className="m-0 mb-6 flex list-none flex-col gap-2 p-0">
         {[
           "$20/seat AI-usage credit included",
-          "Data residency (3 regions)",
+          "Data residency (US; EU/APAC on request)",
           "SSO · SCIM · audit on Business",
         ].map((item) => (
           <li key={item} className="flex items-center gap-2.5 text-[13.5px] text-fg">

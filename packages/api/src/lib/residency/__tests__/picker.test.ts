@@ -332,7 +332,8 @@ describe("requestable regions — parked vs internal (region parking, 2026-09-01
     // The service behind that hostname is scaled down — emitting the URL would
     // invite the exact misroute parking prevents.
     for (const r of buildRequestableRegions(PARKED)) {
-      expect(r).toEqual({ id: r.id, label: r.label });
+      // Key-set, not shape: `toEqual({id: r.id, ...})` built from `r` itself
+      // is a tautology. The key set is what actually pins the absence.
       expect(Object.keys(r).toSorted()).toEqual(["id", "label"]);
     }
   });

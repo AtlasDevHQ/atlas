@@ -17,7 +17,7 @@
  * direct `POST /assign-region`.
  */
 import type { ResidencyConfig } from "@atlas/api/lib/config";
-import type { RegionPickerItem } from "@useatlas/types";
+import type { RegionPickerItem, RequestableRegionItem } from "@useatlas/types";
 
 type RegionConfig = ResidencyConfig["regions"][string];
 
@@ -134,25 +134,6 @@ export function buildAvailableRegions(
 }
 
 /**
- * The full signup region projection the `/regions` route returns: the picker
- * list AND the id the signup page should pre-select.
- *
- * Cross-field invariant (upheld for every non-empty list): the signup page
- * pre-selects the region named by the response `defaultRegion`
- * (`page.tsx` → `setSelected(data.defaultRegion)`), so that id MUST be present in
- * `availableRegions` as the `isDefault` item. `buildAvailableRegions`'s home-arm
- * collapse can return a single arm that is NOT the config `defaultRegion` (the
- * staging deploy offers only `staging` while the config default is `us`) —
- * reporting the unchanged config default there would pre-select a region absent
- * from the list and dead-end the naive Continue click on the "contact support"
- * path (#4131). So the offered default is the marked `isDefault` arm; and if the
- * config default is itself non-selectable or unknown (no arm marked — a misconfig
- * the shared prod config never hits, but config validation permits), the FIRST
- * offered arm is promoted to default rather than echoing the out-of-list config
- * id. Only a genuinely empty selectable set yields a default absent from the
- * (also empty) list — which the page reads as "nothing to pick" and skips.
- */
-/**
  * The parked-but-advertisable arms this deploy should offer "on request"
  * ({@link isRegionRequestable}), in config order.
  *
@@ -173,7 +154,7 @@ export function buildAvailableRegions(
 export function buildRequestableRegions(
   regions: ResidencyConfig["regions"],
   opts?: RegionPickerOptions,
-): Array<{ id: string; label: string }> {
+): RequestableRegionItem[] {
   const { collapsedToHome } = selectDeployRegionEntries(regions, opts?.apiRegion);
   if (collapsedToHome) return [];
   return Object.entries(regions)
@@ -181,6 +162,25 @@ export function buildRequestableRegions(
     .map(([id, cfg]) => ({ id, label: cfg.label }));
 }
 
+/**
+ * The full signup region projection the `/regions` route returns: the picker
+ * list AND the id the signup page should pre-select.
+ *
+ * Cross-field invariant (upheld for every non-empty list): the signup page
+ * pre-selects the region named by the response `defaultRegion`
+ * (`page.tsx` → `setSelected(data.defaultRegion)`), so that id MUST be present in
+ * `availableRegions` as the `isDefault` item. `buildAvailableRegions`'s home-arm
+ * collapse can return a single arm that is NOT the config `defaultRegion` (the
+ * staging deploy offers only `staging` while the config default is `us`) —
+ * reporting the unchanged config default there would pre-select a region absent
+ * from the list and dead-end the naive Continue click on the "contact support"
+ * path (#4131). So the offered default is the marked `isDefault` arm; and if the
+ * config default is itself non-selectable or unknown (no arm marked — a misconfig
+ * the shared prod config never hits, but config validation permits), the FIRST
+ * offered arm is promoted to default rather than echoing the out-of-list config
+ * id. Only a genuinely empty selectable set yields a default absent from the
+ * (also empty) list — which the page reads as "nothing to pick" and skips.
+ */
 export function buildSignupRegions(
   regions: ResidencyConfig["regions"],
   defaultRegion: string,
@@ -188,7 +188,7 @@ export function buildSignupRegions(
 ): {
   defaultRegion: string;
   availableRegions: RegionPickerItem[];
-  requestableRegions: Array<{ id: string; label: string }>;
+  requestableRegions: RequestableRegionItem[];
 } {
   const availableRegions = buildAvailableRegions(regions, defaultRegion, opts);
   const requestableRegions = buildRequestableRegions(regions, opts);

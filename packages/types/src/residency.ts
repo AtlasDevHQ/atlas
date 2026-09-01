@@ -81,6 +81,30 @@ export interface RegionPickerItem {
   apiUrl?: string;
 }
 
+/**
+ * A region advertised as available **on request** rather than offered as a
+ * choice — built and shippable, switched off so an idle always-on process
+ * stops billing (`selectable: false` + `requestable: true` in the deploy
+ * config).
+ *
+ * Deliberately NOT a {@link RegionPickerItem}. The two differ on the field that
+ * matters: a picker item carries `apiUrl` so the browser can repoint at the
+ * chosen region before the first identity write (ADR-0024 §4), and a parked
+ * region has no live service to repoint at. Reusing `RegionPickerItem` here
+ * would make `apiUrl` structurally available on exactly the regions where
+ * following it is a misroute — so the absence is enforced by the type, not by a
+ * convention someone has to remember.
+ *
+ * `isDefault` is absent for the same reason: an arm that cannot be selected can
+ * never be the default.
+ */
+export interface RequestableRegionItem {
+  /** Region identifier (e.g. "eu", "apac"). */
+  id: string;
+  /** Human-readable display label (e.g. "Europe"). */
+  label: string;
+}
+
 // ---------------------------------------------------------------------------
 // Region routing map (login front-door — ADR-0024 §3)
 // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import {
   renderCanonicalAuthMd,
   API_PROTECTED_RESOURCE,
   buildRegionDirectory,
+  mcpHostFor,
 } from "../../../scripts/generate-apex-discovery";
 
 describe("apex-discovery generator", () => {
@@ -62,23 +63,44 @@ describe("apex-discovery generator", () => {
     );
   });
 
-  it("builds a region directory with the us default and per-region hosts", () => {
+  it("builds a region directory listing only regions that actually serve", () => {
     const dir = buildRegionDirectory();
     expect(dir.default).toBe("us");
-    expect(dir.regions.map((r) => r.id)).toEqual(["us", "eu", "apac"]);
+    // `eu`/`apac` are parked (docs/development/parked-regions.md) and `staging`
+    // is internal, so `us` is the only arm here. This directory is NOT the
+    // browser picker: every entry is a host an agent will actually call, and it
+    // carries no "request access" affordance, so an arm whose service is scaled
+    // down must be absent rather than shown-but-unavailable.
+    expect(dir.regions.map((r) => r.id)).toEqual(["us"]);
   });
 
-  it("derives each region's MCP host via the api*→mcp* brand-mirror", () => {
-    const dir = buildRegionDirectory();
-    const eu = dir.regions.find((r) => r.id === "eu");
-    expect(eu).toMatchObject({
-      api: "https://api-eu.useatlas.dev",
-      mcp: "https://mcp-eu.useatlas.dev/mcp",
-      authMd: "https://api-eu.useatlas.dev/auth.md",
-    });
-    // US has no region suffix — mirror must not inject a stray hyphen.
-    expect(dir.regions.find((r) => r.id === "us")?.mcp).toBe(
-      "https://mcp.useatlas.dev/mcp",
+  it("never advertises a parked or internal region", () => {
+    // The failure this guards is an agent resolving its region here and
+    // following the host into a dead endpoint. Asserted by exclusion so it
+    // keeps holding whichever arms are live.
+    const ids = buildRegionDirectory().regions.map((r) => r.id);
+    for (const parked of ["eu", "apac", "staging"]) {
+      expect(ids).not.toContain(parked);
+    }
+  });
+
+  it("derives the MCP host via the api*→mcp* brand-mirror", () => {
+    // Tested through `mcpHostFor` directly rather than through whichever
+    // suffixed region happens to be live. The previous version asserted the
+    // suffix behaviour via the `eu` entry, so parking `eu` broke a test of a
+    // derivation parking did not touch — the coupling this version removes.
+    expect(mcpHostFor("https://api-eu.useatlas.dev")).toBe("https://mcp-eu.useatlas.dev/mcp");
+    expect(mcpHostFor("https://api-apac.useatlas.dev")).toBe(
+      "https://mcp-apac.useatlas.dev/mcp",
     );
+    // US has no region suffix — mirror must not inject a stray hyphen.
+    expect(mcpHostFor("https://api.useatlas.dev")).toBe("https://mcp.useatlas.dev/mcp");
+  });
+
+  it("applies that same mirror to every directory entry", () => {
+    for (const r of buildRegionDirectory().regions) {
+      expect(r.mcp).toBe(mcpHostFor(r.api));
+      expect(r.authMd).toBe(`${r.api}/auth.md`);
+    }
   });
 });

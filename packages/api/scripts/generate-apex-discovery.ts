@@ -148,7 +148,7 @@ const DEFAULT_REGION = "us";
  * (`well-known.ts:brandedMcpHost`). Kept as a derivation (not a second literal)
  * so a region's MCP host is always consistent with its API host.
  */
-function mcpHostFor(api: string): string {
+export function mcpHostFor(api: string): string {
   const brand = api.replace(
     /^https:\/\/api(-[a-z0-9]+)?\.useatlas\.dev$/,
     "https://mcp$1.useatlas.dev",

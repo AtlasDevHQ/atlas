@@ -12,6 +12,7 @@ import { getConfig } from "@atlas/api/lib/config";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createPlatformAdminUser } from "@atlas/api/lib/auth/admin-user-ops";
 import { createLogger } from "@atlas/api/lib/logger";
+import { preflightUnsafeColumns } from "@atlas/api/lib/auth/unsafe-migration-preflight";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { importFromDisk } from "@atlas/api/lib/semantic/sync";
@@ -61,6 +62,14 @@ export async function runBootMigrations(): Promise<void> {
     try {
       const auth = await getAuthInstanceLazy();
       const ctx = await auth.$context;
+
+      // Repair, as nullable, any required column Better Auth would refuse to
+      // add to a populated table (issue 5580). Must run BEFORE runMigrations():
+      // the refusal is a throw, so there is no "after" to recover in. Never
+      // throws for a migration reason — anything it cannot handle falls through
+      // to runMigrations() and fails there, as it does today.
+      await preflightUnsafeColumns(auth.options);
+
       await ctx.runMigrations();
       log.info("Better Auth migration complete");
 

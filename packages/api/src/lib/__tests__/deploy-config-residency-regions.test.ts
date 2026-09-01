@@ -185,21 +185,43 @@ describe("deploy config residency regions (#3948)", () => {
     expect(parsed.keys).toContain("staging");
   });
 
-  it("prod config flags ONLY staging non-selectable — us/eu/apac stay selectable (#3948)", () => {
+  it("prod config parks staging + eu + apac; us is the ONLY selectable arm (#3948, parked 2026-09-01)", () => {
     const parsed = parseResidencyRegions(PROD_CONFIG);
 
-    // The actual #3948 fix: staging exists for boot/routing but is excluded from
-    // the signup picker via `selectable: false`.
-    expect(sliceRegionBody(parsed, "staging")).toMatch(SELECTABLE_FALSE);
-
-    // Real prod regions must remain selectable — a stray `selectable: false` on
-    // us/eu/apac would silently drop a region from the signup picker.
-    for (const id of ["us", "eu", "apac"]) {
-      expect(sliceRegionBody(parsed, id)).not.toMatch(SELECTABLE_FALSE);
+    // The #3948 seam: a region exists for boot/routing but is excluded from the
+    // customer-facing funnels via `selectable: false`. Staging has always used
+    // it; eu/apac now use it too, as a COST decision (see the config comment) —
+    // they are parked, not deleted, and un-parking is deleting the flag.
+    for (const id of ["staging", "eu", "apac"]) {
+      expect(sliceRegionBody(parsed, id)).toMatch(SELECTABLE_FALSE);
     }
 
-    // Exactly one region in the whole map is non-selectable (staging).
+    // `us` must NEVER be parked. It is the default region and the only arm the
+    // signup picker and login region-map can offer — parking it would leave
+    // BOTH funnels with zero selectable regions, which `buildSignupRegions`
+    // renders as an empty picker and `resolveRegion` reports as `skip`. This is
+    // the assertion that still catches a silent drop.
+    expect(sliceRegionBody(parsed, "us")).not.toMatch(SELECTABLE_FALSE);
+
+    // Exactly three arms are parked (staging, eu, apac) — pinned so that
+    // un-parking a region, or parking a fourth, has to come here and say so.
     const count = (parsed.body.match(/selectable\s*:\s*false/g) ?? []).length;
-    expect(count).toBe(1);
+    expect(count).toBe(3);
+  });
+
+  it("parking eu/apac leaves exactly one selectable arm, so login skips the fan-out", () => {
+    // The reachability consequence of the arm above, pinned as a fact rather
+    // than left implicit in a comment: `resolveRegion`
+    // (packages/web/src/lib/login-frontdoor.ts) short-circuits on
+    // `map.regions.length === 1` and never operates the existence oracle. If a
+    // future change makes a second arm selectable, the fan-out comes back and
+    // every probed region must actually be running — otherwise a returning
+    // user's login resolves to `error` ("Could not reach every region") on the
+    // zero-hit path. That coupling is why this count is asserted here.
+    const parsed = parseResidencyRegions(PROD_CONFIG);
+    const selectable = parsed.keys.filter(
+      (id) => !SELECTABLE_FALSE.test(sliceRegionBody(parsed, id)),
+    );
+    expect(selectable).toEqual(["us"]);
   });
 });

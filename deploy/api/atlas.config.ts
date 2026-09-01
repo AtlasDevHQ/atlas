@@ -1137,15 +1137,49 @@ export default defineConfig({
         databaseUrl: process.env.ATLAS_REGION_US_DB_URL ?? process.env.DATABASE_URL!,
         apiUrl: "https://api.useatlas.dev",
       },
+      // ── eu / apac: BUILT, PARKED, NOT DELETED ────────────────────────────
+      //
+      // `selectable: false` here is a COST decision, not a capability one, and
+      // it is the same seam #3948 established for staging: existence ≠
+      // selectability. Both arms stay in the map, so `RegionGuardLive` still
+      // boots an `ATLAS_API_REGION=eu|apac` process and residency routing still
+      // resolves them — parking is one flag, and un-parking is deleting it.
+      //
+      // Why park them: measured 2026-09-01 against prod. `api-eu` + `api-apac`
+      // + their int-postgres + their backup-scratch cost $16.65/mo — 43% of a
+      // $38.87 project bill — to serve ZERO conversations. Region row counts at
+      // the time: eu = 1 user (`admin@useatlas.dev`, seeded), apac = 2
+      // (seeded admin + one external signup, 2026-08-24, 0 conversations).
+      // Memory is 90% of the Railway bill and an always-on API process holds
+      // ~0.6 GB resident whether or not anyone calls it, so an idle region
+      // costs the same as a busy one.
+      //
+      // What this does NOT change: ADR-0024 stands in full. Regional identity
+      // isolation is BUILT and stays built — this is not the rejected
+      // "dark-launch US-only" option (that one deferred the engineering; this
+      // defers only the spend, after the engineering shipped). An EU/APAC
+      // customer is one flag + a redeploy away, which is the property the ADR
+      // was protecting.
+      //
+      // The reachability consequence, stated plainly: with both arms
+      // non-selectable the US deploy's region-map has ONE entry, so
+      // `resolveRegion` (packages/web/src/lib/login-frontdoor.ts) takes the
+      // `map.regions.length === 1` short-circuit and never fans out a probe.
+      // The two dormant accounts above therefore cannot reach the login
+      // front-door while parked. That is acceptable ONLY because neither has
+      // any data (0 conversations in both regions); re-check before parking a
+      // region that does.
       "eu": {
         label: "Europe",
         databaseUrl: process.env.ATLAS_REGION_EU_DB_URL!,
         apiUrl: "https://api-eu.useatlas.dev",
+        selectable: false,
       },
       "apac": {
         label: "Asia Pacific",
         databaseUrl: process.env.ATLAS_REGION_APAC_DB_URL!,
         apiUrl: "https://api-apac.useatlas.dev",
+        selectable: false,
       },
       // ⚠️ LOAD-BEARING — DO NOT REMOVE this "staging" arm.
       //

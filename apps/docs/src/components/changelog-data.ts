@@ -20,6 +20,19 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.25",
+    title: "Regions on Request",
+    date: "2026-09-01",
+    summary:
+      "Atlas Cloud runs in three regions — the United States, Europe, and Asia Pacific — and all three remain fully built and supported. What changes here is how you get one. The United States is available immediately at signup; Europe and Asia Pacific are now brought online on request, and the signup page tells you so with a link to ask. Nothing about how residency works has changed: a workspace's data still lives entirely in its own region, on that region's own database, with its own accounts. The only difference is that we start the two quieter regions for the customer who needs one rather than running them continuously for nobody.",
+    highlights: [
+      "The data-residency step at signup now shows which regions are available immediately and which are available on request, instead of offering all three identically. Choosing the United States is unchanged; asking for Europe or Asia Pacific takes one click and reaches a person",
+      "Requesting a region tells us which one you need, so bringing it online is a decision with evidence behind it rather than a guess. Turning a region back on is a configuration change, not a rebuild — the regional stack stays built, tested, and ready",
+      "Pricing and privacy pages now state this plainly. Both previously described three regions as self-serve selectable; they now say the United States is available at signup with Europe and Asia Pacific on request, so what the pages promise matches what the signup flow offers",
+      "Data-residency guarantees are untouched. Each region remains a fully independent stack — its own database, its own accounts, its own sessions — and no customer data crosses between them",
+    ],
+  },
+  {
     version: "v0.2.24",
     title: "Upgrades That Cannot Wedge a Deploy",
     date: "2026-09-01",

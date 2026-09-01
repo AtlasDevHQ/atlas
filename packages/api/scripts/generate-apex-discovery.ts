@@ -121,11 +121,23 @@ export const API_PROTECTED_RESOURCE = {
  * Only `id`, `label`, `api` are stated; the MCP host + auth.md URL are DERIVED
  * from `api` (§ `mcpHostFor`) so they can't drift from it. `staging`
  * (`selectable: false`) is intentionally excluded — real signups never see it.
+ *
+ * ⚠️ `eu` and `apac` are excluded for a DIFFERENT reason: they are **parked**
+ * (`selectable: false` + `requestable: true` — see
+ * docs/development/parked-regions.md). They stay built and one flag from
+ * returning, but their services are scaled down, so an agent that resolved its
+ * region here and followed the host would reach a dead endpoint. The browser
+ * funnel can offer a parked region because its affordance is "ask a human";
+ * this directory has no such affordance — every entry is a host an agent will
+ * actually call — so a parked region must not appear at all. That asymmetry is
+ * why this list is not simply "everything the picker shows".
+ *
+ * Un-parking means adding the arm back HERE as well as deleting the config
+ * flags; the runbook lists this file, and `assertRegionsMatchConfig()` below
+ * fails generation if the two disagree in either direction.
  */
 const SELECTABLE_REGIONS = [
   { id: "us", label: "United States", api: "https://api.useatlas.dev" },
-  { id: "eu", label: "Europe", api: "https://api-eu.useatlas.dev" },
-  { id: "apac", label: "Asia Pacific", api: "https://api-apac.useatlas.dev" },
 ] as const;
 
 const DEFAULT_REGION = "us";

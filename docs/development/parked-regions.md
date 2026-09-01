@@ -5,7 +5,7 @@ always-on API processes stop billing. This page is the procedure for both
 directions.
 
 It exists because the config comment's claim — *"un-parking is deleting the
-flag"* — is not true on its own. Deleting the flag is one of six steps, and two
+flag"* — is not true on its own. Deleting the flag is one of seven steps, and two
 of the others are ordering constraints that break prod if you get them backwards.
 
 ## Why they are parked
@@ -92,7 +92,19 @@ Parking `eu`/`apac` was acceptable **only** because both held 0 conversations.
 3. **Update `deploy-config-residency-regions.test.ts`** — it pins the parked
    count and the parked/advertised split, deliberately, so this change has to
    come here and say so.
-4. **Restore the copy** that parking made conditional. Grep is the check, not
+4. **Add the arm back to `SELECTABLE_REGIONS`** in
+   `packages/api/scripts/generate-apex-discovery.ts`, then regenerate:
+   ```bash
+   cd packages/api && bun scripts/generate-apex-discovery.ts
+   ```
+   This is the **agent-facing** region directory served at
+   `useatlas.dev/.well-known/atlas-regions.json`, and it is a separate list from
+   the browser picker for a reason: every entry is a host an agent will actually
+   call, so a parked region must not appear at all — there is no "ask a human"
+   affordance in a machine-readable directory. `assertRegionsMatchConfig()`
+   fails generation if this list and the config disagree in either direction,
+   which is how CI catches a half-done park or un-park.
+5. **Restore the copy** that parking made conditional. Grep is the check, not
    memory — every site that named the region count:
    - `apps/www/src/app/pricing/pricing-content.tsx` (tier bullets + the
      `CELL_LABEL_OVERRIDES` table)
@@ -103,9 +115,9 @@ Parking `eu`/`apac` was acceptable **only** because both held 0 conversations.
    - `apps/docs/content/docs/guides/billing-and-plans.mdx`
    - `apps/www/src/app/pricing/pricing-content.tsx` →
      `REQUESTABLE_REGION_LABELS`, if the region should no longer deep-link
-5. **Merge and release to prod** — the config only takes effect once the `prod`
+6. **Merge and release to prod** — the config only takes effect once the `prod`
    branch carries it.
-6. **Verify the funnel end to end** with `/verify-prod-signup`, which exercises
+7. **Verify the funnel end to end** with `/verify-prod-signup`, which exercises
    region routing and the cold-start answer per region.
 
 ## Parking a further region

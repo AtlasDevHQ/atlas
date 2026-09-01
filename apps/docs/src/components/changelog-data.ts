@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.24",
+    title: "Upgrades That Cannot Wedge a Deploy",
+    date: "2026-09-01",
+    summary:
+      "A maintenance release with one change in it, and the change is about upgrades rather than features. When an authentication-library upgrade wanted to add a new required field to a table that already held rows, its migrator correctly refused — there is no right value to put in the existing rows — and Atlas turned that refusal into a failed health check, which stopped the deployment. Nothing was lost and no data was at risk, but the release could not land until the column was added by hand. Atlas now handles that shape itself, so a dependency upgrade cannot block a deployment this way again.",
+    highlights: [
+      "A schema change that arrives with an upgrade no longer stops a deployment. When a new field is required but existing rows have nothing to put in it, Atlas adds the column as optional first and says so in the logs, naming the table and column, rather than failing the upgrade and leaving the deployment stuck",
+      "It refuses loudly rather than guessing. Where the safe change is not obvious — a field that is part of an index, a link to another table, or a type it cannot place — Atlas declines to touch it and reports which column it declined, because a wrongly-created column is harder to undo than the failure it would have avoided",
+      "The gap that let this reach production is closed. The upgrade path is now tested against a database that already contains data, which is the only condition under which this class of problem exists; against an empty database it is invisible, which is why it was not caught earlier",
+    ],
+  },
+  {
     version: "v0.2.23",
     title: "Actions, Credentialed",
     date: "2026-09-01",

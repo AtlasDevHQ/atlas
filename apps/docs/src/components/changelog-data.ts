@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.23",
+    title: "Actions, Credentialed",
+    date: "2026-09-01",
+    summary:
+      "Atlas has been able to read your systems for a long time. This release is the first half of writing back to them: a workspace can now hold its own credentials for GitHub, Linear and Salesforce, and an action runs against the workspace that owns it rather than against anything shared. The care here is almost entirely in the failure cases \u2014 a credential that half-saved, an action that ran twice, an external call with no bound on how long it could hang \u2014 because those are the failures that are expensive to discover in production and cheap to design out.",
+    highlights: [
+      "A workspace holds its own action credentials, and can manage them from a page. Connecting GitHub, Linear or Salesforce is a form in the admin UI rather than a deployment-time secret, so two workspaces on the same Atlas act as themselves and never borrow each other\u2019s access",
+      "A credential write that cannot finish is refused, not half-applied. A partial write left a workspace holding something that looked connected and was not \u2014 the worst state to debug, because every surface reports success. The write now refuses, and names which state it refused in, so the message tells you what happened instead of that something went wrong",
+      "Three action targets ship on one seam. GitHub App, Linear and Salesforce are separate integrations to you and one shape internally, so a fourth target is a new adapter rather than a new subsystem \u2014 and behaviour that matters, like bounding how long an external call may hang, is written once and inherited by all of them",
+      "An action that has already run cannot quietly run again. The check that an action is still valid and the step that consumes it were two operations that could interleave; they are now one gate, written once, so a retry or a crash mid-flight cannot spend the same action twice",
+      "A failed action can be re-dispatched by an operator without re-running everything around it. Actions are routed by their type through a registry, which is also what makes a stuck action re-runnable on its own rather than only as part of the original request",
+      "Multi-line credentials are enterable again. Private keys and PEM blocks were being rendered into a single-line field \u2014 correct in every respect except that you could not paste one into it",
+      "Two more places where deleting an account left keys behind. Erasing a workspace or a user now purges its API keys and the SCIM catalog alongside it, and the auth layer moved to better-auth 1.7, closing the last two outstanding advisories",
+    ],
+  },
+  {
     version: "v0.2.22",
     title: "The Past, Read Back",
     date: "2026-08-26",

@@ -1174,12 +1174,14 @@ export default defineConfig({
         databaseUrl: process.env.ATLAS_REGION_EU_DB_URL!,
         apiUrl: "https://api-eu.useatlas.dev",
         selectable: false,
+        requestable: true,
       },
       "apac": {
         label: "Asia Pacific",
         databaseUrl: process.env.ATLAS_REGION_APAC_DB_URL!,
         apiUrl: "https://api-apac.useatlas.dev",
         selectable: false,
+        requestable: true,
       },
       // ⚠️ LOAD-BEARING — DO NOT REMOVE this "staging" arm.
       //

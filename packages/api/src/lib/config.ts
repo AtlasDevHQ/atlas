@@ -302,6 +302,29 @@ const RegionConfigSchema = z.object({
    * present for boot/routing while filtering it out of the picker only.
    */
   selectable: z.boolean().optional(),
+  /**
+   * Whether a NON-selectable region is still advertised to customers as
+   * available on request. Only meaningful alongside `selectable: false`;
+   * ignored otherwise (a selectable region is already offered outright).
+   *
+   * This splits the two reasons a region can be parked, which `selectable`
+   * alone conflates:
+   *
+   *   - `selectable: false` ALONE  → **internal**. The `staging` arm: exists
+   *     for `RegionGuardLive` and routing, must never be shown to a customer
+   *     in any form. Advertising it would leak an internal hostname into the
+   *     signup funnel.
+   *   - `+ requestable: true`      → **parked**. The `eu`/`apac` arms: fully
+   *     built and shippable, switched off to stop paying for an idle
+   *     always-on process (see deploy/api/atlas.config.ts). A customer who
+   *     wants one should be able to ask, and the ask should reach sales.
+   *
+   * Without this split the picker cannot tell "we turned this off to save
+   * money, ask us" from "you were never meant to see this", and would either
+   * advertise staging or hide eu/apac entirely — the first is a leak, the
+   * second silently drops the demand signal that decides when to un-park.
+   */
+  requestable: z.boolean().optional(),
 });
 
 export type RegionConfigInput = z.input<typeof RegionConfigSchema>;

@@ -351,3 +351,64 @@ describe("RegionPage — region selection repoints pre-auth (ADR-0024 §4, #3972
     expect(navigatePostAuthMock).not.toHaveBeenCalled();
   });
 });
+
+describe("RegionPage — parked regions offered on request", () => {
+  function regionsWithParked(): Response {
+    return new Response(
+      JSON.stringify({
+        configured: true,
+        defaultRegion: "us",
+        availableRegions: [
+          { id: "us", label: "United States", isDefault: true, apiUrl: "https://api.useatlas.dev" },
+        ],
+        requestableRegions: [
+          { id: "eu", label: "Europe" },
+          { id: "apac", label: "Asia Pacific" },
+        ],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }
+
+  test("lists each parked region with a request link carrying its id", async () => {
+    fetchMock.mockImplementation(async () => regionsWithParked());
+    render(<RegionPage />);
+
+    // Present and named, not hidden — a prospect who needed EU must see that it
+    // exists, or the demand signal that decides when we un-park never arrives.
+    expect(await screen.findByText(/also available on request/i)).toBeDefined();
+    expect(screen.getByText("Europe")).toBeDefined();
+    expect(screen.getByText("Asia Pacific")).toBeDefined();
+
+    const links = await screen.findAllByRole("link", { name: /request access/i });
+    expect(links.length).toBe(2);
+    const hrefs = links.map((l) => l.getAttribute("href"));
+    expect(hrefs.some((h) => h?.includes("residency=eu"))).toBe(true);
+    expect(hrefs.some((h) => h?.includes("residency=apac"))).toBe(true);
+  });
+
+  test("parked regions are NOT selectable — Continue still uses the available arm", async () => {
+    // The whole point of parking: these are advertised, never chosen. A card
+    // would be a selectable affordance, so they must not render as one.
+    fetchMock.mockImplementation(async () => regionsWithParked());
+    render(<RegionPage />);
+
+    await screen.findAllByRole("link", { name: /request access/i });
+    // Only the single available arm is a selectable radio/card option.
+    const cont = await screen.findByRole("button", { name: /continue with default region/i });
+    expect(cont).toBeDefined();
+    expect(screen.queryByRole("radio", { name: /europe/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^europe$/i })).toBeNull();
+  });
+
+  test("renders nothing extra when the field is absent (older API / single region)", async () => {
+    // `requestableRegions` is optional so an API that predates it still parses
+    // and the page behaves exactly as before.
+    fetchMock.mockImplementation(async () => regionsConfigured());
+    render(<RegionPage />);
+
+    await screen.findByRole("button", { name: /continue with default region/i });
+    expect(screen.queryByText(/also available on request/i)).toBeNull();
+    expect(screen.queryByRole("link", { name: /request access/i })).toBeNull();
+  });
+});

@@ -57,6 +57,18 @@ type SubmitState =
 export interface TalkToSalesFormProps {
   /** Pre-fill the plan-interest select (e.g. "Business" from /pricing CTA). */
   initialPlanInterest?: string;
+  /**
+   * Pre-fill the free-text message. Used by the parked-region "Request access"
+   * path, which arrives with the region already known and should not make the
+   * prospect retype it — the message is what becomes the Twenty Note body
+   * verbatim, so seeding it is what puts the region in front of a human.
+   *
+   * Deliberately seeds `message` rather than `planInterest`: the latter is a
+   * bounded <select> of real plans, and stuffing a residency string into it
+   * would render as a value outside PLAN_OPTIONS. A residency request is a
+   * normal sales lead that happens to be about a region.
+   */
+  initialMessage?: string;
   /** Called when the user clicks the dialog's Cancel button or after success. */
   onClose?: () => void;
 }
@@ -65,13 +77,14 @@ const PLAN_OPTIONS = ["Starter", "Pro", "Business", "Not sure yet"] as const;
 
 export function TalkToSalesForm({
   initialPlanInterest = "Business",
+  initialMessage = "",
   onClose,
 }: TalkToSalesFormProps) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [company, setCompany] = useState("");
   const [planInterest, setPlanInterest] = useState<string>(initialPlanInterest);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(initialMessage);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [state, setState] = useState<SubmitState>({ kind: "idle" });
 

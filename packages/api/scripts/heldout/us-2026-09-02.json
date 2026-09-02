@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "notice": "MANIFEST ONLY — ids and labels, never tenant text. This file NAMES episodes; it does not carry them, and it resolves to nothing without access to the region database it was cut from. It is the frozen held-out set for issue 5338 (composed-layer triage recall and stage-2 gate agreement) and is DELIBERATELY versioned in-repo — which a gate-export bundle must never be (see EVALUATION_ONLY_NOTICE in lib/brain/gate-export.ts). It is cut mechanically over a time window so that it has no author to be conflicted: do not regenerate it to make a number look better, and do not hand-edit a row. Re-cutting is a decision that belongs on the issue. Rows are re-resolved against the live database at each run; an id that no longer resolves is a purge, not a gap to patch. Its dial evidence attests ONE region — the one named by `region` — because a process may only read its own (ADR-0024); a manifest cut here says nothing about whether triage ran anywhere else.",
+  "issue": 5338,
+  "workspaceId": "VgazIn9VLcR1wkqouZxZ759cBEuvg0Nq",
+  "region": "us",
+  "window": {
+    "column": "ingested_at",
+    "from": "2026-08-01T00:00:00.000Z",
+    "to": "2026-09-02T00:00:00.000Z"
+  },
+  "cutAt": "2026-09-02T14:59:19.260Z",
+  "dialEvidence": {
+    "markedEpisodes": 0,
+    "cyclesObserved": 9411,
+    "cyclesReportingTriage": 0,
+    "platformDialSetting": null,
+    "attestsRegion": "us"
+  },
+  "counts": {
+    "positive": 9,
+    "rejected": 1,
+    "negative": 15,
+    "excluded": 0,
+    "stillDraining": 0
+  },
+  "entries": [
+    {
+      "episodeId": "0fe47d2d-cf62-4d89-9eeb-f01a0c88622a",
+      "class": "positive",
+      "positiveFacts": 1,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "33abe164-ac83-4ce6-941a-08c20bf7c599",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "4a1b2fdf-d12d-43ef-8f21-905b07d20c6b",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "5894c20c-5f09-45d6-8e7c-fa673b2aee59",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "674f4034-dc92-43a6-8ae1-4c3d0b20f4dc",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "6d9a16ae-5139-41b9-a3b1-58b4f461b1d7",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "7833c96c-83d8-4603-8f60-afa2a4dfa654",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "8305baa1-946d-46aa-ab68-9f795466c6a4",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "890f1304-6e4a-4e06-a418-6459313b87d7",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "8a4d36ba-55c4-43fc-b1a8-2089c3fb40c5",
+      "class": "positive",
+      "positiveFacts": 1,
+      "rejectedFacts": 1
+    },
+    {
+      "episodeId": "8dab7d76-bb5b-4d49-a90a-83f01dec81c6",
+      "class": "positive",
+      "positiveFacts": 1,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "9c72deb5-792e-4bed-8a24-c6e363ee0d2c",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "b0be1570-b7ed-48d2-b50d-bc816258ec68",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "bc1d94f2-16f9-4ac0-8d77-2c8527bfb537",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "cb64d6f2-d149-4196-ab55-cf90b3027a91",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "cd4213e0-a019-4592-9131-e863c9e1769b",
+      "class": "rejected",
+      "positiveFacts": 0,
+      "rejectedFacts": 1
+    },
+    {
+      "episodeId": "d65b334d-95ac-44a1-87ac-ca63e3c7d7c9",
+      "class": "positive",
+      "positiveFacts": 1,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "dd0087e3-e268-4c09-aed0-c89e25c69432",
+      "class": "positive",
+      "positiveFacts": 1,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "e5876fee-3243-4927-9ea2-1313a9e25a06",
+      "class": "positive",
+      "positiveFacts": 1,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "ef3eacc7-ff1a-454e-a3a4-52bf01c17a07",
+      "class": "positive",
+      "positiveFacts": 2,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "f005e280-6005-4d5d-99cb-e3016fd60799",
+      "class": "positive",
+      "positiveFacts": 1,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "f1096ca1-6f52-4d6f-9bed-1694dcb7a2d1",
+      "class": "positive",
+      "positiveFacts": 1,
+      "rejectedFacts": 1
+    },
+    {
+      "episodeId": "f4a21492-6629-470e-8f24-893907444677",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "fd4322fe-0b40-41be-b4ea-a1f6e30a9bd7",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    },
+    {
+      "episodeId": "ff19ae0f-8ec0-4aa4-b86c-0a4f8b68e8c2",
+      "class": "negative",
+      "positiveFacts": 0,
+      "rejectedFacts": 0
+    }
+  ]
+}

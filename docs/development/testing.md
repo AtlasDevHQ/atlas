@@ -41,7 +41,7 @@ cd packages/api && bun test --parallel --changed=HEAD~3        # last-3-commit w
 
 `/ci` runs `scripts/ci-local.sh` — 43 ci-local gates (lint, type, type-aware lint, syncpack, template/schema/openapi drift, the `check-*.sh` guards, and the full test suite, among others). All must pass before opening a PR; `.claude/commands/ci.md` carries the authoritative roster, and this page deliberately does not keep a second copy of it. In CI the api suite is sharded 4-way (`--shard=N/4`, duration-balanced via `--timings`); locally it runs unsharded.
 
-> ⚠️ **A clean local pass now requires `TEST_DATABASE_URL` (#5410).** Without it every `*-pg.test.ts` file self-skips — 100 real-postgres suites today, 1,432 assertions when last measured (2026-08-24, at 87 of them) — so the `test` gate reports `DECLINED` (exit 3) rather than PASS, and the run is not a clean pre-PR pass however green the other rows look. `bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas`. The `/ci` skill carries the authoritative gate list and count.
+> ⚠️ **A clean local pass now requires `TEST_DATABASE_URL` (#5410).** Without it every `*-pg.test.ts` file self-skips — 101 real-postgres suites today, 1,432 assertions when last measured (2026-08-24, at 87 of them) — so the `test` gate reports `DECLINED` (exit 3) rather than PASS, and the run is not a clean pre-PR pass however green the other rows look. `bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas`. The `/ci` skill carries the authoritative gate list and count.
 
 ## Mocking
 

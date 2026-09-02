@@ -12,6 +12,7 @@
  * re-cut the set, or measure it a fourth time, or quietly promote a smoke
  * fixture into the scoring set, and every step looks reasonable on its own.
  */
+import type { HeldoutClass } from "@atlas/api/lib/brain/heldout-manifest";
 import {
   evaluateThreshold,
   type LayerMeasurement,
@@ -82,13 +83,20 @@ export function parseMeasurementFixture(raw: unknown): MeasurementFixture {
   if (!Array.isArray(obj.episodes) || obj.episodes.length === 0) {
     throw new Error("measurement fixture: episodes must be a non-empty array");
   }
-  const episodes = obj.episodes.map((entry, index) => {
+  const episodes: LabelledEpisode[] = obj.episodes.map((entry, index) => {
     const e = entry as Record<string, unknown> | null;
+    const cls = e?.class;
+    // Narrowed through a `HeldoutClass` local rather than inline in the guard:
+    // a compound `||` does not narrow `e.class` for the return expression, so
+    // the mapped array widens to `string` and the fixture stops type-checking
+    // as a labelled set.
+    const known: HeldoutClass | null =
+      cls === "positive" || cls === "rejected" || cls === "negative" ? cls : null;
     if (
       typeof e?.id !== "string" ||
       typeof e.body !== "string" ||
       e.body.trim() === "" ||
-      (e.class !== "positive" && e.class !== "rejected" && e.class !== "negative")
+      known === null
     ) {
       throw new Error(
         `measurement fixture: episode ${index} is malformed — every entry is ` +
@@ -97,7 +105,7 @@ export function parseMeasurementFixture(raw: unknown): MeasurementFixture {
           `reach a triager, so they cannot be measured here.)`,
       );
     }
-    return { id: e.id, class: e.class, body: e.body };
+    return { id: e.id, class: known, body: e.body };
   });
 
   if (role === "evaluation") {

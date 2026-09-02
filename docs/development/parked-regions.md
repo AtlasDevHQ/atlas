@@ -86,18 +86,29 @@ Parking `eu`/`apac` was acceptable **only** because both held 0 conversations.
    railway redeploy --service api-<region>
    curl -fsS https://api-<region>.useatlas.dev/api/health
    ```
-   Two sibling services were scaled down with it and must come back before the
-   region is really serving:
+   Two sibling services matter, and they are in **different** states after the
+   2026-09-01 park — check both:
+
    ```bash
-   railway redeploy --service <region>-int-postgres    # left UP at the 2026-09-01 park
-   railway redeploy --service backup-scratch-<region>  # taken DOWN at the 2026-09-01 park
+   railway redeploy --service <region>-int-postgres   # still EXISTS (left up); just redeploy
    ```
-   `backup-scratch-<region>` is the disposable Postgres that
-   `ATLAS_BACKUP_VERIFY_SCRATCH_URL` points at. Without it the region's
-   `scheduled_backup` fiber still runs, but verification silently degrades from
-   full-restore to a `pg_dump` header check — the weaker guarantee #4457 was
-   built to replace, and it degrades quietly rather than failing. The `/health`
-   `backups` component is the tripwire; check it after the region is up.
+
+   `backup-scratch-<region>` does **not** exist any more — it was **deleted**,
+   not scaled down, so un-parking has to **recreate** it:
+
+   - a Postgres service from `ghcr.io/railwayapp-templates/postgres-ssl:18.3`,
+     with a volume at `/var/lib/postgresql/data` (match `backup-scratch-us`,
+     which is still live and is the working reference),
+   - then point that region's `ATLAS_BACKUP_VERIFY_SCRATCH_URL` at it.
+
+   It must be a **genuinely disposable** database — full-restore verification
+   WIPES it on every run (`ee/src/backups/verify.ts`), so it must never point at
+   the region's real internal DB.
+
+   ⚠️ Skipping this does not fail. The region's `scheduled_backup` fiber still
+   runs, but verification silently degrades from full-restore to a `pg_dump`
+   header check — the weaker guarantee #4457 was built to replace. The `/health`
+   `backups` component is the only tripwire; check it once the region is up.
 2. **Delete `selectable: false` and `requestable: true`** from that region's arm
    in `deploy/api/atlas.config.ts`.
 3. **Update `deploy-config-residency-regions.test.ts`** — it pins the parked

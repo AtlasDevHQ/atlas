@@ -29,7 +29,12 @@
  * ## Usage
  *
  *   bun scripts/measure-triage.ts --fixture scripts/heldout/fixtures/smoke.json
- *   bun scripts/measure-triage.ts --fixture <evaluation.json> --record scripts/heldout/measurements.json
+ *   bun scripts/measure-triage.ts --fixture <evaluation.json> --record
+ *
+ * `--record` takes no path by default and writes
+ * `src/lib/brain/triage-measurements.json` — the store the triage-default gate
+ * and the Coverage Surface read. Passing a different path is allowed and warns:
+ * a run recorded where nothing reads it counts toward nothing.
  *
  * Exit codes: 0 reported · 1 threshold failed · 2 refused (a smoke fixture
  * cannot produce a gating verdict) · 3 bad input.
@@ -51,6 +56,7 @@ import {
   type RecordedMeasurement,
 } from "@atlas/api/lib/brain/triage-measure-record";
 import { deterministicTriager, type Triager } from "@atlas/api/lib/brain/triage";
+import { RECORDED_MEASUREMENTS_PATH } from "@atlas/api/lib/brain/triage-measurements";
 
 const TAG = "[measure-triage]";
 
@@ -162,8 +168,21 @@ async function main(): Promise<number> {
   console.log(`${TAG} threshold pair: ${verdict.passed ? "PASS" : "FAIL"}`);
   for (const failure of verdict.failures) console.error(`${TAG}   ✗ ${failure}`);
 
-  const recordPath = flag("--record");
-  if (recordPath) {
+  // `--record` with no path writes the canonical store — the one the default
+  // gate and the Coverage Surface read. A DIFFERENT path is still honoured (a
+  // scratch run is a legitimate thing to want) but says loudly that nothing
+  // will consult it, because a measurement recorded where nothing reads it is
+  // the same defect as a gate whose only caller passes `[]`.
+  const recordFlagPresent = process.argv.includes("--record");
+  const recordPath = recordFlagPresent ? (flag("--record") ?? RECORDED_MEASUREMENTS_PATH) : undefined;
+  if (recordPath !== undefined) {
+    if (recordPath !== RECORDED_MEASUREMENTS_PATH) {
+      console.error(
+        `${TAG} ⚠️ recording to ${recordPath}, which is NOT the store the triage-default gate ` +
+          `and the Coverage Surface read (${RECORDED_MEASUREMENTS_PATH}). This run will not ` +
+          `count toward the measurement budget and cannot license defaulting the dial on.`,
+      );
+    }
     const setId = fixture.provenance?.manifestCutAt ?? fixture.provenance?.labelsFrom ?? fixturePath;
     const record: RecordedMeasurement = {
       setId,
@@ -173,10 +192,32 @@ async function main(): Promise<number> {
       baseline,
       passed: verdict.passed,
     };
-    const existing = (await Bun.file(recordPath)
-      .json()
-      .catch(() => [])) as RecordedMeasurement[];
-    const all = [...(Array.isArray(existing) ? existing : []), record];
+    // A MISSING file is the first record and reads as an empty store. An
+    // UNPARSEABLE one is not: swallowing it would rewrite the file with this
+    // run alone, silently resetting every prior attempt's count to zero — which
+    // spends the measurement budget's entire memory and looks like a clean
+    // first run. The two cases are told apart rather than collapsed.
+    const file = Bun.file(recordPath);
+    let existing: unknown = [];
+    if (await file.exists()) {
+      try {
+        existing = await file.json();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `${TAG} ${recordPath} exists and is not valid JSON (${message}). Refusing to write: ` +
+            `overwriting it would discard every recorded attempt and reset the budget.`,
+        );
+        return 3;
+      }
+    }
+    if (!Array.isArray(existing)) {
+      console.error(
+        `${TAG} ${recordPath} does not hold a JSON array. Refusing to write, for the same reason.`,
+      );
+      return 3;
+    }
+    const all = [...(existing as RecordedMeasurement[]), record];
     await Bun.write(recordPath, `${JSON.stringify(all, null, 2)}\n`);
     console.log(`${TAG} recorded to ${recordPath}`);
 

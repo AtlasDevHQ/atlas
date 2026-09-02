@@ -17,8 +17,10 @@
  * with fixtures below so that none of this is a green nobody has seen go red.
  */
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   RECORDED_MEASUREMENTS,
+  RECORDED_MEASUREMENTS_PATH,
   latestRecordedMeasurement,
 } from "@atlas/api/lib/brain/triage-measurements";
 import {
@@ -80,6 +82,22 @@ describe("the store itself", () => {
     // with this comment — it is not to be "fixed" by relaxing it, and the two
     // checks above are what survive.
     expect(RECORDED_MEASUREMENTS).toHaveLength(0);
+  });
+});
+
+describe("one store, not two", () => {
+  test("⭐ the path the harness records to IS the array the gate reads", () => {
+    // The defect this pins was live for one commit: `measure-triage.ts
+    // --record <path>` appended to an arbitrary JSON file while the gate and
+    // the Coverage Surface read a separate TS literal, so a recorded run —
+    // including a FAILING one — could land somewhere nothing consults. Same
+    // class as the gate whose only caller passed `[]`, one step further out,
+    // and equally invisible from either side alone.
+    const onDisk: unknown = JSON.parse(
+      readFileSync(new URL(`../../../../${RECORDED_MEASUREMENTS_PATH}`, import.meta.url), "utf8"),
+    );
+    expect(Array.isArray(onDisk)).toBe(true);
+    expect(onDisk).toEqual(RECORDED_MEASUREMENTS as unknown as unknown[]);
   });
 });
 

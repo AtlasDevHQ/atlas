@@ -8,19 +8,26 @@
  * `records` array its only caller (a test) passed as `[]`, so a real failing run
  * had no way of reaching it.
  *
- * ## A module, not a JSON file or a table
- *
- * Three candidates, and the choice is load-bearing:
+ * ## A committed file under `src/`, not a table — and ONE file, not two
  *
  *   - **A table** would make recording a measurement an ordinary write, which is
  *     exactly what #5338's budget forbids — three attempts per set, declared
  *     before the cut. A row nobody reviews is a fourth attempt nobody sees.
  *   - **A file under `packages/api/scripts/`** would put the store outside what
  *     the API image ships (ADR-0025) and turn a page render into disk IO.
- *   - **A module** deploys with the code and makes appending a record a
- *     reviewed diff — the same argument {@link checkTriageDefaultGate} makes for
- *     living in a test rather than on a boot path: *"enabled by default is a
- *     code change, so the gate belongs where code changes are caught."*
+ *   - **A committed JSON file beside this module** deploys with the code and
+ *     makes appending a record a reviewed diff — the same argument
+ *     {@link checkTriageDefaultGate} makes for living in a test rather than on a
+ *     boot path: *"enabled by default is a code change, so the gate belongs
+ *     where code changes are caught."*
+ *
+ * ⚠️ **It is JSON rather than a TS literal for one specific reason.**
+ * `scripts/measure-triage.ts --record <path>` appends a run, and if the store
+ * it appends to were not the store the gate and the page read, a measurement
+ * could be recorded to a file nothing consults — the same class of defect as
+ * the gate whose only caller passed `[]`, one step further out. The CLI's
+ * `--record` now defaults to {@link RECORDED_MEASUREMENTS_PATH}, so the
+ * harness's output and the gate's input are the same bytes.
  *
  * ## Empty is the honest state, and the tests are the enforcement
  *
@@ -35,6 +42,21 @@
  * @see ./coverage.ts — where the latest record becomes a sentence on the page
  */
 import type { RecordedMeasurement } from "@atlas/api/lib/brain/triage-measure-record";
+// ⚠️ A RELATIVE import, against this package's `@atlas/api/*` convention, and
+// deliberately: the alias resolves TypeScript sources and does not carry a
+// `.json` extension through, so `@atlas/api/lib/brain/triage-measurements.json`
+// does not resolve. The file sits beside this module, so the relative path is
+// also the shortest true statement of where it is.
+import stored from "./triage-measurements.json";
+
+/**
+ * Where the store lives, relative to `packages/api` — the path
+ * `scripts/measure-triage.ts` writes to by default.
+ *
+ * Exported so the CLI cannot drift from it by holding its own copy of the
+ * string, and so its console output can name the file a reader has to commit.
+ */
+export const RECORDED_MEASUREMENTS_PATH = "src/lib/brain/triage-measurements.json";
 
 /**
  * Every measurement recorded against #5338's threshold, in the order they were
@@ -51,7 +73,8 @@ import type { RecordedMeasurement } from "@atlas/api/lib/brain/triage-measure-re
  * produced by loosening what counts as a scoring set is the one outcome #5338
  * rules out ahead of time.
  */
-export const RECORDED_MEASUREMENTS: readonly RecordedMeasurement[] = [];
+export const RECORDED_MEASUREMENTS: readonly RecordedMeasurement[] =
+  stored as readonly RecordedMeasurement[];
 
 /**
  * The newest record by `measuredAt`, or null when nothing has been recorded.

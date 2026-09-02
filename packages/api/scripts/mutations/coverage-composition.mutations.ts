@@ -242,6 +242,32 @@ a stored zero as a measurement, looks exactly like one that does neither.
       ],
       note: "The review finding this arm was added for. The probe rotation is `CHAT_ACTIVITY_PROBES_PER_CYCLE` = 20 per hourly cycle and the upsert carries an unprobed unit's previous reading forward, so a 5,000-channel workspace re-probes each unit roughly every ten days — and without this arm a ten-day-old vendor answer is compared against a 24-hour threshold and returns `current`. A confident present-tense all-clear about a channel that may have been moving daily since anyone looked, indistinguishable on the wire from one probed this cycle.",
     },
+    {
+      label: "a triage backlog that under-counts no longer clears the page's signal",
+      edits: [
+        {
+          file: COVERAGE,
+          oldString: `  if (input.triageBacklog.degraded) degraded.hit = true;`,
+          newString: "",
+        },
+      ],
+      note: "#5338 AC 8's arm, and the same direction every other row here fails in. `loadTriageBacklog` drops a bucket whose stored reason it cannot name, which shrinks the total — so the page under-states how many episodes Atlas deliberately did not look at, and a smaller blind spot is the reassuring answer. The mutation is a deletion a reader would call tidying: the flag is set nowhere else, and nothing about the rendered page looks different.",
+    },
+    {
+      label: "the triaged-out count arrives with no rules behind it",
+      edits: [
+        {
+          file: COVERAGE,
+          oldString: `    byRule: backlog.byRule.map((bucket) => ({
+      rule: bucket.rule,
+      episodes: bucket.episodes,
+      known: bucket.known,
+    })),`,
+          newString: `    byRule: [],`,
+        },
+      ],
+      note: "The headline stays exactly right and the page stops being actionable: an admin's next move on this number is to re-queue ONE rule's marks, and a bare total names nothing to re-queue. It is also the shape that would pass a reader's eye — the number they check is unchanged — which is why it needs a row rather than a reviewer.",
+    },
   ],
 };
 

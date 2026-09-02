@@ -34391,6 +34391,108 @@
                         "bucketsTruncated"
                       ]
                     },
+                    "triage": {
+                      "type": "object",
+                      "properties": {
+                        "withheldEpisodes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "byRule": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "rule": {
+                                "type": "string"
+                              },
+                              "episodes": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "known": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "rule",
+                              "episodes",
+                              "known"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "recall": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "measured": {
+                                  "type": "boolean",
+                                  "enum": [
+                                    false
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "measured"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "measured": {
+                                  "type": "boolean",
+                                  "enum": [
+                                    true
+                                  ]
+                                },
+                                "setId": {
+                                  "type": "string"
+                                },
+                                "measuredAt": {
+                                  "type": "string"
+                                },
+                                "observedRecall": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 1
+                                },
+                                "recallLowerBound": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 1
+                                },
+                                "positives": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "passed": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "measured",
+                                "setId",
+                                "measuredAt",
+                                "observedRecall",
+                                "recallLowerBound",
+                                "positives",
+                                "passed"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "withheldEpisodes",
+                        "byRule",
+                        "recall"
+                      ],
+                      "additionalProperties": false
+                    },
                     "countsConsistent": {
                       "type": "boolean"
                     }
@@ -34398,6 +34500,7 @@
                   "required": [
                     "availability",
                     "authority",
+                    "triage",
                     "countsConsistent"
                   ],
                   "additionalProperties": false

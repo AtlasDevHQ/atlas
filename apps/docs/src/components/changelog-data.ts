@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.26",
+    title: "Measuring the Extraction Cascade",
+    date: "2026-09-02",
+    summary:
+      "Atlas reads your team's messages and proposes facts for a person to approve. We are building a cheaper filter that skips the obviously empty messages before the expensive step runs, and this release ships the instrument that will decide whether that filter is safe to turn on — before the filter itself exists. The point is the order: a measurement built after the thing it measures tends to agree with it. Nothing here changes what Atlas extracts or what reaches your review queue today.",
+    highlights: [
+      "The evaluation set is now a list of message identifiers and their review outcomes, carrying no message text at all. That is what lets it be kept, versioned, and re-checked over time — the messages themselves are re-read from your own database when a measurement runs, and one that has since been deleted shows up as deleted rather than quietly lingering in a file",
+      "The set is cut mechanically over a date range rather than hand-picked, so nobody chooses which examples the filter is graded on. An oversized range is refused outright rather than trimmed, because a trimmed set is a chosen set",
+      "A cut is refused if the filter under test was ever running during the period being measured — checked three ways, including one record that survives an operator clearing the others. Grading a filter on data it had already influenced would flatter it",
+      "The scoring harness reports the filter's recall with a statistical confidence bound, so a perfect score on a small sample is correctly reported as inconclusive rather than as a pass",
+      "An approval now records when it happened. Previously only a withdrawal carried a timestamp, so the review queue could say what had been decided but not when",
+    ],
+  },
+  {
     version: "v0.2.25",
     title: "Regions on Request",
     date: "2026-09-01",

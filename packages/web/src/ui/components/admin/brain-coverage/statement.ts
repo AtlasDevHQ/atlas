@@ -45,6 +45,8 @@ import {
   noUnitsFoundPhrase,
   notSurveyableClaim,
   surveyedOfPhrase,
+  triageRecallClaim,
+  triageWithheldClaim,
 } from "./vocabulary";
 
 export interface ComposedStatement {
@@ -61,6 +63,17 @@ export interface ComposedStatement {
   readonly mapEdges: readonly string[];
   /** The authority half — observed, awaiting review, federated elsewhere. */
   readonly authority: readonly string[];
+  /**
+   * The triage half (#5338 AC 8) — what extraction was told not to look at,
+   * and what is known about what that costs.
+   *
+   * Always at least one sentence, including when nothing is held: "nothing is
+   * being filtered" is a statement an admin needs, and an arm that disappeared
+   * at zero would make a deploy that never wired triage up read identically to
+   * one that has it off. Same argument the four no-count class arms already
+   * carry, one arm over.
+   */
+  readonly triage: readonly string[];
   /**
    * Set when some part of the response cannot be trusted to add up. A
    * qualification ON the statement, never a replacement FOR it: every sentence
@@ -195,11 +208,38 @@ function authoritySentences(coverage: BrainCoverage): string[] {
   return out;
 }
 
+/**
+ * The triage sentences — the count, then what it costs.
+ *
+ * ⭐ **The caveat is keyed on the NUMBER existing, not on the backlog being
+ * non-empty**, because that is what #5338 AC 8 asks for: *"upgrading to a
+ * recall caveat once a number exists"*. The first spelling gated it on
+ * `withheldEpisodes > 0` and had a hole with the worst possible shape: a
+ * recorded **failing** measurement with a momentarily-empty backlog — the dial
+ * on, everything just re-queued — printed no caveat at all, while the wire type
+ * calls that sentence the most important thing this surface could say.
+ *
+ * The unmeasured caveat still waits for something to be held, and that half of
+ * the judgement stands: with nothing withheld and nothing measured there is no
+ * referent, and a page that warns about every layer whether or not it did
+ * anything trains a reader to skip the warnings that matter. What it costs is
+ * the re-queue case — episodes triaged and later re-queued leave no trace, so a
+ * workspace can read zero having once dropped plenty — which is why the count
+ * is documented on the wire as a live gauge rather than a tally.
+ */
+function triageSentences(coverage: BrainCoverage): string[] {
+  const { withheldEpisodes, byRule, recall } = coverage.triage;
+  const out = [triageWithheldClaim(withheldEpisodes, byRule)];
+  if (recall.measured || withheldEpisodes > 0) out.push(triageRecallClaim(recall));
+  return out;
+}
+
 export function composeStatement(coverage: BrainCoverage): ComposedStatement {
   return {
     availability: CLASS_ORDER.map((cls) => availabilitySentence(coverage, cls)),
     mapEdges: mapEdgeSentences(coverage),
     authority: authoritySentences(coverage),
+    triage: triageSentences(coverage),
     caveat:
       coverage.countsConsistent && coverage.authority.countsConsistent
         ? null

@@ -1396,6 +1396,90 @@ export type BrainCoverageClass =
     };
 
 /**
+ * One triage rule's share of what is being held back (#5338 AC 8).
+ *
+ * `rule` is the stored `triage_reason`, typed as a string rather than a closed
+ * enum for `TriageBacklogBucket`'s reason one layer down: a rule retired from
+ * the vocabulary leaves its marks in the table, and this surface exists to make
+ * those visible rather than to pretend the column agrees with today's code.
+ * {@link known} is how a client tells the two apart.
+ */
+export interface BrainCoverageTriageRule {
+  readonly rule: string;
+  /** Episodes this rule is currently holding off extraction. ≥ 1. */
+  readonly episodes: number;
+  /** False when no rule of that id exists in this deploy — a mark left by a past one. */
+  readonly known: boolean;
+}
+
+/**
+ * Whether anyone has measured what triage costs — #5338 AC 8's "upgrading to a
+ * recall caveat once a number exists".
+ *
+ * ⭐ The unmeasured arm is the SHIPPING state and is not a placeholder. #5338
+ * exists because a filter with unmeasured recall makes ADR-0041's statement
+ * unsupportable: a false negative here is invisible by construction, since
+ * nobody notices a fact that was never proposed. So the page says the number
+ * does not exist, in as many words, rather than showing a count with no
+ * qualification — a bare "42 episodes not looked at" reads as a decision
+ * somebody validated.
+ *
+ * The measured arm carries {@link passed} rather than only the rate, because a
+ * recorded measurement that FAILED its threshold is the most important thing
+ * this surface could say and would otherwise render as a reassuring number with
+ * a decimal point.
+ */
+export type BrainCoverageTriageRecall =
+  | { readonly measured: false }
+  | {
+      readonly measured: true;
+      /** The set the number was measured on — a manifest `cutAt` or a corpus name. */
+      readonly setId: string;
+      readonly measuredAt: string;
+      /** Observed recall over episodes that yielded a published, non-retracted fact. */
+      readonly observedRecall: number;
+      /** The 95% Wilson lower bound on it — the half that says whether the set was big enough. */
+      readonly recallLowerBound: number;
+      /** How many positives the rate was computed over. A rate without it is not a claim. */
+      readonly positives: number;
+      /** Whether this run cleared #5338's threshold pair. */
+      readonly passed: boolean;
+    };
+
+/**
+ * What extraction was told not to look at — the third arm of the Coverage
+ * Surface (#5338 AC 8, ADR-0041).
+ *
+ * ## Why it is an arm of its own rather than a per-class number
+ *
+ * ADR-0041 says this surface counts what Atlas can SEE, and an episode routed
+ * out before any model call is one Atlas deliberately did not look at — it
+ * belongs in that statement. But it cannot be folded into
+ * {@link BrainCoverage.availability}: those ratios are counted in channels,
+ * mailboxes and enrolled pairs, so a triaged episode moves none of them, and
+ * stage 0's rules (`below_min_length`, `pure_reaction`, `known_ack`) are
+ * body-shape rules that know nothing about source class. Splitting the count
+ * per class would invent a structure the mechanism does not have.
+ *
+ * ## What the count means, precisely
+ *
+ * Episodes currently marked `triaged_out_at` and not extracted — a LIVE gauge
+ * of what is being held, not a cumulative tally of what was ever dropped.
+ * #5534's re-queue clears both triage columns, so a re-queued episode leaves
+ * this number and the table retains no record that it was ever here. That is
+ * the correct statement (it is no longer held) and it is also the FLATTERING
+ * direction, which is why it is spelled out rather than left to be inferred.
+ */
+export interface BrainCoverageTriage {
+  /** Episodes held off extraction by any triage rule, right now. */
+  readonly withheldEpisodes: number;
+  /** Per-rule breakdown, largest bucket first. Empty when nothing is held. */
+  readonly byRule: readonly BrainCoverageTriageRule[];
+  /** What is known about what this filtering costs. See {@link BrainCoverageTriageRecall}. */
+  readonly recall: BrainCoverageTriageRecall;
+}
+
+/**
  * The Coverage Surface's wire shape (#5214, ADR-0041) — what Atlas knows, how
  * much it covers, and what it does not know, as parts that are each true.
  *
@@ -1427,6 +1511,15 @@ export interface BrainCoverage {
   readonly availability: Record<BrainCoverageSourceClass, BrainCoverageClass>;
   /** The authority arm — `GET /oversight`'s payload, composed rather than restated. */
   readonly authority: BrainFactOversight;
+  /**
+   * The triage arm — what extraction was told not to look at (#5338 AC 8).
+   *
+   * ⚠️ Required, and present whether or not the triage dial is on. Zero held is
+   * a statement ("nothing is being filtered"); an absent arm is not, and an
+   * optional field would let a deploy that never wired this up render
+   * identically to one filtering half its intake.
+   */
+  readonly triage: BrainCoverageTriage;
   /**
    * False when some part of this response cannot be trusted to add up.
    *

@@ -40,7 +40,9 @@
  */
 
 import type {
+  BrainCoverage,
   BrainCoverageMapEdge,
+  BrainCoverageTriageRule,
   BrainCoverageSourceClass,
   BrainCoverageUnitOrigin,
   BrainCoverageUnverifiedReason,
@@ -445,4 +447,64 @@ export function frozenEnumerationClaim(since: string | null, reason: string): st
       ? "Enumeration has been unavailable since the last successful cycle."
       : `Enumeration has been unavailable since ${when}.`;
   return `${head} These counts are the last that succeeded. ${reason}`;
+}
+
+// ---------------------------------------------------------------------------
+// The triage claims (#5338 AC 8)
+// ---------------------------------------------------------------------------
+
+/**
+ * What extraction was told not to look at, as a sentence.
+ *
+ * ⚠️ Spoken in the PRESENT tense — "is holding", never "has dropped" — because
+ * the count is a live gauge and not a cumulative tally. #5534's re-queue clears
+ * both triage columns, so a re-queued episode leaves this number and nothing
+ * records that it was ever counted. A past-tense sentence over a present-tense
+ * number would be a claim the table cannot support.
+ *
+ * The rules are named rather than totalled away: an admin's next move on this
+ * line is to re-queue one rule's marks, and a bare total names nothing to act
+ * on.
+ */
+export function triageWithheldClaim(
+  withheld: number,
+  byRule: readonly BrainCoverageTriageRule[],
+): string {
+  if (withheld === 0) {
+    return "Nothing is being held back from extraction — no episode in this workspace is currently marked as not worth reading.";
+  }
+  const named = byRule
+    .map((bucket) => `${bucket.episodes.toLocaleString()} by ${bucket.rule}${bucket.known ? "" : " (a rule this deployment no longer has)"}`)
+    .join(", ");
+  const noun = withheld === 1 ? "episode" : "episodes";
+  return `Atlas is not reading ${withheld.toLocaleString()} ${noun} — they were routed out before extraction as unlikely to carry a fact: ${named}.`;
+}
+
+/**
+ * What is known about what that filtering costs — AC 8's "recall caveat".
+ *
+ * ⭐ The unmeasured sentence names the specific harm rather than hedging,
+ * because the harm is not intuitive: a triage false negative is invisible by
+ * construction, since nobody notices a fact that was never proposed. An admin
+ * reading "this has not been measured" without that clause would reasonably
+ * assume the gap would show up somewhere else on the page. It would not.
+ */
+export function triageRecallClaim(recall: BrainCoverage["triage"]["recall"]): string {
+  if (!recall.measured) {
+    return "Nobody has measured what that filter costs. A fact it drops is never proposed, so it cannot appear as a gap anywhere else on this page — treat the sentences above as a statement about what Atlas read, not about what it could have read.";
+  }
+  const rate = `${(recall.observedRecall * 100).toFixed(1)}%`;
+  const bound = `${(recall.recallLowerBound * 100).toFixed(1)}%`;
+  const measured = datePhrase(recall.measuredAt);
+  const when = measured === null ? "" : ` on ${measured}`;
+  // The lower bound and the denominator ride with the rate, always. A point
+  // estimate over a small set is the one number here that can be perfectly
+  // correct and wholly unsupportable — #5338's first cut scored 1.0000 on nine
+  // positives, whose 95% lower bound was 0.6756.
+  const body =
+    `Measured${when} on ${recall.setId}: it kept ${rate} of the episodes that went on to yield a published fact ` +
+    `(${recall.positives.toLocaleString()} such episodes; 95% confidence the true rate is at least ${bound}).`;
+  return recall.passed
+    ? body
+    : `${body} That run did NOT clear the threshold this filter has to meet, and the filter is still running.`;
 }

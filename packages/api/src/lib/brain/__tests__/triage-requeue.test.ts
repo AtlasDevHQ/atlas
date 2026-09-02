@@ -124,7 +124,7 @@ describe("loadTriageBacklog", () => {
     // The console renders `byRule` directly; `undefined` there is a crash and
     // `[{ episodes: 0 }]` per rule would be a different claim ("we looked and
     // each rule holds nothing") from the one an empty group-by supports.
-    expect(await loadTriageBacklog(reader([]), WORKSPACE)).toEqual({ total: 0, byRule: [] });
+    expect(await loadTriageBacklog(reader([]), WORKSPACE)).toEqual({ total: 0, byRule: [], degraded: false });
   });
 
   test("every shipped rule id reads as known", async () => {

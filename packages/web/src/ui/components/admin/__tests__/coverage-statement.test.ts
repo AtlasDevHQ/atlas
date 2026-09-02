@@ -154,6 +154,12 @@ describe("composeStatement — every class answers (ADR-0041)", () => {
       ...statement.availability,
       ...statement.mapEdges,
       ...statement.authority,
+      // The triage half is swept too (#5338 AC 8). In every state reachable
+      // today it holds no rate — the recorded-measurement store is empty, so
+      // the recall arm is `measured: false` — and the ONE sentence that can
+      // spell a percentage is pinned separately below rather than exempted
+      // wholesale here.
+      ...statement.triage,
       statement.caveat ?? "",
     ].join(" ");
     expect(everything).not.toContain("%");
@@ -351,5 +357,137 @@ describe("composeStatement — the authority half", () => {
       build({ authority: { ...AUTHORITY, countsConsistent: false } }),
     );
     expect(statement.caveat).not.toBeNull();
+  });
+});
+
+describe("composeStatement — the triage half (#5338 AC 8)", () => {
+  /** A workspace holding episodes, with recall in whichever state a test needs. */
+  function held(recall: BrainCoverage["triage"]["recall"]): BrainCoverage {
+    return build({
+      triage: {
+        withheldEpisodes: 14,
+        byRule: [
+          { rule: "known_ack", episodes: 12, known: true },
+          { rule: "channel_join_notice", episodes: 2, known: false },
+        ],
+        recall,
+      },
+    });
+  }
+
+  test("⭐ a recorded FAILURE is spoken even when the backlog is momentarily empty", () => {
+    // The hole the first spelling had, and it had the worst possible shape:
+    // gated on `withheldEpisodes > 0`, a recorded failing measurement with the
+    // dial on and everything just re-queued printed NOTHING — while the wire
+    // type calls that sentence the most important thing this surface could say.
+    // AC 8 keys the upgrade on the number existing, not on the backlog.
+    const [count, caveat] = composeStatement(
+      build({
+        triage: {
+          withheldEpisodes: 0,
+          byRule: [],
+          recall: {
+            measured: true,
+            setId: "apache-2026-06",
+            measuredAt: "2026-09-02T00:00:00.000Z",
+            observedRecall: 0.82,
+            recallLowerBound: 0.74,
+            positives: 120,
+            passed: false,
+          },
+        },
+      }),
+    ).triage;
+    expect(count).toContain("Nothing is being held back");
+    expect(caveat).toContain("did NOT clear the threshold");
+  });
+
+  test("says so when nothing is held and nothing measured, rather than saying nothing", () => {
+    // A disappearing arm would make a deploy that never wired triage up read
+    // identically to one that has it off, and those are different states. The
+    // four no-count class arms make the same argument one arm over.
+    const [sentence, ...rest] = composeStatement(build()).triage;
+    expect(sentence).toContain("Nothing is being held back");
+    // No caveat with nothing to qualify: a page that warns about every layer
+    // whether or not it did anything trains a reader to skip the warnings.
+    expect(rest).toHaveLength(0);
+  });
+
+  test("names the rules rather than totalling them away", () => {
+    // The admin's next move on this number is to re-queue ONE rule's marks. A
+    // bare total names nothing to act on.
+    const [count] = composeStatement(held({ measured: false })).triage;
+    expect(count).toContain("14");
+    expect(count).toContain("known_ack");
+    expect(count).toContain("channel_join_notice");
+  });
+
+  test("marks a bucket left by a rule this deployment no longer has", () => {
+    // Those episodes are still held and still re-queueable through the
+    // all-rules arm, but no per-rule request can name the bucket — so the
+    // sentence has to say the id is not one of today's.
+    const [count] = composeStatement(held({ measured: false })).triage;
+    expect(count).toContain("no longer has");
+  });
+
+  test("speaks in the present tense, because the count is a live gauge", () => {
+    // #5534's re-queue clears both triage columns, so a re-queued episode
+    // leaves the count and nothing records that it was ever there. "has
+    // dropped" would be a cumulative claim the table cannot support.
+    const [count] = composeStatement(held({ measured: false })).triage;
+    expect(count).toContain("is not reading");
+  });
+
+  test("⭐ names the specific harm when nobody has measured the filter", () => {
+    // The shipping state. The harm is not intuitive — a triage false negative
+    // is invisible by construction, because nobody notices a fact that was
+    // never proposed — so an admin reading a bare "unmeasured" would reasonably
+    // assume the gap shows up somewhere else on this page. It does not.
+    const [, caveat] = composeStatement(held({ measured: false })).triage;
+    expect(caveat).toContain("Nobody has measured");
+    expect(caveat).toContain("never proposed");
+  });
+
+  test("a measured rate never travels without its denominator or its bound", () => {
+    // ⚠️ This is the one sentence on the surface that may spell a percentage,
+    // and the carve-out is narrow on purpose: it is a rate OF a named
+    // population, not a blend across incommensurable layers, which is what
+    // ADR-0041 refuses. What makes it admissible is that the denominator and
+    // the Wilson bound ride with it — #5338's own first cut scored a perfect
+    // 1.0000 on nine positives, whose 95% lower bound was 0.6756, and the point
+    // estimate alone would have read as a solved problem.
+    const [, caveat] = composeStatement(
+      held({
+        measured: true,
+        setId: "us-2026-09-02",
+        measuredAt: "2026-09-02T00:00:00.000Z",
+        observedRecall: 0.994,
+        recallLowerBound: 0.961,
+        positives: 120,
+        passed: true,
+      }),
+    ).triage;
+    expect(caveat).toContain("99.4%");
+    expect(caveat).toContain("96.1%");
+    expect(caveat).toContain("120");
+    expect(caveat).toContain("us-2026-09-02");
+  });
+
+  test("⭐ a recorded FAILURE says the filter is still running", () => {
+    // The most important thing this surface could say, and the one a bare rate
+    // renders as a reassuring number with a decimal point.
+    const [, caveat] = composeStatement(
+      held({
+        measured: true,
+        setId: "us-2026-09-02",
+        measuredAt: "2026-09-02T00:00:00.000Z",
+        observedRecall: 0.82,
+        recallLowerBound: 0.74,
+        positives: 120,
+        passed: false,
+      }),
+    ).triage;
+    expect(caveat).toContain("did NOT clear the threshold");
+    expect(caveat).toContain("still running");
   });
 });

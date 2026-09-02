@@ -43,6 +43,7 @@ import {
 } from "@atlas/api/lib/brain/triage-measure-record";
 import { deterministicTriager, type Triager } from "@atlas/api/lib/brain/triage";
 import { getSettingDefinition } from "@atlas/api/lib/settings";
+import { RECORDED_MEASUREMENTS } from "@atlas/api/lib/brain/triage-measurements";
 
 const TRIAGE_DIAL_KEY = "ATLAS_BRAIN_EXTRACTION_TRIAGE_ENABLED";
 
@@ -391,15 +392,23 @@ describe("AC 4 — the dial may not default ON below threshold", () => {
   }
 
   it("⭐ the SHIPPED registry default keeps this gate satisfied", () => {
-    // The live assertion. `getSettingDefinition` reads the real registry, so
-    // flipping the dial's default in `settings.ts` without recording a passing
-    // measurement turns this test red — which is where a code change belongs,
-    // rather than on a boot path that would fail closed in a region that never
-    // ran the harness.
+    // The live assertion, and BOTH of its inputs are now the real ones.
+    // `getSettingDefinition` reads the real registry, so flipping the dial's
+    // default in `settings.ts` without recording a passing measurement turns
+    // this test red — which is where a code change belongs, rather than on a
+    // boot path that would fail closed in a region that never ran the harness.
+    //
+    // `RECORDED_MEASUREMENTS` is the other half, and it was `[]` until #5338's
+    // AC 8 gave records somewhere to live: with a literal there, a landed
+    // FAILING measurement could not have reached this gate at all, so the half
+    // of the criterion about a recorded result below threshold was unreachable.
     const definition = getSettingDefinition(TRIAGE_DIAL_KEY);
     expect(definition).toBeDefined();
     expect(
-      checkTriageDefaultGate({ dialDefault: definition?.default ?? "false", records: [] }),
+      checkTriageDefaultGate({
+        dialDefault: definition?.default ?? "false",
+        records: RECORDED_MEASUREMENTS,
+      }),
     ).toBeNull();
   });
 

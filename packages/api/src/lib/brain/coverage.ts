@@ -80,9 +80,14 @@ import {
   type SurveyableSourceClass,
 } from "@atlas/api/lib/brain/coverage-enumeration";
 import { EPISODE_SOURCE_CLASSES, type EpisodeSourceClass } from "@atlas/api/lib/brain/sources";
+import { loadTriageBacklog, type TriageBacklog } from "@atlas/api/lib/brain/triage-requeue";
+import { latestRecordedMeasurement } from "@atlas/api/lib/brain/triage-measurements";
+import type { RecordedMeasurement } from "@atlas/api/lib/brain/triage-measure-record";
 import type {
   BrainCoverage,
   BrainCoverageClass,
+  BrainCoverageTriage,
+  BrainCoverageTriageRecall,
   BrainCoverageFreshness,
   BrainCoverageLabelClause,
   BrainCoverageMapEdge,
@@ -258,9 +263,15 @@ export async function loadCoverage(
   // Both arms in flight together. The authority read is the one that can refuse
   // outright (an unresolved reader), and letting it race the denominators costs
   // nothing: a rejection here rejects the whole load, which is the intent.
-  const [authority, snapshots] = await Promise.all([
+  // The triage read joins the same flight. It is workspace-scoped and NOT
+  // reader-scoped, for `loadTriageBacklog`'s own reason: there is no claim here
+  // to gate, and composing an ACL predicate would report a smaller blind spot to
+  // a reader with fewer grants — on the one arm whose job is to say a blind spot
+  // exists.
+  const [authority, snapshots, triageBacklog] = await Promise.all([
     loadFactOversight(db, ctx, requestId),
     readCoverageSnapshot(workspaceId),
+    loadTriageBacklog(db, workspaceId),
   ]);
 
   // Every surveyable class's roster, in parallel — a serial loop here would be
@@ -292,7 +303,19 @@ export async function loadCoverage(
     ),
   );
 
-  return composeCoverage({ workspaceId, ...(requestId !== undefined ? { requestId } : {}), authority, snapshots, rosters, at: new Date() });
+  return composeCoverage({
+    workspaceId,
+    ...(requestId !== undefined ? { requestId } : {}),
+    authority,
+    snapshots,
+    rosters,
+    triageBacklog,
+    // Resolved HERE rather than inside the composition, so the seam below stays
+    // a pure function of its arguments. The store is a committed file, so this
+    // is a module read and not IO.
+    recordedMeasurement: latestRecordedMeasurement(),
+    at: new Date(),
+  });
 }
 
 /** Everything the composition needs, with the reads already done. */
@@ -305,6 +328,27 @@ export interface CoverageComposition {
   readonly snapshots: readonly CoverageClassSnapshot[];
   /** Per class, the stored roster. A class absent here has none. */
   readonly rosters: ReadonlyMap<SurveyableSourceClass, readonly CoverageUnitRow[]>;
+  /**
+   * What stage-0 triage is currently holding off extraction (#5338 AC 8).
+   *
+   * Required rather than optional, and that is the criterion's word
+   * "unconditionally" made structural: an optional field would let a caller
+   * that forgot this read produce a page identical to one where triage is off,
+   * and those are opposite statements about what Atlas looked at.
+   */
+  readonly triageBacklog: TriageBacklog;
+  /**
+   * The newest recorded triage measurement, or null when none has been
+   * recorded — #5338 AC 8's "upgrading to a recall caveat once a number
+   * exists".
+   *
+   * Optional ONLY so a fixture may omit it and mean "nothing recorded"; absent
+   * and explicitly `null` are the same statement. It is an input rather than a
+   * module read for {@link composeTriageRecall}'s reason: the composition is
+   * this surface's falsifiable seam, and a half of it that reaches past its own
+   * parameters cannot be driven by a fixture.
+   */
+  readonly recordedMeasurement?: RecordedMeasurement | null;
   /**
    * The instant this statement is made — required, never defaulted here.
    *
@@ -366,14 +410,94 @@ export function composeCoverage(input: CoverageComposition): BrainCoverage {
   // `CoverageCompositionError`, whose message asserts a different diagnosis
   // entirely, so the impossible case would have misdirected the operator
   // correlating on its requestId. The `Record` type is the guarantee.
+  const triage = composeTriage(input.triageBacklog, input.recordedMeasurement ?? null);
+  // A backlog that under-counts is a smaller stated blind spot than the real
+  // one — the flattering direction, so it clears the flag exactly like a
+  // dropped roster row does.
+  if (input.triageBacklog.degraded) degraded.hit = true;
+
   return {
     availability,
     authority,
+    triage,
     // The authority arm's own verdict is folded in rather than restated beside
     // it: a client showing one banner should not have to know there are two
     // fields that mean "the arithmetic disagreed". `authority.countsConsistent`
     // stays on the wire untouched for a client that wants to say WHICH arm.
     countsConsistent: !degraded.hit && authority.countsConsistent,
+  };
+}
+
+/**
+ * The triage arm — the count, and what is known about what it costs.
+ *
+ * ## Why the recall half is here at all
+ *
+ * #5338 AC 8 asks for the count *"upgrading to a recall caveat once a number
+ * exists"*, and the upgrade is the whole point rather than a nicety. A count on
+ * its own is a number an admin has no way to price: "412 episodes were not
+ * looked at" is either a rounding error or the reason a question came back
+ * empty, and which one it is depends entirely on a recall figure nobody has
+ * yet. So the arm carries its own epistemic status, and the unmeasured arm is
+ * the shipping state — see {@link BrainCoverageTriageRecall}.
+ *
+ * ## The rate travels with its denominator, always
+ *
+ * `positives` rides beside `observedRecall` because #5338's own first cut is
+ * the cautionary case: 9 positives produced a perfect 1.0000 recall whose 95%
+ * Wilson lower bound was 0.6756. A page rendering "recall 100%" from that
+ * would be arithmetically correct and would state something the set cannot
+ * support, which is the same class of error as a ratio without its unit one arm
+ * over.
+ */
+function composeTriage(
+  backlog: TriageBacklog,
+  record: RecordedMeasurement | null,
+): BrainCoverageTriage {
+  return {
+    withheldEpisodes: backlog.total,
+    byRule: backlog.byRule.map((bucket) => ({
+      rule: bucket.rule,
+      episodes: bucket.episodes,
+      known: bucket.known,
+    })),
+    recall: composeTriageRecall(record),
+  };
+}
+
+/**
+ * The recall statement, from the record the caller resolved.
+ *
+ * ⚠️ **Taken as a parameter, never read from the store here.** The first
+ * spelling of this called `latestRecordedMeasurement()` with no argument, which
+ * made {@link composeCoverage} a function of module state rather than of its
+ * own input — and this module's header says the composition was split out
+ * precisely so a fixture can author its inputs adversarially. The cost was
+ * exact and immediate: the `measured: true` arm became unreachable from
+ * `coverage.test.ts`, so the most consequential sentence on the surface was the
+ * one the composition suite could not drive.
+ *
+ * `loadCoverage` resolves it from the SAME store `checkTriageDefaultGate`
+ * reads, which is the property worth keeping: a page that sourced its number
+ * anywhere else could report a passing measurement while the gate saw a failing
+ * one. The divergence they are allowed is documented on
+ * {@link latestRecordedMeasurement} — newest overall there, newest-per-set in
+ * the gate — and it is a difference in the question, not in the data.
+ */
+function composeTriageRecall(record: RecordedMeasurement | null): BrainCoverageTriageRecall {
+  if (record === null) return { measured: false };
+  return {
+    measured: true,
+    setId: record.setId,
+    measuredAt: record.measuredAt,
+    observedRecall: record.composed.recall,
+    recallLowerBound: record.composed.recallLowerBound,
+    positives: record.composed.positives,
+    // The record's OWN verdict, not a recomputation. `verifyRecordedVerdict`
+    // is the check that the two agree and it runs in CI, where a disagreement
+    // is a diff somebody has to explain; recomputing here would silently
+    // repair a hand-edited record on the page and hide exactly that.
+    passed: record.passed,
   };
 }
 

@@ -220,6 +220,14 @@ function healthyCoverage(overrides: Record<string, unknown> = {}) {
       ...(overrides.availability as Record<string, unknown> | undefined),
     },
     authority: AUTHORITY,
+    // The triage arm (#5338 AC 8) — held episodes rather than an empty one, so
+    // the route test exercises the shape a real backlog produces and not only
+    // the zero case every region is in today.
+    triage: {
+      withheldEpisodes: 6,
+      byRule: [{ rule: "known_ack", episodes: 6, known: true }],
+      recall: { measured: false },
+    },
     countsConsistent: true,
   };
 }
@@ -247,6 +255,16 @@ describe("GET /", () => {
     expect(body.availability.chat).toMatchObject({
       mapEdges: ["chat-public-roster-truncated"],
       unitsWithheld: 1,
+    });
+    // The third arm reaches the wire. An admin's statement of what Atlas knows
+    // has to account for what triage dropped, and the strict schema refuses the
+    // response outright if the arm is absent — which is what makes "the count
+    // reaches the coverage surface unconditionally" enforced rather than
+    // intended.
+    expect(body.triage).toEqual({
+      withheldEpisodes: 6,
+      byRule: [{ rule: "known_ack", episodes: 6, known: true }],
+      recall: { measured: false },
     });
     // The authority arm travels through unchanged — the old overview's backlog
     // counts, inside the one statement rather than beside it.

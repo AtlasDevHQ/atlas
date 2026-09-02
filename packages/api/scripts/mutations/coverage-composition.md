@@ -23,7 +23,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the M1 blind count drops out of the cross-check | 1 | 0 | 0 |
 | unrenderable map-edge marks leave no trace on the wire | 1 | 0 | 0 |
 | the read side trusts the STORED label instead of re-deriving it | 1 | 0 | 0 |
-| green is read off the evidence date alone, ignoring the perimeter | 7 | 0 | 0 |
+| green is read off the evidence date alone, ignoring the perimeter | 8 | 0 | 0 |
 | a never-succeeded cycle renders as a dated, empty roster | 1 | 0 | 0 |
 | the class contract's cadence halves | 4 | 3 | 0 |
 | the staleness comparison drops the cadence entirely | 8 | 0 | 0 |
@@ -31,8 +31,10 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the roster listing clips SILENTLY (the cap holds, the flag does not) | 1 | 0 | 0 |
 | the roster listing stops clipping at all | 1 | 0 | 0 |
 | a vendor reading of any age still licenses "current" | 2 | 0 | 0 |
+| a triage backlog that under-counts no longer clears the page's signal | 1 | 0 | 0 |
+| the triaged-out count arrives with no rules behind it | 2 | 0 | 0 |
 
-Suite sizes: **coverage.test.ts** 47 tests (`src/lib/brain/__tests__/coverage.test.ts`) · **class-contract.test.ts** 27 tests (`src/lib/brain/__tests__/class-contract.test.ts`) · **coverage-enumeration.test.ts** 15 tests (`src/lib/brain/__tests__/coverage-enumeration.test.ts`).
+Suite sizes: **coverage.test.ts** 54 tests (`src/lib/brain/__tests__/coverage.test.ts`) · **class-contract.test.ts** 27 tests (`src/lib/brain/__tests__/class-contract.test.ts`) · **coverage-enumeration.test.ts** 15 tests (`src/lib/brain/__tests__/coverage-enumeration.test.ts`).
 
 ## Notes
 
@@ -51,3 +53,5 @@ Suite sizes: **coverage.test.ts** 47 tests (`src/lib/brain/__tests__/coverage.te
 - **the roster listing clips SILENTLY (the cap holds, the flag does not)** — `OVERSIGHT_BUCKET_MAX`'s argument one surface over: a clipped list reads as the whole roster. ⚠️ The first spelling of this row set `truncated = false`, which made the response ship EVERY row — it stopped clipping rather than clipping silently, so the note claimed the opposite of what the mutated code did and the honesty rule actually named went unmeasured. This anchor keeps the cap and removes only the announcement, which is the shape a reader would call a simplification.
 - **the roster listing stops clipping at all** — The other half, kept as its own row once the two were told apart: the bound stops biting AND the flag stops being set. Milder than it looks on a chat roster and not on a warehouse one, where the pairs have no vendor ceiling — an unbounded array on a page-render path.
 - **a vendor reading of any age still licenses "current"** — The review finding this arm was added for. The probe rotation is `CHAT_ACTIVITY_PROBES_PER_CYCLE` = 20 per hourly cycle and the upsert carries an unprobed unit's previous reading forward, so a 5,000-channel workspace re-probes each unit roughly every ten days — and without this arm a ten-day-old vendor answer is compared against a 24-hour threshold and returns `current`. A confident present-tense all-clear about a channel that may have been moving daily since anyone looked, indistinguishable on the wire from one probed this cycle.
+- **a triage backlog that under-counts no longer clears the page's signal** — #5338 AC 8's arm, and the same direction every other row here fails in. `loadTriageBacklog` drops a bucket whose stored reason it cannot name, which shrinks the total — so the page under-states how many episodes Atlas deliberately did not look at, and a smaller blind spot is the reassuring answer. The mutation is a deletion a reader would call tidying: the flag is set nowhere else, and nothing about the rendered page looks different.
+- **the triaged-out count arrives with no rules behind it** — The headline stays exactly right and the page stops being actionable: an admin's next move on this number is to re-queue ONE rule's marks, and a bare total names nothing to re-queue. It is also the shape that would pass a reader's eye — the number they check is unchanged — which is why it needs a row rather than a reviewer.

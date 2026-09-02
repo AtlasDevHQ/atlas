@@ -131,6 +131,10 @@ const COVERAGE = {
     distinctAudiences: 0,
     bucketsTruncated: false,
   },
+  // Nothing held back (#5338 AC 8) — the state of every region today, and the
+  // one that adds no digits to the page, which is what the digit sweeps below
+  // depend on.
+  triage: { withheldEpisodes: 0, byRule: [], recall: { measured: false } },
   countsConsistent: true,
 };
 

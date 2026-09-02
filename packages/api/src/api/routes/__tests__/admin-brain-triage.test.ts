@@ -98,7 +98,7 @@ void mock.module("@atlas/api/lib/auth/effective-role", () => ({
  */
 const TRIAGE_RULE_TUPLE = ["below_min_length", "pure_reaction", "known_ack"] as const;
 let backlogCalls: string[] = [];
-let backlogResponse: TriageBacklog = { total: 0, byRule: [] };
+let backlogResponse: TriageBacklog = { total: 0, byRule: [], degraded: false };
 let requeueCalls: { workspaceId: string; rule: string | null }[] = [];
 let requeueResult = { requeued: 0 };
 /** Set to make the store THROW — the arm a double cannot otherwise reach. */
@@ -255,7 +255,7 @@ beforeEach(() => {
   auditThrows = null;
   memberRoleResult = "admin";
   backlogCalls = [];
-  backlogResponse = { total: 0, byRule: [] };
+  backlogResponse = { total: 0, byRule: [], degraded: false };
   requeueCalls = [];
   requeueResult = { requeued: 0 };
   requeueThrows = null;
@@ -274,6 +274,7 @@ describe("GET /", () => {
         { rule: "known_ack", episodes: 12, known: true },
         { rule: "channel_join_notice", episodes: 2, known: false },
       ],
+      degraded: false,
     };
 
     const res = await adminBrainTriage.request("/");
@@ -303,7 +304,7 @@ describe("GET /", () => {
 
   it("reports the gate OFF with a non-zero backlog — the two are different states", async () => {
     triageEnabled = false;
-    backlogResponse = { total: 9, byRule: [{ rule: "known_ack", episodes: 9, known: true }] };
+    backlogResponse = { total: 9, byRule: [{ rule: "known_ack", episodes: 9, known: true }], degraded: false };
     const body = (await (await adminBrainTriage.request("/")).json()) as Record<string, unknown>;
     // Marks a previous run left behind: a finite backlog, not a growing one.
     // Rendering them as the same panel is the mistake `enabled` exists to stop.

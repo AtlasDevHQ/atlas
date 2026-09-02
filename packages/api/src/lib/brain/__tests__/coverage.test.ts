@@ -105,6 +105,10 @@ type BrainCoverage = import("@useatlas/types").BrainCoverage;
 type BrainCoverageClass = import("@useatlas/types").BrainCoverageClass;
 type BrainCoverageClassAvailable = import("@useatlas/types").BrainCoverageClassAvailable;
 type BrainFactOversight = import("@useatlas/types").BrainFactOversight;
+type TriageBacklog = import("@atlas/api/lib/brain/triage-requeue").TriageBacklog;
+type RecordedMeasurement =
+  import("@atlas/api/lib/brain/triage-measure-record").RecordedMeasurement;
+type LayerMeasurement = import("@atlas/api/lib/brain/triage-measure").LayerMeasurement;
 
 // ---------------------------------------------------------------------------
 // The VENDOR's truth — one side of the charter
@@ -415,7 +419,34 @@ const AUTHORITY: BrainFactOversight = {
   bucketsTruncated: false,
 };
 
+/**
+ * Nothing held back — the state a workspace with the triage dial off is in, and
+ * the default every test that is not about triage runs against.
+ */
+const NO_TRIAGE: TriageBacklog = { total: 0, byRule: [], degraded: false };
+
+/** A `LayerMeasurement`, for the recorded-measurement arm. Numbers are arbitrary. */
+function measurement(over: Partial<LayerMeasurement> = {}): LayerMeasurement {
+  return {
+    yieldRate: 0.4,
+    dropped: 40,
+    total: 100,
+    recall: 1,
+    positivesKept: 120,
+    positives: 120,
+    recallLowerBound: 0.97,
+    diagnosticRecall: 1,
+    misses: [],
+    byReason: {},
+    ...over,
+  };
+}
+
 interface WorldOptions extends RosterOptions {
+  /** What stage-0 triage is holding — #5338 AC 8's arm. */
+  readonly triageBacklog?: TriageBacklog;
+  /** The newest recorded measurement, or null/absent for "nothing recorded". */
+  readonly recordedMeasurement?: RecordedMeasurement | null;
   /** Cycle-row overrides, per class — the "sicken a pipe" lever. */
   readonly cycles?: Partial<Record<SurveyableSourceClass, Partial<CoverageClassSnapshot>>>;
   /** Aggregate counts computed BEFORE a roster mutation — the understatement lever. */
@@ -442,6 +473,8 @@ function world(opts: WorldOptions = {}): BrainCoverage {
     requestId: REQUEST,
     at: NOW,
     authority: opts.authority ?? AUTHORITY,
+    triageBacklog: opts.triageBacklog ?? NO_TRIAGE,
+    recordedMeasurement: opts.recordedMeasurement ?? null,
     snapshots: [
       cycleRow("chat", chatRoster(aggregateOpts), opts.cycles?.chat),
       cycleRow("email", emailRoster(aggregateOpts), opts.cycles?.email),
@@ -602,6 +635,32 @@ describe("ratios exist only per unit — there is nowhere to put a blended numbe
       world({ backdate: new Map([["C_GENERAL", "2026-08-14T09:00:00.000Z"]]) }),
       world({ cycles: { chat: { unavailableReason: "ratelimited" } } }),
       world({ unprobed: new Set(["C_GENERAL"]) }),
+      // The triage arm with something actually held, so its per-rule bucket
+      // contributes a field name too. At zero the `byRule` list is empty and
+      // `episodes` would never be walked — leaving the newest arm on the
+      // surface the least swept, which is backwards.
+      world({
+        triageBacklog: {
+          total: 4,
+          byRule: [{ rule: "known_ack", episodes: 4, known: true }],
+          degraded: false,
+        },
+      }),
+      // ⭐ And the MEASURED recall arm, which is where an actual RATE lives —
+      // the one place on this surface a percentage is spellable. Leaving it
+      // unswept would put the gap exactly where this pin matters most: a
+      // `coverageScore` added to the recall arm would not redden anything.
+      world({
+        triageBacklog: { total: 4, byRule: [], degraded: false },
+        recordedMeasurement: {
+          setId: "s",
+          measuredAt: "2026-09-02T12:00:00.000Z",
+          candidate: "c",
+          composed: measurement(),
+          baseline: measurement(),
+          passed: true,
+        },
+      }),
     ]) {
       walk(w, "$root");
     }
@@ -613,17 +672,32 @@ describe("ratios exist only per unit — there is nowhere to put a blended numbe
       "distinctAudiences",
       "enumerable",
       "enumerated",
+      // The triage arm (#5338 AC 8): a COUNT of episodes and its per-rule
+      // split. Both are counts of one kind of thing, which is what keeps them
+      // spellable here at all — the moment either becomes a rate or gets
+      // averaged against a class ratio, this list is where it has to be argued
+      // for.
+      "episodes",
       "inPerimeterWithoutEvidence",
       "inTension",
       "lagMs",
+      // The triage recall arm (#5338 AC 8). A RATE and its bound, admissible
+      // here for the reason the arm exists: it is a rate OF a named population
+      // that travels with `positives`, its own denominator — not a blend across
+      // incommensurable layers, which is what ADR-0041 refuses. If either ever
+      // loses its denominator, this list is where that has to be argued.
+      "observedRecall",
+      "positives",
       "provisional",
       "published",
+      "recallLowerBound",
       "retracted",
       "reviewableAwaitingReview",
       "stale",
       "surveyed",
       "unitsWithheld",
       "unverified",
+      "withheldEpisodes",
     ]);
   });
 });
@@ -1057,6 +1131,7 @@ describe("degradation matches oversight — no reassuring zeros, and it travels"
       requestId: REQUEST,
       at: NOW,
       authority: AUTHORITY,
+      triageBacklog: NO_TRIAGE,
       snapshots: [cycleRow("chat", rows)],
       rosters: new Map([["chat", rows]]),
     });
@@ -1078,6 +1153,7 @@ describe("degradation matches oversight — no reassuring zeros, and it travels"
       requestId: REQUEST,
       at: NOW,
       authority: AUTHORITY,
+      triageBacklog: NO_TRIAGE,
       snapshots: [cycleRow("chat", rows, { inPerimeterWithoutEvidence: 7 })],
       rosters: new Map([["chat", rows]]),
     });
@@ -1107,6 +1183,7 @@ describe("degradation matches oversight — no reassuring zeros, and it travels"
       requestId: REQUEST,
       at: NOW,
       authority: AUTHORITY,
+      triageBacklog: NO_TRIAGE,
       snapshots: [cycleRow("chat", rows)],
       rosters: new Map([["chat", rows]]),
     });
@@ -1137,6 +1214,7 @@ describe("degradation matches oversight — no reassuring zeros, and it travels"
       requestId: REQUEST,
       at: NOW,
       authority: AUTHORITY,
+      triageBacklog: NO_TRIAGE,
       snapshots: [cycleRow("chat", rows), cycleRow("chat", rows, { asOf: "2020-01-01T00:00:00.000Z" })],
       rosters: new Map([["chat", rows]]),
     });
@@ -1189,6 +1267,7 @@ describe("degradation matches oversight — no reassuring zeros, and it travels"
       requestId: REQUEST,
       at: NOW,
       authority: AUTHORITY,
+      triageBacklog: NO_TRIAGE,
       snapshots: [cycleRow("chat", many)],
       rosters: new Map([["chat", many]]),
     });
@@ -1219,5 +1298,121 @@ describe("the false-all-clear throw", () => {
     expect(err.message).toContain(REQUEST);
     expect(err.message).toContain("chat");
     expect(err).toBeInstanceOf(Error);
+  });
+});
+
+describe("the triage arm — what extraction was told not to look at (#5338 AC 8)", () => {
+  test("the arm is present with the dial off, saying nothing is held", () => {
+    // "Unconditionally" is the criterion's word and this is what it buys: a
+    // deploy that never enabled triage and one that filters half its intake
+    // produce structurally identical pages otherwise, and the difference has to
+    // be readable.
+    const result = world();
+    expect(result.triage).toEqual({
+      withheldEpisodes: 0,
+      byRule: [],
+      recall: { measured: false },
+    });
+  });
+
+  test("the count and its per-rule buckets travel whole", () => {
+    const result = world({
+      triageBacklog: {
+        total: 14,
+        byRule: [
+          { rule: "known_ack", episodes: 12, known: true },
+          { rule: "channel_join_notice", episodes: 2, known: false },
+        ],
+        degraded: false,
+      },
+    });
+    expect(result.triage.withheldEpisodes).toBe(14);
+    // The rules are named rather than totalled away: an admin's next move on
+    // this number is to re-queue ONE rule's marks, and `known: false` is what
+    // says a bucket's id is not one this deploy still has.
+    expect(result.triage.byRule).toEqual([
+      { rule: "known_ack", episodes: 12, known: true },
+      { rule: "channel_join_notice", episodes: 2, known: false },
+    ]);
+  });
+
+  test("a backlog that could not name a bucket clears the page's signal", () => {
+    // The drop shrinks the total, and a smaller count of what Atlas did not
+    // look at is the flattering direction — the same argument the dropped
+    // roster row and the unreadable map edge make, applied to the third arm.
+    const result = world({
+      triageBacklog: {
+        total: 3,
+        byRule: [{ rule: "known_ack", episodes: 3, known: true }],
+        degraded: true,
+      },
+    });
+    expect(result.countsConsistent).toBe(false);
+    // …and the arm still renders. A degraded count is a banner, not a blank.
+    expect(result.triage.withheldEpisodes).toBe(3);
+  });
+
+  test("⭐ the MEASURED arm is reachable from the composition seam", () => {
+    // The regression this pins: `composeTriageRecall` first read the record
+    // store directly, which made `composeCoverage` a function of module state
+    // and left this arm — the most consequential sentence on the surface —
+    // undrivable from the suite whose whole job is to drive the composition
+    // adversarially. It is an INPUT now.
+    const result = world({
+      triageBacklog: { total: 4, byRule: [], degraded: false },
+      recordedMeasurement: {
+        setId: "apache-2026-06",
+        measuredAt: "2026-09-02T12:00:00.000Z",
+        candidate: "stage-1-distilled",
+        composed: measurement({ recall: 0.82, recallLowerBound: 0.74, positives: 120 }),
+        baseline: measurement(),
+        passed: false,
+      },
+    });
+    expect(result.triage.recall).toEqual({
+      measured: true,
+      setId: "apache-2026-06",
+      measuredAt: "2026-09-02T12:00:00.000Z",
+      observedRecall: 0.82,
+      recallLowerBound: 0.74,
+      positives: 120,
+      // The record's OWN verdict travels, including a FAILING one. A page that
+      // rendered only the rate would show a reassuring number with a decimal
+      // point for the run that did not clear the threshold.
+      passed: false,
+    });
+  });
+
+  test("an absent record and an explicit null are the same statement", () => {
+    expect(world({ recordedMeasurement: null }).triage.recall).toEqual({ measured: false });
+    expect(world().triage.recall).toEqual({ measured: false });
+  });
+
+  test("recall reads UNMEASURED when nothing is recorded", () => {
+    // Ships true and is meant to: #5338's first real cut yielded 9 positives
+    // against a Wilson floor of 110, so there is no gating number to state.
+    const result = world({
+      triageBacklog: {
+        total: 7,
+        byRule: [{ rule: "pure_reaction", episodes: 7, known: true }],
+        degraded: false,
+      },
+    });
+    expect(result.triage.recall).toEqual({ measured: false });
+  });
+
+  test("a held backlog does NOT by itself clear the page's signal", () => {
+    // Triage holding episodes is an ordinary state, not an arithmetic failure.
+    // Conflating the two would put a "these numbers do not add up" banner over
+    // a page whose numbers add up perfectly — and would train a reader to
+    // ignore the banner when something really is broken.
+    const result = world({
+      triageBacklog: {
+        total: 500,
+        byRule: [{ rule: "below_min_length", episodes: 500, known: true }],
+        degraded: false,
+      },
+    });
+    expect(result.countsConsistent).toBe(true);
   });
 });

@@ -128,3 +128,94 @@ The dial is also blind here in one direction worth naming: an **env-var-only**
 enable (`ATLAS_BRAIN_EXTRACTION_TRIAGE_ENABLED=true` with no settings override
 row) writes nothing this query can see. That is why the two window probes are the
 primary evidence and the settings row is only corroboration.
+
+---
+
+# The harness (#5338 AC 3, 4, 5, 7, 9, 10)
+
+```bash
+bun scripts/measure-triage.ts --fixture scripts/heldout/fixtures/smoke.json
+```
+
+No database, no model, no network. The arithmetic is
+`src/lib/brain/triage-measure.ts`; what a measurement is *allowed to claim* is
+`src/lib/brain/triage-measure-record.ts`. Exit codes: `0` reported, `1`
+threshold failed, `2` refused (a smoke fixture cannot gate), `3` bad input.
+
+## Why the baseline is worth measuring before stage 1 exists
+
+The yield half of the threshold is **relative** — the composed layer must drop
+strictly more than stage 0 alone at no worse recall — so stage 0's own number is
+a *prerequisite* of the comparison, not a by-product. Measuring it now means
+#5336's stage 1 lands against a figure already on the record rather than one
+invented alongside it, which is `docs/agents/practices.md`'s structural rule
+doing real work: **the actor that builds a check may not be its only judge.**
+
+With no stage-1 adapter present the harness reports the baseline and stops. It
+deliberately does **not** compose a no-op stage 1 and print the resulting
+failure as a verdict — a layer that ties the baseline fails the yield half by
+construction, and reporting that would dress an absent result as a measured one.
+
+## ⚠️ The acceptance criteria understate the set size
+
+#5338 says *"by the rule of three, zero observed misses clears a 95% lower bound
+only at n ≥ 60, and tolerating one miss needs n ≥ ~100"*. The rule of three
+approximates an **exact** bound; the criterion is written against a **Wilson**
+bound, which is stricter. Measured (`triage-measure.test.ts` derives these rather
+than asserting literals):
+
+| observed misses | n the issue states | n Wilson actually needs | LCB at the issue's n |
+|---|---|---|---|
+| 0 | 60 | **73** | 0.9398 ✗ |
+| 1 | ~100 | **110** | 0.9455 ✗ |
+| 2 | — | 142 | — |
+
+At a perfect score Wilson reduces to `n / (n + z²)`, so the floor is
+`z²·0.95/0.05 ≈ 73`. **Cut for 110 positives, not 100.**
+
+## Fixtures: `smoke` vs `evaluation`
+
+A fixture declares its `role`, and the distinction is enforced rather than
+advisory:
+
+- **`smoke`** proves the harness runs. `assertCanGate` **refuses** to produce a
+  threshold verdict from one. `fixtures/smoke.json` is authored by hand
+  alongside the harness — which is exactly the conflict the structural rule
+  exists to prevent — so it may never be promoted by editing its `role`.
+- **`evaluation`** must carry `provenance { labelsFrom, cutAt }`. A fixture that
+  cannot say where its labels came from is a fixture whose author is
+  unrecorded.
+
+The scoring set is a frozen manifest cut by `atlas-operator ops
+heldout-manifest`, or a licence-checked public corpus from
+`.claude/research/extractor-corpus-acquisition.md`. **Neither exists yet** — the
+instrument is built and the data is named, which is the honest deliverable when
+one is ready and the other is not.
+
+## The measurement budget (AC 9)
+
+`MEASUREMENT_BUDGET.maxAttemptsPerSet = 3`, enforced by `checkMeasurementBudget`
+over the recorded runs.
+
+Candidates are declared **before** the cut, each is measured **once**, and
+needing more than three attempts means cutting a **second set** — not measuring
+this one again until it cooperates. The budget counts per *set*, so a second
+candidate spends the same allowance: it is a property of the set's independence,
+not of any one candidate's patience. `verifyRecordedVerdict` recomputes each
+record's verdict from its own numbers, so a hand-edited `"passed": true` is
+caught rather than trusted.
+
+## Where a failing result goes (AC 10)
+
+A failure is an acceptable outcome and has a home before it happens:
+
+- **Recall fails** → keep the cascade, and never default it on. The gate is
+  `checkTriageDefaultGate`, which turns red if `ATLAS_BRAIN_EXTRACTION_TRIAGE_ENABLED`'s
+  registry default becomes `true` while the latest recorded run did not clear the
+  pair. It is a *test*, not a boot check — "enabled by default" is a code change,
+  and a boot-time check would fail closed in a region that never ran the harness.
+- **Recall *and* yield fail** → abandon the cascade and record it. The entry goes
+  in `.claude/research/ROADMAP.md`, where measured findings live, and #5334
+  closes as answered rather than as delivered.
+
+Neither outcome is a reason to re-cut the set.

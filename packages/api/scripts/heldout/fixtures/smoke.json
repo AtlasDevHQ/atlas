@@ -1,0 +1,40 @@
+{
+  "role": "smoke",
+  "_comment": [
+    "A SMOKE fixture, not the scoring set. It exists to prove the harness runs end to end and",
+    "to pin stage 0's behaviour on the shapes its rules were written for. It cannot produce",
+    "#5338's number — `assertCanGate` refuses on role=smoke — and it must never be promoted to",
+    "role=evaluation by editing this field: an evaluation set has to say where its labels came",
+    "from, and these were authored by hand alongside the harness, which is exactly the conflict",
+    "practices.md's structural rule exists to prevent.",
+    "",
+    "Every body here is invented. None is customer content, and none is derived from any",
+    "workspace's episodes."
+  ],
+  "episodes": [
+    { "id": "s01", "class": "negative", "body": "+1" },
+    { "id": "s02", "class": "negative", "body": "ok" },
+    { "id": "s03", "class": "negative", "body": "on it" },
+    { "id": "s04", "class": "negative", "body": "thanks" },
+    { "id": "s05", "class": "negative", "body": "k" },
+    { "id": "s06", "class": "negative", "body": "👍" },
+    { "id": "s07", "class": "negative", "body": "will do" },
+
+    { "id": "s10", "class": "positive", "body": "Priya took over as the on-call lead for Payments starting this sprint." },
+    { "id": "s11", "class": "positive", "body": "The billing service runs in us-east-1, not us-west-2 — we moved it in March." },
+    { "id": "s12", "class": "positive", "body": "Our SOC 2 Type II report is renewed every October by Vanta." },
+    { "id": "s13", "class": "positive", "body": "Checkout latency budget is 300ms p95; anything above that pages the on-call." },
+    { "id": "s14", "class": "positive", "body": "no" },
+    { "id": "s15", "class": "positive", "body": "The data warehouse is Snowflake. We dropped BigQuery last year." },
+    { "id": "s16", "class": "positive", "body": "Marco owns the pricing page copy now that Dana has moved to growth." },
+    { "id": "s17", "class": "positive", "body": "yes" },
+
+    { "id": "s20", "class": "rejected", "body": "I think the API might be slow sometimes? Not sure." },
+    { "id": "s21", "class": "rejected", "body": "Someone said we were going to switch to Postgres 18 at some point maybe." },
+    { "id": "s22", "class": "rejected", "body": "The deploy felt faster today." },
+
+    { "id": "s30", "class": "negative", "body": "Reminder: standup moved to 10:15 tomorrow only." },
+    { "id": "s31", "class": "negative", "body": "Anyone got a minute to pair on this?" },
+    { "id": "s32", "class": "negative", "body": "lol" }
+  ]
+}

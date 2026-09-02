@@ -35,6 +35,20 @@
  *                          is double-gated by `ATLAS_RESIDUE_OK=1` + `--confirm`
  *                          and requires `--pg-dump <path>`. One region DB per
  *                          invocation. See ./ops-residue.ts.
+ *   heldout-manifest       Cut the FROZEN held-out set #5338 measures the
+ *                          extraction cascade against: a manifest of
+ *                          `(episode_id, class)` plus the cut date, carrying no
+ *                          tenant text — the set is NAMED, not carried, which is
+ *                          what lets it be versioned in-repo without violating
+ *                          `EVALUATION_ONLY_NOTICE`'s "do not accumulate
+ *                          bundles". Cut mechanically over a time window rather
+ *                          than sampled, and REFUSED rather than truncated when
+ *                          the window is too large, still open, or shows
+ *                          evidence the stage-0 triage dial ran. DRY RUN by
+ *                          default; EXECUTE is double-gated by
+ *                          `ATLAS_HELDOUT_OK=1` + `--confirm`. `--verify <path>`
+ *                          re-resolves an existing manifest and is ungated. See
+ *                          ./ops-heldout-manifest.ts.
  *
  * Wipe replaces internal/wipe-prod.sh's per-DB logic; the script's
  * Railway-credential fetching and 3-region orchestration are operator concerns
@@ -298,9 +312,13 @@ export async function handleOps(args: string[]): Promise<void> {
     const { handleSweepResidue } = await import("./ops-residue");
     return handleSweepResidue(args);
   }
+  if (subcommand === "heldout-manifest") {
+    const { handleHeldoutManifest } = await import("./ops-heldout-manifest");
+    return handleHeldoutManifest(args);
+  }
 
   console.error(
-    "Usage: atlas-operator ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts|sweep-residue> [options]\n\n" +
+    "Usage: atlas-operator ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts|sweep-residue|gate-export|heldout-manifest> [options]\n\n" +
       "Subcommands:\n" +
       "  wipe                 TRUNCATE every public table in the tenant DB. DESTRUCTIVE — requires ATLAS_WIPE_OK=1 + --confirm.\n" +
       "  backfill-crm-leads   Enqueue every demo_leads row into crm_outbox for dispatch to Twenty.\n" +
@@ -316,7 +334,14 @@ export async function handleOps(args: string[]): Promise<void> {
       "  sweep-residue        Delete orphaned-workspace residue (rows whose organization row is already gone) from one\n" +
       "                       region's internal DB. Tables derive from lib/db/purge-scope.ts; sentinel scope values are\n" +
       "                       never deleted. DRY RUN by default; EXECUTE requires ATLAS_RESIDUE_OK=1 + --confirm + --pg-dump.\n" +
-      "                       Flags: --region <us|eu|apac> OR --database-url <url>, --pg-dump <path>, --confirm, --dry-run\n",
+      "                       Flags: --region <us|eu|apac> OR --database-url <url>, --pg-dump <path>, --confirm, --dry-run\n" +
+      "  heldout-manifest     Cut the FROZEN held-out set #5338 measures the extraction cascade against — a manifest of\n" +
+      "                       (episode_id, class) and the cut date, carrying NO tenant text. Cut mechanically over a time\n" +
+      "                       window so the set has no author; refuses (never truncates) a window that is too large, still\n" +
+      "                       open, or in which the stage-0 triage dial left evidence of having run. DRY RUN by default;\n" +
+      "                       EXECUTE requires ATLAS_HELDOUT_OK=1 + --confirm. --verify is ungated and writes nothing.\n" +
+      "                       Flags: --workspace <orgId>, --from <iso>, --to <iso>, --region <us|eu|apac> OR\n" +
+      "                              --database-url <url>, --output <path>, --confirm, --dry-run, --verify <path>\n",
   );
   process.exit(1);
 }

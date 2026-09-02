@@ -1,6 +1,6 @@
 # The Company Atlas — completion plan
 
-Status: draft (2026-08-21), reconciled 2026-08-24. **Perishable, like the PRD's snapshot.**
+Status: draft (2026-08-21), reconciled 2026-08-24, **re-reconciled 2026-09-02**. **Perishable, like the PRD's snapshot.**
 
 The destination is [`company-atlas.md`](./company-atlas.md): eight conditions that hold **for a real customer, in production, with no engineer present.** This document is the *path* to them.
 
@@ -18,6 +18,17 @@ It holds the **path** — lanes, their order, and the argument for that order. I
 Five of seven cut milestones are closed (#91–#95). Two more were **not in the cut** — both exist because prod reads found defects that green tests could not — and of those, [#99](https://github.com/AtlasDevHQ/atlas/milestone/99) closed 2026-08-24 and [#98](https://github.com/AtlasDevHQ/atlas/milestone/98) is open. The one *unbuilt* finish condition (6) shipped 2026-08-20.
 
 **The mechanism is nearly done and the proof is barely started.** That asymmetry is what this plan is ordered around, and 2026-08-24 sharpened it rather than easing it: Lane A closed on the same day Lane B grew from four conditions to eight and acquired a milestone. Every one of the eight conditions is now tracked by an issue — which was not true when this document was written — and exactly **one** of the nine issues tracking them is a build. The remaining distance to the destination is mostly demonstration, and demonstration is the kind of work that has never been scheduled here.
+
+### Re-reconciled 2026-09-02 — the asymmetry inverted, and three lanes moved
+
+The paragraph above is kept as written, because **the sentence it turns on is no longer the true one and the change is the finding.** *"The proof is barely started"* was accurate on 2026-08-24, when nothing in Lane B had run. Nine days later:
+
+- **Five of the eight conditions hold** — 2, 4, 5, 6, 7 — each closed on a verified prod read rather than on a merge. **Three are open: 1, 3 and 8.**
+- **Lane E is closed.** Milestone [#101](https://github.com/AtlasDevHQ/atlas/milestone/101) shipped its four issues 2026-08-27/28 and closed 2026-09-02. It was scoped small, exactly as its grill argued it should be.
+- **Lane D is closed**, resolved standalone 2026-08-30. Its expiry is defused.
+- **Lane B is no longer nine issues.** It carries **16** — the original nine plus five fix-issues the demonstrations themselves produced ([#5440](https://github.com/AtlasDevHQ/atlas/issues/5440), [#5450](https://github.com/AtlasDevHQ/atlas/issues/5450), [#5454](https://github.com/AtlasDevHQ/atlas/issues/5454), [#5461](https://github.com/AtlasDevHQ/atlas/issues/5461), [#5467](https://github.com/AtlasDevHQ/atlas/issues/5467)) and two follow-on demonstrations ([#5449](https://github.com/AtlasDevHQ/atlas/issues/5449), [#5473](https://github.com/AtlasDevHQ/atlas/issues/5473)). ⭐ **That ratio is the lane working, not the lane slipping.** The plan predicted each demonstration would *"either hold or produce a defect list"*; five produced one, every list was filed rather than folded in flight, and the milestone grew by 78% while closing 11 of 16. A demonstration lane whose issue count never moved would have meant the demonstrations were not adversarial.
+
+**What replaces the old asymmetry.** The proof is no longer barely started — it is **five-eighths done and stalled on two things engineering cannot produce**: a real customer (condition 1) and an untrained reader (condition 3). Lane C is now the only substantial construction left in the entire plan. The plan's remaining risk has moved once more: not *"will the mechanism work"*, not *"will anyone be shown that it does"*, but **"can we get the two people the last three conditions require in front of it."**
 
 ---
 
@@ -45,20 +56,22 @@ The argument is kept as written rather than deleted, because **the argument is w
 
 ## Lane B — Prove the trust claim
 
-**Milestone [#100](https://github.com/AtlasDevHQ/atlas/milestone/100) — The Eight Conditions, Demonstrated · 9 issues, all filed.** Four demonstrations filed 2026-08-21 ([#5374](https://github.com/AtlasDevHQ/atlas/issues/5374), [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375), [#5376](https://github.com/AtlasDevHQ/atlas/issues/5376), [#5377](https://github.com/AtlasDevHQ/atlas/issues/5377)); the four remaining conditions and the lane's one build filed 2026-08-24 ([#5424](https://github.com/AtlasDevHQ/atlas/issues/5424), [#5425](https://github.com/AtlasDevHQ/atlas/issues/5425), [#5426](https://github.com/AtlasDevHQ/atlas/issues/5426), [#5427](https://github.com/AtlasDevHQ/atlas/issues/5427), [#5422](https://github.com/AtlasDevHQ/atlas/issues/5422)).
+**Milestone [#100](https://github.com/AtlasDevHQ/atlas/milestone/100) — The Eight Conditions, Demonstrated · 9 issues at filing, ~~9~~ **16 as of 2026-09-02, 11 closed**.** Four demonstrations filed 2026-08-21 ([#5374](https://github.com/AtlasDevHQ/atlas/issues/5374), [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375), [#5376](https://github.com/AtlasDevHQ/atlas/issues/5376), [#5377](https://github.com/AtlasDevHQ/atlas/issues/5377)); the four remaining conditions and the lane's one build filed 2026-08-24 ([#5424](https://github.com/AtlasDevHQ/atlas/issues/5424), [#5425](https://github.com/AtlasDevHQ/atlas/issues/5425), [#5426](https://github.com/AtlasDevHQ/atlas/issues/5426), [#5427](https://github.com/AtlasDevHQ/atlas/issues/5427), [#5422](https://github.com/AtlasDevHQ/atlas/issues/5422)).
 
 This was the largest gap in the plan and the one with nothing pointing at it. ADR-0036's T1 finding is that **the adoption gap is trust, not benchmark score**. Conditions 1, 3, 7 and 8 are the trust demonstrations proper, and all four are *built but never demonstrated* — and on 2026-08-24 the lane widened to carry all eight, because the same was true of 2, 4, 5 and 6 and nothing tracked them either.
 
 | Condition | PRD status | What would close it | Tracked by |
 |---|---|---|---|
-| 1 — Cold start works | Not yet | A customer connects one source Monday; by Friday a colleague gets an approved-claim answer, **no engineer involved** | [#5374](https://github.com/AtlasDevHQ/atlas/issues/5374) |
-| 2 — Human name on every claim | Close | Pick a claim at random and point at the person who made it authoritative, its source, its date — with **no exception** for claims that arrived by import, correction or migration, which are the open edges | [#5424](https://github.com/AtlasDevHQ/atlas/issues/5424) |
-| 3 — Tiers unmistakable | Partly | Show an untrained person two answers; they distinguish data from approved-message without being taught the vocabulary | [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375) · build: [#5422](https://github.com/AtlasDevHQ/atlas/issues/5422) |
-| 4 — Disagreement survives | Yes, where recognized | Two people contradict each other in writing; a week later both still stand, attributed, neither picked — **and nobody intervened to keep it that way** | [#5425](https://github.com/AtlasDevHQ/atlas/issues/5425) |
-| 5 — Past is legible | Yes at the record level | Someone who is **not an admin** gets today's answer, the previous answer, and who changed it when | [#5426](https://github.com/AtlasDevHQ/atlas/issues/5426) |
-| 6 — Limits visible and honest | **Shipped 2026-08-20** | The coverage statement still holds on a prod read, and the PRD snapshot that still calls this the largest gap in the list is corrected | [#5427](https://github.com/AtlasDevHQ/atlas/issues/5427) |
-| 7 — Revocation is real | Yes, least-demonstrated | Someone loses source access; within one sync cycle their scoped claims stop being visible, no manual step | [#5376](https://github.com/AtlasDevHQ/atlas/issues/5376) |
-| 8 — Self-hoster has all of it | By construction | Conditions 1–7 re-run on a self-hosted install, no license key, no Atlas account | [#5377](https://github.com/AtlasDevHQ/atlas/issues/5377) — blocked by the seven above |
+| 1 — Cold start works | **OPEN** · Not yet | A customer connects one source Monday; by Friday a colleague gets an approved-claim answer, **no engineer involved** | [#5374](https://github.com/AtlasDevHQ/atlas/issues/5374) |
+| 2 — Human name on every claim | ✅ **HOLDS 2026-08-26** · was: Close | Pick a claim at random and point at the person who made it authoritative, its source, its date — with **no exception** for claims that arrived by import, correction or migration, which are the open edges | [#5424](https://github.com/AtlasDevHQ/atlas/issues/5424) |
+| 3 — Tiers unmistakable | **OPEN** · Partly | Show an untrained person two answers; they distinguish data from approved-message without being taught the vocabulary | [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375) · build: [#5422](https://github.com/AtlasDevHQ/atlas/issues/5422) |
+| 4 — Disagreement survives | ✅ **HOLDS 2026-09-02** · was: Yes, where recognized | Two people contradict each other in writing; a week later both still stand, attributed, neither picked — **and nobody intervened to keep it that way** | [#5425](https://github.com/AtlasDevHQ/atlas/issues/5425) |
+| 5 — Past is legible | ✅ **HOLDS 2026-08-26** · was: Yes at the record level | Someone who is **not an admin** gets today's answer, the previous answer, and who changed it when | [#5426](https://github.com/AtlasDevHQ/atlas/issues/5426) |
+| 6 — Limits visible and honest | ✅ **HOLDS 2026-08-26** · built 2026-08-20 | The coverage statement still holds on a prod read, and the PRD snapshot that still calls this the largest gap in the list is corrected | [#5427](https://github.com/AtlasDevHQ/atlas/issues/5427) |
+| 7 — Revocation is real | ✅ **HOLDS 2026-08-25** · was: least-demonstrated | Someone loses source access; within one sync cycle their scoped claims stop being visible, no manual step | [#5376](https://github.com/AtlasDevHQ/atlas/issues/5376) |
+| 8 — Self-hoster has all of it | **OPEN** · By construction | Conditions 1–7 re-run on a self-hosted install, no license key, no Atlas account | [#5377](https://github.com/AtlasDevHQ/atlas/issues/5377) — blocked by the seven above |
+
+⚠️ **Two demonstrations joined this lane after the table was written, and neither maps to a condition row.** [#5449](https://github.com/AtlasDevHQ/atlas/issues/5449) — the ingest lane has never minted an anchor-arm tension edge in prod, so condition 4's recognition has only ever been shown *retroactively*, by a sweep over rows that already existed. [#5473](https://github.com/AtlasDevHQ/atlas/issues/5473) — an admin reads the Coverage Plate cold, which is the condition-3 test aimed at the surface [#5422](https://github.com/AtlasDevHQ/atlas/issues/5422) built. ⭐ **A closed condition can still owe a demonstration.** Condition 4 holds and #5449 is still open: what closed was *disagreement survives once recognized*, and what #5449 asks is whether recognition happens **as the contradiction arrives** rather than when someone sweeps. Reading the board row as retiring the question is the mistake this note exists to prevent.
 
 **Eight conditions, nine issues, and only one of them is a build.** [#5422](https://github.com/AtlasDevHQ/atlas/issues/5422) — the Coverage Plate — is the sole construction item in this lane. It sits against condition 3 rather than 6 on purpose: condition 6's *semantics* shipped, and what is missing is whether a person can tell the tiers apart on sight, which is condition 3's test. Everything else here is run-and-record. That ratio is the plan's central claim made concrete — **the mechanism is nearly done and the proof is barely started.**
 
@@ -89,7 +102,7 @@ Two consequences, both sequencing rather than schedule:
 
 ## Lane C — Protect the gate before breadth
 
-**Milestone [#98](https://github.com/AtlasDevHQ/atlas/milestone/98) — The Extraction Cascade · 11 issues, all filed** — the 10 in the original cut, plus [#5381](https://github.com/AtlasDevHQ/atlas/issues/5381), which files the ADR-0044 corpus prerequisite this document flagged as untracked.
+**Milestone [#98](https://github.com/AtlasDevHQ/atlas/milestone/98) — The Extraction Cascade · ~~11~~ 15 issues as of 2026-09-02, 9 closed, 6 open** — the 10 in the original cut, plus [#5381](https://github.com/AtlasDevHQ/atlas/issues/5381), which files the ADR-0044 corpus prerequisite this document flagged as untracked.
 
 Cost and volume control ahead of M3 source breadth widening. [#5334](https://github.com/AtlasDevHQ/atlas/issues/5334) is the anchor and is blocked by everything else. Its grill, [#5343](https://github.com/AtlasDevHQ/atlas/issues/5343), is the only open `wayfinder:map`.
 
@@ -146,9 +159,13 @@ The ADR fixes the timing and the reasoning is forced, not preferred:
 
 ---
 
-## Lane E — M6 Write-back (T9)
+## Lane E — M6 Write-back (T9) ✅ **CLOSED 2026-09-02**
 
-**Milestone [#101](https://github.com/AtlasDevHQ/atlas/milestone/101) — Brain M6: Write-back · created 2026-08-24. No issues, no date. Its kickoff grill is [#5468](https://github.com/AtlasDevHQ/atlas/issues/5468), filed 2026-08-26.**
+**Milestone [#101](https://github.com/AtlasDevHQ/atlas/milestone/101) — Brain M6: Write-back · ~~created 2026-08-24. No issues, no date.~~ 4 issues, all closed 2026-08-27/28; milestone closed 2026-09-02.** Its kickoff grill was [#5468](https://github.com/AtlasDevHQ/atlas/issues/5468), filed 2026-08-26 and answered 2026-08-27.
+
+⭐ **The grill sized it and the cut matched the sizing — four issues, two days.** [#5482](https://github.com/AtlasDevHQ/atlas/issues/5482) `proposeFact`, the draft-only agent write · [#5483](https://github.com/AtlasDevHQ/atlas/issues/5483) the review gate it exits through · [#5485](https://github.com/AtlasDevHQ/atlas/issues/5485) the write-back entry gate as the human's act, verified server-side · [#5496](https://github.com/AtlasDevHQ/atlas/issues/5496) `correct_fact` stages for confirmation instead of firing in the agent loop. Three adjacent items shipped alongside without entering the milestone — corroboration weighting distinct sources ([#5487](https://github.com/AtlasDevHQ/atlas/issues/5487)), lazy session-episode materialization ([#5486](https://github.com/AtlasDevHQ/atlas/issues/5486)), and the opt-in off-by-default draft-only suggester ([#5488](https://github.com/AtlasDevHQ/atlas/issues/5488)).
+
+**The prediction the grill made, and whether it held.** It argued for a *small* M6 on the grounds that the milestone's value was governance debt on shipped code rather than new capability — *"name the write that exists, add the one verb that closes the loop together with its review gate, clear lock 5's residue, and stop."* That is what the cut was and it stopped there. ⚠️ **What is NOT established is the payoff**: T9 calls this *"the compounding self-improvement loop"*, and a loop that compounds is a claim about use over time. Four issues shipping is evidence the mechanism exists, not that anything has compounded — and no issue in this plan measures that. **The first proposal a real user accepts is the datum, and nothing currently watches for it.**
 
 `proposeFact` · lazy session-episode materialization · corroboration reuse · opt-in off-by-default autonomous draft-only suggester. ADR-0036 calls it *"the compounding self-improvement loop"* — the thing that makes the Atlas improve from use rather than only from ingestion.
 
@@ -162,7 +179,7 @@ Needs its own kickoff grill before scoping, on the precedent of #4755, #5004 and
 
 **Lane D was declined here, not deferred** — see Lane D above. The route is filed as children of #5468, in dependency order; **nothing entered [#101](https://github.com/AtlasDevHQ/atlas/milestone/101) before the grill closed.**
 
-⚠️ **An empty milestone reads as a scoped one.** #101 is a name and a claim on the arc, not a cut. Nothing should be filed into it ahead of that grill — otherwise the grill ratifies whatever happened to be filed first, which is the exact failure the precedent exists to prevent.
+⚠️ ~~**An empty milestone reads as a scoped one.** #101 is a name and a claim on the arc, not a cut. Nothing should be filed into it ahead of that grill — otherwise the grill ratifies whatever happened to be filed first, which is the exact failure the precedent exists to prevent.~~ **The rule was kept: nothing entered #101 until the grill closed 2026-08-27, and the four issues filed after it are the grill's own route.** Struck as spent, not as wrong — it is the reason the cut was four issues rather than whatever had accumulated.
 
 ⚠️ [#5332](https://github.com/AtlasDevHQ/atlas/issues/5332) in Lane A is a write-back defect found early — corroboration has no source arm, so a person agreeing with a warehouse row produces no reviewable draft. **Their testimony is swallowed.** That is M6's mechanism failing before M6 has been scoped, which is an argument for grilling this lane sooner rather than later.
 
@@ -187,7 +204,8 @@ ADR-0036's governing test: **no brain capability may ever migrate to `/ee`.** On
 | [#5198](https://github.com/AtlasDevHQ/atlas/issues/5198) | T7 retrieval depth. Descheduled; **re-justify against the eight conditions before scheduling**. Greenfield — `fusion.ts`/`search.ts` name the seam, contain no embedding code |
 | [#5349](https://github.com/AtlasDevHQ/atlas/issues/5349) | An enrolled pair with all cells absent emits nothing and is reported nowhere |
 | [#4999](https://github.com/AtlasDevHQ/atlas/issues/4999) | Atlas-published Zoom + Microsoft apps, so Cloud customers need not register their own |
-| [#5113](https://github.com/AtlasDevHQ/atlas/issues/5113) | Reclassify two brain tables to `exported` for residency |
+| ~~[#5113](https://github.com/AtlasDevHQ/atlas/issues/5113)~~ | ~~Reclassify two brain tables to `exported` for residency~~ **Shipped 2026-08-28.** |
+| [#5420](https://github.com/AtlasDevHQ/atlas/issues/5420) | Disclaimer footers are not stripped — #5354's deferred half. **Still unmilestoned as of 2026-09-02**, and Lane C's own note says it belongs to that lane and is not claimed by it. This is the row most likely to rot: a filed-but-unclaimed issue reads as tracked while belonging to nothing |
 
 ## Residue — UNFILED (empty as of 2026-08-26; both rows carried, struck through as the record)
 
@@ -202,21 +220,25 @@ ADR-0036's governing test: **no brain capability may ever migrate to `/ee`.** On
 
 > ~~**Lane A** — wrong data on prod outranks everything.~~ **Done 2026-08-24.** It held the top slot on the only basis that outranks demonstration, and no remaining lane has that basis. Everything below moves up one.
 
-1. **Lane B, conditions 7 → 6 → 2, 3, 4, 5** — cheap, unproven, and they gate what the rest is worth. Now first, which needs no new argument: the lane's own case was *"cheap, unproven, gate what the rest is worth"*, and it was second only because prod was serving wrong rows.
+1. ~~**Lane B, conditions 7 → 6 → 2, 3, 4, 5**~~ — **five of those six ran and hold (7, 6, 2, 5, 4, in that order, 2026-08-25 → 2026-09-02). Condition 3 is the one left, and it is now the top of the plan.** Cheap, unproven, and they gate what the rest is worth. Now first, which needs no new argument: the lane's own case was *"cheap, unproven, gate what the rest is worth"*, and it was second only because prod was serving wrong rows.
    - [#5376](https://github.com/AtlasDevHQ/atlas/issues/5376) (revocation) first on failure mode: **disclosure, not disappointment.**
    - [#5427](https://github.com/AtlasDevHQ/atlas/issues/5427) (limits) second on cost: it re-checks a surface that shipped 2026-08-20 and corrects a PRD snapshot that is wrong in the misleading direction.
    - [#5422](https://github.com/AtlasDevHQ/atlas/issues/5422) (the Coverage Plate) is the lane's only **build** and does not contend for the same hours as the demonstrations — it can run alongside them.
    - [#5374](https://github.com/AtlasDevHQ/atlas/issues/5374) (cold start) last of the eight, because it is the only one gated on a customer. See the warning in Lane B.
+   - ⚠️ **Re-stated 2026-09-02: what is left of this step is [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375) and [#5473](https://github.com/AtlasDevHQ/atlas/issues/5473) — condition 3, against the built surface.** #5473 is an admin reading the Coverage Plate cold and is runnable today. #5375 needs *someone untrained*, which makes it **the second prerequisite in this plan that engineering cannot produce**, after condition 1's customer — and the plan named only one. It is a far smaller ask than a customer (one person, one sitting, no account) and it should not be allowed to inherit condition 1's blocked-on-a-human framing and stall beside it.
+   - [#5449](https://github.com/AtlasDevHQ/atlas/issues/5449) (at-ingest recognition) is a demonstration condition 4's close did **not** retire — see Lane B's note. It is unblocked and needs no person.
 2. **Lane C** — cost control before M3 breadth widens the intake. ⚠️ **Within it, take [#5335](https://github.com/AtlasDevHQ/atlas/issues/5335) → [#5338](https://github.com/AtlasDevHQ/atlas/issues/5338) → [#5336](https://github.com/AtlasDevHQ/atlas/issues/5336) ahead of the rest of order-1.** #5335/#5338 first because every default in this lane is currently unjustified — #5353 shipped with *"the gate-agreement number is deferred"* written into `providers.ts` for want of a number to cite, and #5336's recall target and #5337's accept/reject bar will each want the same one. #5336 next because it is the only **gate** lever here, and because the volume it removes is a sizing input for #5337 rather than a verdict on it. See Lane C's own note on why the *"cheapest first"* heuristic mis-selected on the first pass.
    - ⚠️ **[#5381](https://github.com/AtlasDevHQ/atlas/issues/5381) starts in parallel with all of the above, not after it.** It is procurement, and procurement does not compress under effort — it is the one item here that gets shorter only by starting earlier.
 3. **Lane D — the decision, not the work.** Promoted from step 6, and it is not a reversal of that placement's logic: the *rename* still waits for a carrier, but **choosing the carrier no longer does**, because two candidate milestones now exist and neither existed on 2026-08-21. It costs a paragraph, and it is the only item in this document with an expiry. Cutting `v1.0.0` without having decided is still the one outcome to avoid. **Half-answered on 2026-08-27: [#101](https://github.com/AtlasDevHQ/atlas/milestone/101) declined, leaving [#100](https://github.com/AtlasDevHQ/atlas/milestone/100) as the sole candidate. Answered in full on 2026-08-30: the maintainer shipped Layer 2 standalone instead — see the RESOLVED note in Lane D. This step is closed.**
 4. **Lane B, condition 8** — [#5377](https://github.com/AtlasDevHQ/atlas/issues/5377) is natively blocked by the other seven, since it re-runs them and needs their baselines to compare against. It also wants Lane F's boundary still intact.
-5. ~~**Lane E grill**~~ — **done 2026-08-27 ([#5468](https://github.com/AtlasDevHQ/atlas/issues/5468)), and it ran ahead of this position deliberately**, on the #5332 signal's argument that live unexamined mechanism does not wait its turn. Its inventory half never contended for Lane B/C's hours. What replaces it at this step is **M6 itself**, sized small by what the inventory found: nothing entered #101 before the grill closed, and three of T9's five locks need no work at all.
+5. ~~**Lane E grill**~~ — **done 2026-08-27 ([#5468](https://github.com/AtlasDevHQ/atlas/issues/5468)), and it ran ahead of this position deliberately**, on the #5332 signal's argument that live unexamined mechanism does not wait its turn. Its inventory half never contended for Lane B/C's hours. What replaces it at this step is **M6 itself**, sized small by what the inventory found: nothing entered #101 before the grill closed, and three of T9's five locks need no work at all. ~~What replaces it~~ **— and M6 itself is now done too: four issues, shipped 2026-08-27/28, milestone closed 2026-09-02. This step is closed.**
 6. **Lane F** — last by construction.
 
 **This preserves ADR-0036's ordering principle** — *trust before breadth before monetization* — and applies the PRD's one test for re-cutting: *a milestone that advances none of the eight finish conditions is a milestone worth questioning.* Lane A (now closed) and Lane C advance none directly; both are defect and cost lanes that protect conditions already held. That is a reason to keep them short, not a reason to skip them.
 
 **What the reconciliation changed about the shape of this plan.** With Lane A closed, the critical path is a lane made almost entirely of demonstrations, and Lane C is the only substantial construction left before M6. That is the arc arriving where ADR-0036 said it would — *the ordering is the strategy*, and the strategy was trust first. It also means the plan's remaining risk has moved: it is no longer *"will the mechanism work"* but *"will anyone be shown that it does"*, and the answer to the second is partly outside engineering's hands.
+
+**What the 2026-09-02 re-reconciliation changed.** Four of six lanes are now closed — A, D, E, and five-eighths of B. **Lane C is the only substantial construction left in the whole plan**, and Lane F is last by construction and has never been cut. The sentence above — *"partly outside engineering's hands"* — has stopped being a caveat and become the shape of the remaining work: of the three open conditions, **1 needs a customer, 3 needs an untrained reader, and 8 is blocked behind both.** ⭐ **A plan can be almost entirely complete and almost entirely blocked at the same time, and the two facts do not argue with each other.** The right response is not to re-open engineering scope to look busy — it is to name the two human prerequisites as the critical path they now are, and to notice that this document named only one of them when it was written.
 
 ## What this document does not decide
 

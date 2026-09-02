@@ -50,6 +50,7 @@ import type {
   BrainCoverageNamedUnit,
   BrainCoverageRatio,
   BrainCoverageSourceClass,
+  BrainCoverageTriage,
   BrainCoverageUnitOrigin,
   BrainCoverageUnverifiedReason,
   BrainFactOversight,
@@ -1467,8 +1468,50 @@ const COVERAGE_AVAILABILITY_FIELDS = Object.fromEntries(
  * both against the authority arm, so the server refuses the same payloads
  * `/oversight` refuses, without demanding the previews.
  */
+/**
+ * The triage arm (#5338 AC 8) — the count of what extraction was told not to
+ * look at, and what is known about what that costs.
+ *
+ * `recall` is a discriminated union rather than a nullable rate, and the
+ * discriminant is the point: `{ measured: false }` and `{ observedRecall: 0 }`
+ * are opposite statements — nobody has measured this versus this drops
+ * everything — and a nullable number lets a renderer spell the second when it
+ * means the first. `z.strictObject` on both arms keeps the unmeasured arm
+ * structurally incapable of carrying a rate, so a producer cannot ship a number
+ * flagged as absent.
+ *
+ * `rule` stays `z.string()`, unlike the closed enums elsewhere on this surface.
+ * The direction of drift is the opposite one here: a mark left by a retired
+ * rule is a real bucket of held episodes, and refusing to parse it would
+ * DISAPPEAR those episodes from a count whose whole job is to say they exist.
+ * `known` is what tells a client the id is not one of today's.
+ */
+const BrainCoverageTriageSchema = z.strictObject({
+  withheldEpisodes: z.number().int().nonnegative(),
+  byRule: z.array(
+    z.strictObject({
+      rule: z.string(),
+      episodes: z.number().int().nonnegative(),
+      known: z.boolean(),
+    }),
+  ),
+  recall: z.discriminatedUnion("measured", [
+    z.strictObject({ measured: z.literal(false) }),
+    z.strictObject({
+      measured: z.literal(true),
+      setId: z.string(),
+      measuredAt: z.string(),
+      observedRecall: z.number().min(0).max(1),
+      recallLowerBound: z.number().min(0).max(1),
+      positives: z.number().int().nonnegative(),
+      passed: z.boolean(),
+    }),
+  ]),
+}) satisfies z.ZodType<BrainCoverageTriage, unknown>;
+
 const COVERAGE_ENVELOPE_FIELDS = {
   authority: BrainFactOversightClientSchema,
+  triage: BrainCoverageTriageSchema,
   countsConsistent: z.boolean(),
 } as const;
 
@@ -1577,6 +1620,50 @@ function checkCoverageArithmetic(
         });
       }
     }
+  }
+
+  // ── The TRIAGE arm (#5338 AC 8) ──────────────────────────────────────────
+  //
+  // `loadTriageBacklog` accumulates the total from the same buckets it returns,
+  // so the identity holds even when it drops a bucket it cannot name. A payload
+  // where it does NOT hold is a producer that assembled the two halves from
+  // different reads, and the symptom is the flattering one: a headline smaller
+  // than the rules beneath it, on the count that says what Atlas did not look
+  // at.
+  const triage = value.triage;
+  const ruleSum = triage.byRule.reduce((sum, bucket) => sum + bucket.episodes, 0);
+  if (ruleSum !== triage.withheldEpisodes) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["triage", "withheldEpisodes"],
+      message:
+        "the triaged-out total does not equal the sum of its per-rule buckets — the two halves came from different reads, and a headline smaller than its own parts under-states what extraction never looked at",
+    });
+  }
+  // A rate can only exceed its own lower bound. Inverted, it is a hand-edited
+  // record or a bound computed against a different denominator, and the
+  // reassuring direction is the one that survives: a reader looking for
+  // confidence reads the LOWER bound, so an inflated one is the number that
+  // makes an unmeasurable set look decisive.
+  if (triage.recall.measured && triage.recall.recallLowerBound > triage.recall.observedRecall) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["triage", "recall", "recallLowerBound"],
+      message:
+        "the Wilson lower bound on triage recall exceeds the observed rate — a bound above its own point estimate cannot come from the set it claims to describe",
+    });
+  }
+  // A rate over zero positives is not a rate. #5338's first real cut is the
+  // cautionary case in the other direction (9 positives, a perfect 1.0000), and
+  // zero is that failure with nothing left to notice: the arithmetic would
+  // produce 0/0 and any value rendered from it is invented.
+  if (triage.recall.measured && triage.recall.positives === 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["triage", "recall", "positives"],
+      message:
+        "a measured triage recall over zero positives has no denominator — report it unmeasured rather than as a rate nothing was counted for",
+    });
   }
 }
 

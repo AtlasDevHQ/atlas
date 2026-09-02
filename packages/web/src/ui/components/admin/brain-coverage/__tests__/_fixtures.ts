@@ -206,6 +206,7 @@ export function coverage(
   overrides: {
     availability?: Partial<BrainCoverage["availability"]>;
     authority?: BrainCoverage["authority"];
+    triage?: BrainCoverage["triage"];
     countsConsistent?: boolean;
   } = {},
 ): BrainCoverage {
@@ -229,6 +230,11 @@ export function coverage(
       ...overrides.availability,
     },
     authority: overrides.authority ?? AUTHORITY,
+    // Nothing held back by default — the state of a workspace with the triage
+    // dial off, which is every region today (#5338 AC 8). A fixture that
+    // defaulted to a non-zero backlog would make every unrelated assertion
+    // render a caveat it is not about.
+    triage: overrides.triage ?? { withheldEpisodes: 0, byRule: [], recall: { measured: false } },
     countsConsistent: overrides.countsConsistent ?? true,
   };
 }

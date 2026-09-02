@@ -131,6 +131,17 @@ export function CoverageStatement({ coverage }: { coverage: BrainCoverage }) {
             </p>
           ))}
         </div>
+        {/* The triage half (#5338 AC 8). Rendered unconditionally and LAST, so
+            it qualifies the sentences above rather than being read as one more
+            of them: everything before this describes what Atlas read, and this
+            says what it was told not to read. */}
+        <div className="space-y-1.5" data-testid="coverage-statement-triage">
+          {statement.triage.map((sentence) => (
+            <p key={sentence} className="text-muted-foreground">
+              {sentence}
+            </p>
+          ))}
+        </div>
       </CardContent>
     </Card>
   );

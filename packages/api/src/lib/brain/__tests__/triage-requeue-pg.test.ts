@@ -177,11 +177,12 @@ describeIfPg("brain triage backlog + re-queue (real Postgres)", () => {
     expect(before).toEqual({
       total: 1,
       byRule: [{ rule: "known_ack", episodes: 1, known: true }],
+      degraded: false,
     });
 
     const { requeued } = await requeueTriagedEpisodes(reader, WORKSPACE, null);
     expect(requeued).toBe(before.total);
-    expect(await loadTriageBacklog(reader, WORKSPACE)).toEqual({ total: 0, byRule: [] });
+    expect(await loadTriageBacklog(reader, WORKSPACE)).toEqual({ total: 0, byRule: [], degraded: false });
 
     // The trap row is untouched — still marked, still extracted.
     const { rows } = await pool.query<{ triage_reason: string | null }>(
@@ -218,6 +219,7 @@ describeIfPg("brain triage backlog + re-queue (real Postgres)", () => {
     expect(await loadTriageBacklog(reader, WORKSPACE)).toEqual({
       total: 1,
       byRule: [{ rule: "pure_reaction", episodes: 1, known: true }],
+      degraded: false,
     });
     expect(await drainedIds()).toEqual([ack]);
   });
@@ -248,6 +250,7 @@ describeIfPg("brain triage backlog + re-queue (real Postgres)", () => {
     expect(await loadTriageBacklog(reader, WORKSPACE)).toEqual({
       total: 1,
       byRule: [{ rule: "channel_join_notice", episodes: 1, known: false }],
+      degraded: false,
     });
 
     expect((await requeueTriagedEpisodes(reader, WORKSPACE, null)).requeued).toBe(1);
@@ -270,6 +273,7 @@ describeIfPg("brain triage backlog + re-queue (real Postgres)", () => {
     expect(await loadTriageBacklog(reader, OTHER_WORKSPACE)).toEqual({
       total: 1,
       byRule: [{ rule: "known_ack", episodes: 1, known: true }],
+      degraded: false,
     });
   });
 

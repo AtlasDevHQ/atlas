@@ -72,7 +72,11 @@ function chatArm() {
  * reason (the totality refusal, not the one it names).
  */
 function coverage(
-  overrides: { availability?: Record<string, unknown>; countsConsistent?: boolean } = {},
+  overrides: {
+    availability?: Record<string, unknown>;
+    triage?: Record<string, unknown>;
+    countsConsistent?: boolean;
+  } = {},
 ) {
   const { availability, ...envelope } = overrides;
   return {
@@ -95,6 +99,11 @@ function coverage(
       ...availability,
     } as Record<string, unknown>,
     authority: AUTHORITY as Record<string, unknown>,
+    triage: {
+      withheldEpisodes: 0,
+      byRule: [] as unknown[],
+      recall: { measured: false },
+    } as Record<string, unknown>,
     countsConsistent: true,
     ...envelope,
   };
@@ -381,5 +390,135 @@ describe("BrainCoverageSchema — the cross-checks are server-side only (#5215)"
     expect(BrainCoverageSchema.parse(clipped).availability.chat).toMatchObject({
       unitsTruncated: true,
     });
+  });
+});
+
+describe("BrainCoverageSchema — the triage arm (#5338 AC 8)", () => {
+  test("the arm is REQUIRED, so a producer that skipped the read cannot ship a page", () => {
+    // The count of what Atlas deliberately did not look at is exactly as
+    // load-bearing as the counts of what it did. An optional field would make a
+    // deploy that never wired this up render identically to one filtering half
+    // its intake — opposite statements, one shape.
+    const { triage: _dropped, ...withoutTriage } = coverage();
+    expect(BrainCoverageSchema.safeParse(withoutTriage).success).toBe(false);
+    expect(BrainCoverageClientSchema.safeParse(withoutTriage).success).toBe(false);
+  });
+
+  test("a zero count with an empty rule list is a valid statement, not an absent one", () => {
+    // "Nothing is being held back" is the answer for every region today, and it
+    // has to be spellable — a schema that only admitted a non-zero backlog
+    // would force a producer to omit the arm to say nothing is filtered.
+    const parsed = BrainCoverageSchema.safeParse(coverage());
+    expect(parsed.success).toBe(true);
+  });
+
+  test("a total that disagrees with its own buckets is refused", () => {
+    // The flattering direction: a headline smaller than the rules beneath it
+    // under-states what extraction never read.
+    const parsed = BrainCoverageSchema.safeParse(
+      coverage({
+        triage: {
+          withheldEpisodes: 3,
+          byRule: [{ rule: "known_ack", episodes: 9, known: true }],
+          recall: { measured: false },
+        },
+      }),
+    );
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed)).toContain("does not equal the sum of its per-rule buckets");
+  });
+
+  test("…and the CLIENT renders it anyway, like every other cross-check", () => {
+    // Somebody else's already-shipped arithmetic bug must not blank the surface.
+    expect(
+      BrainCoverageClientSchema.safeParse(
+        coverage({
+          triage: {
+            withheldEpisodes: 3,
+            byRule: [{ rule: "known_ack", episodes: 9, known: true }],
+            recall: { measured: false },
+          },
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  test("the unmeasured arm cannot carry a rate", () => {
+    // `{ measured: false }` and `{ observedRecall: 0 }` are opposite statements
+    // — nobody has measured this, versus this drops everything — and a nullable
+    // number would let a renderer spell the second meaning the first.
+    const parsed = BrainCoverageSchema.safeParse(
+      coverage({
+        triage: {
+          withheldEpisodes: 0,
+          byRule: [],
+          recall: { measured: false, observedRecall: 0.99 },
+        },
+      }),
+    );
+    expect(parsed.success).toBe(false);
+  });
+
+  test("a Wilson bound above its own point estimate is refused", () => {
+    const parsed = BrainCoverageSchema.safeParse(
+      coverage({
+        triage: {
+          withheldEpisodes: 0,
+          byRule: [],
+          recall: {
+            measured: true,
+            setId: "2026-09-02",
+            measuredAt: "2026-09-02T00:00:00.000Z",
+            observedRecall: 0.9,
+            recallLowerBound: 0.95,
+            positives: 110,
+            passed: false,
+          },
+        },
+      }),
+    );
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed)).toContain("above its own point estimate");
+  });
+
+  test("a measured rate over zero positives has no denominator and is refused", () => {
+    // 0/0 rendered as a percentage is the one number on this surface that can be
+    // arithmetically produced and mean nothing at all.
+    const parsed = BrainCoverageSchema.safeParse(
+      coverage({
+        triage: {
+          withheldEpisodes: 0,
+          byRule: [],
+          recall: {
+            measured: true,
+            setId: "empty",
+            measuredAt: "2026-09-02T00:00:00.000Z",
+            observedRecall: 1,
+            recallLowerBound: 0,
+            positives: 0,
+            passed: true,
+          },
+        },
+      }),
+    );
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed)).toContain("has no denominator");
+  });
+
+  test("a mark left by a retired rule parses, because those episodes are real", () => {
+    // The opposite drift direction from the closed enums on this surface: a
+    // refusal here would DISAPPEAR held episodes from the count whose whole job
+    // is to say they exist. `known: false` is how a client says the id is not
+    // one of today's.
+    const parsed = BrainCoverageSchema.safeParse(
+      coverage({
+        triage: {
+          withheldEpisodes: 2,
+          byRule: [{ rule: "channel_join_notice", episodes: 2, known: false }],
+          recall: { measured: false },
+        },
+      }),
+    );
+    expect(parsed.success).toBe(true);
   });
 });

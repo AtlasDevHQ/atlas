@@ -115,6 +115,23 @@ export interface TriageBacklog {
   readonly total: number;
   /** Per-rule breakdown, largest bucket first. Empty when nothing is held. */
   readonly byRule: readonly TriageBacklogBucket[];
+  /**
+   * True when a bucket was dropped because its stored reason could not be
+   * named, so {@link total} is an UNDER-count.
+   *
+   * ⚠️ Under-counting is the flattering direction here, and the flattering
+   * direction is the one that has to travel. On the Coverage Surface this
+   * number is the count of episodes Atlas deliberately did not look at
+   * (#5338 AC 8) — a silently smaller one reads as a smaller blind spot, which
+   * is precisely the "green while nothing is happening" statement ADR-0041
+   * exists to end. `coverage.ts` folds this into `countsConsistent`.
+   *
+   * Unreachable through the writers — migration 0210's CHECK pairs the mark
+   * with its reason — so it is a signal about a broken CHECK, not an ordinary
+   * state. Reported rather than thrown on, because a backlog an admin can
+   * partly see is still worth seeing.
+   */
+  readonly degraded: boolean;
 }
 
 /**
@@ -164,6 +181,7 @@ export async function loadTriageBacklog(
   const known: ReadonlySet<string> = new Set<string>(TRIAGE_RULE_IDS);
   const byRule: TriageBacklogBucket[] = [];
   let total = 0;
+  let degraded = false;
 
   for (const raw of result.rows as readonly Record<string, unknown>[]) {
     // `GROUP BY triage_reason` over a `triage_reason IS NOT NULL` population
@@ -171,9 +189,12 @@ export async function loadTriageBacklog(
     // with `triaged_out_at` set has a reason. Guarded anyway rather than
     // asserted: a NULL here would mean the CHECK is gone, and rendering it as
     // the string "null" in an admin's bucket list is a worse answer than
-    // dropping a row we cannot name. Logged so it is not silent.
+    // dropping a row we cannot name. Logged AND flagged (`degraded`) so it is
+    // not silent: the drop shrinks `total`, and a shrunken count of what triage
+    // is holding is the reassuring direction.
     const rule = raw.rule;
     if (typeof rule !== "string" || rule === "") {
+      degraded = true;
       log.warn(
         { workspaceId, episodes: raw.episodes },
         "brain triage backlog: a triaged-out episode carries no reason — migration 0210's CHECK should make this unrepresentable",
@@ -188,7 +209,7 @@ export async function loadTriageBacklog(
     byRule.push({ rule, episodes, known: known.has(rule) });
   }
 
-  return { total, byRule };
+  return { total, byRule, degraded };
 }
 
 /**

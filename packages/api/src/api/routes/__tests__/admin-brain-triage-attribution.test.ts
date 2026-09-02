@@ -115,7 +115,7 @@ void mock.module("@atlas/api/lib/brain/triage-requeue", () => ({
   REQUEUE_TRIAGED_COUNTED_SQL: "WITH requeued AS (UPDATE brain_episodes)",
   isKnownTriageRule: (rule: string) =>
     ["below_min_length", "pure_reaction", "known_ack"].includes(rule),
-  loadTriageBacklog: async () => ({ total: 0, byRule: [] }),
+  loadTriageBacklog: async () => ({ total: 0, byRule: [], degraded: false }),
   requeueTriagedEpisodes: async () => ({ requeued }),
 }));
 

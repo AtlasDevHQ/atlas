@@ -197,7 +197,7 @@ export default function TheLastMile() {
           scheme was written down: sixty-seven releases banked in the patch
           position, and the minor only moves when Atlas goes public. That
           moment is days away now. Until then, the live demo is the part you
-          don&apos;t have to take on faith: no signup, nothing to install.
+          don&apos;t have to take on faith: no account, nothing to install.
         </P>
 
         <PostActions />

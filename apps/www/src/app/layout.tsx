@@ -26,7 +26,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Atlas — Ask your data anything, trust the answer.",
     description:
-      "94% of AI-generated SQL fails at least one Atlas validator. Atlas reads your semantic layer, writes the SQL, and runs it read-only behind 7 validators. Cloud or self-hosted.",
+      "Atlas reads your semantic layer, writes the SQL, and runs it read-only behind 7 validators — SELECT-only, single-statement, whitelisted to your schema. Cloud or self-hosted.",
     url: "https://www.useatlas.dev",
     siteName: "Atlas",
     type: "website",

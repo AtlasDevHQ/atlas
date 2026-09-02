@@ -158,7 +158,7 @@ export default function WhyThisOneStuck() {
           <a href="/blog/announcing-atlas" className="link-accent">
             launch recap
           </a>
-          . If you just want to see it work, the demo is live, with no signup
+          . If you just want to see it work, the demo is live, with no account
           and nothing to install.
         </P>
 

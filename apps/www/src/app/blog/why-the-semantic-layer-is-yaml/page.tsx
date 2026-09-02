@@ -307,7 +307,7 @@ export default function WhyTheSemanticLayerIsYaml() {
             launch recap
           </a>
           . If you just want to watch the semantic layer do its job, the demo is
-          live and runs on the same NovaMart data you just read about, no signup
+          live and runs on the same NovaMart data you just read about, no account
           required.
         </P>
         <P>

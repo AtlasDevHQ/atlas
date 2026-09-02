@@ -710,9 +710,16 @@ export const MERGE_PROVENANCE_MARKER_SQL = `UPDATE brain_facts
  * after {@link classifyFactForPromotion} admitted it; the `status = 'draft'`
  * predicate keeps the statement correct standalone, exactly like
  * `PROMOTE_FACTS_SQL`'s.
+ *
+ * Stamps `published_at` (#5591) for the same reason the review gate does: this
+ * IS a gate decision, made on a human's authority in the transaction that
+ * carries their correction. The correction path being a different entry point
+ * does not make the approval a different kind of event, and leaving it unstamped
+ * would put a systematic hole in the corpus exactly where the most deliberate
+ * human decisions land.
  */
 export const PROMOTE_CORRECTION_FACT_SQL = `UPDATE brain_facts
-        SET status = 'published', updated_at = now()
+        SET status = 'published', published_at = now(), updated_at = now()
       WHERE workspace_id = $1
         AND id = $2::uuid
         AND status = 'draft'

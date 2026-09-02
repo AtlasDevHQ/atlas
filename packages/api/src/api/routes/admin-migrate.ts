@@ -3863,6 +3863,15 @@ export async function importBundle(
         // rows whose `_cmp` this import dropped, and on no others. Without it
         // the null-out is merely safe; with it, it is recoverable, and
         // `PROVISIONAL_PREDICATE` is the query that finds the rows.
+        // ⚠️ `published_at` (#5591) is DELIBERATELY ABSENT, and completing this
+        // list would be a bug rather than a tidy-up. The import restores a prior
+        // gate decision instead of making a new one — that is why it may write
+        // `status` at all — so there is nothing here to date. `now()` would
+        // assert that a whole tenant was approved at cutover, on exactly the
+        // rows an evaluation corpus (#5338) reads as ground truth for when
+        // reviewers decide. NULL is the honest value; the bundle does not carry
+        // the source region's stamp, and deciding whether it should is its own
+        // slice. Pinned by `brain/__tests__/published-at.test.ts`.
         `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, subject_cmp, object_cmp, valid_from, valid_to, ingested_at, invalidated_at, extracted_at, source_episode_id, provenance, status, visible_to, pre_widening_visible_to, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
                  -- invalidated_at is the one other column with a CASE, and for

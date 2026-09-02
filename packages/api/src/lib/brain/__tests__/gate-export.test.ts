@@ -265,6 +265,7 @@ describe("gate export — analytics", () => {
     status: "published",
     extractedAt: null,
     invalidatedAt: null,
+        publishedAt: null,
     visibleTo: ["org"],
     actor: null,
     provenanceSourceId: null,

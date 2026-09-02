@@ -1,6 +1,7 @@
 #!/bin/bash
 # Refuse any write to `brain_facts.status`, or any MUTATION of
-# `brain_facts.visible_to`, `brain_facts.valid_to`, or a fact's IDENTITY KEYS,
+# `brain_facts.visible_to`, `brain_facts.valid_to`, `brain_facts.published_at`,
+# or a fact's IDENTITY KEYS,
 # outside the atomic publish endpoint (#4769 / #4823 / #4912 / #5019,
 # ADR-0036 + ADR-0037). Scope + blind spots below.
 #
@@ -37,6 +38,14 @@
 #     may open a validity window (`valid_from` on an INSERT) but never close
 #     one, and an import carrying an already-closed window is a restore rather
 #     than an arbitration.
+#   - `published_at` (#5591) — UPDATE **only**, and for the OPPOSITE reason to
+#     `status`'s INSERT arm rather than the same one. `status` is refused on
+#     INSERT so 0180's `draft` default applies the gate by construction; this
+#     column has no default to protect, and NULL already means "not approved".
+#     An INSERT naming it would be refused by the `status` arm anyway if it also
+#     named `status`, and if it does not, the row is a draft and the stamp is
+#     inert. What must never happen is a LATER writer moving it — which is an
+#     UPDATE, always.
 #   - the identity keys — `subject_key`, `predicate_key`, `object_key`, and the
 #     `_cmp` comparison columns (#5019) — UPDATE **only**, on the grant's terms
 #     exactly: derived at ingest, so INSERT must stay legal; never RE-derived by
@@ -547,8 +556,8 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 # `ORM_UPDATE_GATED_COLUMNS` has no such reader — it is documentation of the
 # camelCase spellings and nothing more. Stated plainly because the sentence
 # above used to cover both and did not apply to it.
-UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to|valid_to|subject_key|predicate_key|object_key|subject_cmp|object_cmp)'
-ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo|validTo|subjectKey|predicateKey|objectKey|subjectCmp|objectCmp)'
+UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to|valid_to|published_at|subject_key|predicate_key|object_key|subject_cmp|object_cmp)'
+ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo|validTo|publishedAt|subjectKey|predicateKey|objectKey|subjectCmp|objectCmp)'
 
 # Does one statement write a gated `brain_facts` column? Exit 0 = yes, and it
 # ECHOES which — they have completely different remedies, and a message that
@@ -612,6 +621,7 @@ statement_writes_gated_column() {
     grep -qiE '\bstatus\b' <<<"$stmt" && hits="$hits status"
     grep -qiE "\b(pre_widening_)?visible_to\b" <<<"$stmt" && hits="$hits visible_to"
     grep -qiE '\bvalid_to\b' <<<"$stmt" && hits="$hits valid_to"
+    grep -qiE '\bpublished_at\b' <<<"$stmt" && hits="$hits published_at"
     # Spelled out rather than hoisted into a shared constant, and that is not an
     # oversight: `brain-promotion-carveout-register.test.ts` proves
     # declared ⊆ ENFORCED by scanning this function for `\bname\b` literals, so a
@@ -624,6 +634,7 @@ statement_writes_gated_column() {
     grep -qE '\bstatus\b' <<<"$stmt" && hits="$hits status"
     grep -qE '\b(preWideningVisibleTo|visibleTo)\b' <<<"$stmt" && hits="$hits visible_to"
     grep -qE '\bvalidTo\b' <<<"$stmt" && hits="$hits valid_to"
+    grep -qE '\bpublishedAt\b' <<<"$stmt" && hits="$hits published_at"
     grep -qE '\b(subjectKey|predicateKey|objectKey|subjectCmp|objectCmp)\b' <<<"$stmt" && hits="$hits identity"
   fi
 
@@ -667,7 +678,7 @@ statement_writes_gated_column() {
 # The headline precedence, most-severe first. Parsed by the fixture suite, which
 # asserts every ordered pair — so reordering this line is a behaviour change a
 # test has to agree to.
-SEVERITY_ORDER=(visible_to identity valid_to status)
+SEVERITY_ORDER=(visible_to identity valid_to status published_at)
 
 # Did this arm fire? Maps a SEVERITY_ORDER entry onto its flag.
 arm_fired() {
@@ -676,6 +687,7 @@ arm_fired() {
     identity) [ "$SAW_IDENTITY" -eq 1 ] ;;
     valid_to) [ "$SAW_VALIDITY" -eq 1 ] ;;
     status) [ "$SAW_STATUS" -eq 1 ] ;;
+    published_at) [ "$SAW_PUBLISHED_AT" -eq 1 ] ;;
     *)
       echo "::error::internal: SEVERITY_ORDER names '$1', which arm_fired does not know. Add the arm, or drop the entry." >&2
       exit 2
@@ -689,6 +701,7 @@ headline_for() {
     identity) echo "::error::a company-brain fact is RE-KEYED outside the alias-approval seam (#5019)." ;;
     valid_to) echo "::error::a company-brain fact's \`valid_to\` is stamped outside the atomic publish endpoint (#4912)." ;;
     status) echo "::error::a company-brain fact's \`status\` is written outside the atomic publish endpoint (#4769)." ;;
+    published_at) echo "::error::a company-brain fact's \`published_at\` is stamped outside the atomic publish endpoint (#5591)." ;;
     *)
       echo "::error::internal: no headline for '$1' — every SEVERITY_ORDER entry needs one." >&2
       exit 2
@@ -701,6 +714,7 @@ OFFENDERS=""
 # only the relevant advice is printed. Printing all would put a wrong fix in
 # front of every reader, and "omit the column" is actively wrong for a grant.
 SAW_STATUS=0
+SAW_PUBLISHED_AT=0
 SAW_GRANT=0
 SAW_VALIDITY=0
 SAW_IDENTITY=0
@@ -737,6 +751,7 @@ if [ -n "$CANDIDATES" ]; then
         for column in $columns; do
           case "$column" in
             status) SAW_STATUS=1 ;;
+            published_at) SAW_PUBLISHED_AT=1 ;;
             visible_to) SAW_GRANT=1 ;;
             valid_to) SAW_VALIDITY=1 ;;
             identity) SAW_IDENTITY=1 ;;
@@ -807,6 +822,32 @@ if [ -n "$OFFENDERS" ]; then
     echo "    demoted by status (ADR-0036: supersession is not deletion)."
     echo "  * Genuinely restoring a PRIOR gate decision (a region import)? Add the file"
     echo "    to ALLOWLIST in this script WITH the rationale, per CLAUDE.md § Content Mode."
+    echo ""
+  fi
+
+  if [ "$SAW_PUBLISHED_AT" -eq 1 ]; then
+    echo "\`brain_facts.published_at\` is WHEN the review gate approved a claim (#5591,"
+    echo "migration 0214). It moves with \`status\`, in the same two allowlisted"
+    echo "statements and nowhere else: \`PROMOTE_FACTS_SQL\` and"
+    echo "\`PROMOTE_CORRECTION_FACT_SQL\`."
+    echo ""
+    echo "A rogue write here does not over-trust a claim the way a \`status\` write"
+    echo "does — it MANUFACTURES EVIDENCE OF A REVIEW THAT NEVER HAPPENED, on the"
+    echo "rows an evaluation corpus (#5338) reads as ground truth for when reviewers"
+    echo "decide. Wrong data that looks right, rather than a claim that looks trusted."
+    echo ""
+    echo "Fixes for a \`published_at\` write:"
+    echo "  * Writing a NEW fact? Omit it. NULL is correct until a human approves;"
+    echo "    the promote statement stamps it at the moment they do."
+    echo "  * Backfilling the NULLs from before 0214? Don't — there is no honest"
+    echo "    source. \`created_at\` is the INSERT and \`updated_at\` is the last write"
+    echo "    of any kind; both would invent a review timestamp. 0214's header is the"
+    echo "    argument."
+    echo "  * Restoring a region-imported fact's original approval time? The bundle"
+    echo "    does not carry it, and \`now()\` would claim a whole tenant was approved"
+    echo "    at cutover. NULL is the honest value; carrying it needs a bundle change."
+    echo "  * Needed a decision timestamp for a REJECTION? That is \`invalidated_at\`,"
+    echo "    which has always dated itself. This column is the positive verb only."
     echo ""
   fi
 
@@ -881,4 +922,4 @@ if [ -n "$OFFENDERS" ]; then
   exit 1
 fi
 
-echo "Brain-fact promotion check passed — no ungated status, visible_to, valid_to, or identity-key write to brain_facts outside the atomic publish endpoint."
+echo "Brain-fact promotion check passed — no ungated status, visible_to, valid_to, published_at, or identity-key write to brain_facts outside the atomic publish endpoint."

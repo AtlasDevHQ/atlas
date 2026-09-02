@@ -42,6 +42,7 @@
 import type {
   BrainCoverage,
   BrainCoverageMapEdge,
+  BrainCoverageTriageRule,
   BrainCoverageSourceClass,
   BrainCoverageUnitOrigin,
   BrainCoverageUnverifiedReason,
@@ -467,7 +468,7 @@ export function frozenEnumerationClaim(since: string | null, reason: string): st
  */
 export function triageWithheldClaim(
   withheld: number,
-  byRule: readonly { readonly rule: string; readonly episodes: number; readonly known: boolean }[],
+  byRule: readonly BrainCoverageTriageRule[],
 ): string {
   if (withheld === 0) {
     return "Nothing is being held back from extraction — no episode in this workspace is currently marked as not worth reading.";

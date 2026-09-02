@@ -41,6 +41,7 @@
  * @see ./triage-measure-record.ts — what a record may claim
  * @see ./coverage.ts — where the latest record becomes a sentence on the page
  */
+import { fileURLToPath } from "node:url";
 import type { RecordedMeasurement } from "@atlas/api/lib/brain/triage-measure-record";
 // ⚠️ A RELATIVE import, against this package's `@atlas/api/*` convention, and
 // deliberately: the alias resolves TypeScript sources and does not carry a
@@ -50,13 +51,28 @@ import type { RecordedMeasurement } from "@atlas/api/lib/brain/triage-measure-re
 import stored from "./triage-measurements.json";
 
 /**
- * Where the store lives, relative to `packages/api` — the path
- * `scripts/measure-triage.ts` writes to by default.
+ * Where the store lives, as a repo-relative string — for MESSAGES only.
  *
- * Exported so the CLI cannot drift from it by holding its own copy of the
- * string, and so its console output can name the file a reader has to commit.
+ * ⚠️ Never pass this to a filesystem call. It resolves against the process
+ * CWD, and the CLI that writes the store can be run from the repo root as
+ * easily as from `packages/api`: from the root it would create a second,
+ * unread file at `<root>/src/lib/brain/…`, and the "you are recording where
+ * nothing reads it" warning would compare the two strings equal and stay
+ * silent. That is precisely the defect the warning exists to raise, so the
+ * write target is {@link recordedMeasurementsFile} and this string is only
+ * ever printed.
  */
-export const RECORDED_MEASUREMENTS_PATH = "src/lib/brain/triage-measurements.json";
+export const RECORDED_MEASUREMENTS_PATH = "packages/api/src/lib/brain/triage-measurements.json";
+
+/**
+ * The store's absolute path, resolved from this module's own location.
+ *
+ * CWD-independent by construction, so a caller comparing its `--record`
+ * argument against this is comparing files rather than spellings.
+ */
+export function recordedMeasurementsFile(): string {
+  return fileURLToPath(new URL("./triage-measurements.json", import.meta.url));
+}
 
 /**
  * Every measurement recorded against #5338's threshold, in the order they were

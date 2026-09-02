@@ -34,7 +34,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | a triage backlog that under-counts no longer clears the page's signal | 1 | 0 | 0 |
 | the triaged-out count arrives with no rules behind it | 2 | 0 | 0 |
 
-Suite sizes: **coverage.test.ts** 52 tests (`src/lib/brain/__tests__/coverage.test.ts`) · **class-contract.test.ts** 27 tests (`src/lib/brain/__tests__/class-contract.test.ts`) · **coverage-enumeration.test.ts** 15 tests (`src/lib/brain/__tests__/coverage-enumeration.test.ts`).
+Suite sizes: **coverage.test.ts** 54 tests (`src/lib/brain/__tests__/coverage.test.ts`) · **class-contract.test.ts** 27 tests (`src/lib/brain/__tests__/class-contract.test.ts`) · **coverage-enumeration.test.ts** 15 tests (`src/lib/brain/__tests__/coverage-enumeration.test.ts`).
 
 ## Notes
 

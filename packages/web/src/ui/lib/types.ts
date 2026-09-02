@@ -20,6 +20,7 @@ export type {
   BrainCoverageMapEdge,
   BrainCoverageNamedUnit,
   BrainCoverageSourceClass,
+  BrainCoverageTriageRule,
   BrainCoverageUnitOrigin,
   BrainCoverageUnverifiedReason,
   BrainFactCandidate,

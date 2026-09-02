@@ -106,6 +106,9 @@ type BrainCoverageClass = import("@useatlas/types").BrainCoverageClass;
 type BrainCoverageClassAvailable = import("@useatlas/types").BrainCoverageClassAvailable;
 type BrainFactOversight = import("@useatlas/types").BrainFactOversight;
 type TriageBacklog = import("@atlas/api/lib/brain/triage-requeue").TriageBacklog;
+type RecordedMeasurement =
+  import("@atlas/api/lib/brain/triage-measure-record").RecordedMeasurement;
+type LayerMeasurement = import("@atlas/api/lib/brain/triage-measure").LayerMeasurement;
 
 // ---------------------------------------------------------------------------
 // The VENDOR's truth — one side of the charter
@@ -422,9 +425,28 @@ const AUTHORITY: BrainFactOversight = {
  */
 const NO_TRIAGE: TriageBacklog = { total: 0, byRule: [], degraded: false };
 
+/** A `LayerMeasurement`, for the recorded-measurement arm. Numbers are arbitrary. */
+function measurement(over: Partial<LayerMeasurement> = {}): LayerMeasurement {
+  return {
+    yieldRate: 0.4,
+    dropped: 40,
+    total: 100,
+    recall: 1,
+    positivesKept: 120,
+    positives: 120,
+    recallLowerBound: 0.97,
+    diagnosticRecall: 1,
+    misses: [],
+    byReason: {},
+    ...over,
+  };
+}
+
 interface WorldOptions extends RosterOptions {
   /** What stage-0 triage is holding — #5338 AC 8's arm. */
   readonly triageBacklog?: TriageBacklog;
+  /** The newest recorded measurement, or null/absent for "nothing recorded". */
+  readonly recordedMeasurement?: RecordedMeasurement | null;
   /** Cycle-row overrides, per class — the "sicken a pipe" lever. */
   readonly cycles?: Partial<Record<SurveyableSourceClass, Partial<CoverageClassSnapshot>>>;
   /** Aggregate counts computed BEFORE a roster mutation — the understatement lever. */
@@ -452,6 +474,7 @@ function world(opts: WorldOptions = {}): BrainCoverage {
     at: NOW,
     authority: opts.authority ?? AUTHORITY,
     triageBacklog: opts.triageBacklog ?? NO_TRIAGE,
+    recordedMeasurement: opts.recordedMeasurement ?? null,
     snapshots: [
       cycleRow("chat", chatRoster(aggregateOpts), opts.cycles?.chat),
       cycleRow("email", emailRoster(aggregateOpts), opts.cycles?.email),
@@ -623,6 +646,21 @@ describe("ratios exist only per unit — there is nowhere to put a blended numbe
           degraded: false,
         },
       }),
+      // ⭐ And the MEASURED recall arm, which is where an actual RATE lives —
+      // the one place on this surface a percentage is spellable. Leaving it
+      // unswept would put the gap exactly where this pin matters most: a
+      // `coverageScore` added to the recall arm would not redden anything.
+      world({
+        triageBacklog: { total: 4, byRule: [], degraded: false },
+        recordedMeasurement: {
+          setId: "s",
+          measuredAt: "2026-09-02T12:00:00.000Z",
+          candidate: "c",
+          composed: measurement(),
+          baseline: measurement(),
+          passed: true,
+        },
+      }),
     ]) {
       walk(w, "$root");
     }
@@ -643,8 +681,16 @@ describe("ratios exist only per unit — there is nowhere to put a blended numbe
       "inPerimeterWithoutEvidence",
       "inTension",
       "lagMs",
+      // The triage recall arm (#5338 AC 8). A RATE and its bound, admissible
+      // here for the reason the arm exists: it is a rate OF a named population
+      // that travels with `positives`, its own denominator — not a blend across
+      // incommensurable layers, which is what ADR-0041 refuses. If either ever
+      // loses its denominator, this list is where that has to be argued.
+      "observedRecall",
+      "positives",
       "provisional",
       "published",
+      "recallLowerBound",
       "retracted",
       "reviewableAwaitingReview",
       "stale",
@@ -1306,11 +1352,45 @@ describe("the triage arm — what extraction was told not to look at (#5338 AC 8
     expect(result.triage.withheldEpisodes).toBe(3);
   });
 
-  test("recall reads UNMEASURED, because the store is empty", () => {
+  test("⭐ the MEASURED arm is reachable from the composition seam", () => {
+    // The regression this pins: `composeTriageRecall` first read the record
+    // store directly, which made `composeCoverage` a function of module state
+    // and left this arm — the most consequential sentence on the surface —
+    // undrivable from the suite whose whole job is to drive the composition
+    // adversarially. It is an INPUT now.
+    const result = world({
+      triageBacklog: { total: 4, byRule: [], degraded: false },
+      recordedMeasurement: {
+        setId: "apache-2026-06",
+        measuredAt: "2026-09-02T12:00:00.000Z",
+        candidate: "stage-1-distilled",
+        composed: measurement({ recall: 0.82, recallLowerBound: 0.74, positives: 120 }),
+        baseline: measurement(),
+        passed: false,
+      },
+    });
+    expect(result.triage.recall).toEqual({
+      measured: true,
+      setId: "apache-2026-06",
+      measuredAt: "2026-09-02T12:00:00.000Z",
+      observedRecall: 0.82,
+      recallLowerBound: 0.74,
+      positives: 120,
+      // The record's OWN verdict travels, including a FAILING one. A page that
+      // rendered only the rate would show a reassuring number with a decimal
+      // point for the run that did not clear the threshold.
+      passed: false,
+    });
+  });
+
+  test("an absent record and an explicit null are the same statement", () => {
+    expect(world({ recordedMeasurement: null }).triage.recall).toEqual({ measured: false });
+    expect(world().triage.recall).toEqual({ measured: false });
+  });
+
+  test("recall reads UNMEASURED when nothing is recorded", () => {
     // Ships true and is meant to: #5338's first real cut yielded 9 positives
-    // against a Wilson floor of 110, so there is no gating number to state. The
-    // measured arm is driven in `triage-measurements.test.ts`, where the store's
-    // own shape is under test.
+    // against a Wilson floor of 110, so there is no gating number to state.
     const result = world({
       triageBacklog: {
         total: 7,

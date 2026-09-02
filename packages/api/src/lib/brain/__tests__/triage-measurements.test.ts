@@ -17,11 +17,13 @@
  * with fixtures below so that none of this is a green nobody has seen go red.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import {
   RECORDED_MEASUREMENTS,
   RECORDED_MEASUREMENTS_PATH,
   latestRecordedMeasurement,
+  recordedMeasurementsFile,
 } from "@atlas/api/lib/brain/triage-measurements";
 import {
   MEASUREMENT_BUDGET,
@@ -93,11 +95,26 @@ describe("one store, not two", () => {
     // including a FAILING one — could land somewhere nothing consults. Same
     // class as the gate whose only caller passed `[]`, one step further out,
     // and equally invisible from either side alone.
-    const onDisk: unknown = JSON.parse(
-      readFileSync(new URL(`../../../../${RECORDED_MEASUREMENTS_PATH}`, import.meta.url), "utf8"),
-    );
+    const onDisk: unknown = JSON.parse(readFileSync(recordedMeasurementsFile(), "utf8"));
     expect(Array.isArray(onDisk)).toBe(true);
     expect(onDisk).toEqual(RECORDED_MEASUREMENTS as unknown as unknown[]);
+  });
+
+  test("⭐ the write target is CWD-independent, so the warning cannot be silenced", () => {
+    // The second half of the same defect. `RECORDED_MEASUREMENTS_PATH` is a
+    // repo-relative string for messages; resolving it against the CWD is how
+    // the CLI ends up writing `<root>/src/lib/brain/…` when run from the repo
+    // root — a different file that compares string-equal to the default, so
+    // the "you are recording where nothing reads it" warning stays silent on
+    // the one run that needs it.
+    // Absolute and derived from this module's own URL, so it names the same
+    // file from any working directory. Asserted WITHOUT chdir — `testing.md`
+    // forbids that, and an assertion comparing against `resolve(...)` would
+    // itself flip depending on where the suite was invoked from, which is the
+    // bug wearing a test's clothes.
+    expect(isAbsolute(recordedMeasurementsFile())).toBe(true);
+    expect(recordedMeasurementsFile()).toEndWith(RECORDED_MEASUREMENTS_PATH);
+    expect(existsSync(recordedMeasurementsFile())).toBe(true);
   });
 });
 

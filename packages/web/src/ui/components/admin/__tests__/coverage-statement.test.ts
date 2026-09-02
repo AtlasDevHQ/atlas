@@ -375,7 +375,34 @@ describe("composeStatement — the triage half (#5338 AC 8)", () => {
     });
   }
 
-  test("says so when nothing is held, rather than saying nothing", () => {
+  test("⭐ a recorded FAILURE is spoken even when the backlog is momentarily empty", () => {
+    // The hole the first spelling had, and it had the worst possible shape:
+    // gated on `withheldEpisodes > 0`, a recorded failing measurement with the
+    // dial on and everything just re-queued printed NOTHING — while the wire
+    // type calls that sentence the most important thing this surface could say.
+    // AC 8 keys the upgrade on the number existing, not on the backlog.
+    const [count, caveat] = composeStatement(
+      build({
+        triage: {
+          withheldEpisodes: 0,
+          byRule: [],
+          recall: {
+            measured: true,
+            setId: "apache-2026-06",
+            measuredAt: "2026-09-02T00:00:00.000Z",
+            observedRecall: 0.82,
+            recallLowerBound: 0.74,
+            positives: 120,
+            passed: false,
+          },
+        },
+      }),
+    ).triage;
+    expect(count).toContain("Nothing is being held back");
+    expect(caveat).toContain("did NOT clear the threshold");
+  });
+
+  test("says so when nothing is held and nothing measured, rather than saying nothing", () => {
     // A disappearing arm would make a deploy that never wired triage up read
     // identically to one that has it off, and those are different states. The
     // four no-count class arms make the same argument one arm over.

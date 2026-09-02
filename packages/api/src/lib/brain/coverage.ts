@@ -82,6 +82,7 @@ import {
 import { EPISODE_SOURCE_CLASSES, type EpisodeSourceClass } from "@atlas/api/lib/brain/sources";
 import { loadTriageBacklog, type TriageBacklog } from "@atlas/api/lib/brain/triage-requeue";
 import { latestRecordedMeasurement } from "@atlas/api/lib/brain/triage-measurements";
+import type { RecordedMeasurement } from "@atlas/api/lib/brain/triage-measure-record";
 import type {
   BrainCoverage,
   BrainCoverageClass,
@@ -302,7 +303,19 @@ export async function loadCoverage(
     ),
   );
 
-  return composeCoverage({ workspaceId, ...(requestId !== undefined ? { requestId } : {}), authority, snapshots, rosters, triageBacklog, at: new Date() });
+  return composeCoverage({
+    workspaceId,
+    ...(requestId !== undefined ? { requestId } : {}),
+    authority,
+    snapshots,
+    rosters,
+    triageBacklog,
+    // Resolved HERE rather than inside the composition, so the seam below stays
+    // a pure function of its arguments. The store is a committed file, so this
+    // is a module read and not IO.
+    recordedMeasurement: latestRecordedMeasurement(),
+    at: new Date(),
+  });
 }
 
 /** Everything the composition needs, with the reads already done. */
@@ -324,6 +337,18 @@ export interface CoverageComposition {
    * and those are opposite statements about what Atlas looked at.
    */
   readonly triageBacklog: TriageBacklog;
+  /**
+   * The newest recorded triage measurement, or null when none has been
+   * recorded — #5338 AC 8's "upgrading to a recall caveat once a number
+   * exists".
+   *
+   * Optional ONLY so a fixture may omit it and mean "nothing recorded"; absent
+   * and explicitly `null` are the same statement. It is an input rather than a
+   * module read for {@link composeTriageRecall}'s reason: the composition is
+   * this surface's falsifiable seam, and a half of it that reaches past its own
+   * parameters cannot be driven by a fixture.
+   */
+  readonly recordedMeasurement?: RecordedMeasurement | null;
   /**
    * The instant this statement is made — required, never defaulted here.
    *
@@ -385,7 +410,7 @@ export function composeCoverage(input: CoverageComposition): BrainCoverage {
   // `CoverageCompositionError`, whose message asserts a different diagnosis
   // entirely, so the impossible case would have misdirected the operator
   // correlating on its requestId. The `Record` type is the guarantee.
-  const triage = composeTriage(input.triageBacklog);
+  const triage = composeTriage(input.triageBacklog, input.recordedMeasurement ?? null);
   // A backlog that under-counts is a smaller stated blind spot than the real
   // one — the flattering direction, so it clears the flag exactly like a
   // dropped roster row does.
@@ -425,7 +450,10 @@ export function composeCoverage(input: CoverageComposition): BrainCoverage {
  * support, which is the same class of error as a ratio without its unit one arm
  * over.
  */
-function composeTriage(backlog: TriageBacklog): BrainCoverageTriage {
+function composeTriage(
+  backlog: TriageBacklog,
+  record: RecordedMeasurement | null,
+): BrainCoverageTriage {
   return {
     withheldEpisodes: backlog.total,
     byRule: backlog.byRule.map((bucket) => ({
@@ -433,23 +461,30 @@ function composeTriage(backlog: TriageBacklog): BrainCoverageTriage {
       episodes: bucket.episodes,
       known: bucket.known,
     })),
-    recall: composeTriageRecall(),
+    recall: composeTriageRecall(record),
   };
 }
 
 /**
- * The recall statement, read from the in-repo record store.
+ * The recall statement, from the record the caller resolved.
  *
- * ⚠️ It reads the SAME store `checkTriageDefaultGate` does, and that is the
- * property worth keeping: a page that sourced its number anywhere else could
- * report a passing measurement while the gate saw a failing one, and the two
- * would disagree about the only question either exists to answer. The
- * divergence they are allowed is documented on
- * {@link latestRecordedMeasurement} — newest overall here, newest-per-set
- * there — and it is a difference in the question, not in the data.
+ * ⚠️ **Taken as a parameter, never read from the store here.** The first
+ * spelling of this called `latestRecordedMeasurement()` with no argument, which
+ * made {@link composeCoverage} a function of module state rather than of its
+ * own input — and this module's header says the composition was split out
+ * precisely so a fixture can author its inputs adversarially. The cost was
+ * exact and immediate: the `measured: true` arm became unreachable from
+ * `coverage.test.ts`, so the most consequential sentence on the surface was the
+ * one the composition suite could not drive.
+ *
+ * `loadCoverage` resolves it from the SAME store `checkTriageDefaultGate`
+ * reads, which is the property worth keeping: a page that sourced its number
+ * anywhere else could report a passing measurement while the gate saw a failing
+ * one. The divergence they are allowed is documented on
+ * {@link latestRecordedMeasurement} — newest overall there, newest-per-set in
+ * the gate — and it is a difference in the question, not in the data.
  */
-function composeTriageRecall(): BrainCoverageTriageRecall {
-  const record = latestRecordedMeasurement();
+function composeTriageRecall(record: RecordedMeasurement | null): BrainCoverageTriageRecall {
   if (record === null) return { measured: false };
   return {
     measured: true,

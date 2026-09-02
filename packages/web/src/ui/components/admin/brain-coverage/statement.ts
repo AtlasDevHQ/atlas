@@ -211,11 +211,18 @@ function authoritySentences(coverage: BrainCoverage): string[] {
 /**
  * The triage sentences — the count, then what it costs.
  *
- * ⚠️ The recall caveat is spoken only when something IS held, and that is a
- * judgement worth stating rather than hiding in a condition. With nothing
- * withheld the caveat has no referent: it would qualify a filter that dropped
- * nothing, and a page that warns about every layer whether or not it did
- * anything trains a reader to skip the warnings that matter. What that costs is
+ * ⭐ **The caveat is keyed on the NUMBER existing, not on the backlog being
+ * non-empty**, because that is what #5338 AC 8 asks for: *"upgrading to a
+ * recall caveat once a number exists"*. The first spelling gated it on
+ * `withheldEpisodes > 0` and had a hole with the worst possible shape: a
+ * recorded **failing** measurement with a momentarily-empty backlog — the dial
+ * on, everything just re-queued — printed no caveat at all, while the wire type
+ * calls that sentence the most important thing this surface could say.
+ *
+ * The unmeasured caveat still waits for something to be held, and that half of
+ * the judgement stands: with nothing withheld and nothing measured there is no
+ * referent, and a page that warns about every layer whether or not it did
+ * anything trains a reader to skip the warnings that matter. What it costs is
  * the re-queue case — episodes triaged and later re-queued leave no trace, so a
  * workspace can read zero having once dropped plenty — which is why the count
  * is documented on the wire as a live gauge rather than a tally.
@@ -223,7 +230,7 @@ function authoritySentences(coverage: BrainCoverage): string[] {
 function triageSentences(coverage: BrainCoverage): string[] {
   const { withheldEpisodes, byRule, recall } = coverage.triage;
   const out = [triageWithheldClaim(withheldEpisodes, byRule)];
-  if (withheldEpisodes > 0) out.push(triageRecallClaim(recall));
+  if (recall.measured || withheldEpisodes > 0) out.push(triageRecallClaim(recall));
   return out;
 }
 

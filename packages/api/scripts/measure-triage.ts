@@ -56,7 +56,11 @@ import {
   type RecordedMeasurement,
 } from "@atlas/api/lib/brain/triage-measure-record";
 import { deterministicTriager, type Triager } from "@atlas/api/lib/brain/triage";
-import { RECORDED_MEASUREMENTS_PATH } from "@atlas/api/lib/brain/triage-measurements";
+import { resolve } from "node:path";
+import {
+  RECORDED_MEASUREMENTS_PATH,
+  recordedMeasurementsFile,
+} from "@atlas/api/lib/brain/triage-measurements";
 
 const TAG = "[measure-triage]";
 
@@ -174,9 +178,16 @@ async function main(): Promise<number> {
   // will consult it, because a measurement recorded where nothing reads it is
   // the same defect as a gate whose only caller passes `[]`.
   const recordFlagPresent = process.argv.includes("--record");
-  const recordPath = recordFlagPresent ? (flag("--record") ?? RECORDED_MEASUREMENTS_PATH) : undefined;
+  const canonical = recordedMeasurementsFile();
+  const requested = flag("--record");
+  // Compared as RESOLVED paths, never as strings. `--record src/lib/...` from
+  // `packages/api` and the default name the same file, and a string compare
+  // would call them different; run from the repo root, a CWD-relative default
+  // would name a different file and a string compare would call them the same.
+  // Both directions are wrong, and the second silences this warning.
+  const recordPath = recordFlagPresent ? (requested ?? canonical) : undefined;
   if (recordPath !== undefined) {
-    if (recordPath !== RECORDED_MEASUREMENTS_PATH) {
+    if (resolve(recordPath) !== canonical) {
       console.error(
         `${TAG} ⚠️ recording to ${recordPath}, which is NOT the store the triage-default gate ` +
           `and the Coverage Surface read (${RECORDED_MEASUREMENTS_PATH}). This run will not ` +
@@ -214,6 +225,26 @@ async function main(): Promise<number> {
     if (!Array.isArray(existing)) {
       console.error(
         `${TAG} ${recordPath} does not hold a JSON array. Refusing to write, for the same reason.`,
+      );
+      return 3;
+    }
+    // Element shape is CHECKED, not asserted. `checkMeasurementBudget` counts
+    // attempts per `setId`, so an entry missing one is an attempt that silently
+    // does not count — the budget's memory leaking one row at a time rather
+    // than all at once, which is the same failure the unparseable-file arm
+    // above refuses, only quieter.
+    const malformed = existing.filter(
+      (entry) =>
+        typeof entry !== "object" ||
+        entry === null ||
+        typeof (entry as Record<string, unknown>).setId !== "string" ||
+        typeof (entry as Record<string, unknown>).measuredAt !== "string",
+    );
+    if (malformed.length > 0) {
+      console.error(
+        `${TAG} ${recordPath} holds ${malformed.length} entr(ies) without a string setId and ` +
+          `measuredAt. Refusing to write: the budget counts attempts per set, so those rows ` +
+          `would be attempts that do not count.`,
       );
       return 3;
     }

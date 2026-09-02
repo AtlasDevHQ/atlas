@@ -1,0 +1,101 @@
+-- 0214 — `brain_facts.published_at`: an approval that dates itself (#5591).
+--
+-- A rejection has always been datable and an approval never was. `brain_facts`
+-- carries `valid_from`, `valid_to`, `invalidated_at`, `extracted_at`,
+-- `created_at` and `updated_at`, and not one of them says WHEN a reviewer
+-- approved a claim. `gate-export.ts` states the consequence in its own
+-- docstring and had to narrow a field name because of it: `medianHoursToDecision`
+-- became `medianHoursToRetraction`, "and the narrower name is the honest one",
+-- because filtering on `invalidated_at` dropped every positive from the sample.
+--
+-- `updated_at` cannot stand in. Publish-time grant widening (#4823) moves it,
+-- and so does every provenance merge — so it dates the last write of any kind,
+-- not the decision.
+--
+-- ## Why `published_at` and not `decided_at`
+--
+-- #5338's design entry named this `decided_at`. `published_at` is the better
+-- name, on the single-writer argument `scripts/check-brain-fact-promotion.sh`
+-- is built on: the column moves with exactly ONE verb, in exactly the places
+-- that verb is allowlisted. `decided_at` invites a future writer to stamp it on
+-- retraction as well — a second writer, which would destroy the "when was this
+-- approved" reading the column exists for. Decision time is `published_at` for
+-- an approval and `invalidated_at` for a rejection; neither borrows the other's
+-- column, and the pair is complete without a third.
+--
+-- ## FORWARD-ONLY, and never backfilled
+--
+-- Every row existing when this migration runs reads NULL, permanently. There is
+-- no defensible backfill: `created_at` is the row's INSERT (extraction time,
+-- not review time) and `updated_at` is the last write of any kind. Either one
+-- would manufacture a review timestamp that no human act produced — on exactly
+-- the rows an evaluation corpus (#5338) is about to read as evidence of when
+-- reviewers decide. NULL means "not datable", which is true; a backfilled value
+-- would be a lie with a plausible shape, and that is worse than the gap.
+--
+-- Consumers must therefore treat NULL as "not datable" rather than as zero —
+-- the posture `summarizeGateDecisions` already takes for a never-extracted
+-- fact, where reporting an absent stamp as 0 "would claim an instantaneous
+-- review".
+--
+-- ## The three allowlisted `status` writers do NOT all stamp it
+--
+--   * `content-mode/adapters/brain-facts.ts` (`PROMOTE_FACTS_SQL`) — the review
+--     gate. Stamps `now()`.
+--   * `brain/correction.ts` (`PROMOTE_CORRECTION_FACT_SQL`) — the
+--     correction-authored replacement, promoted in the same transaction on a
+--     human's authority. Also a real decision, so it stamps `now()` too.
+--   * `api/routes/admin-migrate.ts` — the region import (ADR-0024). Stamps
+--     NOTHING. The allowlist's own words for why it may write `status` at all
+--     are that it "preserves the SOURCE workspace's review status verbatim… a
+--     restore of a prior gate decision, not a new one" — and `now()` there
+--     would assert that every migrated fact was approved at cutover, corrupting
+--     precisely the analytics this column exists to feed. An imported fact
+--     reads NULL because the decision happened in another region and the bundle
+--     does not carry it. Carrying it across a region bundle is a follow-up, not
+--     this migration.
+--
+-- ## The column is itself gated
+--
+-- `published_at` joins `UPDATE_GATED_COLUMNS` in
+-- `scripts/check-brain-fact-promotion.sh`. That guard's argument transfers
+-- directly: a rogue `status` write over-trusts a claim, and a rogue
+-- `published_at` write MANUFACTURES EVIDENCE OF A REVIEW THAT NEVER HAPPENED —
+-- evidence #5338's measurement is going to consume as ground truth. UPDATE-
+-- refused outside the allowlist, on the same terms as `status`.
+--
+-- ## Deploy-overlap note (expand only, no drops)
+--
+-- One nullable column and one partial index. Nothing is dropped or renamed, so
+-- an N-1 container that has never heard of the column keeps serving correctly
+-- through the overlap window — it neither reads nor writes it, and NULL is the
+-- value it would have produced anyway.
+
+ALTER TABLE brain_facts
+  ADD COLUMN IF NOT EXISTS published_at timestamptz;
+
+-- One literal rather than SQL string continuation across lines: the
+-- continuation form is standard and Postgres implements it, but a migration
+-- that runs at boot in three prod regions is the wrong place to depend on a
+-- lexer nicety nobody reading the diff would double-check.
+COMMENT ON COLUMN brain_facts.published_at IS 'When the review gate approved this claim (#5591). NULL = not datable: published before migration 0214, or restored verbatim by a region import whose bundle does not carry the source decision. Never backfilled. Written only by PROMOTE_FACTS_SQL and PROMOTE_CORRECTION_FACT_SQL; UPDATE-gated by scripts/check-brain-fact-promotion.sh.';
+
+-- ## NO INDEX, deliberately
+--
+-- An earlier cut of this migration added
+-- `idx_brain_facts_published_at (workspace_id, published_at) WHERE published_at
+-- IS NOT NULL`, and `identity-pg.test.ts` refused it by name: *"the index set on
+-- brain_facts changed. 0187 repoints one index and adds none; if you meant to
+-- add one, ADR-0037 §1's zero-net-new-indexes result is what you are trading
+-- away."* The tripwire was right and the index was speculative — NOTHING QUERIES
+-- THIS COLUMN YET. `gate-export` projects it and does not filter or order on it,
+-- and the readers that would (a `medianHoursToDecision`, #5338's decision-time
+-- window) are unwritten. An index for a query nobody has written is the
+-- "plausible hedge" ADR-0037 §1 spent a result refusing.
+--
+-- What would justify one, so the next reader does not have to re-derive it: a
+-- committed reader that filters or orders on `published_at` at a scale where a
+-- sequential scan of the workspace's facts costs something. Add it THEN, in its
+-- own migration, and update `identity-pg.test.ts`'s index list in the same
+-- change so the zero-net-new result is traded away on purpose rather than by
+-- accident.

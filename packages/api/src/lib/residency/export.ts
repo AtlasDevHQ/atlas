@@ -394,6 +394,13 @@ export async function exportWorkspaceBundle(
     // forward would restore a guess as a curated decision. #5028 phase 2 has
     // since dropped the column itself (migration 0195), so this projection could
     // no longer name it even if someone tried.
+    //
+    // `published_at` (#5591) is likewise absent, on the `extraction_batch_id`
+    // precedent: a new column rides a bundle only by an explicit edit. Whether
+    // an importer should carry a foreign region's approval clock is a real
+    // question and its own slice; until it is answered, an imported fact reads
+    // NULL rather than inheriting a stamp nothing here decided how to read.
+    // Pinned by `brain/__tests__/published-at.test.ts`.
     pool.query(
       `SELECT f.id, f.source_episode_id, f.subject, f.predicate, f.object,
               f.subject_key, f.predicate_key, f.object_key,

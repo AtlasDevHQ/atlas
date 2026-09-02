@@ -656,6 +656,12 @@ describe("migrateAuthTables", () => {
             // every auth mode — must be in the already-applied set so this
             // "all applied" test sees zero new migrations.
             { name: "0213_workspace_action_credentials.sql" },
+            // 0214 (#5591) — brain_facts.published_at, the approval timestamp.
+            // Additive ALTER on an Atlas-internal table, no Better Auth
+            // involvement, so it runs in every auth mode — must be in the
+            // already-applied set so this "all applied" test sees zero new
+            // migrations.
+            { name: "0214_brain_facts_published_at.sql" },
           ],
         };
       }

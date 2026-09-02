@@ -305,10 +305,18 @@ export const DRAFT_FACTS_SCOPED_SQL = draftFactsSql(2);
  * `FOR UPDATE` already pins the rows: it makes the statement correct on its own
  * terms, so a future refactor that drops the lock cannot turn this into a
  * republish of archived facts.
+ *
+ * ⚠️ It also stamps `published_at` (#5591, migration 0214) — THE approval
+ * timestamp, and the reason the `status = 'draft'` predicate above matters more
+ * than it looks. A statement that could re-run over an already-published row
+ * would move the stamp, rewriting when a reviewer decided; the predicate makes
+ * that unreachable rather than merely unlikely. `updated_at` cannot serve this
+ * purpose — publish-time grant widening moves it a few statements later in this
+ * same transaction.
  */
 export const PROMOTE_FACTS_SQL = `
   UPDATE brain_facts
-     SET status = 'published', updated_at = now()
+     SET status = 'published', published_at = now(), updated_at = now()
    WHERE workspace_id = $1
      AND status = 'draft'
      AND invalidated_at IS NULL

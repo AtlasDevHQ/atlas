@@ -915,8 +915,17 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
         // status write silently becoming a no-op.
         expect((await publish(workspaceId)).promoted).toBe(0);
         // Faithful to what the gate would have written: `PROMOTE_FACTS_SQL`
-        // sets `status` and `updated_at` and nothing else, and with one fact in
-        // the workspace there is no supersession phase to reproduce.
+        // sets `status`, `published_at` (#5591) and `updated_at` and nothing
+        // else, and with one fact in the workspace there is no supersession
+        // phase to reproduce.
+        //
+        // ⚠️ `published_at` is the one column where the two populations this arm
+        // models would genuinely read NULL — a row blessed before the gate
+        // closed predates migration 0214, and a region import deliberately does
+        // not stamp it. Mirrored anyway, because the pin below is against
+        // `PROMOTE_FACTS_SQL` rather than against those populations, and nothing
+        // in this test reads the column. If something ever does, this is the
+        // line to reconsider first.
         //
         // Pinned against the real statement rather than asserted in prose. A
         // column added to the gate's SET clause would otherwise leave this
@@ -927,10 +936,10 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
         const setClause = /SET([\s\S]*?)WHERE/.exec(PROMOTE_FACTS_SQL)?.[1];
         expect(setClause).toBeDefined();
         expect(setClause?.replace(/\s+/g, " ").trim()).toBe(
-          "status = 'published', updated_at = now()",
+          "status = 'published', published_at = now(), updated_at = now()",
         );
         const stamped = await pool.query(
-          `UPDATE brain_facts SET status = 'published', updated_at = now()
+          `UPDATE brain_facts SET status = 'published', published_at = now(), updated_at = now()
             WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL`,
           [workspaceId],
         );

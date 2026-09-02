@@ -3673,6 +3673,27 @@ export const brainFacts = pgTable(
     // immediately, and a region import preserves the source's review status
     // rather than demoting reviewed facts back to draft.
     status: text("status").notNull().default("draft"),
+    // When the review gate APPROVED this claim (#5591, migration 0214). The
+    // counterpart to `invalidatedAt`: a rejection has always dated itself and
+    // an approval never did, which is why `gate-export.ts` reports
+    // `medianHoursToRetraction` and not `medianHoursToDecision`. `updatedAt`
+    // cannot stand in — publish-time grant widening (#4823) and every
+    // provenance merge move it, so it dates the last write of any kind.
+    //
+    // FORWARD-ONLY AND NEVER BACKFILLED. Every row predating 0214 reads NULL
+    // permanently, and so does every region-imported row: the import restores a
+    // prior gate decision rather than making a new one, and `now()` there would
+    // assert that a whole tenant was approved at cutover. `createdAt` (the
+    // INSERT) and `updatedAt` (any write) are both available and both wrong —
+    // either would manufacture a review timestamp no human act produced, on
+    // exactly the rows #5338's evaluation corpus reads as evidence of when
+    // reviewers decide. NULL means "not datable", which is true.
+    //
+    // Written by `PROMOTE_FACTS_SQL` and `PROMOTE_CORRECTION_FACT_SQL` and
+    // nothing else, and UPDATE-gated by `check-brain-fact-promotion.sh` on the
+    // same terms as `status` — a rogue write here manufactures evidence of a
+    // review that never happened.
+    publishedAt: timestamp("published_at", { withTimezone: true }),
     // Self-contained principal set, derived at ingest, evaluated read-time
     // local. Grammar (parser in #4768):
     //   org | role:{owner,admin,member} | user:<id> | audience:<source-derived>

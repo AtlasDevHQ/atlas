@@ -242,6 +242,18 @@ export interface GateExportFact {
   readonly status: string;
   readonly extractedAt: string | null;
   readonly invalidatedAt: string | null;
+  /**
+   * When the review gate APPROVED this claim (#5591, migration 0214) — the
+   * positive verb's timestamp, and the counterpart to `invalidatedAt`.
+   *
+   * ⚠️ NULL is common and permanent, not a gap waiting to be filled. Every fact
+   * published before 0214 reads NULL, and so does every region-imported fact,
+   * whose approval happened in another region and is not carried by the bundle.
+   * Read it as "not datable" — never as zero, and never as "approved at epoch".
+   * The corpus is therefore datable going FORWARD only, which is exactly what
+   * #5338's held-out manifest works around by owning the decision label itself.
+   */
+  readonly publishedAt: string | null;
   readonly visibleTo: readonly string[];
   readonly actor: string | null;
   readonly provenanceSourceId: string | null;
@@ -295,6 +307,17 @@ export interface GateAnalytics {
    * called the field `medianHoursToDecision` and filtered on `invalidatedAt`
    * anyway — so every positive fell out of the sample and the number described
    * rejections while claiming to describe decisions.
+   *
+   * ⭐ THE LIMIT IS NOW CLOSING, FORWARD-ONLY (#5591). `brain_facts.published_at`
+   * exists as of migration 0214 and the two allowlisted promote statements
+   * stamp it, so an approval made from now on DOES date itself and rides this
+   * bundle as `GateExportFact.publishedAt`. This field keeps its narrow name
+   * regardless: every fact published before 0214 reads NULL permanently and is
+   * never backfilled, so a `medianHoursToDecision` computed today would describe
+   * the recent minority while looking like it described the corpus. Rename it
+   * when the NULL population stops mattering, not before — and note that the
+   * analytics here deliberately did NOT change in the same slice, so nothing
+   * this bundle reports silently switched denominators.
    *
    * Null when no rejected claim carries both stamps — an authored
    * (never-extracted) fact has no `extracted_at`, and reporting its absence as
@@ -431,7 +454,7 @@ WITH decided AS (
          e.id AS episode_id, e.source, e.source_id, e.source_actor, e.body, e.locator,
          e.occurred_at, e.ingested_at, e.extracted_at AS episode_extracted_at, e.visible_to AS episode_visible_to,
          f.id AS fact_id, f.subject, f.predicate, f.object, f.status,
-         f.extracted_at AS fact_extracted_at, f.invalidated_at, f.visible_to AS fact_visible_to,
+         f.extracted_at AS fact_extracted_at, f.invalidated_at, f.published_at, f.visible_to AS fact_visible_to,
          f.provenance->>'actor' AS actor, f.provenance->>'sourceId' AS provenance_source_id
     FROM brain_facts f
     JOIN brain_episodes e
@@ -447,6 +470,7 @@ silent AS (
          e.occurred_at, e.ingested_at, e.extracted_at AS episode_extracted_at, e.visible_to AS episode_visible_to,
          NULL::uuid AS fact_id, NULL::text AS subject, NULL::text AS predicate, NULL::text AS object,
          NULL::text AS status, NULL::timestamptz AS fact_extracted_at, NULL::timestamptz AS invalidated_at,
+         NULL::timestamptz AS published_at,
          NULL::text[] AS fact_visible_to, NULL::text AS actor, NULL::text AS provenance_source_id
     FROM brain_episodes e
    WHERE e.workspace_id = $1
@@ -482,6 +506,7 @@ interface RawDecisionRow {
   status: string | null;
   fact_extracted_at: Date | string | null;
   invalidated_at: Date | string | null;
+  published_at: Date | string | null;
   fact_visible_to: unknown;
   actor: string | null;
   provenance_source_id: string | null;
@@ -575,6 +600,7 @@ export async function loadGateDecisions(
         status: row.status ?? "",
         extractedAt: iso(row.fact_extracted_at),
         invalidatedAt: iso(row.invalidated_at),
+        publishedAt: iso(row.published_at),
         visibleTo: factGrant,
         actor: row.actor,
         provenanceSourceId: row.provenance_source_id,

@@ -429,6 +429,61 @@ run_fixture "UPDATE of another table's visible_to passes" pass \
 'await db.query(`UPDATE brain_episodes SET visible_to = ARRAY['"'"'org'"'"'] WHERE id = $1`);
 const live = await db.query(`SELECT id FROM brain_facts`);'
 
+# ── published_at (#5591): the approval stamp, UPDATE-only ──
+#
+# Both directions, like every other gated column. The failure this one guards
+# is unlike the three above: a rogue `status` write over-trusts a claim and a
+# rogue `visible_to` write discloses one, but a rogue `published_at` write
+# MANUFACTURES EVIDENCE OF A REVIEW THAT NEVER HAPPENED — on exactly the rows
+# an evaluation corpus (#5338) reads as ground truth for when reviewers decide.
+
+run_fixture "UPDATE … SET published_at fails (a review that never happened)" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET published_at = now() WHERE workspace_id = $1 AND subject = $2`);'
+
+run_fixture "Drizzle .update().set({publishedAt}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ publishedAt: new Date() }).where(eq(brainFacts.id, id));'
+
+# The backfill shape, called out on its own because it is the tempting one:
+# every row predating migration 0214 reads NULL and `created_at` is sitting
+# right there. 0214's header is the argument for why it must stay NULL.
+run_fixture "backfilling published_at from created_at fails" fail \
+  "packages/api/src/lib/brain/backfill.ts" \
+'await db.query(`UPDATE brain_facts SET published_at = created_at WHERE status = '"'"'published'"'"' AND published_at IS NULL`);'
+
+run_fixture "ON CONFLICT … DO UPDATE SET published_at fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`INSERT INTO brain_facts (id, workspace_id, subject) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET published_at = now()`);'
+
+# The must-PASS arm. INSERT is ungated for the OPPOSITE reason to `status`'"'"'s
+# being gated: this column has no default to protect and NULL already means
+# "not approved", so a stamp on an unpublished row is inert. What must never
+# happen is a LATER writer MOVING it, which is an UPDATE, always.
+run_fixture "INSERT naming published_at passes — no default to protect, and NULL already means not-approved" pass \
+  "packages/api/src/lib/brain/import-shape2.ts" \
+'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, published_at, provenance, source_episode_id, visible_to)
+  VALUES ($1,$2,$3,$4,$5::timestamptz,$6::jsonb,$7::uuid, ARRAY(SELECT jsonb_array_elements_text($8::jsonb)))`);'
+
+run_fixture "SELECT filtering on published_at passes — the corpus read is the point of the column" pass \
+  "packages/api/src/lib/brain/read2.ts" \
+'const rows = await db.query(`SELECT id, published_at FROM brain_facts WHERE workspace_id = $1 AND published_at IS NOT NULL`);'
+
+# The two allowlisted promote statements, which are the only writers.
+run_fixture "the allowlisted adapter promote stamp passes" pass \
+  "packages/api/src/lib/content-mode/adapters/brain-facts.ts" \
+'await tx.query(`UPDATE brain_facts SET status = '"'"'published'"'"', published_at = now(), updated_at = now() WHERE workspace_id = $1 AND status = '"'"'draft'"'"' AND id = ANY($2::uuid[])`);'
+
+run_fixture "correction.ts promote stamp passes" pass \
+  "packages/api/src/lib/brain/correction.ts" \
+'await tx.query(`UPDATE brain_facts SET status = '"'"'published'"'"', published_at = now(), updated_at = now() WHERE workspace_id = $1 AND id = $2::uuid AND status = '"'"'draft'"'"'`);'
+
+# A retraction names neither column, so it must keep passing now that
+# `published_at` is gated too — the same regression guard `valid_to` has.
+run_fixture "retraction still passes with published_at gated" pass \
+  "packages/api/src/lib/brain/retract3.ts" \
+'await db.query(`UPDATE brain_facts AS f SET invalidated_at = now(), updated_at = now() WHERE f.id = $1 AND f.invalidated_at IS NULL`);'
+
 # ── valid_to (#4912): the supersession stamp, UPDATE-only like the grant ──
 
 run_fixture "UPDATE … SET valid_to fails (autonomous supersession)" fail \
@@ -668,19 +723,27 @@ declare -A PRECEDENCE_COLUMN=(
   [identity]="subject_key"
   [valid_to]="valid_to"
   [status]="status"
+  [published_at]="published_at"
 )
 declare -A PRECEDENCE_HEADLINE=(
   [visible_to]="\`visible_to\` is MUTATED"
   [identity]="is RE-KEYED outside the alias-approval seam"
   [valid_to]="\`valid_to\` is stamped"
   [status]="\`status\` is written"
+  [published_at]="\`published_at\` is stamped outside"
 )
 
 # The pin. Failure direction, most severe first: a grant write DISCLOSES; a
 # re-key reaches the irreversible `valid_to` stamp by proxy, so it subsumes the
 # stamp wherever a statement carries both; a stamp retires a belief invisibly; a
-# status write over-trusts a claim, the recoverable one.
-EXPECTED_ORDER=(visible_to identity valid_to status)
+# status write over-trusts a claim, the recoverable one; and `published_at`
+# (#5591) comes LAST, deliberately. It is the only gated column whose rogue
+# write changes nothing about what the system SERVES — the claim's trust and
+# visibility are decided by `status` and `visible_to`, and a moved approval
+# timestamp leaves both intact. What it corrupts is the RECORD of when a human
+# decided, which matters to an evaluation corpus (#5338) and to nobody reading
+# a fact. Real, and ranked below every column that changes what a user sees.
+EXPECTED_ORDER=(visible_to identity valid_to status published_at)
 
 SEVERITY_ORDER_LINE="$(grep -oE '^SEVERITY_ORDER=\(([^)]*)\)' "$SCRIPT" | head -1)"
 if [ -z "$SEVERITY_ORDER_LINE" ]; then

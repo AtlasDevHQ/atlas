@@ -457,7 +457,13 @@ describe("runMigrations", () => {
     //   an operator tier — the ladder is workspace row → process.env on
     //   self-hosted only → throw, per ADR-0046. Renumbered from 0212 on the
     //   merge with main, which took that number first) = 214.
-    expect(count).toBe(214);
+    //   Plus 0214 (brain_facts.published_at — #5591: the approval timestamp. A
+    //   rejection has always dated itself via `invalidated_at` and an approval
+    //   never did, which is why `gate-export` reports `medianHoursToRetraction`
+    //   and not `medianHoursToDecision`. One nullable column, forward-only and
+    //   never backfilled; no index, deliberately — see the migration header) =
+    //   215.
+    expect(count).toBe(215);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -782,6 +788,7 @@ describe("runMigrations", () => {
         "0211_plugin_grant_revocation_failures.sql",
         "0212_region_migrations_vocabulary_memory_refusals.sql",
         "0213_workspace_action_credentials.sql",
+        "0214_brain_facts_published_at.sql",
       ],
     });
 

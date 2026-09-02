@@ -3780,13 +3780,6 @@ export const brainFacts = pgTable(
       .on(t.workspaceId, t.subjectKey, t.predicateKey)
       .where(sql`invalidated_at IS NULL AND valid_to IS NULL`),
     index("idx_brain_facts_valid_from").on(t.workspaceId, t.validFrom),
-    // PARTIAL, and the predicate is load-bearing rather than a byte shave:
-    // every row predating migration 0214 and every region-imported row is NULL
-    // forever, so an unfiltered index would carry a permanent dead majority on
-    // exactly the deployments that have been running longest.
-    index("idx_brain_facts_published_at")
-      .on(t.workspaceId, t.publishedAt)
-      .where(sql`published_at IS NOT NULL`),
     index("idx_brain_facts_source_episode").on(t.sourceEpisodeId),
     index("idx_brain_facts_visible_to").using("gin", t.visibleTo),
     // Lexical tier-2 retrieval (#4773, migration 0181).

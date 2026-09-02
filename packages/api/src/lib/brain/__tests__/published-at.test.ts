@@ -93,4 +93,37 @@ describe("published_at — it reaches the evaluation corpus", () => {
     // predating 0214 reads NULL and is never backfilled.
     expect(sql.join("\n")).toContain("f.published_at");
   });
+
+  it("pads the negative arm, so the UNION arms stay the same width", async () => {
+    // ⚠️ The regression this exists for, caught by CI rather than locally: the
+    // projection is `decided UNION ALL silent`, and a column added to the
+    // fact-bearing arm alone makes Postgres refuse the whole statement with
+    // "each UNION query must have the same number of columns". The negative arm
+    // has no fact, so it carries a typed NULL placeholder for every fact
+    // column — `published_at` included.
+    const { loadGateDecisions } = await import("../gate-export");
+    const sql: string[] = [];
+    const reader = {
+      query: async (q: string) => {
+        sql.push(q);
+        return { rows: [] as readonly unknown[], rowCount: 0 };
+      },
+    };
+    await loadGateDecisions(reader, "ws-1");
+    const joined = sql.join("\n");
+    expect(joined).toContain("NULL::timestamptz AS published_at");
+
+    // And the general form, so the next column added to either arm is caught
+    // here rather than by a real Postgres: both SELECT lists, compared by the
+    // count of comma-separated projections.
+    const decided = /WITH decided AS \(\s*SELECT([\s\S]*?)\n\s*FROM brain_facts/.exec(joined);
+    const silent = /silent AS \(\s*SELECT([\s\S]*?)\n\s*FROM brain_episodes/.exec(joined);
+    expect(decided, "the `decided` CTE no longer parses — re-point this pin").not.toBeNull();
+    expect(silent, "the `silent` CTE no longer parses — re-point this pin").not.toBeNull();
+    const width = (body: string) => body.split(",").length;
+    expect(
+      width(silent![1]!),
+      "the two UNION arms project a different number of columns — Postgres refuses the whole statement",
+    ).toBe(width(decided![1]!));
+  });
 });

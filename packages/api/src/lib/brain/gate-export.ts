@@ -470,6 +470,7 @@ silent AS (
          e.occurred_at, e.ingested_at, e.extracted_at AS episode_extracted_at, e.visible_to AS episode_visible_to,
          NULL::uuid AS fact_id, NULL::text AS subject, NULL::text AS predicate, NULL::text AS object,
          NULL::text AS status, NULL::timestamptz AS fact_extracted_at, NULL::timestamptz AS invalidated_at,
+         NULL::timestamptz AS published_at,
          NULL::text[] AS fact_visible_to, NULL::text AS actor, NULL::text AS provenance_source_id
     FROM brain_episodes e
    WHERE e.workspace_id = $1

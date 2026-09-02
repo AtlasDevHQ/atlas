@@ -80,14 +80,22 @@ ALTER TABLE brain_facts
 -- lexer nicety nobody reading the diff would double-check.
 COMMENT ON COLUMN brain_facts.published_at IS 'When the review gate approved this claim (#5591). NULL = not datable: published before migration 0214, or restored verbatim by a region import whose bundle does not carry the source decision. Never backfilled. Written only by PROMOTE_FACTS_SQL and PROMOTE_CORRECTION_FACT_SQL; UPDATE-gated by scripts/check-brain-fact-promotion.sh.';
 
--- The datable-approval population, per workspace and in decision order — what
--- an evaluation corpus (#5338) walks to draw a window on decision time, and
--- what a future `medianHoursToDecision` would aggregate.
+-- ## NO INDEX, deliberately
 --
--- PARTIAL on `published_at IS NOT NULL`, which is doing real work rather than
--- shaving bytes: every row predating this migration and every region-imported
--- row is NULL forever, so the unfiltered index would carry a permanent dead
--- majority on exactly the deployments that have been running longest.
-CREATE INDEX IF NOT EXISTS idx_brain_facts_published_at
-  ON brain_facts (workspace_id, published_at)
-  WHERE published_at IS NOT NULL;
+-- An earlier cut of this migration added
+-- `idx_brain_facts_published_at (workspace_id, published_at) WHERE published_at
+-- IS NOT NULL`, and `identity-pg.test.ts` refused it by name: *"the index set on
+-- brain_facts changed. 0187 repoints one index and adds none; if you meant to
+-- add one, ADR-0037 §1's zero-net-new-indexes result is what you are trading
+-- away."* The tripwire was right and the index was speculative — NOTHING QUERIES
+-- THIS COLUMN YET. `gate-export` projects it and does not filter or order on it,
+-- and the readers that would (a `medianHoursToDecision`, #5338's decision-time
+-- window) are unwritten. An index for a query nobody has written is the
+-- "plausible hedge" ADR-0037 §1 spent a result refusing.
+--
+-- What would justify one, so the next reader does not have to re-derive it: a
+-- committed reader that filters or orders on `published_at` at a scale where a
+-- sequential scan of the workspace's facts costs something. Add it THEN, in its
+-- own migration, and update `identity-pg.test.ts`'s index list in the same
+-- change so the zero-net-new result is traded away on purpose rather than by
+-- accident.

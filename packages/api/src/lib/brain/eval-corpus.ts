@@ -40,6 +40,31 @@
  * the path plan explicitly allows and which is what makes a number traceable to
  * a set the repo does not hold.
  *
+ * ## The denominator is a reviewer's judgement of the TEXT (#5338, amended 2026-09-02)
+ *
+ * AC 3 originally read *"episodes yielding a published, non-retracted fact"* —
+ * the pipeline's outcome, which requires the extractor to have produced a
+ * candidate AND a reviewer to have published it. On a prod cut the two are the
+ * same thing, because there the only evidence a claim existed is that the
+ * pipeline produced one. On a labelled corpus they come apart, and the
+ * criterion now asks for the reviewer's judgement of the text alone.
+ *
+ * ⭐ The reason is that the outcome denominator **decays toward unsafe**: an
+ * episode counts as a positive only if TODAY's extractor would have produced a
+ * candidate, so a triage drop the extractor would have missed anyway scores as
+ * free — until #5337 ships a better extractor and it is not free any more,
+ * while the recorded measurement the gate treats as live still says it is. A
+ * denominator that moves with extractor quality has to be re-cut on every
+ * extractor change, which defeats the freeze this whole apparatus rests on. It
+ * also carries a perverse gradient: an extractor REGRESSION would make triage's
+ * recall go up, because fewer episodes qualify as positives.
+ *
+ * The cost, stated because it is real: this over-counts. It includes claims no
+ * realistic extractor would catch, so the number runs pessimistic and triage
+ * can be charged with a miss that would not have cost a published fact today.
+ * The gap between the two denominators is reported rather than hidden — see
+ * {@link SHEET_LABEL_GUIDE} and the README's "both numbers" step.
+ *
  * ## What it is NOT allowed to do, and how that is enforced
  *
  * ⭐ **A sheet carries no triage information, ever.** If the labeller could see
@@ -207,7 +232,7 @@ export const SHEET_CLASS_PRECEDENCE: readonly HeldoutClass[] = [
 /** The classes a labeller may write, with what each one means. */
 export const SHEET_LABEL_GUIDE: Readonly<Record<HeldoutClass, string>> = {
   positive:
-    "This episode carries a claim about the world you would PUBLISH as a fact — ownership, status, a decision, a deprecation. The counterfactual the number rests on: if triage drops this, a fact that would have been published is never proposed.",
+    "This episode carries a claim about the world you would PUBLISH as a fact — ownership, status, a decision, a deprecation. Judge the TEXT: would you publish this if it were put in front of you? Do NOT ask whether the extractor would find it — that is a different question, answered separately and afterwards. The counterfactual the number rests on: if triage drops this, a claim you would have published is never proposed.",
   rejected:
     "This episode carries a claim you would look at and REJECT — it reads like an assertion but you would not publish it. Rejected rides the ungated diagnostic beside the gating number; it is not a positive.",
   negative:

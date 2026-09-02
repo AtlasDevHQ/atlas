@@ -327,6 +327,42 @@ observed, that is roughly **300 episodes**. `SHEET_MAX_EPISODES` (400) is a
 per-**sheet** refusal, not a cap on the set: `--sheet` repeats, and a corpus with
 a lower positive rate simply needs more sheets.
 
+## ⭐ What `positive` means, and the ordering rule that protects it
+
+AC 3 was **amended 2026-09-02**. The denominator is *"episodes a reviewer judges
+to carry a claim they would publish"* — your judgement of the **text** — not the
+pipeline's outcome (*"episodes yielding a published, non-retracted fact"*),
+which is what it said before.
+
+On a prod cut the two are the same thing: there, the only evidence a claim
+existed is that the pipeline produced one. On a labelled corpus they come apart,
+and the outcome version is the wrong one to gate on because it **decays toward
+unsafe** — an episode is a positive only if *today's* extractor would have found
+it, so a triage drop the extractor would have missed anyway scores as free,
+until #5337 ships a better extractor and it silently stops being free while the
+recorded measurement still says it is. It also has a perverse gradient: an
+extractor *regression* would make triage's recall go *up*.
+
+The cost is real and is not hidden: this over-counts, including claims no
+realistic extractor would catch, so the number runs pessimistic.
+
+**So both numbers get reported, from one labelling pass:**
+
+1. Label the sheet from the text alone → the **gating** denominator.
+2. **Afterwards**, run the frontier extractor over the same episodes and join on
+   `id` → which of them it actually produced a candidate for.
+3. Report recall against both. The old denominator falls out arithmetically, as
+   an **ungated diagnostic** beside the gating number — the shape AC 5 already
+   uses for positives+rejected. A large gap is itself a finding: it says the
+   extractor is missing claims a human can see, which is #5337's problem rather
+   than triage's, and a single blended number would have hidden it.
+
+⚠️ **Step 2 must come after step 1, never alongside it.** A sheet showing "the
+extractor found nothing here" anchors you to the pipeline's opinion — the same
+circularity `parseSheet` refuses triage output for. That half is enforced in
+code; this half is an ordering rule on the operator, which is why it is written
+here. Do not pre-run the extractor and label with its output in view.
+
 ## The rules specific to this kind of set
 
 The five above still apply. These are additional, and each is enforced:
@@ -354,6 +390,8 @@ The five above still apply. These are additional, and each is enforced:
    later and only for the model call. A pre-stripped corpus would hand triage a
    shape production never gives it.
 7. **Class precedence is the manifest's**: positive ▸ rejected ▸ negative.
+8. **`positive` is judged from the text**, and the extractor pass comes after —
+   see the section above.
 
 ## Licence and personal data
 

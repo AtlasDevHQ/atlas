@@ -86,7 +86,18 @@ Parking `eu`/`apac` was acceptable **only** because both held 0 conversations.
    railway redeploy --service api-<region>
    curl -fsS https://api-<region>.useatlas.dev/api/health
    ```
-   Its `*-int-postgres` must be running too — it may also have been scaled down.
+   Two sibling services were scaled down with it and must come back before the
+   region is really serving:
+   ```bash
+   railway redeploy --service <region>-int-postgres    # left UP at the 2026-09-01 park
+   railway redeploy --service backup-scratch-<region>  # taken DOWN at the 2026-09-01 park
+   ```
+   `backup-scratch-<region>` is the disposable Postgres that
+   `ATLAS_BACKUP_VERIFY_SCRATCH_URL` points at. Without it the region's
+   `scheduled_backup` fiber still runs, but verification silently degrades from
+   full-restore to a `pg_dump` header check — the weaker guarantee #4457 was
+   built to replace, and it degrades quietly rather than failing. The `/health`
+   `backups` component is the tripwire; check it after the region is up.
 2. **Delete `selectable: false` and `requestable: true`** from that region's arm
    in `deploy/api/atlas.config.ts`.
 3. **Update `deploy-config-residency-regions.test.ts`** — it pins the parked

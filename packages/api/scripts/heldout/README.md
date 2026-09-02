@@ -238,3 +238,137 @@ A failure is an acceptable outcome and has a home before it happens:
   closes as answered rather than as delivered.
 
 Neither outcome is a reason to re-cut the set.
+
+---
+
+# The labelled evaluation set (#5338 AC 3)
+
+Everything above is about **manifests cut from prod**. This section is about the
+other kind of set, and it exists because prod cannot produce the scoring one.
+
+## ⛔ Read this first: none of it lives in git
+
+`.claude/research/extractor-corpus-acquisition.md`, under **Prohibited**:
+
+> **Committing any corpus text to this repository**, which is public and AGPL;
+> acquisition lands in private storage per the path plan.
+
+and its path plan:
+
+> **This repository** carries only this document, the acquisition scripts if any
+> are written, and the manifests' hashes if useful — **never corpus text, never
+> labels**.
+
+ADR-0044 permits an evaluation set at all only on this footing: *"Training data
+ends up in the weights — that is the leak surface. Evaluation data is **read once
+and discarded**."* A fixture versioned in git is neither read once nor discarded.
+
+This is the same argument the manifest section above already makes — a manifest
+may live in git **because it carries no bodies** — so the sheet and the fixture,
+which carry both bodies and labels, may not. `assertOutsideRepo` enforces it:
+both CLIs refuse any output path inside the working tree, before the sheet is
+fetched and before the fixture is written.
+
+**What git keeps:** the two scripts, the recorded measurement, and the fixture's
+**sha256**, which the path plan explicitly allows and which is what makes a
+number traceable to a set the repo does not hold.
+
+## ⚠️ Why prod cannot produce this set
+
+Measured against the `us` region's internal DB on **2026-09-02** — `us` is the
+only serving region:
+
+| | |
+|---|---|
+| Episodes, **lifetime** | **36** (21 slack, 9 warehouse, 6 human) |
+| …of which **triage-eligible** | **27** — `notAWarehouseEpisodeSql` scopes warehouse out |
+| Extracted | 36 — nothing pending |
+| Facts | 13 published, 24 draft |
+
+The recall denominator counts **episodes**, so 27 is not a running total — it is
+the **ceiling**, 4× below the Wilson floor of 110. Reviewing all 24 outstanding
+drafts moves it by nothing, because those drafts come from those same episodes.
+The bottleneck was assumed to be review throughput; it is **ingest volume**.
+
+So #5338's own framing is operative — *the number is set on a labelled set and
+prod is the smoke test* — and `us-2026-09-02.json` is the smoke test.
+
+## The lane
+
+```bash
+export ATLAS_EVAL_CORPUS_DIR=~/atlas-eval        # OUTSIDE the repo. Anywhere else.
+
+# 1. Collect. Mechanical: repos and a window, nothing else.
+GITHUB_TOKEN=… bun scripts/collect-eval-corpus.ts \
+  --repo apache/kafka --repo apache/airflow \
+  --from 2026-06-01T00:00:00Z --to 2026-06-08T00:00:00Z \
+  -o "$ATLAS_EVAL_CORPUS_DIR/apache-2026-06.sheet.json"
+
+# 2. Label. Open the sheet and set every `class`. `_guide` and `_note` in the
+#    file say what each class means and how to break a tie. Check progress at
+#    any point — it also says whether the positives so far could EVER clear the
+#    bound, so you learn that at row 200 rather than at the end:
+bun scripts/build-eval-fixture.ts --sheet "$ATLAS_EVAL_CORPUS_DIR/apache-2026-06.sheet.json"
+
+# 3. Build, once every row is labelled. Repeat --sheet to span several sittings.
+bun scripts/build-eval-fixture.ts \
+  --sheet "$ATLAS_EVAL_CORPUS_DIR/apache-2026-06.sheet.json" \
+  --labeller "<who>" -o "$ATLAS_EVAL_CORPUS_DIR/apache-2026-06.json"
+#    → prints the sha256. THAT is what goes in the repo, via the measurement.
+
+# 4. Measure, and record.
+bun scripts/measure-triage.ts \
+  --fixture "$ATLAS_EVAL_CORPUS_DIR/apache-2026-06.json" \
+  --candidate stage-1-distilled --record
+```
+
+**Size it for 110 positives.** At the ~36% positive rate the first prod cut
+observed, that is roughly **300 episodes**. `SHEET_MAX_EPISODES` (400) is a
+per-**sheet** refusal, not a cap on the set: `--sheet` repeats, and a corpus with
+a lower positive rate simply needs more sheets.
+
+## The rules specific to this kind of set
+
+The five above still apply. These are additional, and each is enforced:
+
+1. **No corpus text or labels in the working tree.** `assertOutsideRepo` refuses,
+   quoting the prohibition. See the top of this section.
+2. **A sheet may not carry triage output of any kind.** `parseSheet` refuses an
+   undeclared key rather than stripping it, and the two annotation keys
+   (`_guide`, `_note`) are **pinned to their shipped values** rather than merely
+   allow-listed — an unvalidated free-form field is a channel, and a `_note`
+   reading "gh-14 would be dropped by known_ack" anchors a labeller to the layer
+   under test exactly as a `triage` key would.
+3. **A partly-labelled sheet is refused, not filtered.** Dropping unlabelled rows
+   redefines the set as *"the episodes somebody got round to"* — a curated set
+   wearing a mechanical one's provenance — and does so hardest on the rows that
+   were hardest to call, which are the rows a triage layer is most likely to get
+   wrong.
+4. **`--labeller` is required**, checked before any work is read. #5338 extends
+   `practices.md`'s structural rule to the set's author: whoever builds #5336
+   stage 1 may not author the set.
+5. **Collection refuses rather than truncates**, at both the page budget and the
+   sheet size, for the manifest's reason.
+6. **Bodies are stored RAW.** Triage reads `brain_episodes.body`; the
+   quoted-reply strip and the 8k cap live in `extractionExcerpt`, which runs
+   later and only for the model call. A pre-stripped corpus would hand triage a
+   shape production never gives it.
+7. **Class precedence is the manifest's**: positive ▸ rejected ▸ negative.
+
+## Licence and personal data
+
+The corpus document's two decision cards are about **training inputs and shipped
+weights**, and an evaluation set produces no weights — so ADR-0044's weights
+prohibition is not what governs here. **What does govern is the same document's
+storage rule**, quoted at the top: private storage, never this repo. The earlier
+framing of this section got that wrong, and the enforcement above is the
+correction.
+
+⚠️ **Pseudonymisation is not anonymisation.** It rewrites `@handle` mentions and
+email addresses; **names in free text survive** — "Marco said he'd take this"
+still reads that way. The handle pattern is **GitHub's** (alphanumeric plus
+internal hyphens, max 39), so a handle shaped differently passes through
+verbatim. The claim is that a sheet carries no handle you can resolve to a
+GitHub account and no address you can mail. It is not a claim of anonymity, and
+the corpus document is explicit that choosing among data-protection mitigations
+is **part of a human sign-off**, not something this tooling settles.

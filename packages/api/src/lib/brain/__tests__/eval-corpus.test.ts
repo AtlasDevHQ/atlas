@@ -10,12 +10,17 @@ import { describe, expect, test } from "bun:test";
 import {
   SHEET_MAX_EPISODES,
   SHEET_LABEL_GUIDE,
+  SHEET_NOTES,
+  SHEET_CLASS_PRECEDENCE,
   SheetFormatError,
+  assertOutsideRepo,
   checkSheetSize,
+  fixtureDigest,
   parseSheet,
   pseudonymise,
   sheetProgress,
   sheetToFixture,
+  sheetsToFixture,
   type EvalSheet,
 } from "@atlas/api/lib/brain/eval-corpus";
 
@@ -76,14 +81,32 @@ describe("pseudonymisation", () => {
     expect(out).toBe("@person-1 and @person-1");
   });
 
-  test("⭐ an address is rewritten whole, not left half-resolvable", () => {
-    // The ordering bug this pins: with mentions first, the mention pattern eats
-    // the local-part-then-`@` of an address, leaving a fragment that is still
-    // resolvable and no longer looks like an address — so a later reader would
-    // not know to check it.
+  test("an address is rewritten whole, not left half-resolvable", () => {
     const out = pseudonymise("mail dev@kafka.apache.org about it", new Map());
     expect(out).not.toContain("kafka.apache.org");
     expect(out).toMatch(/person-\d+@example\.invalid/);
+  });
+
+  test("⭐ the LOOKBEHIND is what protects an address, not the replacement order", () => {
+    // This test previously claimed the email-then-mention order was what
+    // stopped the mention pattern eating an address's local-part-then-`@`.
+    // Measured, that hazard does not exist: `(?<![\w/])` refuses to start a
+    // match after a word character, so a mention-only pass leaves the address
+    // untouched. The assertion was true and its stated mechanism was fiction —
+    // so the mechanism is asserted directly here, and the ordering is what it
+    // actually is: harmless belt-and-braces.
+    const mentionOnly = /(?<![\w/])@([A-Za-z\d](?:[A-Za-z\d]|-(?=[A-Za-z\d])){0,38})\b/g;
+    expect("mail dev@kafka.apache.org about it".replace(mentionOnly, "@REWRITTEN")).toBe(
+      "mail dev@kafka.apache.org about it",
+    );
+  });
+
+  test("⚠️ a non-GitHub handle shape passes through, and that is the documented limit", () => {
+    // `@foo_bar` is not a legal GitHub login (no underscores), so leaving it is
+    // correct for a GitHub corpus and a real gap for any other source. Pinned
+    // as the limit rather than left to be discovered by whoever adds a corpus
+    // with different handle rules.
+    expect(pseudonymise("@foo_bar shipped it", new Map())).toContain("@foo_bar");
   });
 
   test("⚠️ a name in free text SURVIVES, and the guide says so", () => {
@@ -216,5 +239,130 @@ describe("the label guide", () => {
     ]);
     expect(SHEET_LABEL_GUIDE.positive).toContain("PUBLISH");
     expect(SHEET_LABEL_GUIDE.rejected).toContain("REJECT");
+  });
+});
+
+describe("⛔ corpus text never enters the repository", () => {
+  test("a path inside the working tree is REFUSED, quoting the prohibition", () => {
+    // The defect this closes shipped in the first draft of this lane: sheets
+    // and fixtures were written to `packages/api/scripts/heldout/fixtures/`,
+    // which is tracked — in the same directory whose README already argues a
+    // manifest may live in git precisely because it carries no bodies.
+    const refusal = assertOutsideRepo("packages/api/scripts/heldout/fixtures/x.json");
+    expect(refusal).toContain("Committing any corpus text to this repository");
+    expect(refusal).toContain("never corpus text, never labels");
+    expect(refusal).toContain("read once and discarded");
+  });
+
+  test("…including one that walks back in through `..`", () => {
+    // The check is on the RESOLVED path, so an absolute-looking escape that
+    // lands back inside the tree is caught.
+    expect(assertOutsideRepo(`${import.meta.dir}/../../../../scratch.json`)).not.toBeNull();
+  });
+
+  test("a path outside the tree is allowed", () => {
+    expect(assertOutsideRepo("/tmp/atlas-eval/apache-2026-06.sheet.json")).toBeNull();
+  });
+
+  test("a sibling directory sharing the repo's name prefix is not swept up", () => {
+    // Prefix tests on paths are a classic off-by-one: `/home/x/atlas` must not
+    // capture `/home/x/atlas-scratch`. The check compares on a separator
+    // boundary.
+    expect(assertOutsideRepo("/home/msywu/oss/atlas-scratch/eval.json")).toBeNull();
+  });
+});
+
+describe("the annotation keys are pinned, not merely permitted", () => {
+  function withNote(note: unknown) {
+    return { ...sheet(), _note: note };
+  }
+
+  test("⭐ an edited `_note` is refused — an allow-listed free field is a channel", () => {
+    // `_note` passes the undeclared-key check by construction, so without this
+    // a sheet could carry "gh-14 would be dropped by known_ack" and anchor the
+    // labeller to the layer under test exactly as a `triage` key would.
+    expect(() => parseSheet(withNote(["gh-14 is dropped by known_ack"]))).toThrow(
+      /not the shipped note set/,
+    );
+  });
+
+  test("the shipped `_guide` and `_note` round-trip through the parser", () => {
+    // A collector whose own output its parser rejects is a broken lane, so the
+    // exact values the collector writes are asserted to parse.
+    const ok = { ...sheet(), _guide: SHEET_LABEL_GUIDE, _note: SHEET_NOTES };
+    expect(() => parseSheet(ok)).not.toThrow();
+  });
+
+  test("an edited `_guide` is refused", () => {
+    const edited = { ...sheet(), _guide: { ...SHEET_LABEL_GUIDE, positive: "anything goes" } };
+    expect(() => parseSheet(edited)).toThrow(/not the shipped label guide/);
+  });
+
+  test("the class precedence is stated, and matches the manifest's collapse", () => {
+    // `heldout-manifest.ts` fixes positive ▸ rejected ▸ negative for prod cuts.
+    // A hand-labelled set using a different rule would compute the number over
+    // a differently-shaped population than the corpus it mirrors.
+    expect(SHEET_CLASS_PRECEDENCE).toEqual(["positive", "rejected", "negative"]);
+    expect(SHEET_NOTES.join(" ")).toContain("POSITIVE beats REJECTED beats NEGATIVE");
+  });
+});
+
+describe("a blank body is not an episode", () => {
+  test("refused at the sheet, because the harness refuses it later", () => {
+    // Accepting it here would let a labeller spend a decision on a row
+    // `parseMeasurementFixture` then rejects — the work discarded at the far
+    // end of the lane rather than the near one.
+    const blank = sheet({ episodes: [{ id: "gh-1", body: "   \n ", class: "negative" }] });
+    expect(() => parseSheet(blank)).toThrow(/blank body/);
+  });
+});
+
+describe("merging sheets", () => {
+  function labelled(ids: readonly string[]): EvalSheet {
+    return sheet({
+      episodes: ids.map((id) => ({ id, body: `body ${id}`, class: "negative" as const })),
+    });
+  }
+
+  test("⭐ a set may span several sheets, so the per-sheet cap is not a ceiling on the SET", () => {
+    // Without a merge, `SHEET_MAX_EPISODES` would cap the whole set — and at a
+    // positive rate below ~28% that makes 110 positives unreachable by
+    // construction. The refusal would have become the thing it protects
+    // against.
+    const fixture = sheetsToFixture([labelled(["a", "b"]), labelled(["c"])], PROVENANCE);
+    expect(fixture.episodes.map((e) => e.id)).toEqual(["a", "b", "c"]);
+  });
+
+  test("an id in two sheets is refused, never de-duplicated", () => {
+    // The same episode labelled twice may carry two different classes, and
+    // silently keeping one picks a label nobody chose.
+    expect(() => sheetsToFixture([labelled(["a"]), labelled(["a"])], PROVENANCE)).toThrow(
+      /appears in sheet 1 and sheet 2/,
+    );
+  });
+
+  test("no sheets is a refusal, not an empty fixture", () => {
+    expect(() => sheetsToFixture([], PROVENANCE)).toThrow(/no sheets given/);
+  });
+});
+
+describe("the fixture digest", () => {
+  test("is stable for the same fixture and differs when a label changes", async () => {
+    // The one thing about a set that may live in git — the path plan permits
+    // "the manifests' hashes if useful" while refusing text and labels. It is
+    // what turns a recorded `setId` from a string anybody could type into
+    // something checkable against a privately-held fixture.
+    const a = await fixtureDigest(sheetToFixture(sheet(), PROVENANCE));
+    const b = await fixtureDigest(sheetToFixture(sheet(), PROVENANCE));
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+
+    const flipped = sheet({
+      episodes: [
+        { id: "gh-1", body: "Priya owns the consumer rebalance path now.", class: "negative" },
+        { id: "gh-2", body: "+1", class: "negative" },
+      ],
+    });
+    expect(await fixtureDigest(sheetToFixture(flipped, PROVENANCE))).not.toBe(a);
   });
 });

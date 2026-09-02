@@ -36,35 +36,27 @@
  * Exit codes: 0 written · 1 refused (window too large) · 3 bad input or API failure.
  */
 import {
+  CORPUS_DIR_ENV,
   SHEET_MAX_EPISODES,
   SHEET_LABEL_GUIDE,
-  RAW_BODY_NOTE,
+  SHEET_NOTES,
+  assertOutsideRepo,
   checkSheetSize,
   pseudonymise,
   type EvalSheet,
   type PseudonymMap,
   type SheetEpisode,
 } from "@atlas/api/lib/brain/eval-corpus";
+import { flag, repeatedFlag } from "./argv";
 
 const TAG = "[collect-eval-corpus]";
 
-function flag(name: string): string | undefined {
-  const idx = process.argv.indexOf(name);
-  if (idx === -1 || idx + 1 >= process.argv.length) return undefined;
-  const value = process.argv[idx + 1];
-  return value !== undefined && !value.startsWith("--") ? value : undefined;
-}
 
-/** Every `--repo` occurrence, so two repos is two flags rather than a delimiter to escape. */
-function repoFlags(): string[] {
-  const out: string[] = [];
-  for (const [index, arg] of process.argv.entries()) {
-    if (arg !== "--repo") continue;
-    const value = process.argv[index + 1];
-    if (value !== undefined && !value.startsWith("--")) out.push(value);
-  }
-  return out;
-}
+/**
+ * The page budget, named rather than inlined because exceeding it is a REFUSAL.
+ * 100 comments per page, so this scans 4,000 per repo before it gives up.
+ */
+const MAX_PAGES = 40;
 
 interface IssueComment {
   readonly id: number;
@@ -94,7 +86,7 @@ async function fetchRepoComments(
   const out: IssueComment[] = [];
   const fromMs = Date.parse(from);
   const toMs = Date.parse(to);
-  for (let page = 1; page <= 40; page += 1) {
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
     const url =
       `https://api.github.com/repos/${repo}/issues/comments` +
       `?since=${encodeURIComponent(from)}&sort=created&direction=asc&per_page=100&page=${page}`;
@@ -120,21 +112,49 @@ async function fetchRepoComments(
       out.push(comment);
     }
     if (batch.length < 100) break;
+    if (page === MAX_PAGES) {
+      // ⭐ REFUSE, never return a prefix. Exhausting the page budget silently
+      // would hand back the window's earliest comments in `created` order —
+      // precisely the "clipped at a cap is sampled by sort order" set
+      // `checkSheetSize` refuses one layer up, arriving before that check ever
+      // sees a count. `since` filters on UPDATED time, so an old thread with
+      // recent activity spends pages without contributing rows, and a busy
+      // repo reaches this sooner than the comment count suggests.
+      throw new Error(
+        `${repo}: the window needs more than ${MAX_PAGES} pages (${MAX_PAGES * 100} comments ` +
+          `scanned). Refusing to return a prefix — narrow --from/--to and re-run.`,
+      );
+    }
   }
   return out;
 }
 
 async function main(): Promise<number> {
-  const repos = repoFlags();
+  const repos = repeatedFlag("--repo");
   const from = flag("--from");
   const to = flag("--to");
   const out = flag("-o") ?? flag("--out");
-  const max = Number(flag("--max") ?? SHEET_MAX_EPISODES);
+  const maxRaw = flag("--max");
+  const max = maxRaw === undefined ? SHEET_MAX_EPISODES : Number(maxRaw);
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
 
   if (repos.length === 0 || !from || !to || !out) {
     console.error(`${TAG} usage: --repo <owner/name> [--repo …] --from <iso> --to <iso> -o <sheet.json>`);
+    console.error(`${TAG} write OUTSIDE the repo — set ${CORPUS_DIR_ENV} or pass an absolute path.`);
     return 3;
+  }
+  // Validated like the timestamps are. Unchecked, `--max abc` yields NaN and
+  // `count <= NaN` is false, so every run refuses with "above the NaN a sheet
+  // may carry" — a real refusal message naming an unreal limit.
+  if (!Number.isInteger(max) || max <= 0) {
+    console.error(`${TAG} --max must be a positive integer (got ${JSON.stringify(maxRaw)})`);
+    return 3;
+  }
+  // ⛔ Before any network call: corpus text may not land in the working tree.
+  const outside = assertOutsideRepo(out);
+  if (outside) {
+    console.error(`${TAG} ${outside}`);
+    return 1;
   }
   if (!token) {
     // Unauthenticated is 60 requests/hour, which cannot page a real window —
@@ -187,12 +207,12 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const sheet: EvalSheet & { _guide: unknown; _note: string } = {
+  const sheet: EvalSheet = {
     sheet: 1,
     source: { corpus: "github-issue-comments", repos, from, to },
     collectedAt: new Date().toISOString(),
     _guide: SHEET_LABEL_GUIDE,
-    _note: RAW_BODY_NOTE,
+    _note: SHEET_NOTES,
     episodes,
   };
   await Bun.write(out, `${JSON.stringify(sheet, null, 2)}\n`);

@@ -195,7 +195,7 @@ export const OPERATOR_SUBCOMMAND_HELP = {
     description:
       "Operator-only tools that touch tenant data. Destructive subcommands require an explicit double-confirm flag.",
     usage:
-      "ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts|sweep-residue|gate-export> [options]",
+      "ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts|sweep-residue|gate-export|heldout-manifest> [options]",
     subcommands: [
       {
         name: "wipe",
@@ -226,6 +226,11 @@ export const OPERATOR_SUBCOMMAND_HELP = {
         name: "sweep-residue",
         description:
           "Delete orphaned-workspace residue — rows whose organization row is already gone, left behind by a purge that predated the table entering the purge path (#5185). The normal purge cannot reach them: it requires the workspace to exist and be soft-deleted. Candidate tables are derived from lib/db/purge-scope.ts (decision: purged only) and sentinel scope values (_default, <atlas-operator>, empty) are never deleted. DRY RUN by default; EXECUTE requires ATLAS_RESIDUE_OK=1 + --confirm + --pg-dump <path> naming a real, recent backup. Exits non-zero if anything survived or could not be checked. Flags: --region <us|eu|apac> OR --database-url <url>, --pg-dump <path>, --confirm, --dry-run.",
+      },
+      {
+        name: "heldout-manifest",
+        description:
+          "Cut the FROZEN held-out set #5338 measures the extraction cascade against — a manifest of (episode_id, class) plus the cut date, carrying NO tenant text. The set is NAMED, not carried, which is what lets it be versioned in-repo where a gate-export bundle must not be (EVALUATION_ONLY_NOTICE: do not accumulate bundles); bodies are re-read live at measurement time, so a row that no longer resolves is a loud purge signal instead of silent staleness. The class is per-EPISODE (positive beats rejected beats negative), because triage drops episodes rather than claims. Cut MECHANICALLY over a half-open [from, to) window on ingested_at — never on decision time, which is not queryable before migration 0214 — so the set has no author to be conflicted. `to` having elapsed is necessary but not sufficient: counts.stillDraining reports the episodes still on the extraction drain, which would have been decisions in a later cut, because no drain-lag constant is both true and non-blocking. The dial evidence attests ONE region (dialEvidence.attestsRegion) — a process may only read its own (ADR-0024), so covering the fleet means one manifest per region. Refuses rather than truncates: a window that is too large, still open, inverted, or in which stage-0 triage left evidence of having run (a triaged_out_at mark, a cycle audit row reporting skipped.triaged, or a dial that is on today). DRY RUN by default; EXECUTE requires ATLAS_HELDOUT_OK=1 + --confirm. --verify <path> re-resolves an existing manifest, writes nothing, and is ungated — though it DOES refuse to cross a region boundary, because pointing a us manifest at --region eu would report every row as purged and fire the alarm the design rests on from a flag typo. Every run, refusals and dry runs included, lands in admin_action_log — and the triage-active refusal row is the only durable record of when a region's window closed, since a re-queue erases the mark. Flags: --workspace <orgId>, --from <iso>, --to <iso>, --region <us|eu|apac> OR --database-url <url>, --output <path>, --confirm, --dry-run, --verify <path>.",
       },
     ],
     flags: [
@@ -258,6 +263,9 @@ export const OPERATOR_SUBCOMMAND_HELP = {
       "ATLAS_SMOKE_WIPE_OK=1 atlas-operator ops smoke-crm --personas ./fixtures/personas.yml --wipe-twenty",
       "atlas-operator ops sweep-residue --region us",
       "ATLAS_RESIDUE_OK=1 atlas-operator ops sweep-residue --region us --confirm --pg-dump ./residue-us.dump",
+      "atlas-operator ops heldout-manifest --region us --workspace <orgId> --from 2026-06-01T00:00:00Z --to 2026-09-01T00:00:00Z",
+      "ATLAS_HELDOUT_OK=1 atlas-operator ops heldout-manifest --region us --workspace <orgId> --from 2026-06-01T00:00:00Z --to 2026-09-01T00:00:00Z --confirm -o packages/api/scripts/heldout/us-2026-09.json",
+      "atlas-operator ops heldout-manifest --region us --verify packages/api/scripts/heldout/us-2026-09.json",
     ],
   },
 } satisfies Record<OperatorCommand, SubcommandHelp>;
@@ -275,7 +283,7 @@ export function printOperatorOverviewHelp(): void {
       "DATABASE_URL); export and learn read Atlas's internal DB via DATABASE_URL.\n\n" +
       "Usage: atlas-operator <command> [options]\n\n" +
       "Commands:\n" +
-      "  ops              Operator-only destructive tools (wipe, backfill-crm-leads, smoke-crm, teardown-verify-accounts, sweep-residue, gate-export)\n" +
+      "  ops              Operator-only destructive tools (wipe, backfill-crm-leads, smoke-crm, teardown-verify-accounts, sweep-residue, gate-export, heldout-manifest)\n" +
       "  seed             Seed durable workspace data — prompts, connection groups\n" +
       "  proactive        Enable/disable proactive chat for a workspace\n" +
       "  export           Export workspace data to a migration bundle\n" +

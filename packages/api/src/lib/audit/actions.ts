@@ -678,6 +678,23 @@ export const ADMIN_ACTIONS = {
      * re-queued".
      */
     triageRequeue: "brain.triage_requeue",
+    /**
+     * `atlas-operator ops heldout-manifest` — an operator cut, or re-verified,
+     * the FROZEN held-out set #5338 measures the extraction cascade against
+     * (`lib/brain/heldout-manifest.ts`). Emitted on every terminal path, the
+     * DRY RUN and the refusal included, on `gateExport`'s reasoning: the cut
+     * reads the same tenant rows the bundle does, and only the file it writes
+     * is different.
+     *
+     * ⚠️ **The refusal rows are the load-bearing ones here**, which is not true
+     * of `gateExport`. A `triage-active` refusal is the durable record that a
+     * region's window HAD closed by a given date — and the mark it refuses on
+     * (`brain_episodes.triaged_out_at`) is itself erased by a re-queue, so
+     * without this row there is later no query that can establish when triage
+     * first ran. `targetId` is the workspace (org) id; metadata carries the
+     * window, the class counts and the dial evidence, never an episode id.
+     */
+    heldoutManifest: "brain.heldout_manifest",
   },
   /**
    * Without these entries a compromised admin could shrink retentionDays

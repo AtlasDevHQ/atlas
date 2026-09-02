@@ -13,6 +13,25 @@ ATLAS_HELDOUT_OK=1 atlas-operator ops heldout-manifest \
 Drop `ATLAS_HELDOUT_OK=1` and `--confirm` for a DRY RUN: the query runs, the
 counts and the dial evidence printed are exact, and no file is written.
 
+## What is here
+
+| File | Window | Positives | Dial evidence | Standing |
+|---|---|---|---|---|
+| `us-2026-09-02.json` | `[2026-08-01, 2026-09-02)`, workspace `Atlas` (us) | **9** | attested — 9,411 cycles, 0 reporting triage, 0 marks | ⚠️ **smoke test, not the scoring set** |
+
+⚠️ **The first cut is 12× short of the gating floor and that was expected.**
+Nine positives puts the 95% Wilson lower bound at ~0.70 against a 0.95 threshold
+that needs **73** positives at a perfect score. #5338 says so in as many words —
+the number is set on a synthetic set and prod is the smoke test — so this file
+exists to prove the lane works end to end and to be the real-data arm when prod
+has the volume, not to produce a verdict. Its `stillDraining` is `0` and its
+`excluded` is `0`, so the window is fully settled.
+
+Its dial evidence is the strong kind: **9,411** extraction-cycle audit rows
+between the window's start and the cut, none reporting a triage drop, no
+`triaged_out_at` marks, and no settings override. Nothing about it is
+`UNATTESTED`. It attests **`us` only** — see below.
+
 ## What a manifest is, and what it is not
 
 A manifest **names** episodes: `(episodeId, class)` plus the cut date, the

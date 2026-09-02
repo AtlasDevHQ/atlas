@@ -150,7 +150,9 @@ export const HELDOUT_MANIFEST_NOTICE =
   "mechanically over a time window so that it has no author to be conflicted: do not " +
   "regenerate it to make a number look better, and do not hand-edit a row. Re-cutting is a " +
   "decision that belongs on the issue. Rows are re-resolved against the live database at each " +
-  "run; an id that no longer resolves is a purge, not a gap to patch.";
+  "run; an id that no longer resolves is a purge, not a gap to patch. Its dial evidence attests ONE " +
+  "region — the one named by `region` — because a process may only read its own (ADR-0024); a manifest " +
+  "cut here says nothing about whether triage ran anywhere else.";
 
 /** A manifest carries the same three classes a bundle does. */
 export type HeldoutClass = GateDecisionClass;
@@ -210,6 +212,22 @@ export interface TriageDialEvidence {
    * substitute for the two probes above.
    */
   readonly platformDialSetting: string | null;
+  /**
+   * The region every probe above was read from — the workspace's own, or null on
+   * a single-region or self-hosted deployment.
+   *
+   * ⚠️ **#5338 AC 2 says "off in every region" and this attests ONE.** That is
+   * not a shortcut: ADR-0024 makes the process the region, so no deployment can
+   * read another region's `brain_episodes`, `admin_action_log` or `settings` —
+   * a cross-region probe would be the residency violation the whole model
+   * exists to prevent. The criterion is met by cutting while the dial is off
+   * everywhere, which is a fact about the fleet and cannot be established from
+   * inside one process. So the manifest states WHAT IT CHECKED rather than
+   * implying more: covering every region means running this command in each and
+   * keeping each manifest, and the reader can see from this field which one
+   * they are holding.
+   */
+  readonly attestsRegion: string | null;
 }
 
 /** The window a cut covers. Half-open: `[from, to)`. */
@@ -237,8 +255,26 @@ export interface HeldoutManifest {
     readonly rejected: number;
     readonly negative: number;
     /** Episodes in the window that landed on no arm — undecided drafts,
-     *  unkeyable-import tombstones, and episodes still pending extraction. */
+     *  unkeyable-import tombstones, the review gate's own correction episodes,
+     *  and episodes still pending extraction. */
     readonly excluded: number;
+    /**
+     * The subset of `excluded` still sitting on the extraction drain at
+     * `cutAt` — never extracted, never triaged out.
+     *
+     * ⚠️ **This is the number that says how frozen the set really is.** An
+     * episode still draining is excluded here and would have been a decision in
+     * a cut taken a day later, so a non-zero value means the negative arm's size
+     * depends on when the cut ran. {@link checkCutWindow} can only require that
+     * `to` has elapsed — it cannot know the drain has caught up, because a
+     * quarantined or batch-submitted episode may take hours or never arrive, and
+     * refusing on any straggler would let one permanently stuck row block every
+     * evaluation forever. So the shortfall is MEASURED and carried in the file
+     * rather than gated: a manifest whose `stillDraining` is not 0 has to say so
+     * wherever its number is reported, exactly as an unattested
+     * {@link TriageDialEvidence.cyclesObserved} does.
+     */
+    readonly stillDraining: number;
   };
   readonly entries: readonly HeldoutManifestEntry[];
 }
@@ -260,6 +296,15 @@ export const HELDOUT_REFUSALS = {
   windowOpen: "window-open",
   /** `to` is not after `from`. */
   windowInverted: "window-inverted",
+  /**
+   * A bound would not parse as a timestamp.
+   *
+   * Its own code rather than sharing `window-inverted`, because the refusal
+   * lands in `admin_action_log` and outlives its message: a mistyped `--from`
+   * recorded forever as an inverted window is a forensic answer to a question
+   * nobody asked.
+   */
+  windowUnparseable: "window-unparseable",
   /** More episodes than {@link HELDOUT_EPISODE_MAX}. Narrow the window. */
   windowTooLarge: "window-too-large",
 } as const;
@@ -291,8 +336,20 @@ export const HELDOUT_EPISODE_MAX = 10_000;
  */
 export const HELDOUT_MIN_POSITIVES = 100;
 
+/**
+ * Whether a cut is too small for #5338's threshold pair to be decidable on it.
+ *
+ * One predicate rather than the same comparison in the module and in the
+ * operator command: they warn on different channels (structured log, console)
+ * and both must move together with {@link HELDOUT_MIN_POSITIVES}, or one of
+ * them starts calling a set powered that the other does not.
+ */
+export function isUnderpowered(counts: { readonly positive: number }): boolean {
+  return counts.positive < HELDOUT_MIN_POSITIVES;
+}
+
 /** The audit action whose rows carry the per-cycle triage tally. */
-const EXTRACTION_CYCLE_ACTION = "brain.extraction_cycle";
+export const EXTRACTION_CYCLE_ACTION = "brain.extraction_cycle";
 
 /** The platform settings key for the stage-0 triage dial. */
 export const TRIAGE_DIAL_SETTING_KEY = "ATLAS_BRAIN_EXTRACTION_TRIAGE_ENABLED";
@@ -319,7 +376,7 @@ function heldoutClassifySql(scope: "window" | "ids"): string {
   const limitClause = scope === "window" ? `LIMIT $4` : ``;
   return `
 WITH scoped AS (
-  SELECT e.id, e.extracted_at
+  SELECT e.id, e.extracted_at, e.triaged_out_at
     FROM brain_episodes e
    WHERE e.workspace_id = $1
      ${scopeClause}
@@ -327,6 +384,10 @@ WITH scoped AS (
 )
 SELECT s.id AS episode_id,
        (s.extracted_at IS NOT NULL) AS extracted,
+       -- Still on the drain: no extraction ran and triage did not route it out.
+       -- Both halves, even though a passing cut refuses on any triage mark at
+       -- all, so this stays correct if that rule ever loosens.
+       (s.extracted_at IS NULL AND s.triaged_out_at IS NULL) AS draining,
        (SELECT count(*) FROM brain_facts f
          WHERE f.workspace_id = $1 AND f.source_episode_id = s.id
            AND ${notAnObservationSql("f")}
@@ -357,6 +418,12 @@ export const HELDOUT_RESOLVE_SQL = heldoutClassifySql("ids");
  * drained at any time up to the cut, so the dial only has to have been off for
  * the whole of that longer period for the window's episodes to be unfiltered.
  *
+ * The action type and the settings key are BOUND (`$5`, `$6`) rather than
+ * interpolated. Interpolation is the documented pattern for the composed
+ * PREDICATES this module reuses from `gate-export` — a predicate is not a value
+ * and cannot be a parameter — but these two are plain values, and a value
+ * literal is what a later edit replaces with a variable.
+ *
  * `coalesce(…, '0') <> '0'` rather than a cast: `metadata` is `jsonb` written by
  * us, but a cast that throws on unexpected text would turn a malformed audit row
  * into an exception instead of into evidence. Absent (every cycle row predating
@@ -370,18 +437,19 @@ SELECT
       AND e.ingested_at >= $2 AND e.ingested_at < $3
       AND e.triaged_out_at IS NOT NULL)::int AS marked_episodes,
   (SELECT count(*) FROM admin_action_log a
-    WHERE a.action_type = '${EXTRACTION_CYCLE_ACTION}'
+    WHERE a.action_type = $5
       AND a.timestamp >= $2 AND a.timestamp <= $4)::int AS cycles_observed,
   (SELECT count(*) FROM admin_action_log a
-    WHERE a.action_type = '${EXTRACTION_CYCLE_ACTION}'
+    WHERE a.action_type = $5
       AND a.timestamp >= $2 AND a.timestamp <= $4
       AND coalesce(a.metadata->'skipped'->>'triaged', '0') <> '0')::int AS cycles_reporting_triage,
   (SELECT value FROM settings
-    WHERE key = '${TRIAGE_DIAL_SETTING_KEY}' AND org_id IS NULL) AS platform_dial_setting`;
+    WHERE key = $6 AND org_id IS NULL) AS platform_dial_setting`;
 
 interface RawClassifyRow {
   episode_id: string;
   extracted: boolean;
+  draining: boolean;
   positives: number;
   rejected: number;
   occupied: boolean;
@@ -410,12 +478,24 @@ export function classifyHeldoutEpisode(row: {
 }
 
 /**
- * The window is closed and ordered.
+ * The window is parseable, ordered, and closed.
  *
- * `to` must be strictly in the past. Not a margin, a hard boundary: an episode
- * ingested inside an open window may not have been drained yet, so its class is
- * not "negative", it is "unknown" — and a frozen set whose rows can still change
- * class after the freeze is not frozen.
+ * `to` must be strictly in the past — a bound this function CAN check, and the
+ * one it is honest about.
+ *
+ * ⚠️ **It is a necessary condition and not a sufficient one, and the docstring
+ * used to overclaim.** `to <= now` does not mean the drain has caught up: an
+ * episode ingested a second before `to` may still be un-extracted at `cutAt`,
+ * in which case it lands in `excluded` rather than on the arm it is about to
+ * reach, and the negative arm's size varies with the `to`→`cutAt` gap. That is
+ * authorship by timing, in a set that exists to have none.
+ *
+ * A drain-lag margin was the obvious fix and is the wrong one: batch extraction
+ * is *"an asynchronous turnaround measured in hours"* and a quarantined episode
+ * may never arrive, so any constant is either too short to be true or long
+ * enough to make one permanently stuck row block every evaluation forever. The
+ * shortfall is therefore MEASURED instead — {@link HeldoutManifest.counts}
+ * carries `stillDraining`, and a non-zero value travels in the committed file.
  */
 export function checkCutWindow(
   window: { readonly from: string; readonly to: string },
@@ -425,7 +505,7 @@ export function checkCutWindow(
   const to = Date.parse(window.to);
   if (!Number.isFinite(from) || !Number.isFinite(to)) {
     return {
-      refusal: HELDOUT_REFUSALS.windowInverted,
+      refusal: HELDOUT_REFUSALS.windowUnparseable,
       detail:
         `--from and --to must both be parseable timestamps (ISO 8601, e.g. 2026-06-01T00:00:00Z). ` +
         `Got from=${JSON.stringify(window.from)} to=${JSON.stringify(window.to)}.`,
@@ -495,7 +575,14 @@ export function checkTriageDialOff(evidence: TriageDialEvidence): HeldoutRefusal
   return null;
 }
 
-/** Read the dial evidence for a window. */
+/**
+ * Read the dial evidence for a window.
+ *
+ * `region` is not queried — it is the caller's statement of which region these
+ * probes were read from, and it rides on the result so the manifest records the
+ * SCOPE of its own attestation rather than leaving a reader to infer it. See
+ * {@link TriageDialEvidence.attestsRegion}.
+ */
 export async function loadTriageDialEvidence(
   db: GateExportReader,
   options: {
@@ -503,6 +590,7 @@ export async function loadTriageDialEvidence(
     readonly from: string;
     readonly to: string;
     readonly cutAt: string;
+    readonly region: string | null;
   },
 ): Promise<TriageDialEvidence> {
   const result = await db.query(HELDOUT_DIAL_EVIDENCE_SQL, [
@@ -510,6 +598,8 @@ export async function loadTriageDialEvidence(
     options.from,
     options.to,
     options.cutAt,
+    EXTRACTION_CYCLE_ACTION,
+    TRIAGE_DIAL_SETTING_KEY,
   ]);
   const row = result.rows[0] as Record<string, unknown> | undefined;
   if (!row) {
@@ -527,6 +617,7 @@ export async function loadTriageDialEvidence(
     cyclesReportingTriage: Number(row.cycles_reporting_triage ?? 0),
     platformDialSetting:
       typeof row.platform_dial_setting === "string" ? row.platform_dial_setting : null,
+    attestsRegion: options.region,
   };
 }
 
@@ -589,6 +680,7 @@ export async function cutHeldoutManifest(
     from: options.from,
     to: options.to,
     cutAt,
+    region: options.workspaceRegion,
   });
   const dialRefusal = checkTriageDialOff(dialEvidence);
   if (dialRefusal) return { ok: false, refusal: dialRefusal };
@@ -615,11 +707,14 @@ export async function cutHeldoutManifest(
   }
 
   const entries: HeldoutManifestEntry[] = [];
-  const counts = { positive: 0, rejected: 0, negative: 0, excluded: 0 };
+  const counts = { positive: 0, rejected: 0, negative: 0, excluded: 0, stillDraining: 0 };
   for (const row of rows) {
     const cls = classifyHeldoutEpisode(row);
     if (cls === null) {
       counts.excluded += 1;
+      // A strict subset of `excluded` — an episode on the drain has neither a
+      // decision nor a triage mark, so it can never have reached an arm.
+      if (row.draining) counts.stillDraining += 1;
       continue;
     }
     counts[cls] += 1;
@@ -631,10 +726,16 @@ export async function cutHeldoutManifest(
     });
   }
 
-  if (counts.positive < HELDOUT_MIN_POSITIVES) {
+  if (isUnderpowered(counts)) {
     log.warn(
       { workspaceId: options.workspaceId, positives: counts.positive, need: HELDOUT_MIN_POSITIVES },
       "held-out manifest is underpowered — the threshold pair needs ~100 positives for its Wilson lower bound",
+    );
+  }
+  if (counts.stillDraining > 0) {
+    log.warn(
+      { workspaceId: options.workspaceId, stillDraining: counts.stillDraining },
+      "held-out manifest cut over a window whose drain has not caught up — the negative arm depends on when the cut ran",
     );
   }
 

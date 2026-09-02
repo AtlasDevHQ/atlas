@@ -38,8 +38,10 @@ import {
   getWorkspaceRegion,
 } from "@atlas/api/lib/db/internal";
 import { logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { checkRegionContainment } from "@atlas/api/lib/brain/gate-export";
 import {
   cutHeldoutManifest,
+  isUnderpowered,
   parseHeldoutManifest,
   resolveHeldoutManifest,
   HELDOUT_MIN_POSITIVES,
@@ -53,6 +55,15 @@ import { resolveRegionDbUrl } from "./ops-gate-export";
 export const HELDOUT_OK_ENV = "ATLAS_HELDOUT_OK";
 
 const TAG = "[ops:heldout-manifest]";
+
+/**
+ * How many episode ids `--verify` prints before summarising the rest.
+ *
+ * Named rather than a bare `20` beside a named constant, on
+ * `ops-gate-export.ts`'s `CONSOLE_PREDICATE_ROWS` precedent — and it appears at
+ * two call sites, which is exactly where a bare literal drifts.
+ */
+export const CONSOLE_ID_ROWS = 20;
 
 /**
  * The execute double-gate. Returns null when the run is cleared to EXECUTE, or
@@ -98,6 +109,16 @@ export function formatDialEvidence(evidence: TriageDialEvidence): string {
         ? "no override row (default: off)"
         : evidence.platformDialSetting
     }`,
+    // ⚠️ Printed on every run, because #5338 AC 2 says "off in EVERY region"
+    // and each probe above read exactly one. A process may only read its own
+    // (ADR-0024), so covering the fleet means running this command in each
+    // region and keeping each manifest — and an operator who is not told the
+    // scope will read a one-region pass as a fleet-wide one.
+    `  attests region:              ${
+      evidence.attestsRegion === null
+        ? "unregioned deployment (single region / self-hosted)"
+        : `${evidence.attestsRegion} ONLY — other regions are not probed and are not attested`
+    }`,
   ].join("\n");
 }
 
@@ -108,6 +129,7 @@ export function formatCounts(manifest: HeldoutManifest): string {
     `  rejected (retracted):   ${manifest.counts.rejected}`,
     `  negative (no claim):    ${manifest.counts.negative}`,
     `  excluded (undecided):   ${manifest.counts.excluded}`,
+    `    …of which draining:   ${manifest.counts.stillDraining}`,
     `  manifest rows:          ${manifest.entries.length}`,
   ].join("\n");
 }
@@ -128,6 +150,51 @@ async function bindRegionDb(url: string): Promise<void> {
   process.env.DATABASE_URL = url;
 }
 
+/**
+ * Containment for the VERIFY path: null to proceed, or the operator-facing
+ * refusal.
+ *
+ * ⚠️ **Not decoration, and its absence was the sharpest defect in the first cut
+ * of this command.** Re-resolution's whole value is that an id which no longer
+ * resolves is a LOUD purge signal. Point a `us` manifest at `--region eu` and
+ * every row fails to resolve — so the alarm the design rests on would fire, at
+ * full volume, on a flag typo. The cut path has always refused to cross a
+ * boundary; the path that PRINTS the alarm has to refuse on the same terms or
+ * the alarm means nothing.
+ *
+ * Composed from `checkRegionContainment` rather than re-deciding: one
+ * containment rule for the whole brain, including its fail-closed
+ * unproven-region arm, which is the one that matters on the `--database-url`
+ * path.
+ */
+export function checkVerifyContainment(
+  apiRegion: string | null,
+  manifestRegion: string | null,
+): string | null {
+  if (!checkRegionContainment(apiRegion, manifestRegion)) return null;
+  return (
+    `this manifest was cut in region ${JSON.stringify(manifestRegion)} and this invocation is ` +
+    `reading ${JSON.stringify(apiRegion)}. Every row would fail to resolve and be reported as a ` +
+    `purge, which is a false alarm rather than a finding. Re-run with ` +
+    `--region ${manifestRegion ?? "<the manifest's region>"}.`
+  );
+}
+
+/**
+ * Release the region pool, reporting a failure to close rather than swallowing
+ * it. Both entry points end here, and both used to carry a byte-identical copy
+ * of it — as does `ops-gate-export.ts`, which is where the shape comes from.
+ */
+async function closeRegionDb(): Promise<void> {
+  await closeInternalDB().catch((closeErr) => {
+    console.warn(
+      `${TAG} failed to close the internal DB pool: ${
+        closeErr instanceof Error ? closeErr.message : String(closeErr)
+      }`,
+    );
+  });
+}
+
 const reader = {
   query: async (sql: string, params?: unknown[]) => ({ rows: await internalQuery(sql, params) }),
 };
@@ -143,6 +210,38 @@ async function handleVerify(args: string[], path: string): Promise<void> {
   console.log(`${TAG} target DB: ${resolved.source} · VERIFY · ${path}`);
   try {
     const manifest = parseHeldoutManifest(JSON.parse(await Bun.file(path).text()));
+
+    // ⚠️ Containment on the VERIFY path, and it is not decoration.
+    //
+    // Re-resolution's whole value is that an id which no longer resolves is a
+    // LOUD purge signal. Point a `us` manifest at `--region eu` and every row
+    // fails to resolve — so the alarm the design rests on would fire, at full
+    // volume, on a flag typo. The cut path has always refused to cross a
+    // boundary; the path that PRINTS the alarm has to refuse on the same terms
+    // or the alarm means nothing.
+    const apiRegion = process.env.ATLAS_API_REGION ?? resolved.region ?? null;
+    const containment = checkVerifyContainment(apiRegion, manifest.region);
+    if (containment) {
+      console.error(`${TAG} REFUSED (region-boundary): ${containment}`);
+      await logAdminActionAwait({
+        actionType: ADMIN_ACTIONS.brain.heldoutManifest,
+        targetType: "brain",
+        targetId: manifest.workspaceId,
+        status: "failure",
+        scope: "platform",
+        systemActor: "system:atlas-operator",
+        metadata: {
+          mode: "verify",
+          refusal: "region-boundary",
+          manifestRegion: manifest.region,
+          apiRegion,
+          targetDb: resolved.source,
+        },
+      });
+      process.exitCode = 1;
+      return;
+    }
+
     const resolution = await resolveHeldoutManifest(reader, manifest);
 
     console.log(
@@ -158,9 +257,11 @@ async function handleVerify(args: string[], path: string): Promise<void> {
           `purged after the cut. Record the shrunken denominator beside any number computed from ` +
           `this set — do NOT re-cut the manifest to replace them.`,
       );
-      for (const id of resolution.missing.slice(0, 20)) console.warn(`${TAG}   missing ${id}`);
-      if (resolution.missing.length > 20) {
-        console.warn(`${TAG}   … and ${resolution.missing.length - 20} more`);
+      for (const id of resolution.missing.slice(0, CONSOLE_ID_ROWS)) {
+        console.warn(`${TAG}   missing ${id}`);
+      }
+      if (resolution.missing.length > CONSOLE_ID_ROWS) {
+        console.warn(`${TAG}   … and ${resolution.missing.length - CONSOLE_ID_ROWS} more`);
       }
     }
     if (resolution.drifted.length > 0) {
@@ -171,11 +272,11 @@ async function handleVerify(args: string[], path: string): Promise<void> {
         `${TAG} ${resolution.drifted.length} row(s) have drifted class since the cut (a decision ` +
           `landed after cutAt). The frozen label stands — this is information, not a defect.`,
       );
-      for (const d of resolution.drifted.slice(0, 20)) {
+      for (const d of resolution.drifted.slice(0, CONSOLE_ID_ROWS)) {
         console.log(`${TAG}   ${d.episodeId}: ${d.frozen} → ${d.live ?? "no arm"}`);
       }
-      if (resolution.drifted.length > 20) {
-        console.log(`${TAG}   … and ${resolution.drifted.length - 20} more`);
+      if (resolution.drifted.length > CONSOLE_ID_ROWS) {
+        console.log(`${TAG}   … and ${resolution.drifted.length - CONSOLE_ID_ROWS} more`);
       }
     }
 
@@ -199,13 +300,7 @@ async function handleVerify(args: string[], path: string): Promise<void> {
     console.error(`${TAG} ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
   } finally {
-    await closeInternalDB().catch((closeErr) => {
-      console.warn(
-        `${TAG} failed to close the internal DB pool: ${
-          closeErr instanceof Error ? closeErr.message : String(closeErr)
-        }`,
-      );
-    });
+    await closeRegionDb();
   }
 }
 
@@ -306,6 +401,18 @@ export async function handleHeldoutManifest(args: string[]): Promise<void> {
           `on one erasable signal. Say so wherever its number is reported.`,
       );
     }
+    if (manifest.counts.stillDraining > 0) {
+      // The limit `checkCutWindow` cannot enforce, said out loud. `to <= now`
+      // does not mean the drain caught up, and these episodes would have been
+      // decisions in a cut taken a day later — so the negative arm's size
+      // depends on when this ran.
+      console.warn(
+        `${TAG} ⚠️ ${manifest.counts.stillDraining} episode(s) in this window are STILL ON THE ` +
+          `DRAIN and are frozen as excluded rather than as the decision they are about to reach. ` +
+          `The negative arm's size therefore depends on when this cut ran. Either wait for the ` +
+          `drain to clear and cut again, or report the number beside any result from this set.`,
+      );
+    }
     if (manifest.entries.length === 0) {
       // The shape an operator typo takes. There is no "unknown workspace"
       // refusal to lean on — after a purge, a purged workspace and a mistyped
@@ -317,7 +424,7 @@ export async function handleHeldoutManifest(args: string[]): Promise<void> {
           `into an empty manifest.`,
       );
     }
-    if (manifest.counts.positive < HELDOUT_MIN_POSITIVES) {
+    if (isUnderpowered(manifest.counts)) {
       console.warn(
         `${TAG} ⚠️ UNDERPOWERED: ${manifest.counts.positive} positive(s), and #5338's threshold ` +
           `pair needs ~${HELDOUT_MIN_POSITIVES} for its 95% Wilson lower bound to clear 95%. ` +
@@ -360,12 +467,6 @@ export async function handleHeldoutManifest(args: string[]): Promise<void> {
     console.error(`${TAG} ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
   } finally {
-    await closeInternalDB().catch((closeErr) => {
-      console.warn(
-        `${TAG} failed to close the internal DB pool: ${
-          closeErr instanceof Error ? closeErr.message : String(closeErr)
-        }`,
-      );
-    });
+    await closeRegionDb();
   }
 }

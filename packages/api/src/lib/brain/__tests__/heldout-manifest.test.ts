@@ -20,15 +20,18 @@ import {
   HELDOUT_EPISODE_MAX,
   HELDOUT_MANIFEST_NOTICE,
   HELDOUT_MANIFEST_VERSION,
+  HELDOUT_MIN_POSITIVES,
   HELDOUT_REFUSALS,
   HELDOUT_WINDOW_SQL,
   HELDOUT_RESOLVE_SQL,
   HELDOUT_DIAL_EVIDENCE_SQL,
+  EXTRACTION_CYCLE_ACTION,
   TRIAGE_DIAL_SETTING_KEY,
   checkCutWindow,
   checkTriageDialOff,
   classifyHeldoutEpisode,
   cutHeldoutManifest,
+  isUnderpowered,
   loadTriageDialEvidence,
   parseHeldoutManifest,
   resolveHeldoutManifest,
@@ -56,6 +59,7 @@ function rawRow(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     episode_id: "11111111-1111-4111-8111-111111111111",
     extracted: true,
+    draining: false,
     positives: 1,
     rejected: 0,
     occupied: true,
@@ -127,7 +131,14 @@ describe("held-out manifest — no tenant text can reach it", () => {
    * counts and an id — and adding a sixth output column is what this test is
    * here to make loud.
    */
-  const OUTPUT_ALIASES = ["episode_id", "extracted", "positives", "rejected", "occupied"];
+  const OUTPUT_ALIASES = [
+    "episode_id",
+    "extracted",
+    "draining",
+    "positives",
+    "rejected",
+    "occupied",
+  ];
 
   for (const sqlName of ["window", "resolve"] as const) {
     const sql = sqlName === "window" ? HELDOUT_WINDOW_SQL : HELDOUT_RESOLVE_SQL;
@@ -207,11 +218,55 @@ describe("held-out manifest — class precedence at the episode grain", () => {
         rawRow({ episode_id: "b", positives: 0, rejected: 2 }),
         rawRow({ episode_id: "c", positives: 0, rejected: 0, occupied: false }),
         rawRow({ episode_id: "d", positives: 0, rejected: 0, occupied: true }),
-        rawRow({ episode_id: "e", extracted: false, positives: 0, rejected: 0, occupied: false }),
+        rawRow({
+          episode_id: "e",
+          extracted: false,
+          draining: true,
+          positives: 0,
+          rejected: 0,
+          occupied: false,
+        }),
       ],
     });
-    expect(manifest.counts).toEqual({ positive: 1, rejected: 1, negative: 1, excluded: 2 });
+    expect(manifest.counts).toEqual({
+      positive: 1,
+      rejected: 1,
+      negative: 1,
+      excluded: 2,
+      // A STRICT SUBSET of `excluded`: "d" is a settled live draft and "e" is
+      // still on the drain, and the two are different problems. Separating them
+      // is what makes `excluded` readable — one is a reviewer's backlog, the
+      // other is a set that is not finished freezing.
+      stillDraining: 1,
+    });
     expect(manifest.entries.map((e) => e.episodeId)).toEqual(["a", "b", "c"]);
+  });
+
+  it("⭐ counts the drain shortfall the window check cannot enforce", async () => {
+    // `checkCutWindow` can only require that `to` has elapsed. It cannot know
+    // the drain has caught up — batch extraction turns around in hours and a
+    // quarantined episode may never arrive — and refusing on any straggler
+    // would let one permanently stuck row block every evaluation forever. So
+    // the shortfall is MEASURED and travels in the committed file.
+    const manifest = await cutOk({
+      rows: [
+        rawRow({ episode_id: "a", positives: 1 }),
+        rawRow({ episode_id: "b", extracted: false, draining: true, positives: 0, occupied: false }),
+        rawRow({ episode_id: "c", extracted: false, draining: true, positives: 0, occupied: false }),
+      ],
+    });
+    expect(manifest.counts.stillDraining).toBe(2);
+    expect(manifest.counts.stillDraining).toBeLessThanOrEqual(manifest.counts.excluded);
+  });
+
+  it("does not count a settled no-arm episode as draining", async () => {
+    // A live draft and an unkeyable-import tombstone are excluded and SETTLED.
+    // Folding them into the drain shortfall would report a set as unfinished
+    // when the only thing outstanding is a human.
+    const manifest = await cutOk({
+      rows: [rawRow({ episode_id: "d", positives: 0, rejected: 0, occupied: true })],
+    });
+    expect(manifest.counts).toMatchObject({ excluded: 1, stillDraining: 0 });
   });
 
   it("keeps both fact counts on the row so the collapse is auditable", async () => {
@@ -225,6 +280,17 @@ describe("held-out manifest — class precedence at the episode grain", () => {
 // ---------------------------------------------------------------------------
 // The window
 // ---------------------------------------------------------------------------
+
+describe("held-out manifest — the underpowered predicate", () => {
+  it("is one comparison, shared by the module and the operator command", () => {
+    // Both warn, on different channels, and both must move together with
+    // HELDOUT_MIN_POSITIVES — or one starts calling a set powered that the
+    // other does not.
+    expect(isUnderpowered({ positive: HELDOUT_MIN_POSITIVES - 1 })).toBe(true);
+    expect(isUnderpowered({ positive: HELDOUT_MIN_POSITIVES })).toBe(false);
+    expect(isUnderpowered({ positive: 0 })).toBe(true);
+  });
+});
 
 describe("held-out manifest — the window is closed and ordered", () => {
   it("refuses a window whose end has not elapsed", () => {
@@ -242,9 +308,12 @@ describe("held-out manifest — the window is closed and ordered", () => {
     );
   });
 
-  it("refuses an unparseable bound rather than silently reading NaN", () => {
+  it("refuses an unparseable bound under its OWN code, not the inverted one", () => {
+    // The refusal code lands in `admin_action_log` and outlives its message: a
+    // mistyped --from recorded forever as an inverted window is a forensic
+    // answer to a question nobody asked.
     expect(checkCutWindow({ from: "last tuesday", to: WINDOW.to }, NOW)?.refusal).toBe(
-      HELDOUT_REFUSALS.windowInverted,
+      HELDOUT_REFUSALS.windowUnparseable,
     );
   });
 
@@ -296,6 +365,7 @@ function evidence(over: Partial<TriageDialEvidence> = {}): TriageDialEvidence {
     cyclesObserved: 42,
     cyclesReportingTriage: 0,
     platformDialSetting: null,
+    attestsRegion: "us",
     ...over,
   };
 }
@@ -344,6 +414,7 @@ describe("held-out manifest — the triage dial must have been off", () => {
       cyclesObserved: 0,
       cyclesReportingTriage: 0,
       platformDialSetting: "false",
+      attestsRegion: null,
     });
   });
 
@@ -355,6 +426,17 @@ describe("held-out manifest — the triage dial must have been off", () => {
       `coalesce(a.metadata->'skipped'->>'triaged', '0') <> '0'`,
     );
     expect(HELDOUT_DIAL_EVIDENCE_SQL).not.toContain("::numeric");
+  });
+
+  it("BINDS the action type and the settings key rather than interpolating them", () => {
+    // Interpolation is the documented pattern for the composed PREDICATES this
+    // module reuses from `gate-export` — a predicate cannot be a parameter —
+    // but these two are plain values, and a value literal is what a later edit
+    // replaces with a variable.
+    expect(HELDOUT_DIAL_EVIDENCE_SQL).not.toContain(`'${EXTRACTION_CYCLE_ACTION}'`);
+    expect(HELDOUT_DIAL_EVIDENCE_SQL).not.toContain(`'${TRIAGE_DIAL_SETTING_KEY}'`);
+    expect(HELDOUT_DIAL_EVIDENCE_SQL).toContain("a.action_type = $5");
+    expect(HELDOUT_DIAL_EVIDENCE_SQL).toContain("WHERE key = $6");
   });
 
   it("reads the dial across the whole region, not one workspace", () => {
@@ -369,9 +451,38 @@ describe("held-out manifest — the triage dial must have been off", () => {
   });
 
   it("reads the platform dial row, never a per-org override", () => {
-    expect(HELDOUT_DIAL_EVIDENCE_SQL).toContain(
-      `WHERE key = '${TRIAGE_DIAL_SETTING_KEY}' AND org_id IS NULL`,
-    );
+    expect(HELDOUT_DIAL_EVIDENCE_SQL).toContain("WHERE key = $6 AND org_id IS NULL");
+  });
+
+  it("⭐ records the ONE region it attested, because AC 2 asks about every region", async () => {
+    // ADR-0024 makes the process the region: no deployment can read another
+    // region's brain_episodes, admin_action_log or settings, so "off in every
+    // region" cannot be established from inside one process. The manifest
+    // therefore states WHAT IT CHECKED rather than implying more, and a reader
+    // can see from this field which region's manifest they are holding.
+    const cut = await cutHeldoutManifest(readerOf({}), {
+      workspaceId: "ws-1",
+      apiRegion: "us",
+      workspaceRegion: "us",
+      ...WINDOW,
+      now: NOW,
+    });
+    if (!cut.ok) throw new Error("expected a manifest");
+    expect(cut.manifest.dialEvidence.attestsRegion).toBe("us");
+    expect(cut.manifest.notice).toContain("attests ONE");
+  });
+
+  it("passes the bound values as params 5 and 6", async () => {
+    const reader = readerOf({});
+    await cutHeldoutManifest(reader, {
+      workspaceId: "ws-1",
+      apiRegion: null,
+      workspaceRegion: null,
+      ...WINDOW,
+      now: NOW,
+    });
+    const params = reader.params[reader.sql.findIndex((s) => s.includes("cycles_reporting_triage"))];
+    expect(params?.slice(4)).toEqual([EXTRACTION_CYCLE_ACTION, TRIAGE_DIAL_SETTING_KEY]);
   });
 
   it("spans window-start to CUT time, because drain time is not ingest time", async () => {
@@ -387,13 +498,23 @@ describe("held-out manifest — the triage dial must have been off", () => {
       reader.params[reader.sql.findIndex((s) => s.includes("cycles_reporting_triage"))];
     // An episode ingested inside the window can be drained at any time up to
     // the cut, so the dial has to have been off for the whole longer period.
-    expect(evidenceParams).toEqual(["ws-1", WINDOW.from, WINDOW.to, NOW.toISOString()]);
+    expect(evidenceParams?.slice(0, 4)).toEqual([
+      "ws-1",
+      WINDOW.from,
+      WINDOW.to,
+      NOW.toISOString(),
+    ]);
   });
 
   it("throws rather than defaulting to zeros when the aggregate returns no row", async () => {
     const reader: GateExportReader = { query: async () => ({ rows: [] }) };
     await expect(
-      loadTriageDialEvidence(reader, { workspaceId: "ws-1", ...WINDOW, cutAt: NOW.toISOString() }),
+      loadTriageDialEvidence(reader, {
+        workspaceId: "ws-1",
+        ...WINDOW,
+        cutAt: NOW.toISOString(),
+        region: "us",
+      }),
     ).rejects.toThrow(/query shape changed/);
   });
 });
@@ -459,7 +580,7 @@ describe("held-out manifest — re-resolution against the live database", () => 
     window: { column: "ingested_at", ...WINDOW },
     cutAt: NOW.toISOString(),
     dialEvidence: evidence(),
-    counts: { positive: 2, rejected: 1, negative: 0, excluded: 0 },
+    counts: { positive: 2, rejected: 1, negative: 0, excluded: 0, stillDraining: 0 },
     entries: [
       { episodeId: "a", class: "positive", positiveFacts: 1, rejectedFacts: 0 },
       { episodeId: "b", class: "positive", positiveFacts: 1, rejectedFacts: 0 },

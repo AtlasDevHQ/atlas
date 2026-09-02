@@ -11,6 +11,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   HELDOUT_OK_ENV,
+  checkVerifyContainment,
   checkHeldoutGate,
   formatCounts,
   formatDialEvidence,
@@ -76,6 +77,7 @@ describe("ops heldout-manifest — the dial-evidence report", () => {
       cyclesObserved: 0,
       cyclesReportingTriage: 0,
       platformDialSetting: null,
+      attestsRegion: "us",
     });
     expect(out).toContain("UNATTESTED");
   });
@@ -86,6 +88,7 @@ describe("ops heldout-manifest — the dial-evidence report", () => {
       cyclesObserved: 96,
       cyclesReportingTriage: 0,
       platformDialSetting: null,
+      attestsRegion: "us",
     });
     expect(out).not.toContain("UNATTESTED");
     expect(out).toContain("96");
@@ -99,8 +102,36 @@ describe("ops heldout-manifest — the dial-evidence report", () => {
       cyclesObserved: 1,
       cyclesReportingTriage: 0,
       platformDialSetting: null,
+      attestsRegion: "us",
     });
     expect(out).toContain("no override row (default: off)");
+  });
+
+  it("⭐ says the attestation covers ONE region, because AC 2 asks about every one", () => {
+    // ADR-0024 makes the process the region, so every probe read exactly one
+    // database. An operator not told the scope will read a one-region pass as a
+    // fleet-wide one — which is the specific misreading #5338 AC 2 invites.
+    const out = formatDialEvidence({
+      markedEpisodes: 0,
+      cyclesObserved: 96,
+      cyclesReportingTriage: 0,
+      platformDialSetting: null,
+      attestsRegion: "us",
+    });
+    expect(out).toContain("us ONLY");
+    expect(out).toContain("not attested");
+  });
+
+  it("names an unregioned deployment rather than printing null", () => {
+    const out = formatDialEvidence({
+      markedEpisodes: 0,
+      cyclesObserved: 1,
+      cyclesReportingTriage: 0,
+      platformDialSetting: null,
+      attestsRegion: null,
+    });
+    expect(out).toContain("single region / self-hosted");
+    expect(out).not.toContain("null");
   });
 
   it("prints the settings row verbatim when one exists", () => {
@@ -109,6 +140,7 @@ describe("ops heldout-manifest — the dial-evidence report", () => {
       cyclesObserved: 1,
       cyclesReportingTriage: 3,
       platformDialSetting: "true",
+      attestsRegion: "us",
     });
     expect(out).toContain("true");
     expect(out).toContain("triaged-out marks in window: 2");
@@ -134,8 +166,9 @@ describe("ops heldout-manifest — the class report", () => {
       cyclesObserved: 10,
       cyclesReportingTriage: 0,
       platformDialSetting: null,
+      attestsRegion: "us",
     },
-    counts: { positive: 37, rejected: 4, negative: 210, excluded: 9 },
+    counts: { positive: 37, rejected: 4, negative: 210, excluded: 9, stillDraining: 2 },
     entries: [
       {
         episodeId: "11111111-1111-4111-8111-111111111111",
@@ -152,6 +185,9 @@ describe("ops heldout-manifest — the class report", () => {
     // that summed to fewer than the window held would read as a lost row.
     const out = formatCounts(manifest);
     expect(out).toContain("excluded (undecided):   9");
+    // The drain shortfall is broken out of `excluded`, because a reviewer's
+    // backlog and a set that has not finished freezing are different problems.
+    expect(out).toContain("…of which draining:   2");
     expect(out).toContain("positive (published):   37");
     expect(out).toContain("manifest rows:          1");
   });
@@ -160,5 +196,36 @@ describe("ops heldout-manifest — the class report", () => {
     // The console output is the surface most likely to end up pasted into a
     // ticket. The counts are safe there; the ids are the manifest's business.
     expect(formatCounts(manifest)).not.toContain("11111111-1111-4111-8111-111111111111");
+  });
+});
+
+describe("ops heldout-manifest — --verify refuses to cross a region boundary", () => {
+  it("⭐ refuses rather than reporting every row as purged", () => {
+    // The fix for the sharpest defect in this command. Re-resolution's whole
+    // value is that an unresolvable id is a LOUD purge signal — so pointing a
+    // `us` manifest at `--region eu` would fire that alarm, at full volume, on
+    // a flag typo. The path that PRINTS the alarm has to refuse on the same
+    // terms as the path that cuts, or the alarm means nothing.
+    const refusal = checkVerifyContainment("eu", "us");
+    expect(refusal).not.toBeNull();
+    expect(refusal).toContain("false alarm");
+    expect(refusal).toContain("--region us");
+  });
+
+  it("proceeds when the regions agree", () => {
+    expect(checkVerifyContainment("us", "us")).toBeNull();
+  });
+
+  it("proceeds for an unregioned manifest on an unregioned deployment", () => {
+    // Self-hosted: no regions at all, so there is no boundary to cross —
+    // `checkRegionContainment`'s own call, not a second opinion about it.
+    expect(checkVerifyContainment(null, null)).toBeNull();
+  });
+
+  it("refuses when the manifest names a region this process cannot prove it serves", () => {
+    // Unproven containment fails closed, which is the arm that matters on the
+    // `--database-url` path: that one invocation can point at any region on
+    // earth and carries no ATLAS_API_REGION to check itself against.
+    expect(checkVerifyContainment(null, "us")).not.toBeNull();
   });
 });

@@ -38,7 +38,10 @@ atlas-operator ops heldout-manifest --region us --verify packages/api/scripts/he
 ```
 
 `--verify` is ungated — it writes nothing, and everything it prints is already in
-the file you handed it.
+the file you handed it. ⚠️ **It does still refuse to cross a region boundary**,
+and that refusal is load-bearing rather than tidy: point a `us` manifest at
+`--region eu` and every row fails to resolve, so the purge alarm this whole
+design rests on would fire at full volume on a flag typo.
 
 ## The rules that make a frozen set worth anything
 
@@ -74,6 +77,19 @@ These come from #5338 and `docs/agents/practices.md`, not from taste.
   `HELDOUT_EPISODE_MAX` episodes. A set clipped at a cap is sampled by sort
   order, which is the authorship a mechanical window exists to remove.
 
+⚠️ **`to` having elapsed is a necessary condition, not a sufficient one, and the
+manifest says so in a number.** It does not mean the drain has caught up: an
+episode ingested a second before `to` may still be un-extracted at `cutAt`, in
+which case it lands in `excluded` rather than on the arm it is about to reach —
+so the negative arm's size depends on when the cut ran. A drain-lag margin was
+the obvious fix and is the wrong one (batch extraction turns around in *hours*
+and a quarantined episode may never arrive, so any constant is either too short
+to be true or long enough to let one stuck row block every evaluation forever).
+The shortfall is therefore **measured**: `counts.stillDraining` is a strict
+subset of `counts.excluded`, and a manifest whose value is not `0` has to say so
+wherever its number is reported — exactly as an unattested `cyclesObserved: 0`
+does.
+
 ## The triage-dial precondition
 
 `gate-export`'s negative arm requires `extracted_at IS NOT NULL`, and triage runs
@@ -95,6 +111,18 @@ and warns loudly rather than refusing: a refusal keyed on missing audit rows
 would fire hardest on the deployments with the shortest retention, which has
 nothing to do with whether triage ran. Say so wherever such a manifest's number
 is reported.
+
+⚠️ **The attestation covers ONE region — the one in `dialEvidence.attestsRegion`.**
+#5338 AC 2 asks for a window in which the dial was off *in every region*, and no
+process can establish that: ADR-0024 makes the process the region, so no
+deployment can read another region's `brain_episodes`, `admin_action_log` or
+`settings`, and a cross-region probe would be the residency violation the whole
+model exists to prevent. So the manifest states **what it checked** rather than
+implying more. Covering the fleet means running this command in each region and
+keeping each manifest; the console says `<region> ONLY` on every run so a
+one-region pass is not read as a fleet-wide one. (`eu` and `apac` are parked, so
+their extraction fibers do not run at all — but the manifest carries no evidence
+of that either, and shouldn't pretend to.)
 
 The dial is also blind here in one direction worth naming: an **env-var-only**
 enable (`ATLAS_BRAIN_EXTRACTION_TRIAGE_ENABLED=true` with no settings override

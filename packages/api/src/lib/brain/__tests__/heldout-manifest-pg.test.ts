@@ -242,6 +242,25 @@ describeIfPg("brain held-out manifest (real Postgres)", () => {
     expect(manifest.counts.excluded).toBe(3);
   });
 
+  it("⭐ counts a real un-drained episode as stillDraining, a subset of excluded", async () => {
+    // The limit `checkCutWindow` cannot enforce, measured against a real row:
+    // `to <= now` does not mean the drain caught up, and this episode would be
+    // a decision in a cut taken later. Asserted here rather than only against a
+    // literal handle because `draining` is a SQL expression over two nullable
+    // columns, and the direction that matters is the one Postgres computes.
+    const ws = "ws-draining";
+    const decided = await seedEpisode(ws, "dr:1");
+    await seedFact(ws, decided, { predicate: "leads" });
+    await seedEpisode(ws, "dr:2", { extracted: false });
+    const draft = await seedEpisode(ws, "dr:3");
+    await seedFact(ws, draft, { predicate: "owns", status: "draft" });
+
+    const manifest = await cutOk(ws);
+    // Two excluded — the un-drained one and the undecided draft — but only the
+    // first is a set that has not finished freezing.
+    expect(manifest.counts).toMatchObject({ positive: 1, excluded: 2, stillDraining: 1 });
+  });
+
   it("collapses one episode's two decisions onto `positive`", async () => {
     const ws = "ws-precedence";
     const both = await seedEpisode(ws, "p:1");
@@ -396,6 +415,7 @@ describeIfPg("brain held-out manifest (real Postgres)", () => {
         from: FROM,
         to: TO,
         cutAt: NOW.toISOString(),
+        region: "us",
       });
       expect(evidence.cyclesReportingTriage).toBeGreaterThan(0);
     } finally {
@@ -414,6 +434,7 @@ describeIfPg("brain held-out manifest (real Postgres)", () => {
         from: FROM,
         to: TO,
         cutAt: NOW.toISOString(),
+        region: "us",
       });
       expect(evidence.cyclesReportingTriage).toBeGreaterThan(0);
     } finally {

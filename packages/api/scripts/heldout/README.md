@@ -238,3 +238,105 @@ A failure is an acceptable outcome and has a home before it happens:
   closes as answered rather than as delivered.
 
 Neither outcome is a reason to re-cut the set.
+
+---
+
+# The labelled evaluation set (#5338 AC 3)
+
+Everything above is about **manifests cut from prod**. This section is about the
+other kind of set, and it exists because prod cannot produce the scoring one.
+
+## ⚠️ The prod path does not converge, and that is measured
+
+Measured against the `us` region's internal DB on **2026-09-02** — `us` is the
+only serving region:
+
+| | |
+|---|---|
+| Episodes, **lifetime** | **36** (21 slack, 9 warehouse, 6 human) |
+| Extracted | 36 — nothing pending |
+| Earliest | 2026-08-03 |
+| Facts | 13 published, 24 draft |
+
+The recall denominator counts **episodes**, so 36 is not a running total — it is
+the **ceiling**, and the Wilson floor is 110. Reviewing all 24 outstanding drafts
+moves it by nothing, because those drafts come from those same 36 episodes. The
+bottleneck was assumed to be review throughput; it is **ingest volume**, and no
+amount of reviewing reaches the number.
+
+So #5338's own framing is the operative one — *the number is set on a labelled
+set and prod is the smoke test* — and `us-2026-09-02.json` is the smoke test.
+
+## The lane
+
+```bash
+# 1. Collect. Mechanical: a repo and a window, nothing else.
+GITHUB_TOKEN=… bun scripts/collect-eval-corpus.ts \
+  --repo apache/kafka --repo apache/airflow \
+  --from 2026-06-01T00:00:00Z --to 2026-06-08T00:00:00Z \
+  -o scripts/heldout/fixtures/apache-2026-06.sheet.json
+
+# 2. Label. Open the sheet and set every `class`. `_guide` in the file says
+#    what each one means. Check progress at any point — it also tells you
+#    whether the positives you have could ever clear the bound:
+bun scripts/build-eval-fixture.ts --sheet scripts/heldout/fixtures/apache-2026-06.sheet.json
+
+# 3. Build, once every row is labelled.
+bun scripts/build-eval-fixture.ts \
+  --sheet scripts/heldout/fixtures/apache-2026-06.sheet.json \
+  --labeller "<who>" -o scripts/heldout/fixtures/apache-2026-06.json
+
+# 4. Measure.
+bun scripts/measure-triage.ts --fixture scripts/heldout/fixtures/apache-2026-06.json --record
+```
+
+**Size it for 110 positives.** At the ~36% positive rate the first prod cut
+observed, that is roughly **300 episodes** labelled. Step 2 prints the Wilson
+bound a *perfect* score would carry at the positives you have so far, so you can
+see at row 200 whether the sheet is going to be big enough rather than after.
+
+## The rules that are specific to this kind of set
+
+The five above still apply. These are additional, and each is enforced rather
+than requested:
+
+1. **A sheet may not carry triage output of any kind.** `parseSheet` refuses an
+   undeclared key rather than stripping it. A labeller who can see which rule
+   fires is labelling the thing under test, and stripping the evidence while
+   keeping the labels is strictly worse than refusing.
+2. **A partly-labelled sheet is refused, not filtered.** Dropping unlabelled
+   rows redefines the set as *"the episodes somebody got round to"* — a curated
+   set wearing a mechanical one's provenance — and it does so hardest on the
+   rows that were hardest to call, which are the rows a triage layer is most
+   likely to get wrong.
+3. **`--labeller` is required to write a fixture.** #5338 extends
+   `practices.md`'s structural rule: whoever builds #5336 stage 1 may not author
+   the set. A fixture that cannot say who judged it makes that rule a formality.
+4. **The window refuses rather than truncates**, exactly as a prod cut does, and
+   for the same reason.
+5. **Bodies are stored RAW.** Triage reads `brain_episodes.body`; the
+   quoted-reply strip and the 8k cap live in `extractionExcerpt`, which runs
+   later and only for the model call. A corpus that pre-stripped would hand
+   triage a shape production never gives it, and stage 0's rules are length- and
+   shape-sensitive.
+
+## Licence and personal data
+
+`.claude/research/extractor-corpus-acquisition.md` holds two decision cards, and
+**both are about training inputs and shipped weights**. An evaluation set
+produces no weights, so:
+
+- ADR-0044's prohibition (fact content into model weights) is **not engaged**.
+- This needs only that document's *"store in our infra"* column. The `apache/*`
+  rows are yes there on the ALv2 reading, and collection through the API
+  sidesteps the scraping clause — GitHub's AUP: *"Scraping does not refer to the
+  collection of information through our API."*
+- It does **not** need the *"commercial derived weights"* column, which is where
+  ambiguity note 1 and the counsel question live.
+
+⚠️ **The data-protection axis is not answered by any of that.** `pseudonymise`
+rewrites the mechanical identifiers — `@handle` mentions and email addresses —
+and **names in free text survive it**. "Marco said he'd take this" still reads
+that way afterwards. The claim is that a sheet carries no handle you can resolve
+to an account and no address you can mail; it is **not** a claim that the text is
+anonymous, and anything stronger needs a different technique.

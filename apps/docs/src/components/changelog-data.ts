@@ -20,6 +20,23 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.29",
+    title: "The Approval Names Its Approver",
+    date: "2026-09-03",
+    summary:
+      "Atlas promises that every answer carries its source, its date, and the name of the person who approved it. Two of those three were backed. A fact recorded who said a thing, and when it was published, but nothing recorded who stood behind it — so the name in the promise had nowhere to come from. This release records it: approving a fact stamps the approver, and a search returns that name alongside the source and the date. The surfaces that print the sentence — the landing page, the README's first screen, the docs — were rewritten in the same release, so what they claim and what the product does now match.",
+    highlights: [
+      "Publishing a fact records who approved it, and searchAtlas serves that name with the fact. On a deployment with no accounts the approver reads as the local operator; a fact that cannot be attributed to a person is refused rather than published anonymously. Existing facts are left as they are — an approver is recorded going forward, never guessed backwards",
+      "A new admin endpoint approves specific facts, one to two hundred at a time, instead of only being able to publish everything a review pass had cleared. It writes no SQL of its own: the same single gate, the same refusals, the same supersession rules — what it adds is a unit of decision small enough to have a person's name on it",
+      "Fixed: a fact whose access was widened at publish time was marked published without a publication date. Both paths now write both columns, and a test holds them together so a future approval-time column cannot re-open it",
+      "The landing page leads with the sentence and the command. The primary call to action is the one-line MCP install, the trust tiers (Surveyed, Attested, On the record) are stated in the product's own language, and the example answer shown is the answer the hosted demo actually gives — including the claim two people disagree about, shown as a disagreement",
+      "The README's first screen is the sentence, the command, one question and an answer with a name on it — 302 lines down to 63. Nothing was dropped: every removed section is linked once to the docs page that now holds it",
+      "The docs meet the reader arriving from an AI agent first. The introduction's first door is the anonymous MCP demo, the MCP guide opens with a sixty-second path, and both llms.txt surfaces lead with the sentence and the right command for that audience",
+      "Five new comparison pages — Databricks Genie, Snowflake Cortex Analyst, Hyper, Glean, and Dust/Onyx — each argued on the same axis: who approved it, is it stale, can you self-host it, does it show what it does not know. Every page has a section on where that vendor wins, and every fact was read from the vendor's own documentation",
+      "@useatlas/mcp 0.0.4 publishes the anonymous demo flag, so the command every one of those surfaces prints now works from npm",
+    ],
+  },
+  {
     version: "v0.2.28",
     title: "The Demo Door Answers SQL",
     date: "2026-09-03",

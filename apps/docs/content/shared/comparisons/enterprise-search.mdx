@@ -18,7 +18,7 @@ The difference is what stands between a retrieved passage and an agent acting on
 | | Atlas | Dust | Onyx |
 |---|---|---|---|
 | **Who approved it** | Every attested fact carries the name of the person who approved it and the date | No one. Answers cite the retrieved documents; authority is the source system's | No one. Answers cite retrieved passages with links to the originals; authority is the source system's |
-| **Is it stale** | Warehouse facts re-read live rows. Attested facts carry an observation date; the coverage page reports measured lag per source | As fresh as the last sync of the connector | As fresh as the last index run of the connector |
+| **Is it stale** | Warehouse facts re-read live rows. Attested facts carry an observation date; the coverage page reports measured lag where a source can report it and marks the rest unverified since a date | As fresh as the last sync of the connector | As fresh as the last index run of the connector |
 | **Can you self-host it** | Yes. Complete under AGPL, in your VPC, free. Hosted in the US; EU and APAC regions are built and brought online on request | The source is MIT and actively developed, but self-hosting is not an offered or documented product. The product is hosted, with US or EU residency on every paid plan | Yes, first-class: a one-command installer, MIT core. Enterprise features live under `ee/` directories on a separate commercial license |
 | **Does it show what it does not know** | Yes. Contradictions with both claims and both sources; unsurveyed regions marked on the coverage page | Not documented | Not documented |
 | **Human review gate** | Nothing enters the authoritative record without a named person approving it; no setting turns this off | None found | None found |

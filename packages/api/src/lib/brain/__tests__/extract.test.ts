@@ -327,6 +327,26 @@ describe("llmFactExtractor", () => {
     expect(candidates[0]?.predicateCardinality).toBe("multi");
   });
 
+  test("⭐ every candidate bounds its cardinality hint to the exact slot (#5615)", async () => {
+    // The hint is a guess about ONE predicate. Left at reconcile's default it
+    // also licenses the tension scan's anchor arm — every live claim sharing
+    // the subject, any predicate — which on a company-subject corpus mints the
+    // cross-product. `curated-only` is the same bound `correction.ts` declares;
+    // the live-Postgres half is `extract-anchor-reach-pg.test.ts`. Asserted on
+    // the `single` claim, since a `multi` hint never reaches the scan at all.
+    const { model } = modelReturning([
+      { subject: "NovaMart", predicate: "has return window of", object: "30 days", cardinality: "single" },
+    ]);
+    const candidates = await llmFactExtractor({ episode, body: "hello", model, modelId: "m" });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.predicateCardinality).toBe("single");
+    expect(
+      candidates[0]?.anchorReach,
+      "the extractor's guess licenses the anchor arm — the #5615 bound is gone",
+    ).toBe("curated-only");
+  });
+
   test("an episode with no durable claim yields no candidates", async () => {
     // The modal production case by a wide margin — most chat is not a fact.
     const { model } = modelReturning([]);

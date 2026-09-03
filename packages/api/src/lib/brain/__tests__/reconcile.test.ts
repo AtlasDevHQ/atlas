@@ -1476,10 +1476,8 @@ describe("advisory contradiction edges", () => {
   test("⭐ the anchor arm's licence is bound TENTH, and defaults to the producer's hint (#5467)", async () => {
     // `$10` — see the lexical half in `segmentation.test.ts`. TRUE means *this
     // producer's per-claim `single` licenses the ANCHOR arm as well as its own
-    // slot*, which is what every producer got between #5438 and #5467 and what
-    // all but one still gets. Asserted for a producer that says nothing, because
-    // that is the case the whole ingest path is: an absent field must not
-    // silently acquire the bound. A widening default subtracts edges from
+    // slot*. Asserted for a producer that says nothing: an absent field must
+    // not silently acquire the bound. A widening default subtracts edges from
     // producers that never asked, and a missing advisory edge is
     // indistinguishable from agreement.
     const store = new FakeBrainStore();

@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.28",
+    title: "The Demo Door Answers SQL",
+    date: "2026-09-03",
+    summary:
+      "A one-fix release for the anonymous demo that shipped in v0.2.27. Asking the demo a question that needs the warehouse — an order count, revenue by category — was refused, because the demo's query tool was pointed at a connection the hosted service never exposes, while the demo workspace's own datasource sat unused beside it. It now targets that datasource, so an AI agent connected to the demo gets a real answer from the NovaMart data as well as the approved company facts.",
+    highlights: [
+      "Queries over the anonymous demo now run against the demo workspace's own datasource. A client that sends only the SQL — which is every client — reaches it; a client that names a connection explicitly is passed through unchanged",
+      "The per-call request frame that every hosted tool runs in now carries the demo's pinned datasource with it, so the query planner and the table allow-list agree on which connection a query is for. The hosted workspace route is unaffected: it pins nothing, and a test now guards that",
+      "Found on the live service minutes after the demo workspace was seeded, and fixed the same day. Searching the company facts was never affected",
+    ],
+  },
+  {
     version: "v0.2.27",
     title: "The Launch Cycle Opens",
     date: "2026-09-03",

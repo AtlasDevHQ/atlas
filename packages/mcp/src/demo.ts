@@ -37,7 +37,7 @@ import { getConfig } from "@atlas/api/lib/config";
 import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import { isDemoEnabled } from "@atlas/api/lib/demo";
-import { DEMO_CONNECTION_ID } from "@atlas/api/lib/semantic/entities";
+import { DEMO_INSTALL_ID } from "@atlas/api/lib/integrations/installed-connection";
 import {
   ANONYMOUS_DEMO_SCOPES,
   anonymousDemoActor,
@@ -218,7 +218,7 @@ export function createDemoMcpServer(
   // order is what `tools/list` shows a client first.
   registerSearchAtlasTool(server, dispatch);
   // A visitor's client sends only `sql`; the demo install is the target.
-  registerExecuteSqlTool(server, dispatch, { defaultConnectionId: DEMO_CONNECTION_ID });
+  registerExecuteSqlTool(server, dispatch, { defaultConnectionId: DEMO_INSTALL_ID });
   registerShareEmailTool(server, { sessionId, deps: d });
 
   return server;
@@ -520,7 +520,7 @@ export function createDemoMcpRouter(deps: DemoMcpDeps = {}): Hono {
           atlasMode: "published",
           agentOrigin: "mcp",
           clientIp: ip,
-          connectionId: DEMO_CONNECTION_ID,
+          connectionId: DEMO_INSTALL_ID,
         },
         () =>
           withDemoRequestFrame({ ip, requestId }, async () => {

@@ -482,6 +482,14 @@ const retractRoute = createRoute({
  */
 const APPROVE_MAX_IDS = 200;
 
+/**
+ * Deadline on the approve verb's audit write, matching `admin-knowledge.ts`'s.
+ * `logAdminActionAwait` reaches `internalQuery`, which bypasses the breaker,
+ * and the internal pool sets no statement timeout — so the await needs its own
+ * bound or a committed approval can hang with no response.
+ */
+const AUDIT_WRITE_TIMEOUT_MS = 5_000;
+
 const approveRoute = createRoute({
   method: "post",
   path: "/approve",
@@ -1072,23 +1080,76 @@ adminBrainFacts.openapi(approveRoute, async (c) => {
       // row is the trail's copy of a decision that put a named person behind a
       // set of claims, and a fire-and-forget write can be lost on a process
       // exit that the client already saw succeed.
-      yield* Effect.promise(() =>
-        logAdminActionAwait({
-          actionType: ADMIN_ACTIONS.brainFact.approve,
-          targetType: "brainFact",
-          // The WORKSPACE, for the reason the retract row gives one step over:
-          // this verb's target is a SET of facts, and `metadata.requested`
-          // carries the ids. A single `targetId` cannot name a set, and picking
-          // the first would make the row lie about the other four.
-          targetId: orgId,
-          metadata: {
-            workspaceId: orgId,
-            requested: factIds,
-            promotedIds,
-            refused,
-          },
+      //
+      // BOUNDED, on `admin-knowledge.ts`'s argument: `logAdminActionAwait`
+      // reaches `internalQuery`, which bypasses the breaker, and the internal
+      // pool sets no statement timeout — so an unbounded await here is a
+      // committed approval whose response never arrives.
+      const audited = yield* Effect.tryPromise({
+        try: () =>
+          Promise.race([
+            logAdminActionAwait({
+              actionType: ADMIN_ACTIONS.brainFact.approve,
+              targetType: "brainFact",
+              // The WORKSPACE, for the reason the retract row gives one step
+              // over: this verb's target is a SET of facts, and
+              // `metadata.requested` carries the ids. A single `targetId`
+              // cannot name a set, and picking the first would make the row lie
+              // about the other four.
+              targetId: orgId,
+              metadata: {
+                workspaceId: orgId,
+                requested: factIds,
+                promotedIds,
+                refused,
+              },
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`audit write timed out after ${AUDIT_WRITE_TIMEOUT_MS}ms`)),
+                AUDIT_WRITE_TIMEOUT_MS,
+              ),
+            ),
+          ]),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.as(true as const),
+        Effect.catchAll((err) => {
+          log.error(
+            { workspaceId: orgId, promoted: report.promoted, promotedIds, requestId, err: err.message },
+            "Brain fact approval COMMITTED but its audit row failed to write",
+          );
+          return Effect.succeed(false as const);
         }),
       );
+
+      if (!audited) {
+        // 500 with a SPECIFIC body, on `admin-brain-triage.ts`'s reasoning: the
+        // transaction committed, so a generic "approve failed" would tell an
+        // admin the opposite of what happened and invite a retry. A retry is
+        // harmless here — the promoted rows are no longer drafts, so a second
+        // call promotes nothing — but it would report zero and read as "the
+        // first call did nothing".
+        //
+        // Sharper than the triage case, and this is why the row matters: the
+        // approval put a NAMED PERSON behind these claims. `published_by`
+        // records that on each row, so the decision itself is not lost — but
+        // the admin-action trail is where the act is reviewable, and it did
+        // not land.
+        return c.json(
+          {
+            error: "audit_write_failed",
+            message:
+              `The approval COMMITTED — ${promotedIds.length} fact(s) are now published and carry you as their ` +
+              "approver — but the admin-action audit row could not be written. The per-fact approver is on each " +
+              "row, so the decision is recorded; the reviewable trail of this act is not. Do not retry: those " +
+              "facts are no longer drafts, so a second call would report 0. Record this manually and check the " +
+              "audit subsystem's health.",
+            requestId,
+          },
+          500,
+        );
+      }
 
       return c.json(
         checked(BrainFactApproveResponseSchema, {

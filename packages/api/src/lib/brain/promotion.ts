@@ -396,7 +396,9 @@ export interface EvidenceWidenedGrant {
  * this paragraph's argument, and the distinction matters. #5635 added an
  * affirmative verb whose SCOPE is a set of facts; it did not add a per-fact
  * SIDE EFFECT to promotion. Widening still rides the bulk promote and still
- * introduces no per-row verb of its own, which is what this sentence is about. Widening at corroboration time would instead let any
+ * introduces no per-row verb of its own, which is what this sentence is about.
+ *
+ * Widening at corroboration time would instead let any
  * unattended ingest pass mutate an ACL field, which is the same side-effect
  * class that #4771 refused for predicate cardinality.
  *

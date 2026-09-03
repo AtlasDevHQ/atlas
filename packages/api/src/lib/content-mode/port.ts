@@ -99,9 +99,9 @@ export type ExoticModeAdapter = {
    *
    * `publishedBy` is the person the publish is attributable to — a user id, or
    * `local-operator` on a no-auth deployment, or null where the caller cannot
-   * name one. Every exotic adapter receives it; only one records it today
-   * (`brain_facts`, #5635), because only the fact class makes a per-row claim
-   * about who approved it. An adapter that ignores the parameter is correct,
+   * name one. Every exotic adapter receives it; `brain_facts` is the only one
+   * that records it (#5635), because the fact class is the only one making a
+   * per-row claim about who approved it. An adapter that ignores the parameter is correct,
    * not incomplete — the alternative was a brain-only channel into the
    * registry, and a second way to pass an actor is a second thing to keep true.
    */

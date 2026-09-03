@@ -96,7 +96,6 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
 import { resolveBrainReaderContext } from "@atlas/api/lib/brain/reader-context";
-import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { recordedAuthor } from "@atlas/api/lib/brain/recorded-author";
 import {
   InvalidEnrollmentPairError,
@@ -132,14 +131,6 @@ import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-r
 
 const log = createLogger("api.admin.brain-enrollment");
 
-/**
- * `admin-brain-slack.ts`'s `recordedAuthor`, verbatim and for its reason.
- *
- * Switched on the ORIGIN rather than written `ctx.userId ?? SENTINEL`: `??`
- * applies the local-operator sentinel to every origin whose `userId` happens to
- * be null, so an `unresolved` principal would file one workspace's authority
- * decision under another's operator.
- */
 
 function errorBody(error: string, message: string, requestId: string) {
   return { error, message, requestId };

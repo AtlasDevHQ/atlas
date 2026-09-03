@@ -1498,18 +1498,6 @@ adminBrainVocabulary.openapi(cardinalityRoute, async (c) => {
   );
 });
 
-
-/**
- * The author id to record, or `null` when this reader may not author at all.
- *
- * Switched on the ORIGIN rather than written `ctx.userId ?? SENTINEL`, for
- * `recordedApprover`'s reason exactly: `??` applies the local-operator sentinel
- * to every origin whose `userId` happens to be null, so a future
- * `BrainPrincipalContext` arm would silently inherit "the declared local
- * operator" — an audit falsification one origin over, on the column migration
- * 0192 calls the first thing an audit of a retroactive re-key reads.
- */
-
 /** Compile-time pin: the router only ever speaks the three known positions. */
 type _PositionsAreSlotPositions = [
   Exclude<(typeof BRAIN_VOCABULARY_SLOT_POSITIONS)[number], SlotPosition>,

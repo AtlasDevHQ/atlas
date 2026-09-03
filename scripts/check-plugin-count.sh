@@ -107,7 +107,6 @@ echo ":: Canonical plugin count derived from plugins/: ${N} (${typed_dirs[*]})"
 # exactly "<N> plugins" (at least once) and carry no stale "<other> plugins".
 # Add a surface here whenever a new one starts quoting the count.
 SURFACES=(
-  "README.md"
   "apps/www/src/components/landing/comparison.tsx"
   "apps/www/src/app/blog/announcing-atlas/page.tsx"
   "apps/www/public/llms.txt"

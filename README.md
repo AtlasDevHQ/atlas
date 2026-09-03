@@ -1,293 +1,66 @@
 <h1 align="center">Atlas</h1>
 
 <p align="center">
-  Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs — grounded in a semantic layer you author, a Knowledge Base of your own docs, the query patterns it learns as your team approves them, and a Company Atlas of what your colleagues have said and someone has stood behind.
+  <strong>Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/AtlasDevHQ/atlas/actions/workflows/ci.yml"><img src="https://github.com/AtlasDevHQ/atlas/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://www.npmjs.com/package/@useatlas/sdk"><img src="https://img.shields.io/npm/v/@useatlas/sdk" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/@useatlas/mcp"><img src="https://img.shields.io/npm/v/@useatlas/mcp?label=%40useatlas%2Fmcp" alt="npm"></a>
   <a href="https://github.com/AtlasDevHQ/atlas/blob/main/LICENSE"><img src="https://img.shields.io/github/license/AtlasDevHQ/atlas" alt="License"></a>
 </p>
 
 <p align="center">
-  <a href="https://docs.useatlas.dev">Documentation</a> · <a href="https://app.useatlas.dev">Live Demo</a> · <a href="https://docs.useatlas.dev/semantic-layer">The Semantic Layer</a> · <a href="https://docs.useatlas.dev/guides/mcp">MCP Guide</a> · <a href="https://github.com/AtlasDevHQ/atlas/issues">Issues</a>
+  <img src="assets/demo.svg" alt="Atlas demo — one command into Claude Desktop, one question, one answer with a name on it" width="820">
 </p>
 
-<p align="center">
-  <img src="assets/demo.svg" alt="Atlas terminal demo — create, init, and query in under 30 seconds" width="820">
-</p>
-
----
-
-## What is Atlas?
-
-Ask two tools what revenue was last quarter and you can get two different numbers. Atlas reads *your* definitions first.
-
-### What grounds an answer
-
-Four context surfaces, each with a different job — and a boundary between them that Atlas enforces rather than trusts:
-
-| | What it is | Its job |
-|---|---|---|
-| **Semantic layer** | YAML on disk — entities, dimensions, measures, joins, glossary terms, pinned metrics | The **sole authoritative** surface. The table whitelist, pinned metric SQL, and glossary gating are *enforced*, not suggested |
-| **Knowledge Base** | Your own docs — mirrored through ten vendor connectors (Notion, Confluence (Cloud + Data Center), GitBook, Zendesk, Salesforce, Intercom, Front, Help Scout, Freshdesk) or uploaded directly | **Descriptive only.** Runbooks, definitions, policies. Never queried as data, never extends the whitelist, never gates the agent ([ADR-0028](docs/adr/0028-knowledge-base-fourth-pillar.md)) |
-| **Learned patterns** | The query shapes Atlas keeps as your team approves them | The canonical joins for your domain — earned from real use rather than authored up front |
-| **Company Atlas** | Claims drawn from what your company already says — chat, meeting transcripts, mail — each carrying its source, its date, and the person who approved it | **Nothing counts until a person approves it.** Facts are ACL-scoped fail-closed, superseded rather than deleted, and readable as of a past date. Contradictions are surfaced with both sources, never arbitrated ([ADR-0036](docs/adr/0036-atlas-as-company-brain.md)) |
-
-That descriptive-vs-authoritative split is the point: a runbook can *inform* an answer, but only the semantic layer can *authorize* the SQL behind it.
-
-The Company Atlas is the newest of the four and the one you opt into: **extraction ships off by default** (`ATLAS_BRAIN_EXTRACTION_ENABLED`), so nothing is drawn from your chat, transcripts, or mail until you turn it on — and once on, a claim still waits for a person before it counts.
-
-Every YAML field exists because an LLM needs it to write correct SQL: `sample_values` ground the agent in real data, `glossary.status: ambiguous` forces clarifying questions, `metrics.objective` picks `MAX` vs `MIN`, `query_patterns` teach the canonical join shapes for your domain.
-
-### Where the answer shows up
-
-The same grounded agent, reachable however your team already works:
-
-- **Chat UI** — built in, with the SQL on display behind every answer
-- **Dashboards** — draft-first and publish-gated, so private work stays private until you ship it ([ADR-0029](docs/adr/0029-dashboards-draft-first-editing.md))
-- **MCP server** — Claude Desktop, Cursor, Continue, or any MCP client, over stdio or OAuth 2.1
-- **Embeddable widget** — script tag or React component, in your own app
-- **Chat platforms** — six, Slack one-click; Teams, Discord, Telegram, and WhatsApp with your own bot (Google Chat coming soon)
-- **REST API + CLI** — headless, typed, scriptable
-
-Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ollama, any OpenAI-compatible endpoint, and Vercel AI Gateway. Works with PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch, and Salesforce.
-
-## Try the demo locally
+One command, from a terminal, with no account and no email. It points Claude Desktop, Cursor or Continue at the hosted NovaMart demo:
 
 ```bash
-bun create atlas-agent my-app
-cd my-app
-# edit .env and set your LLM API key (Anthropic / OpenAI / etc.)
-bun run dev
-# Open http://localhost:3000
+bunx @useatlas/mcp init --hosted --demo --write
 ```
 
-The scaffold seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) by default — twelve generic e-commerce KPIs ship as starter prompts inside the chat UI; the canonical 5 below drive the eval harness ([#2025](https://github.com/AtlasDevHQ/atlas/issues/2025)) and the docs/landing copy. The scaffold defaults to PostgreSQL + Anthropic; `--defaults` skips the prompts and assumes a local Postgres at `postgresql://atlas:atlas@localhost:5432/atlas`, or follow the prompts to pick MySQL / OpenAI / etc.
+Restart the client and ask:
 
-Ask one of the canonical questions in the chat UI:
+> **What is NovaMart's return window?**
 
-- *"What's our GMV this quarter?"*
-- *"What's our top-performing category by GMV this month?"*
-- *"Monthly GMV trend over the past 6 months."*
-- *"Show me revenue last quarter."* — Atlas asks which definition you mean (GMV vs. net revenue vs. seller revenue) because `revenue` is `status: ambiguous` in the glossary
-- *"What are our most common return reasons?"*
+The answer carries a name. Finance says 30 days — Priya Natarajan, Head of Finance, in `#finance`, on a date, a claim a person approved before it counted. Support's macro says 14. Atlas shows both and picks neither. Ask what the warehouse says and the live rows come back with the exact SQL that read them. (Claude Code, VS Code and other clients: the same command with `--client generic` prints a block to paste. On WSL2, write `bun x` instead of `bunx`.)
 
-The agent reads your YAML semantic layer first, picks the right entities, writes SQL, runs it through the validation pipeline, and returns answers with the underlying SQL on display.
+## How it works
 
-The default landing for fresh installs is chat-first — admins can flip to admin in **Settings → Profile**. See the [Default Landing guide](https://docs.useatlas.dev/guides/default-landing) for the underlying preference.
+Three kinds of thing live in the Atlas, and every answer says which it is drawing on:
 
-## Install Atlas as an MCP server
+1. **Surveyed** — read straight from your company's own data through a semantic layer you author. True by construction: the query re-reads live rows, nobody interpreted anything, and it cannot go stale between readings. SELECT-only, single statement, table-whitelisted, validated seven ways before it runs.
+2. **Attested** — extracted from something someone wrote, then approved by a named person in your company. That person is on the record, and the fact carries its source and its date.
+3. **On the record** — the raw source material itself, unedited. Trustworthy as testimony, not as fact.
 
-Once you have an Atlas instance (local from the demo above, self-hosted, or a hosted workspace), add it to Claude Desktop, Cursor, or Continue with one command. Auto-detects the client and merges into its config:
+Surveyed outranks Attested wherever they overlap, so a recollection never overwrites the data. Nothing becomes Attested without a person approving it, and there is no setting that turns that off. Contradictions are shown with both claims and both sources; Atlas does not pick a winner. Where nobody has surveyed, the coverage page says so instead of guessing.
 
-```bash
-bunx @useatlas/mcp init --local            # paste-ready config for a local Atlas instance
-bunx @useatlas/mcp init --local --write    # merge into the detected client config (with a .bak)
-bunx @useatlas/mcp init --hosted --write   # for an app.useatlas.dev workspace via OAuth 2.1
-```
+## Run it
 
-> **On WSL2?** Bun's `bunx` shim has resolution issues on some WSL2 setups — substitute `bun x` (space-separated) for any `bunx` command above (e.g. `bun x @useatlas/mcp init --local`). The space-separated form is a bun subcommand and resolves correctly.
+- **From your AI agent** — the command above against the demo; `bunx @useatlas/mcp init --hosted --write` against your own hosted workspace; `--local` against a self-hosted one. [MCP guide](https://docs.useatlas.dev/guides/mcp).
+- **Hosted** — [app.useatlas.dev](https://app.useatlas.dev): connect your data, invite your team, two-week trial, no card. [Hosted quick start](https://docs.useatlas.dev/getting-started/hosted).
+- **Self-hosted** — the complete Atlas under AGPL, in your VPC, free; Docker, Railway or Vercel. [Self-host quick start](https://docs.useatlas.dev/self-hosted/getting-started/quick-start).
 
-Restart Claude Desktop / Cursor and ask the same canonical questions through your AI client. See the [MCP guide](https://docs.useatlas.dev/guides/mcp) for the full flow — hosted (`mcp.useatlas.dev` over OAuth 2.1 + DCR + PKCE) and self-hosted (stdio) live in the same page under tabs.
+## Where everything else went
 
-## What's in the YAML?
+This README used to inventory the whole product. Each section now lives on one docs page:
 
-A 20-line slice of `semantic/entities/orders.yml` from the bundled NovaMart e-commerce demo (#2021):
-
-```yaml
-name: Orders
-type: fact_table
-table: orders
-grain: one row per order
-description: |
-  Customer orders — the primary fact table for revenue analysis.
-  shipping_cost uses MIXED UNITS (some rows in dollars, some in cents).
-dimensions:
-  - name: status
-    sql: status
-    type: string
-    sample_values: [pending, processing, shipped, delivered, cancelled]
-  - name: order_month
-    sql: TO_CHAR(created_at, 'YYYY-MM')
-    type: string
-    virtual: true
-measures:
-  - name: total_gmv_cents
-    sql: total_cents
-    type: sum
-joins:
-  - target_entity: Customers
-    relationship: many_to_one
-    join_columns: { from: customer_id, to: id }
-```
-
-That YAML is the contract between your team and the agent — version-controlled, code-reviewed, diffable. Sibling files (`glossary.yml`, `metrics/*.yml`, `catalog.yml`) round it out: glossary terms with `status: ambiguous` force the agent to clarify, metrics with `objective: maximize` / `minimize` make optimization direction explicit, and the catalog routes the agent to the right entity for a given question.
-
-See the full [Semantic Layer reference](https://docs.useatlas.dev/getting-started/semantic-layer) for the complete schema.
-
-## Embed in your app
-
-Atlas also ships an embeddable chat widget for any frontend:
-
-```html
-<script
-  src="https://your-atlas.example.com/widget.js"
-  data-api-url="https://your-atlas.example.com"
-  data-theme="dark"
-></script>
-```
-
-Or use the React component:
-
-```tsx
-import { AtlasChat } from "@useatlas/react";
-
-export default function App() {
-  return <AtlasChat apiUrl="https://your-atlas.example.com" />;
-}
-```
-
-The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `Atlas.destroy()`), event callbacks, and theming. See the [widget docs](https://docs.useatlas.dev/guides/embedding-widget).
-
-## Why Atlas?
-
-| | Atlas | Traditional BI | Other text-to-SQL |
-|---|---|---|---|
-| **Semantic layer** | YAML on disk — `query_patterns`, `virtual_dimensions`, `glossary.status: ambiguous`, `metrics.objective` are all first-class | Proprietary metadata, GUI-authored | None or limited |
-| **Your docs as context** | Knowledge Base pillar — ten vendor connectors, descriptive-only by construction (never extends the SQL whitelist) | Separate wiki, unlinked | None |
-| **Dashboards** | Draft-first, publish-gated — built from chat answers, private until you ship | Core product, GUI-authored | Rare |
-| **Agent-native** | MCP server first — Claude Desktop, Cursor, Continue with `bunx @useatlas/mcp init` | Bolted-on AI feature | Standalone chat UI |
-| **Embeddable** | Script tag, React component, headless API, MCP, 6 chat platforms (Slack one-click; Teams/Discord/Telegram/WhatsApp bring-your-own-bot; Google Chat coming soon) | Standalone app | Standalone app |
-| **Deploy anywhere** | Docker, Railway, Vercel, or your own infra | Vendor-hosted | Vendor-hosted |
-| **Plugin ecosystem** | 24 plugins across 5 types — extend anything | Closed | Limited |
-| **Open source** | AGPL-3.0 core, MIT client libs | Proprietary | Varies |
-| **Multi-database** | PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch, Salesforce | Usually one | Usually one |
-| **REST APIs as datasources** | Stripe, GitHub, Notion, any OpenAPI spec — read like a datasource, write-gated; generic OpenAPI installs auto-refresh | None | None |
-
-## Deploy
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FAtlasDevHQ%2Fatlas-starter-vercel&project-name=atlas&repository-name=atlas&products=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%5D&env=AI_GATEWAY_API_KEY,BETTER_AUTH_SECRET&envDescription=AI_GATEWAY_API_KEY%3A%20Vercel%20AI%20Gateway%20key%20(vercel.com%2F~%2Fai%2Fapi-keys).%20BETTER_AUTH_SECRET%3A%20Random%20string%2C%2032%2B%20chars%20(openssl%20rand%20-base64%2032).)
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/_XHuNP?referralCode=N5vD3S)
-
-**Docker:**
-
-```bash
-git clone https://github.com/AtlasDevHQ/atlas-starter-docker.git && cd atlas-starter-docker
-cp .env.example .env   # Set your API key + database URL
-docker compose up
-```
-
-| Platform | Starter | Guide |
-|----------|---------|-------|
-| Vercel | [atlas-starter-vercel](https://github.com/AtlasDevHQ/atlas-starter-vercel) | Next.js + embedded Hono API + Neon Postgres |
-| Railway | [atlas-starter-railway](https://github.com/AtlasDevHQ/atlas-starter-railway) | Docker + sidecar sandbox + Railway Postgres |
-| Docker | [atlas-starter-docker](https://github.com/AtlasDevHQ/atlas-starter-docker) | Docker Compose + optional nsjail isolation |
-
-## How It Works
-
-1. User (or agent) asks a natural language question — over MCP, the chat widget, the API, or a chat platform (Slack, Teams, Discord, Telegram, or WhatsApp; Google Chat coming soon)
-2. Agent explores the **YAML semantic layer** — entities, glossary, metrics, query patterns
-3. Agent writes SQL, validated through a 7-layer security pipeline (empty check, regex guard, AST parse, table whitelist, RLS injection, auto-LIMIT, statement timeout)
-4. Results are returned with charts and an interpreted narrative
-
-```
-Question → YAML semantic layer → SQL generation → 7-layer validation → Query execution → Charts + narrative
-```
-
-### Generate the semantic layer
-
-```bash
-bun run atlas -- init                 # Profile DB and generate YAMLs
-bun run atlas -- init --enrich        # Profile + LLM enrichment
-bun run atlas -- init --demo          # Load NovaMart demo data + profile
-```
-
-## Architecture
-
-```
-atlas/
-├── packages/
-│   ├── api/              # @atlas/api — Hono API server + agent loop + tools + auth
-│   ├── web/              # @atlas/web — Next.js frontend + chat UI components
-│   ├── cli/              # @atlas/cli — CLI (profiler, schema diff, enrichment)
-│   ├── mcp/              # @atlas/mcp — MCP server (Claude Desktop, Cursor, etc.)
-│   ├── sandbox-sidecar/  # @atlas/sandbox-sidecar — Isolated explore sidecar
-│   ├── sdk/              # @useatlas/sdk — TypeScript SDK
-│   ├── react/            # @useatlas/react — Embeddable chat component + hooks
-│   ├── types/            # @useatlas/types — Shared wire-format types
-│   ├── schemas/          # @useatlas/schemas — Shared Zod schemas
-│   ├── plugin-sdk/       # @useatlas/plugin-sdk — Plugin type definitions
-│   ├── webhook-publisher/# @useatlas/webhook-publisher — HMAC-signed outbound webhooks
-│   ├── oauth-helper/     # @atlas/oauth-helper — OAuth 2.1 + DCR + PKCE primitives (internal)
-│   ├── okf-bundle/       # @atlas/okf-bundle — OKF knowledge-bundle builder (internal)
-│   └── fumadocs-okf/     # @atlas/fumadocs-okf — Fumadocs → OKF adapter (internal)
-├── plugins/              # 24 plugins (datasource, context, interaction, action, sandbox)
-├── ee/                   # @atlas/ee — Enterprise features (source-available, commercial license)
-├── create-atlas/         # Scaffolding CLI (bun create atlas-agent)
-├── apps/
-│   ├── www/              # Landing page (useatlas.dev)
-│   └── docs/             # Documentation (docs.useatlas.dev)
-└── examples/             # Docker + Vercel deploy examples
-```
-
-## Security
-
-SQL validation runs through multiple layers. Your database credentials and query results never leave your infrastructure — only questions reach the LLM provider (use Ollama for fully self-hosted).
-
-| Layer | What it does |
-|-------|-------------|
-| Read-only enforcement | Only SELECT queries allowed (regex + AST validation) |
-| AST parsing | `node-sql-parser` verifies single-statement SELECT |
-| Table whitelist | Only tables in your semantic layer are queryable |
-| Auto LIMIT | Every query gets a LIMIT (default 1000) |
-| Statement timeout | Queries killed after 30s (configurable) |
-| Sandboxed execution | Filesystem access runs in Vercel Sandbox, nsjail, or the sidecar — with e2b, Daytona, and Railway available as bring-your-own-cloud backends |
-| Row-level security | Optional RLS injection per-user |
-
-See [sandbox architecture](https://docs.useatlas.dev/architecture/sandbox) for the full threat model.
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ATLAS_PROVIDER` | `anthropic` | LLM provider (`anthropic`, `openai`, `bedrock`, `ollama`, `openai-compatible`, `gateway`) |
-| `ATLAS_MODEL` | Provider default | Model ID override |
-| `DATABASE_URL` | — | Atlas internal Postgres for auth, audit, settings |
-| `ATLAS_DATASOURCE_URL` | — | Analytics datasource (PostgreSQL, MySQL, etc.) |
-| `ATLAS_ROW_LIMIT` | `1000` | Max rows per query |
-| `ATLAS_QUERY_TIMEOUT` | `30000` | Query timeout in ms |
-
-See [`.env.example`](.env.example) for all options.
-
-## Documentation
-
-- [The Semantic Layer](https://docs.useatlas.dev/getting-started/semantic-layer) — Entities, dimensions, measures, joins, glossary, metrics — the YAML format reference
-- [Knowledge Base](https://docs.useatlas.dev/guides/knowledge-base) — Mirror your own docs as descriptive context, via connectors or upload
-- [Dashboards](https://docs.useatlas.dev/guides/dashboards) — Draft-first, publish-gated dashboards built from chat answers
-- [MCP Server](https://docs.useatlas.dev/guides/mcp) — Use Atlas from Claude Desktop, Cursor, Continue
-- [Quick Start](https://docs.useatlas.dev/getting-started/quick-start) — Local dev from zero to asking questions
-- [Demo Dataset](https://docs.useatlas.dev/getting-started/demo-datasets) — NovaMart e-commerce dataset and canonical questions
-- [Deploy Options](https://docs.useatlas.dev/deployment/deploy) — Docker, Railway, Vercel, and more
-- [Connect Your Data](https://docs.useatlas.dev/getting-started/connect-your-data) — Connect to an existing database safely
-- [Widget Embedding](https://docs.useatlas.dev/guides/embedding-widget) — Script tag and React component
-- [Bring Your Own Frontend](https://docs.useatlas.dev/frameworks/overview) — Nuxt, SvelteKit, React/Vite, TanStack Start
-- [Plugin Authoring](https://docs.useatlas.dev/plugins/authoring-guide) — Build custom plugins
-- [Security & Sandbox](https://docs.useatlas.dev/architecture/sandbox) — Threat model, isolation tiers
-- [Enterprise Boundary](https://docs.useatlas.dev/architecture/enterprise) — `/ee` features, AGPL vs commercial split, `requireEnterprise` API
-
-## Contributing
-
-Quick development setup:
-
-```bash
-git clone https://github.com/AtlasDevHQ/atlas.git && cd atlas
-bun install
-bun run db:up         # Start Postgres + sandbox sidecar
-cp .env.example .env  # Set ATLAS_PROVIDER + API key
-bun run dev           # http://localhost:3000
-```
+- The four context surfaces (semantic layer, Knowledge Base, learned patterns, the Company Atlas) and where answers show up — [Introduction](https://docs.useatlas.dev)
+- The YAML semantic layer and a worked `orders.yml` — [Semantic layer](https://docs.useatlas.dev/getting-started/semantic-layer)
+- The NovaMart dataset and the canonical questions — [Demo datasets](https://docs.useatlas.dev/getting-started/demo-datasets)
+- The local scaffold (`bun create atlas-agent`) — [Self-host quick start](https://docs.useatlas.dev/self-hosted/getting-started/quick-start)
+- The embeddable widget and React component — [Embedding widget](https://docs.useatlas.dev/guides/embedding-widget)
+- How Atlas compares to Genie, Cortex Analyst, Hyper, Glean and the text-to-SQL peers — [Comparisons](https://docs.useatlas.dev/comparisons)
+- Deploy buttons, starters and Docker Compose — [Deploy](https://docs.useatlas.dev/self-hosted/deployment/deploy)
+- The SQL validation pipeline and sandbox threat model — [SQL validation](https://docs.useatlas.dev/security/sql-validation), [Sandbox architecture](https://docs.useatlas.dev/architecture/sandbox)
+- Environment variables — [Reference](https://docs.useatlas.dev/reference/environment-variables) and [`.env.example`](.env.example)
+- Plugins, datasources, chat platforms and connectors — [Plugin authoring](https://docs.useatlas.dev/plugins/authoring-guide), [Integrations](https://docs.useatlas.dev/guides/integrations)
+- Supported databases and LLM providers — [Connect your data](https://docs.useatlas.dev/getting-started/connect-your-data), [Model routing](https://docs.useatlas.dev/guides/model-routing)
+- The Knowledge Base, dashboards, and bringing your own frontend — [Knowledge Base](https://docs.useatlas.dev/guides/knowledge-base), [Dashboards](https://docs.useatlas.dev/guides/dashboards), [Frameworks](https://docs.useatlas.dev/self-hosted/frameworks/overview)
+- The CLI (`atlas init`, `atlas diff`, and the rest) — [CLI reference](https://docs.useatlas.dev/reference/cli)
+- The monorepo layout and dev setup — [CONTRIBUTING.md](CONTRIBUTING.md)
+- What is open source and what is commercial — [Enterprise boundary](https://docs.useatlas.dev/architecture/enterprise)
 
 ## Acknowledgments
 
@@ -295,8 +68,4 @@ Atlas was inspired by [Abhi Sivasailam](https://x.com/_abhisivasailam)'s work on
 
 ## License
 
-The Atlas server and core packages (`@atlas/api`, `@atlas/cli`, `@atlas/web`, `@atlas/mcp`, `@atlas/sandbox-sidecar`) are licensed under [AGPL-3.0](LICENSE). If you modify the server and serve it to users, you must share those modifications.
-
-The client libraries (`@useatlas/sdk`, `@useatlas/react`, `@useatlas/types`, `@useatlas/plugin-sdk`) and all plugins are licensed under [MIT](packages/sdk/LICENSE). Embed them in proprietary apps with no restrictions.
-
-The `ee/` directory (`@atlas/ee` — SSO, SCIM, custom roles, approval workflows, residency, branding, and the rest of the SaaS surfaces) is **source-available** under a [commercial license](ee/LICENSE). Self-hosted users get the full AGPL core for free; the commercial license adds enterprise governance and the polished hosted experience. See the [Enterprise Boundary](https://docs.useatlas.dev/architecture/enterprise) page for the full feature inventory.
+The server and core packages are [AGPL-3.0](LICENSE): if you modify the server and serve it to users, you share those modifications. The client libraries (`@useatlas/sdk`, `@useatlas/react`, `@useatlas/types`, `@useatlas/plugin-sdk`, `@useatlas/mcp`) and all plugins are [MIT](packages/sdk/LICENSE). The `ee/` directory is source-available under a [commercial license](ee/LICENSE); nothing that makes the Atlas work is behind it — only governance, convenience and scale. Full inventory: [Enterprise boundary](https://docs.useatlas.dev/architecture/enterprise).

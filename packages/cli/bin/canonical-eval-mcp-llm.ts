@@ -2414,8 +2414,9 @@ function describeNonError(err: unknown): string {
   try {
     return JSON.stringify(err) ?? String(err);
   } catch (jsonErr) {
-    console.debug(
-      `canonical-eval: non-Error throw not serialisable (${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)})`,
+    // stderr, not console: fd 1 is the `--json` artifact and is pinned.
+    process.stderr.write(
+      `canonical-eval: non-Error throw not serialisable (${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)})\n`,
     );
     return String(err);
   }

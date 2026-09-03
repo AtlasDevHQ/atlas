@@ -508,11 +508,12 @@ export function createDemoMcpRouter(deps: DemoMcpDeps = {}): Hono {
     try {
       // `connectionId` pins the execution target to the platform demo
       // install the demo workspace was set up with (`/use-demo`). The
-      // registry's `"default"` is never visible on SaaS, and the imported
-      // demo entities sit in the whitelist's unpinned bucket, so a target
-      // that is both the request's connection and the tool's makes
-      // `resolveExecutionTarget` read it as the all-sources self target and
-      // the whitelist union admits the demo tables.
+      // registry's `"default"` is never visible on SaaS, and `/use-demo`
+      // imports the demo entities with no connection group, so the
+      // whitelist keys them under its `"default"` bucket rather than the
+      // install's. A target that is both the request's connection and the
+      // tool's makes `resolveExecutionTarget` read it as the all-sources
+      // self target, and the whitelist union then admits the demo tables.
       return await withRequestContext(
         {
           requestId,

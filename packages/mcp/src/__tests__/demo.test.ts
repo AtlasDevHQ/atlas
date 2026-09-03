@@ -347,6 +347,7 @@ describe("/mcp/demo — the anonymous principal's reach", () => {
   afterEach(async () => {
     for (const live of opened.splice(0)) await live.close();
     mockExecuteSQLExecute.mockClear();
+    executeSqlFrameConnectionId = undefined;
     mockSearchBrainExecute.mockClear();
   });
 

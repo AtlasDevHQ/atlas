@@ -1027,6 +1027,135 @@ export async function declarePredicateCardinalityForSurface(
  * slot, and that is the rejection memory — deleting it would readmit the
  * producer's next run.
  */
+/**
+ * {@link declarePredicateCardinalityForFacts}'s read. Exported so the pin in
+ * `cardinality.test.ts` reads the same string the seam executes.
+ *
+ * A key WITHOUT its claim: the projection is the distinct `predicate_key` and
+ * nothing else — no fact id, no surface, no row — which is the shape
+ * `keys-not-on-the-wire.test.ts` records as not the leak the prohibition
+ * exists to stop (its `alias-proposal.ts` entry). A caller that gets a norm
+ * back cannot branch on which CLAIM carries it, because no claim came with it.
+ */
+export const FACT_SLOT_KEYS_SQL = `SELECT DISTINCT predicate_key
+     FROM brain_facts
+    WHERE workspace_id = $1
+      AND id = ANY($2::uuid[])
+    ORDER BY predicate_key`;
+
+/**
+ * {@link declarePredicateCardinalityForFacts}'s outcome. `slot` and `slots`
+ * carry the norm(s) for a REPORT — an operator's summary line and an audit
+ * row — and for nothing a consumer can branch a claim on, which is the whole
+ * reason `predicate_key` is never projected beside `predicate` (#5019).
+ */
+export type FactSlotDeclarationResult =
+  | {
+      readonly ok: true;
+      readonly cardinality: PredicateCardinality;
+      readonly previous: PriorCardinalityEntry;
+      /** The one `predicate_key` every given fact carries — what the entry is keyed on. */
+      readonly slot: string;
+    }
+  | {
+      readonly ok: false;
+      readonly refusal: "no-facts";
+      readonly message: string;
+    }
+  | {
+      readonly ok: false;
+      readonly refusal: "slot-mismatch";
+      /** Every distinct `predicate_key` the given facts carry, sorted. */
+      readonly slots: readonly string[];
+      readonly message: string;
+    }
+  | {
+      readonly ok: false;
+      readonly refusal: Extract<CardinalityRefusal, "degenerate-key" | "unattributed">;
+      readonly message: string;
+    };
+
+/**
+ * {@link declarePredicateCardinality} addressed by the FACTS that occupy the
+ * slot — the entry point for a caller that holds rows and not a surface (#5620).
+ *
+ * ## Why this exists rather than the caller reading the key off its rows
+ *
+ * `keys-not-on-the-wire.test.ts` refuses a `predicate_key` projected beside its
+ * claim on any read surface that says `brain_facts`, and it refuses the ORM
+ * spelling as a total prohibition. The demo seed holds the published rows it
+ * matched by SURFACE and needs the slot those rows actually occupy declared
+ * `single` — deriving it from the surface again is the silent no-op
+ * {@link declarePredicateCardinalityForSurface} describes (a norm no live claim
+ * carries), and selecting it beside the claim is the leak. So the read lives
+ * here, keyed on ids, projecting the key alone.
+ *
+ * ## Refused when the facts do not share one slot
+ *
+ * A `single` entry on a key only some of the given facts hold licenses
+ * supersession in a slot the others never enter. That is worse than no entry,
+ * so the seam declares nothing and names every slot it found; the caller
+ * decides whether to alias them together and try again.
+ */
+export async function declarePredicateCardinalityForFacts(
+  executor: CardinalityExecutor,
+  workspaceId: string,
+  input: {
+    readonly factIds: readonly string[];
+    readonly cardinality: PredicateCardinality;
+    readonly authoredBy: string;
+  },
+): Promise<FactSlotDeclarationResult> {
+  if (input.factIds.length === 0) {
+    return { ok: false, refusal: "no-facts", message: "No fact ids were given, so there is no slot to declare." };
+  }
+  const { rows } = await executor.query(FACT_SLOT_KEYS_SQL, [workspaceId, input.factIds]);
+  const slots = rows.map((row, i) => {
+    const key = (row as { predicate_key?: unknown }).predicate_key;
+    if (typeof key !== "string" || key === "") {
+      // `brain_facts.predicate_key` is NOT NULL text (migration 0194); anything
+      // else here is schema drift, and a declaration on a guessed slot is the
+      // retroactive change this store refuses to make on a bad input.
+      throw new Error(
+        `declarePredicateCardinalityForFacts: row ${i} of ${rows.length} carries a non-text predicate_key (workspace ${workspaceId})`,
+      );
+    }
+    return key;
+  });
+  if (slots.length === 0) {
+    return {
+      ok: false,
+      refusal: "no-facts",
+      message: `None of the ${input.factIds.length} given fact ids exist on workspace ${workspaceId}, so there is no slot to declare.`,
+    };
+  }
+  const [slot, ...others] = slots;
+  if (slot === undefined || others.length > 0) {
+    return {
+      ok: false,
+      refusal: "slot-mismatch",
+      slots,
+      message:
+        `The given facts occupy ${slots.length} slots (${slots.map((s) => JSON.stringify(s)).join(", ")}), not one. ` +
+        "A `single` entry on a key only some of them hold would license supersession in a slot the others never enter; " +
+        "nothing was declared. Alias the predicates together, then declare again.",
+    };
+  }
+  const result = await declarePredicateCardinality(executor, workspaceId, {
+    predicateKey: slot,
+    cardinality: input.cardinality,
+    authoredBy: input.authoredBy,
+  });
+  if (result.ok) return { ok: true, cardinality: result.cardinality, previous: result.previous, slot };
+  if (result.refusal === "degenerate-key" || result.refusal === "unattributed") {
+    return { ok: false, refusal: result.refusal, message: result.message };
+  }
+  // Same unreachable arm as `declarePredicateCardinalityForSurface`, for the same reason.
+  throw new Error(
+    `declarePredicateCardinalityForFacts: unexpected refusal "${result.refusal}" from the direct-authoring path (workspace ${workspaceId}).`,
+  );
+}
+
 export async function decidePredicateCardinality(
   executor: CardinalityExecutor,
   workspaceId: string,

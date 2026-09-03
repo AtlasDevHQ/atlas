@@ -365,19 +365,30 @@ export interface ExpectedClaim {
  */
 export const CONTRADICTION_PREDICATE_SURFACE = "return window" as const;
 
-export const EXPECTED_CLAIMS: readonly ExpectedClaim[] = Object.freeze([
+/**
+ * The two expected claims that ARE the contradiction. The seed's approve phase
+ * reads the `predicate_key` off the published rows these match and declares
+ * that key `single` (#5620), because the extractor's phrasing — not the
+ * literal surface above — is what the rows carry and what the sweep and the
+ * write-time anchor gate look up.
+ */
+export const CONTRADICTION_CLAIMS: readonly [ExpectedClaim, ExpectedClaim] = Object.freeze([
   {
     key: "return-window-30",
     subjectHint: "novamart",
-    predicateHint: "return window",
+    predicateHint: CONTRADICTION_PREDICATE_SURFACE,
     objectHints: ["30 day"],
   },
   {
     key: "return-window-14",
     subjectHint: "novamart",
-    predicateHint: "return window",
+    predicateHint: CONTRADICTION_PREDICATE_SURFACE,
     objectHints: ["14 day"],
   },
+] as const);
+
+export const EXPECTED_CLAIMS: readonly ExpectedClaim[] = Object.freeze([
+  ...CONTRADICTION_CLAIMS,
   {
     key: "gmv-december-2024",
     subjectHint: "novamart",

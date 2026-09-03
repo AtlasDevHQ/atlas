@@ -23,6 +23,7 @@
  * goes through `@atlas/api/lib/brain/*` seams rather than raw SQL.
  */
 
+import type { ApproveCardinalityOutcome } from "@atlas/api/lib/brain/demo-corpus/seed";
 import { getFlag } from "../../../lib/cli-utils";
 import { resolveTenantUrl } from "../../../lib/tenant-db";
 
@@ -53,6 +54,18 @@ function requireApprover(args: string[], phase: Phase): string | null {
     process.exit(1);
   }
   return approvedBy ?? null;
+}
+
+/** One line per outcome of the approve phase's keyed `single` declaration (#5620). */
+function describeCardinality(outcome: ApproveCardinalityOutcome): string {
+  if (outcome.kind === "not-found") {
+    return `NOT declared — published rows per rival: ${outcome.found.join("/")}; every rival needs one to declare on`;
+  }
+  if (outcome.ok) return `declared ${outcome.cardinality} on slot ${JSON.stringify(outcome.slot)}`;
+  if (outcome.refusal === "slot-mismatch") {
+    return `NOT declared — the rivals occupy ${outcome.slots.length} slots (${outcome.slots.map((s) => JSON.stringify(s)).join(", ")}); alias them together, then re-run --phase approve`;
+  }
+  return `REFUSED (${outcome.refusal}): ${outcome.message}`;
 }
 
 export async function handleSeedDemoAtlas(args: string[]): Promise<void> {
@@ -97,9 +110,10 @@ export async function handleSeedDemoAtlas(args: string[]): Promise<void> {
       console.log(`${TAG} approve promoted=${r.promoted.length} refused=${r.refused.length} tensionEdges=${r.tensionEdges}`);
       for (const ref of r.refused) console.log(`${TAG}   refused ${ref.id}: ${ref.reasons.join(", ")}`);
       for (const e of r.expected) console.log(`${TAG}   ${e.found ? "✓" : "✗"} ${e.key}`);
+      console.log(`${TAG} cardinality (keyed to the published rivals): ${describeCardinality(r.cardinality)}`);
       if (r.promoted.length > 0 && r.tensionEdges === 0) {
         console.log(
-          `${TAG} no in-tension-with edge on the workspace: the extractor did not hint the return-window predicate single, so reconcile minted nothing at write time. The ingest phase declared it single, so an admin's tension sweep (the facts page, or POST /api/v1/admin/brain-facts/tension-sweep) will mint the contradiction's edge — deliberately not run from here (ADR-0037 §7: one caller).`,
+          `${TAG} no in-tension-with edge on the workspace: the extractor did not hint the return-window predicate single, so reconcile minted nothing at write time. The predicate is declared single (the literal surface at ingest, the rivals' own key at approve), so an admin's tension sweep (the facts page, or POST /api/v1/admin/brain-facts/tension-sweep) will mint the contradiction's edge — deliberately not run from here (ADR-0037 §7: one caller).`,
         );
       }
       if (r.missing.length > 0) {

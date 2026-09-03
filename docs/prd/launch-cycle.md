@@ -1,6 +1,6 @@
 # The Launch Cycle — the sentence, the buyer, the demo, the gate
 
-**Status:** Decided 2026-09-03, pending the maintainer's sign-off below. **Owner:** maintainer.
+**Status:** Decided and signed 2026-09-03. **Owner:** maintainer.
 **Scope:** milestone [`v0.2.x — The Launch Cycle`](https://github.com/AtlasDevHQ/atlas/milestone/103) (#5602 – #5613). Five weeks, one gate that can fail.
 
 Read alongside:
@@ -100,7 +100,7 @@ Each measure names the exact source that produces its number. The person reading
 
 This is a decision, and the actor who proposed the check is not its only judge.
 
-**Maintainer (Matt Sywulak):** _______________ **Date:** _______________
+**Maintainer (Matt Sywulak):** signed **Date:** 2026-09-03
 
 ---
 

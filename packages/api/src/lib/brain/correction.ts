@@ -2280,11 +2280,9 @@ async function applySupersede(
           // predicate the correction gets the wide reach back — the workspace
           // said so, and `TENSION_SWEEP_SQL` would mint the same edges anyway.
           //
-          // ⚠️ Not a weakening of the anchor arm, which #5467 explicitly
-          // declines to ask for: the EXTRACT lane still arms it from the model's
-          // per-claim guess, because that trade WAS made with the arm in view
-          // and is carried as a named limit on `docs/prd/company-atlas.md`'s
-          // condition 4. This lane is the one whose licence predated the width.
+          // The extract lane declares the same bound (`toFactCandidates`,
+          // #5615), so every lane's anchor arm is licensed by the curated entry
+          // and nothing else.
           anchorReach: "curated-only",
         },
       ],

@@ -437,8 +437,8 @@ export interface FactCandidate {
   readonly predicateCardinality?: PredicateCardinality;
   /**
    * How far {@link FactCandidate.predicateCardinality} carries — the bound
-   * #5438 removed and #5467 put back on the one lane that never re-made the
-   * trade.
+   * #5438 removed and #5467 (correction lane) and #5615 (extract lane) put
+   * back.
    *
    * `TENSION_CANDIDATES_SQL` has two arms. The EXACT-SLOT arm asks about the
    * claim's own slot; the ANCHOR arm reaches every live claim sharing the
@@ -447,14 +447,15 @@ export interface FactCandidate {
    * statement about ONE predicate, so spending it on the second arm is
    * spending it on slots the producer never spoke about.
    *
-   *   - `"producer-hint"` (the default, and today's shipped behaviour) — the
-   *     hint arms BOTH arms. What the extractor's guess has done since #5438,
-   *     recorded as a named limit on `docs/prd/company-atlas.md`'s condition 4
-   *     rather than as an accident.
+   *   - `"producer-hint"` (the default for an absent field) — the hint arms
+   *     BOTH arms. Kept as the default for the direction it fails in, not for
+   *     any caller: a producer that has not declared standing keeps its reach
+   *     rather than silently losing edges.
    *   - `"curated-only"` — the hint arms the exact slot; the anchor arm is
    *     admitted only where the workspace holds an APPROVED `single` entry for
    *     the predicate (`cardinalitySingleSql`, the bound `TENSION_SWEEP_SQL`
-   *     already has). `correction.ts` passes this.
+   *     already has). `correction.ts` (#5467) and the extractor's
+   *     `toFactCandidates` (#5615) pass this.
    *
    * ⚠️ **Not a switch for "how noisy do we want this producer to be."** It says
    * whose assertion licenses the reach, and there are only two answers: the
@@ -2778,10 +2779,10 @@ async function writeCandidate(
       // contradictions.
       episode.id,
       // #5467, the tenth bind the docstring above reserved. TRUE says the
-      // producer's per-claim hint licenses the ANCHOR arm as well as the slot,
-      // which is what every producer got for free between #5438 and #5467 and
-      // what all but one still gets. `correction.ts` binds FALSE and the arm
-      // then has to find an approved entry in `brain_predicate_cardinality`.
+      // producer's per-claim hint licenses the ANCHOR arm as well as the slot.
+      // `correction.ts` (#5467) and the extractor's `toFactCandidates` (#5615)
+      // bind FALSE, and the arm then has to find an approved entry in
+      // `brain_predicate_cardinality`.
       //
       // Spelled as `!== "curated-only"` rather than `=== "producer-hint"` so an
       // absent field — every existing caller, and `FactCandidate` makes it

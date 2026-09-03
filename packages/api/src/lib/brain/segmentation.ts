@@ -266,7 +266,7 @@
  *
  * ⚠️ **That bound now holds for every lane's anchor arm** — the sweep's since
  * #5029, the correction lane's since #5467, the extract lane's since #5615
- * (below). The EXACT-SLOT arm on both write-time lanes still runs on the
+ * (above). The EXACT-SLOT arm on both write-time lanes still runs on the
  * producer's per-claim hint, so "approved-predicate coverage" is the anchor
  * arm's radius everywhere and the whole story nowhere: a `single` guess still
  * mints an edge inside its own slot with no curation anywhere.

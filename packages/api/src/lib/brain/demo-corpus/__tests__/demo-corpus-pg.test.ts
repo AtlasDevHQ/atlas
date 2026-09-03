@@ -114,7 +114,9 @@ function deterministicClaims(hintSingle: boolean): ReadonlyMap<string, readonly 
     if (episode === undefined) throw new Error("test fixture references an episode the corpus no longer has");
     out.set(corpusSourceId(episode), claims);
   };
-  const hint = hintSingle ? { predicateCardinality: "single" as const } : {};
+  // Shaped as `toFactCandidates` shapes the extractor's output (#5615): the hint
+  // arms the exact slot only, so an anchor flood here would be a real one.
+  const hint = hintSingle ? { predicateCardinality: "single" as const, anchorReach: "curated-only" as const } : {};
   const [finance30, , financeGmv] = chatIn("finance");
   const [support14] = chatIn("support");
   const [engineeringDecision] = chatIn("engineering");

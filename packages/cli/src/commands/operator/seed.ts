@@ -460,12 +460,17 @@ export async function handleSeed(args: string[]): Promise<void> {
   const subcommand = args[1];
   if (subcommand === "prompts") return handleSeedPrompts(args);
   if (subcommand === "workspace") return handleSeedWorkspace(args);
+  if (subcommand === "demo-atlas") {
+    const { handleSeedDemoAtlas } = await import("./seed-demo-atlas");
+    return handleSeedDemoAtlas(args);
+  }
 
   console.error(
-    "Usage: atlas-operator seed <prompts|workspace> [options]\n\n" +
+    "Usage: atlas-operator seed <prompts|workspace|demo-atlas> [options]\n\n" +
       "Subcommands:\n" +
       "  prompts    Seed a prompt-library collection + items from a YAML file.\n" +
-      "  workspace  Provision a connection group + member connections + semantic entities.\n",
+      "  workspace  Provision a connection group + member connections + semantic entities.\n" +
+      "  demo-atlas Seed the synthetic NovaMart corpus into the DEMO workspace (slug novamart-demo only) — see ./seed-demo-atlas.ts.\n",
   );
   process.exit(1);
 }

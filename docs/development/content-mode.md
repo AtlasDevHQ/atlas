@@ -127,6 +127,16 @@ The four verbs now have one home — `lib/brain/review-gate.ts` (`queued`, `prev
 
 Regression coverage: `lib/content-mode/adapters/__tests__/brain-facts-scoped-promotion.test.ts` runs both arms over identical fixture rows and compares the reports — an all-ids scope must be indistinguishable from no scope, a subset must produce the unscoped arm's own per-fact refusals, widenings and supersessions for those rows, and no statement may bind an id outside the scope; it also pins the two draft statements as differing by exactly the one predicate line, since both are built from one `draftFactsSql` body. `oversight.test.ts` pins the scoped preview arm, and `lib/brain/__tests__/proposal-review-gate-pg.test.ts` drives the facade against live Postgres.
 
+### The demo-corpus seed approves through the gate's adapter, outside the endpoint (#5603)
+
+`lib/brain/demo-corpus/seed.ts`'s approve phase promotes the drafts extracted from the synthetic NovaMart corpus by calling `review-gate.approve` — which *is* `promoteBrainFacts`, the #5568 id-scoped form — inside its own `withInternalTransaction`, from an `atlas-operator` process rather than from `/api/v1/admin/publish`. Recorded here because the rule requires it, and **it is a caller, not a writer**: the file names no gated column, is not on `check-brain-fact-promotion.sh`'s allowlist, and must never need to be. The precedent is `api/routes/admin-brain-facts.ts`, which calls the same adapter the same way; what makes this one worth an entry is that no HTTP request stands behind it.
+
+Three things bound it:
+
+- **One workspace, by slug.** `resolveDemoWorkspace` refuses any organization whose slug is not `novamart-demo`, before any read, with no override flag. A tenant's drafts cannot be reached from here.
+- **Only the corpus's own drafts.** The id scope handed to `approve` is the set of drafts whose `source_episode_id` joins to the corpus's `source_id`s. A draft that arrived on the demo workspace from a real connector stays in the queue for a person.
+- **The actor is a person.** The phase runs under a request context whose user is `--approved-by` (no default), so the `brain.demo_corpus_seed` audit row's `actor_id` names the human exactly as the publish route's `mode.publish` row would. Every refusal the adapter returns is carried on that row beside the promoted ids, never folded into them.
+
 ### A correction is the second gate-time writer (`correct_fact`, #4915)
 
 `lib/brain/correction.ts` is on `check-brain-fact-promotion.sh`'s allowlist, and it is the carve-out the guard's own remediation text forecast. It writes two of them:

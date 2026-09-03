@@ -1,6 +1,6 @@
 ---
 name: operator-commands
-description: Run destructive tenant-data operator subcommands via the atlas-operator binary — proactive enable/disable, seed prompts/workspace, ops wipe, backfill-crm-leads, smoke-crm, teardown-verify-accounts, gate-export, heldout-manifest. Use when asked to wipe, seed, backfill, smoke-test, tear down, export gate decisions, or cut/verify the frozen held-out set from workspace/tenant data.
+description: Run destructive tenant-data operator subcommands via the atlas-operator binary — proactive enable/disable, seed prompts/workspace/demo-atlas, ops wipe, backfill-crm-leads, smoke-crm, teardown-verify-accounts, gate-export, heldout-manifest. Use when asked to wipe, seed, backfill, smoke-test, tear down, export gate decisions, or cut/verify the frozen held-out set from workspace/tenant data.
 ---
 
 # Operator subcommands (destructive) — the `atlas-operator` binary
@@ -18,6 +18,7 @@ Run with `bun run atlas-operator -- <command>` (root or `packages/cli` script).
 | `ops teardown-verify-accounts` | a **region's internal** DB via `ATLAS_REGION_<R>_DB_URL` — no `DATABASE_URL` fallback |
 | `ops gate-export` | a **region's internal** DB, on the same terms — no `DATABASE_URL` fallback |
 | `ops heldout-manifest` | a **region's internal** DB, on the same terms — no `DATABASE_URL` fallback |
+| `seed demo-atlas` | tenant DB at `ATLAS_TEAM_PG_URL` → `DATABASE_URL`, and ONLY the organization whose slug is `novamart-demo` — refuses every other, no override |
 
 ```bash
 bun run atlas-operator -- proactive enable --workspace <id|slug> --channels <c1,c2>
@@ -25,6 +26,9 @@ bun run atlas-operator -- proactive disable --workspace <id|slug>
 bun run atlas-operator -- seed prompts --workspace <id|slug> --library ./prompts/library.yml
 bun run atlas-operator -- seed workspace --workspace <id|slug> --group prod \
   --connections us-prod=US_DB_URL:postgres:primary,eu-prod=EU_DB_URL:postgres
+# Synthetic NovaMart corpus into the DEMO workspace (slug novamart-demo ONLY — refuses any other):
+bun run atlas-operator -- seed demo-atlas [--phase ingest|coverage|approve|all] [--extract] --approved-by <user id>
+#   --approved-by is the audit row's actor and the cardinality declaration's author; no default.
 
 # DESTRUCTIVE — TRUNCATE every public table (excluding migration bookkeeping):
 ATLAS_WIPE_OK=1 bun run atlas-operator -- ops wipe --confirm [--database-url <url>]

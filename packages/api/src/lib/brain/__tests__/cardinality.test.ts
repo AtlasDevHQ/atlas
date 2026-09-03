@@ -29,6 +29,7 @@ import {
   CORRECTION_REPEAT_THRESHOLD,
   cardinalitySingleSql,
   declarePredicateCardinality,
+  declarePredicateCardinalityForFacts,
   decidePredicateCardinality,
   proposeFromCorrectionEvents,
   proposePredicateCardinality,
@@ -465,6 +466,71 @@ describe("declarePredicateCardinality — the human door", () => {
           .map((p) => p.split(/\bFROM\b/)[0])
           .join(""),
       ).toContain("predicate_key");
+    });
+  });
+
+  describe("declarePredicateCardinalityForFacts (#5620)", () => {
+    const IDS = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
+
+    it("projects the key and no claim beside it — the file-local pin for the one statement that projects a key", async () => {
+      const { exec, sql, params } = executor([{ match: "DISTINCT predicate_key", rows: [{ predicate_key: KEY }] }]);
+      await declarePredicateCardinalityForFacts(exec, WS, { factIds: IDS, cardinality: "single", authoredBy: "curator-1" });
+      const projection = sql[0]!.split(/\bFROM\b/)[0]!;
+      expect(projection).toContain("predicate_key");
+      // No surface, no id, no row: `\bpredicate\b` does not match `predicate_key`.
+      expect(projection).not.toMatch(/\b(id|subject|predicate|object|source_episode_id)\b|\*/);
+      expect(params[0]).toEqual([WS, IDS]);
+    });
+
+    it("declares on the one slot the facts share, and reports it", async () => {
+      const { exec, sql, params } = executor([
+        { match: "DISTINCT predicate_key", rows: [{ predicate_key: KEY }] },
+        { match: "WITH prior", rows: [FIRST_CURATION] },
+      ]);
+      const result = await declarePredicateCardinalityForFacts(exec, WS, {
+        factIds: IDS,
+        cardinality: "single",
+        authoredBy: "curator-1",
+      });
+      expect(result).toMatchObject({ ok: true, slot: KEY, cardinality: "single" });
+      expect(sql.length).toBe(2);
+      expect(params[1]).toEqual([WS, KEY, "single", "curator-1"]);
+    });
+
+    it("refuses when the facts occupy more than one slot, naming every slot and writing nothing", async () => {
+      const { exec, sql } = executor([
+        { match: "DISTINCT predicate_key", rows: [{ predicate_key: "has return window of" }, { predicate_key: "return window" }] },
+      ]);
+      const result = await declarePredicateCardinalityForFacts(exec, WS, {
+        factIds: IDS,
+        cardinality: "single",
+        authoredBy: "curator-1",
+      });
+      expect(result).toMatchObject({ ok: false, refusal: "slot-mismatch", slots: ["has return window of", "return window"] });
+      expect(sql.length).toBe(1);
+    });
+
+    it("refuses when no given fact exists, and when no id is given at all — without writing", async () => {
+      const { exec, sql } = executor();
+      expect(
+        await declarePredicateCardinalityForFacts(exec, WS, { factIds: IDS, cardinality: "single", authoredBy: "curator-1" }),
+      ).toMatchObject({ ok: false, refusal: "no-facts" });
+      expect(sql.length).toBe(1);
+      expect(
+        await declarePredicateCardinalityForFacts(exec, WS, { factIds: [], cardinality: "single", authoredBy: "curator-1" }),
+      ).toMatchObject({ ok: false, refusal: "no-facts" });
+      expect(sql.length).toBe(1);
+    });
+
+    it("passes the direct-authoring refusals through — an unattributed declaration is not one", async () => {
+      const { exec, sql } = executor([{ match: "DISTINCT predicate_key", rows: [{ predicate_key: KEY }] }]);
+      const result = await declarePredicateCardinalityForFacts(exec, WS, {
+        factIds: IDS,
+        cardinality: "single",
+        authoredBy: "",
+      });
+      expect(result).toMatchObject({ ok: false, refusal: "unattributed" });
+      expect(sql.length).toBe(1);
     });
   });
 

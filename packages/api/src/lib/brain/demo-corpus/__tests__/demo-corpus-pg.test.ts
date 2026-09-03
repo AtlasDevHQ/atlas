@@ -348,7 +348,7 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     expect(report.expected.every((e) => e.found)).toBe(true);
     // The rivals carry the literal key here, so the keyed declaration lands on
     // the same entry the ingest phase wrote — one entry, not two.
-    expect(report.cardinality).toMatchObject({ kind: "declared", predicateKey: "return window", cardinality: "single" });
+    expect(report.cardinality).toMatchObject({ kind: "declaration", ok: true, slot: "return window", cardinality: "single" });
     expect(await approvedSingleKeys(pool, DEMO_ORG)).toEqual(["return window"]);
 
     // Every published corpus claim matches at least one expected claim — the
@@ -441,12 +441,16 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     expect(report.missing).toEqual([]);
     expect(report.tensionEdges).toBe(0);
     expect(report.cardinality).toMatchObject({
-      kind: "declared",
-      predicateKey: "has return window of",
+      kind: "declaration",
+      ok: true,
+      slot: "has return window of",
       cardinality: "single",
-      // Nothing was under this key before the declaration, and the outcome says so.
+      // Nothing was under this slot before the declaration, and the outcome says so.
       previous: { kind: "none" },
     });
+    // The outcome is cardinality-shaped, not fact-shaped: no id, no surface beside the slot.
+    expect(report.cardinality).not.toHaveProperty("id");
+    expect(report.cardinality).not.toHaveProperty("predicate");
     // Additive: the literal entry is still there beside the keyed one.
     expect(await approvedSingleKeys(pool, DEMO_ORG_REPHRASED)).toEqual(["has return window of", "return window"]);
     const entry = await pool.query<{ source_class: string; proposed_by: string; reviewed_by: string }>(
@@ -459,8 +463,9 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     const again = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_REPHRASED, approvedBy: APPROVER });
     expect(again.promoted).toEqual([]);
     expect(again.cardinality).toMatchObject({
-      kind: "declared",
-      predicateKey: "has return window of",
+      kind: "declaration",
+      ok: true,
+      slot: "has return window of",
       cardinality: "single",
       // The upsert overwrote the first declaration; the audit row carries what it replaced (#5448).
       previous: { kind: "replaced", cardinality: "single", status: "approved", reviewedBy: APPROVER },
@@ -480,16 +485,18 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     expect(Number(edges.rows[0]?.n)).toBeGreaterThanOrEqual(1);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("rivals under DIFFERENT keys: approve warns naming both and declares nothing beyond the literal (#5620)", async () => {
+  it("rivals in DIFFERENT slots: approve warns naming both and declares nothing beyond the literal (#5620)", async () => {
     await seedDemoCorpusIngest({ workspaceRef: DEMO_ORG_SPLIT_KEYS, authoredBy: APPROVER });
     const cycle = await extractWith(deterministicClaims(false, ["return window", "has return window of"]));
     expect(cycle.status).toBe("success");
 
     const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_SPLIT_KEYS, approvedBy: APPROVER });
     expect(report.missing).toEqual([]);
-    expect(report.cardinality).toEqual({
-      kind: "keys-differ",
-      predicateKeys: ["has return window of", "return window"],
+    expect(report.cardinality).toMatchObject({
+      kind: "declaration",
+      ok: false,
+      refusal: "slot-mismatch",
+      slots: ["has return window of", "return window"],
     });
     // A wrong-key declaration is worse than none: only the ingest phase's
     // literal entry exists, and it is the one a person would alias onto.

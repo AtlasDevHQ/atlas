@@ -58,16 +58,14 @@ function requireApprover(args: string[], phase: Phase): string | null {
 
 /** One line per outcome of the approve phase's keyed `single` declaration (#5620). */
 function describeCardinality(outcome: ApproveCardinalityOutcome): string {
-  switch (outcome.kind) {
-    case "declared":
-      return `declared ${outcome.cardinality} on key ${JSON.stringify(outcome.predicateKey)}`;
-    case "refused":
-      return `REFUSED on key ${JSON.stringify(outcome.predicateKey)} (${outcome.refusal}): ${outcome.message}`;
-    case "keys-differ":
-      return `NOT declared — the rivals carry ${outcome.predicateKeys.length} different keys (${outcome.predicateKeys.map((k) => JSON.stringify(k)).join(", ")}); alias them together, then re-run --phase approve`;
-    case "not-found":
-      return `NOT declared — published rows per rival: ${outcome.found.join("/")}; every rival needs one to key off`;
+  if (outcome.kind === "not-found") {
+    return `NOT declared — published rows per rival: ${outcome.found.join("/")}; every rival needs one to declare on`;
   }
+  if (outcome.ok) return `declared ${outcome.cardinality} on slot ${JSON.stringify(outcome.slot)}`;
+  if (outcome.refusal === "slot-mismatch") {
+    return `NOT declared — the rivals occupy ${outcome.slots.length} slots (${outcome.slots.map((s) => JSON.stringify(s)).join(", ")}); alias them together, then re-run --phase approve`;
+  }
+  return `REFUSED (${outcome.refusal}): ${outcome.message}`;
 }
 
 export async function handleSeedDemoAtlas(args: string[]): Promise<void> {

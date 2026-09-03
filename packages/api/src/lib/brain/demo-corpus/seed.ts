@@ -31,12 +31,15 @@
  * key is whatever the extractor said (`has return window of` on the demo
  * workspace, #5620) — a literal entry the rows do not carry licenses neither
  * the sweep nor the write-time anchor arm (#5618). The approve phase therefore
- * reads the key off the rows the expected-claim matcher found and declares
- * THAT. Additive: the literal stays. Idempotent: `ON CONFLICT DO UPDATE`
- * underneath. And refused when the two rivals carry different keys — a
- * `single` entry on a key only one of them holds would license supersession
- * in a slot the other never enters, which is worse than no entry, so the seed
- * warns naming both keys and declares nothing beyond the literal.
+ * hands the ids of the rows the expected-claim matcher found to
+ * `declarePredicateCardinalityForFacts`, which declares the slot THOSE rows
+ * occupy. The key itself is never read here: this file is a `brain_facts` read
+ * surface, and `keys-not-on-the-wire.test.ts` refuses a key beside its claim
+ * on one (#5019). Additive: the literal stays. Idempotent: `ON CONFLICT DO
+ * UPDATE` underneath. And refused when the two rivals occupy different slots —
+ * a `single` entry on a key only one of them holds would license supersession
+ * in a slot the other never enters, which is worse than no entry, so the seam
+ * declares nothing and the seed warns naming both.
  *
  * Registered as a caller of the gate — not a writer — in
  * `docs/development/content-mode.md` § "The demo-corpus seed approves through
@@ -55,7 +58,7 @@
  *   - **Writing a fact, edge or `status` itself.** Every write goes through the
  *     seam that owns it: `ingestEpisodes`, `captureActorIdentities`,
  *     `persistCoverageSnapshot`, `declarePredicateCardinalityForSurface`,
- *     `declarePredicateCardinality`, `approve`. `scripts/check-brain-fact-promotion.sh` would refuse this file
+ *     `declarePredicateCardinalityForFacts`, `approve`. `scripts/check-brain-fact-promotion.sh` would refuse this file
  *     otherwise, and that refusal is the design.
  *
  * ## On the approver's name
@@ -95,10 +98,10 @@ import {
   type ActorIdentityCapture,
 } from "@atlas/api/lib/brain/actor-identity";
 import {
-  declarePredicateCardinality,
+  declarePredicateCardinalityForFacts,
   declarePredicateCardinalityForSurface,
   priorAuditFields,
-  type PriorCardinalityEntry,
+  type FactSlotDeclarationResult,
 } from "@atlas/api/lib/brain/cardinality";
 import { identityAlias } from "@atlas/api/lib/brain/identity";
 import type { PredicateCardinality } from "@atlas/api/lib/brain/types";
@@ -454,8 +457,6 @@ interface CorpusFactRow extends Record<string, unknown> {
   readonly id: string;
   readonly subject: string;
   readonly predicate: string;
-  /** The slot key the row carries — what every cardinality lookup matches on, not the surface. */
-  readonly predicate_key: string;
   readonly object: string;
   readonly source_id: string;
 }
@@ -465,7 +466,7 @@ interface CorpusFactRow extends Record<string, unknown> {
  * corpus's own `source_id`s, so a draft extracted from anything else on the
  * demo workspace is not this phase's to touch.
  */
-const CORPUS_FACTS_SQL = `SELECT f.id, f.subject, f.predicate, f.predicate_key, f.object, e.source_id
+const CORPUS_FACTS_SQL = `SELECT f.id, f.subject, f.predicate, f.object, e.source_id
      FROM brain_facts f
      JOIN brain_episodes e ON e.workspace_id = f.workspace_id AND e.id = f.source_episode_id
     WHERE f.workspace_id = $1
@@ -478,28 +479,19 @@ const TENSION_EDGES_SQL = `SELECT count(*)::text AS n FROM brain_edges WHERE wor
 
 /**
  * What the approve phase did about the contradiction's cardinality, keyed to
- * the published rivals' own `predicate_key`.
+ * the slot the published rivals occupy (#5620).
  *
- *   - `declared`     — one key under both rivals, written as an approved `single`
- *                      entry. `previous` is what the upsert overwrote (#5448: the
- *                      prior decision exists nowhere else afterwards, so the audit
- *                      row carries it).
- *   - `refused`      — one key, but the seam refused it (degenerate key or no author).
- *   - `keys-differ`  — the rivals carry different keys; nothing declared beyond the
- *                      literal, every key named so a person can alias them.
- *   - `not-found`    — a rival has no published row; nothing to key off. `found`
- *                      is the count of published rows per rival, in corpus order.
+ *   - `not-found`    — a rival has no published row; nothing to declare on.
+ *                      `found` is the count of published rows per rival, in
+ *                      corpus order.
+ *   - `declaration`  — the seam's own outcome: `ok` with the slot and what the
+ *                      upsert replaced (#5448), or a refusal — `slot-mismatch`
+ *                      naming every slot the rivals occupy, `no-facts`, or the
+ *                      direct-authoring refusals.
  */
 export type ApproveCardinalityOutcome =
-  | {
-      readonly kind: "declared";
-      readonly predicateKey: string;
-      readonly cardinality: PredicateCardinality;
-      readonly previous: PriorCardinalityEntry;
-    }
-  | { readonly kind: "refused"; readonly predicateKey: string; readonly refusal: string; readonly message: string }
-  | { readonly kind: "keys-differ"; readonly predicateKeys: readonly string[] }
-  | { readonly kind: "not-found"; readonly found: readonly number[] };
+  | { readonly kind: "not-found"; readonly found: readonly number[] }
+  | ({ readonly kind: "declaration" } & FactSlotDeclarationResult);
 
 export interface ApprovePhaseReport {
   readonly workspaceId: string;
@@ -518,14 +510,14 @@ export interface ApprovePhaseReport {
 }
 
 /**
- * Declare the contradiction's predicate `single` under the key the published
- * rivals carry. Reads the rows the expected-claim matcher found — never the
- * literal surface — and declares only when EACH rival has a published row and
- * every such row carries the same key. Per rival, not a total: two rows for
- * one rival and none for the other is the one-sided slot the `keys-differ`
- * arm exists to refuse, and a total count would pass it.
+ * Declare the contradiction's predicate `single` on the slot the published
+ * rivals occupy. Selects the rows by the expected-claim matcher — never by the
+ * literal surface — and hands their ids to the seam only when EACH rival has a
+ * published row. Per rival, not a total: two rows for one rival and none for
+ * the other is the one-sided slot the seam's `slot-mismatch` arm exists to
+ * refuse, and a total count would pass it.
  */
-async function declareContradictionKey(
+async function declareContradictionSlot(
   workspaceId: string,
   published: readonly CorpusFactRow[],
   authoredBy: string,
@@ -534,28 +526,18 @@ async function declareContradictionKey(
   if (perRival.some((rows) => rows.length === 0)) {
     return { kind: "not-found", found: perRival.map((rows) => rows.length) };
   }
-  const predicateKeys = [...new Set(perRival.flat().map((r) => r.predicate_key))].sort();
-  const [predicateKey, ...others] = predicateKeys;
-  if (predicateKey === undefined || others.length > 0) {
-    log.warn(
-      { workspaceId, predicateKeys },
-      "demo corpus: the contradiction's published rivals carry different predicate keys — declaring neither single beyond the literal surface, because an entry on a key only one rival holds would license supersession in a slot the other never enters; alias the keys together, then re-run approve",
-    );
-    return { kind: "keys-differ", predicateKeys };
-  }
-  const declared = await declarePredicateCardinality(executor, workspaceId, {
-    predicateKey,
+  const declared = await declarePredicateCardinalityForFacts(executor, workspaceId, {
+    factIds: perRival.flat().map((row) => row.id),
     cardinality: "single",
     authoredBy,
   });
   if (!declared.ok) {
     log.warn(
-      { workspaceId, predicateKey, refusal: declared.refusal, message: declared.message },
-      "demo corpus: keyed cardinality declaration refused — the sweep and the anchor arm will not see the contradiction's slot as single",
+      { workspaceId, ...declared },
+      "demo corpus: the contradiction's slot was not declared single — the sweep and the anchor arm will not see it, and only the ingest phase's literal entry exists",
     );
-    return { kind: "refused", predicateKey, refusal: declared.refusal, message: declared.message };
   }
-  return { kind: "declared", predicateKey, cardinality: declared.cardinality, previous: declared.previous };
+  return { kind: "declaration", ...declared };
 }
 
 export async function seedDemoCorpusApprove(params: {
@@ -617,7 +599,7 @@ export async function seedDemoCorpusApprove(params: {
       }));
       const missing = expected.filter((e) => !e.found).map((e) => e.key);
 
-      const cardinality = await declareContradictionKey(workspaceId, published, params.approvedBy);
+      const cardinality = await declareContradictionSlot(workspaceId, published, params.approvedBy);
 
       await logAdminActionAwait({
         actionType: ADMIN_ACTIONS.brain.demoCorpusSeed,
@@ -629,13 +611,14 @@ export async function seedDemoCorpusApprove(params: {
           refused,
           tensionEdges,
           missingExpectedClaims: missing,
-          // The `declared` arm's prior entry goes in as the same projection the
-          // vocabulary route's audit row uses, so a forensic query reads one shape.
+          // The prior entry goes in as the same projection the vocabulary
+          // route's audit row uses, so a forensic query reads one shape.
           cardinality:
-            cardinality.kind === "declared"
+            cardinality.kind === "declaration" && cardinality.ok
               ? {
                   kind: cardinality.kind,
-                  predicateKey: cardinality.predicateKey,
+                  ok: cardinality.ok,
+                  slot: cardinality.slot,
                   cardinality: cardinality.cardinality,
                   ...priorAuditFields(cardinality.previous),
                 }

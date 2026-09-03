@@ -117,6 +117,14 @@ const DECLARATION_SITES = new Set([
   // predicate key", which reads the projection SPAN of the statement rather
   // than its first column. That is the file-local replacement for what this
   // line turns off, and it is why the exemption is affordable.
+  //
+  // One statement in the module DOES project the key, on purpose (#5620):
+  // `FACT_SLOT_KEYS_SQL`, which `declarePredicateCardinalityForFacts` reads to
+  // declare the slot a set of facts occupies. It is the `alias-proposal.ts`
+  // shape — a key WITHOUT its claim: no fact id, no surface, no row comes back
+  // with it, so nothing downstream can branch on which claim carries it. The
+  // pin for that statement is `cardinality.test.ts`'s "projects the key and no
+  // claim beside it", which reads the projection span for a surface column.
   "packages/api/src/lib/brain/cardinality.ts",
   // The alias-proposal query (#5034). It reads `predicate_key` off two
   // `brain_facts` rows and SELECTS the pair — genuinely a projection, not an

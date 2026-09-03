@@ -695,6 +695,15 @@ export const ADMIN_ACTIONS = {
      * window, the class counts and the dial evidence, never an episode id.
      */
     heldoutManifest: "brain.heldout_manifest",
+    /**
+     * `atlas-operator seed demo-atlas` approve phase (#5603) — the drafts
+     * extracted from the synthetic NovaMart corpus were promoted through the
+     * review gate on the DEMO workspace. `targetId` is the demo org id;
+     * metadata carries the promoted draft ids and `approvedBy`, the human who
+     * ran the seed. Never emitted for a workspace whose slug is not the demo's —
+     * `lib/brain/demo-corpus/seed.ts` refuses before any write.
+     */
+    demoCorpusSeed: "brain.demo_corpus_seed",
   },
   /**
    * Without these entries a compromised admin could shrink retentionDays

@@ -25,6 +25,8 @@ bun run atlas-operator -- proactive disable --workspace <id|slug>
 bun run atlas-operator -- seed prompts --workspace <id|slug> --library ./prompts/library.yml
 bun run atlas-operator -- seed workspace --workspace <id|slug> --group prod \
   --connections us-prod=US_DB_URL:postgres:primary,eu-prod=EU_DB_URL:postgres
+# Synthetic NovaMart corpus into the DEMO workspace (slug novamart-demo ONLY — refuses any other):
+bun run atlas-operator -- seed demo-atlas [--phase ingest|coverage|approve|all] [--extract] --approved-by <user id>
 
 # DESTRUCTIVE — TRUNCATE every public table (excluding migration bookkeeping):
 ATLAS_WIPE_OK=1 bun run atlas-operator -- ops wipe --confirm [--database-url <url>]

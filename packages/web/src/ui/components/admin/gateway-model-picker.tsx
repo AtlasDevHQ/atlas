@@ -16,6 +16,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import type { GatewayCatalogModel } from "@/ui/lib/types";
 
 interface GatewayModelPickerProps {
+  /** Forwarded to the trigger button so a `<Label htmlFor>` can name it. */
+  id?: string;
+  /** Trigger text when `value` is blank; defaults to "Pick a model". */
+  placeholder?: string;
   models: GatewayCatalogModel[];
   value: string;
   onChange: (modelId: string) => void;
@@ -97,6 +101,8 @@ function formatContext(tokens: number | null): string | null {
  * - Search runs across model id, display name, and provider.
  */
 export function GatewayModelPicker({
+  id,
+  placeholder,
   models,
   value,
   onChange,
@@ -135,13 +141,14 @@ export function GatewayModelPicker({
       ? value
       : loading
         ? "Loading catalog…"
-        : "Pick a model";
+        : (placeholder ?? "Pick a model");
 
   return (
     <div className="space-y-1.5">
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button
+            id={id}
             type="button"
             variant="outline"
             role="combobox"

@@ -2582,6 +2582,37 @@ describe("bindMcpToolsForLlm", () => {
     expect(recorded[0]!.result.kind).toBe("error");
   });
 
+  it("records a non-Error rejection's payload in the __transport envelope, not [object Object]", async () => {
+    // A gateway hands the SDK a plain object on some models; `String(obj)`
+    // is `[object Object]` and the artifact then names nothing. Reverting
+    // the envelope's `error:` to `String(err)` fails this.
+    const recorded: RecordedToolCall[] = [];
+    const fakeClient = {
+      callTool: async () => {
+        throw { code: "Client specified an invalid argument", error: "Invalid arguments passed to the model." };
+      },
+    };
+    const tools = __forTesting__.bindMcpToolsForLlm(
+      fakeClient,
+      [{ name: "explore", description: "Shell." }, { name: "runMetric", description: "Run a metric." }],
+      recorded,
+    );
+    const runner = getRunner(tools, "runMetric");
+    await expect(runner({ id: "x" }, { toolCallId: "t1", messages: [] })).rejects.toBeDefined();
+    expect(recorded).toHaveLength(1);
+    const result = recorded[0]!.result;
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      const env = result.envelope as { error?: string; errorName?: string };
+      expect(env.errorName).toBe("Unknown");
+      expect(env.error).not.toBe("[object Object]");
+      expect(JSON.parse(env.error ?? "")).toEqual({
+        code: "Client specified an invalid argument",
+        error: "Invalid arguments passed to the model.",
+      });
+    }
+  });
+
   it("re-throws AND records a __transport envelope when callTool rejects", async () => {
     const recorded: RecordedToolCall[] = [];
     const fakeClient = {
@@ -3182,5 +3213,45 @@ describe("runTokenUsage", () => {
     }).then((usage) => {
       expect(usage).toBeNull();
     });
+  });
+});
+
+// ── describeNonError ─────────────────────────────────────────────────
+
+describe("describeNonError", () => {
+  const { describeNonError } = __forTesting__;
+
+  it("serialises a plain-object throw so the artifact carries the payload", () => {
+    expect(describeNonError({ status: 400, error: "bad" })).toBe('{"status":400,"error":"bad"}');
+  });
+
+  it("passes a string through untouched", () => {
+    expect(describeNonError("plain")).toBe("plain");
+  });
+
+  it("falls back to String() on a value JSON cannot take, and says so on stderr (never stdout)", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const stderrWrites: string[] = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    const origOut = process.stdout.write.bind(process.stdout);
+    let stdoutWrites = 0;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrWrites.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      stdoutWrites += 1;
+      return origOut(chunk);
+    }) as typeof process.stdout.write;
+    try {
+      expect(describeNonError(cyclic)).toBe("[object Object]");
+    } finally {
+      process.stderr.write = origErr;
+      process.stdout.write = origOut;
+    }
+    expect(stderrWrites).toHaveLength(1);
+    expect(stderrWrites[0]).toContain("[mcp-llm-eval] non-Error throw not serialisable");
+    expect(stdoutWrites).toBe(0);
   });
 });

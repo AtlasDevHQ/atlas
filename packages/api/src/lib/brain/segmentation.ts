@@ -204,16 +204,40 @@
  * so this builder's output is byte-identical at both call sites and the two
  * statements still cannot drift about what "in tension" means.
  *
- * ⚠️ **The EXTRACT lane is deliberately untouched, and that is not an
- * oversight.** The extractor's per-claim `single` guess still arms this arm with
- * no curation anywhere. That trade was made WITH this arm in view — #5438 built
- * the arm knowing the gate was a model's guess, and
- * `docs/prd/company-atlas.md`'s condition 4 records it as a named limit ("a
- * model at ingest, or a human at the sweep"). The correction lane's hard-code is
- * the one that was never re-made at this width. Closing the extract lane too
- * would be a weakening of the anchor arm in the general case, which #5467
- * explicitly declines to ask for; if it should close, it closes on its own
- * evidence and its own issue.
+ * ## …and the EXTRACT lane, on its own evidence (#5615)
+ *
+ * #5467 left the extractor's per-claim guess arming this arm, as a named limit
+ * on `docs/prd/company-atlas.md`'s condition 4, to be closed only on evidence
+ * of its own. **Measured on the staging demo workspace, 2026-09-03**, draining
+ * the synthetic NovaMart corpus (#5603) through the live extractor: 28 claims,
+ * 15 with the company as subject, and **39 `in-tension-with` edges of which 38
+ * were anchor-only and spurious** — every pair of company-subject claims from
+ * different episodes, regardless of predicate (`had GMV in December 2024 of`
+ * against `applies return window to`), beside the one exact-slot edge that is
+ * the corpus's planted contradiction. 31 of the 38 had EQUAL subjects: the
+ * anchor's first disjunct, not the prefix drift the arm was built for.
+ *
+ * The shape is exactly the one predicted above — *a subject carrying several
+ * `single`-cardinality predicates* — at a ratio the prediction did not name,
+ * on the corpus shape a customer's Slack produces: the live model hints
+ * `single` on most declarative claims, and a company is the subject of half of
+ * what its people say about it. One workspace still licenses no precision
+ * rate; it establishes that the cost makes the contradictions surface unusable
+ * where it lands.
+ *
+ * So `extract-contract.ts`'s `toFactCandidates` declares `anchorReach:
+ * "curated-only"` — the bound the sweep and the correction lane already take.
+ * The EXACT-SLOT arm keeps the model's hint, because the guess is about that
+ * slot; the ANCHOR arm on every lane is admitted only where the workspace
+ * holds an approved `single` entry for the incoming claim's predicate.
+ * `extract-anchor-reach-pg.test.ts` pins both halves against live Postgres.
+ *
+ * ⚠️ **What this gives up is named, not hidden.** The #5438 pair — `series b /
+ * target raise` against `series b fundraise / has goal of` — is reachable at
+ * ingest only once a human has curated `has goal of`, at which point the ingest
+ * scan and the sweep both mint it. Condition 4's limit reads *"a model at
+ * ingest for the exact slot; a human's curated entry for anything wider, at
+ * ingest or at the sweep"*. ADR-0037 §2's #5615 amendment records the trade.
  *
  * ⚠️ **One-of-three, and then one-of-two, on a corpus of 35 facts in ONE
  * workspace with two producers, is NOT a precision rate and does not
@@ -240,10 +264,12 @@
  * structural reason given below — but the bound is the curation, and the zero
  * is a property of this workspace's shape rather than of the gate.)
  *
- * ⚠️ **That bound now holds for the CORRECTION lane's anchor arm too, and for
- * nothing else** (#5467, above). Its exact-slot arm and the whole EXTRACT lane
- * still run on the producer's per-claim hint, so "approved-predicate coverage"
- * corrects the PRD about the sweep without being the whole story anywhere else.
+ * ⚠️ **That bound now holds for every lane's anchor arm** — the sweep's since
+ * #5029, the correction lane's since #5467, the extract lane's since #5615
+ * (above). The EXACT-SLOT arm on both write-time lanes still runs on the
+ * producer's per-claim hint, so "approved-predicate coverage" is the anchor
+ * arm's radius everywhere and the whole story nowhere: a `single` guess still
+ * mints an edge inside its own slot with no curation anywhere.
  *
  * ## Asking the question before paying the cost
  *

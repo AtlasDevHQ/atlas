@@ -287,6 +287,21 @@ export function toFactCandidates(
     // calls on two different messages decide, between them, whether a belief was
     // destroyed.
     predicateCardinality: fact.cardinality,
+    // How far that hint carries. It is a guess about ONE predicate, and the
+    // tension scan's anchor arm reaches every live claim sharing the subject's
+    // anchor from another episode with no predicate test (`segmentation.ts`).
+    // A guess spent on that arm mints the cross-product of a subject's claims;
+    // on a corpus where the company is the subject of half the claims that is
+    // the whole contradictions surface (38 spurious edges beside 1 real one,
+    // #5615). So the guess arms the EXACT SLOT only, and the anchor arm needs
+    // the workspace's approved `single` entry for the predicate
+    // (`cardinalitySingleSql`) — the bound the sweep and `correction.ts`
+    // already take. #5027 names the curated entry as the one authority for a
+    // predicate-wide single-valuedness claim, and a model is not it. What this
+    // gives up — a segmentation-drifted pair on an uncurated predicate — is
+    // condition 4's named limit in `docs/prd/company-atlas.md`; the trade is
+    // recorded in ADR-0037 §2.
+    anchorReach: "curated-only",
     // The model id belongs in provenance: a later pass with a better model has
     // to be tellable from this one, and the reviewer is entitled to know what
     // asserted the claim on the source's behalf.

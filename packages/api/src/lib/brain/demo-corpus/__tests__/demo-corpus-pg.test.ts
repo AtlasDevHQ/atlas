@@ -348,7 +348,7 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     expect(report.expected.every((e) => e.found)).toBe(true);
     // The rivals carry the literal key here, so the keyed declaration lands on
     // the same entry the ingest phase wrote — one entry, not two.
-    expect(report.cardinality).toEqual({ kind: "declared", predicateKey: "return window", cardinality: "single" });
+    expect(report.cardinality).toMatchObject({ kind: "declared", predicateKey: "return window", cardinality: "single" });
     expect(await approvedSingleKeys(pool, DEMO_ORG)).toEqual(["return window"]);
 
     // Every published corpus claim matches at least one expected claim — the
@@ -440,10 +440,12 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_REPHRASED, approvedBy: APPROVER });
     expect(report.missing).toEqual([]);
     expect(report.tensionEdges).toBe(0);
-    expect(report.cardinality).toEqual({
+    expect(report.cardinality).toMatchObject({
       kind: "declared",
       predicateKey: "has return window of",
       cardinality: "single",
+      // Nothing was under this key before the declaration, and the outcome says so.
+      previous: { kind: "none" },
     });
     // Additive: the literal entry is still there beside the keyed one.
     expect(await approvedSingleKeys(pool, DEMO_ORG_REPHRASED)).toEqual(["has return window of", "return window"]);
@@ -456,15 +458,17 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     // Idempotent: a second approve re-declares the same key and adds no entry.
     const again = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_REPHRASED, approvedBy: APPROVER });
     expect(again.promoted).toEqual([]);
-    expect(again.cardinality).toEqual({
+    expect(again.cardinality).toMatchObject({
       kind: "declared",
       predicateKey: "has return window of",
       cardinality: "single",
+      // The upsert overwrote the first declaration; the audit row carries what it replaced (#5448).
+      previous: { kind: "replaced", cardinality: "single", status: "approved", reviewedBy: APPROVER },
     });
     expect(await approvedSingleKeys(pool, DEMO_ORG_REPHRASED)).toEqual(["has return window of", "return window"]);
 
-    // The sweep matches on the rows' key. Before #5620 only the literal was
-    // declared, the rows carried this key, and this minted nothing.
+    // The sweep matches on the rows' key, so the keyed declaration — not the
+    // literal one — is what makes it productive here (#5620).
     const sweep = await sweepTensionEdges(DEMO_ORG_REPHRASED);
     expect(sweep.kind).toBe("swept");
     if (sweep.kind !== "swept") throw new Error("unreachable");

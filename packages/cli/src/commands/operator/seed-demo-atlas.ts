@@ -64,9 +64,9 @@ function describeCardinality(outcome: ApproveCardinalityOutcome): string {
     case "refused":
       return `REFUSED on key ${JSON.stringify(outcome.predicateKey)} (${outcome.refusal}): ${outcome.message}`;
     case "keys-differ":
-      return `NOT declared — the two rivals carry different keys ${outcome.predicateKeys.map((k) => JSON.stringify(k)).join(" and ")}; alias them together, then re-run --phase approve`;
+      return `NOT declared — the rivals carry ${outcome.predicateKeys.length} different keys (${outcome.predicateKeys.map((k) => JSON.stringify(k)).join(", ")}); alias them together, then re-run --phase approve`;
     case "not-found":
-      return `NOT declared — ${outcome.found} of 2 rivals published, nothing to key off`;
+      return `NOT declared — published rows per rival: ${outcome.found.join("/")}; every rival needs one to key off`;
   }
 }
 

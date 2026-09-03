@@ -170,10 +170,10 @@ curl -X POST https://your-atlas.example.com/api/v1/demo/anonymous \
 
 ### What is stored
 
-Every mint inserts one row in `demo_anonymous_sessions` — `id` (the identity), `started_at`, `expires_at`, `workspace_id`, a hashed IP (`ip_hash`, an HMAC under a key derived from `BETTER_AUTH_SECRET`; **no raw IP at rest**), the client label, `answer_count`, and `email_captured_at`. An email shared through `shareEmail` or the REST endpoint goes to `demo_leads` through the same lead-capture path the web demo uses; the session row keeps only the timestamp. To count anonymous sessions in a window:
+Every mint inserts one row in `demo_anonymous_sessions` — `id` (the identity), `created_at`, `expires_at`, `workspace_id`, a hashed IP (`ip_hash`, an HMAC under a key derived from `BETTER_AUTH_SECRET`; **no raw IP at rest**), the client label, `answer_count`, and `email_captured_at`. An email shared through `shareEmail` or the REST endpoint goes to `demo_leads` through the same lead-capture path the web demo uses; the session row keeps only the timestamp. To count anonymous sessions in a window:
 
 ```sql
-SELECT count(*) FROM demo_anonymous_sessions WHERE started_at >= '2026-10-01';
+SELECT count(*) FROM demo_anonymous_sessions WHERE created_at >= '2026-10-01';
 ```
 
 ---

@@ -5,7 +5,7 @@
  * email gate — all against the ACTUAL SQL the lib runs.
  *
  * Why real Postgres: the launch-cycle gate reads this table with its own
- * `SELECT count(*) … WHERE started_at >= <date>`, and the email gate is a
+ * `SELECT count(*) … WHERE created_at >= <date>`, and the email gate is a
  * single-row `answer_count` read — a mocked `internalQuery` would pin the
  * strings the lib sends, not what the schema returns.
  *
@@ -122,7 +122,7 @@ describeIfPg("anonymous demo sessions (real Postgres, #5604)", () => {
   });
 
   describe("session rows", () => {
-    it("mints a row whose id is the identity and whose started_at the launch-cycle gate can count", async () => {
+    it("mints a row whose id is the identity and whose created_at the launch-cycle gate can count", async () => {
       const expiresAt = Date.now() + 60_000;
       const session = await startAnonymousDemoSession({
         workspaceId: DEMO_ORG,
@@ -136,7 +136,7 @@ describeIfPg("anonymous demo sessions (real Postgres, #5604)", () => {
       expect(Math.abs(session.expiresAt.getTime() - expiresAt)).toBeLessThan(1000);
 
       const counted = await pool.query<{ count: string }>(
-        `SELECT count(*) FROM demo_anonymous_sessions WHERE started_at >= $1`,
+        `SELECT count(*) FROM demo_anonymous_sessions WHERE created_at >= $1`,
         [new Date(Date.now() - 60_000).toISOString()],
       );
       expect(Number(counted.rows[0]?.count)).toBe(1);

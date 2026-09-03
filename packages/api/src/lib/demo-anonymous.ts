@@ -36,8 +36,8 @@
  *     moves from a precondition to an explicit, later act.
  *
  * The launch-cycle gate reads this table directly:
- * `SELECT count(*) FROM demo_anonymous_sessions WHERE started_at >= <date>` —
- * so `id` and `started_at` are load-bearing column names.
+ * `SELECT count(*) FROM demo_anonymous_sessions WHERE created_at >= <date>` —
+ * so `id` and `created_at` are load-bearing column names.
  */
 
 import * as crypto from "crypto";
@@ -274,7 +274,7 @@ export async function resolveDemoWorkspaceId(): Promise<DemoWorkspaceResolution>
 export interface AnonymousDemoSession {
   readonly id: string;
   readonly workspaceId: string;
-  readonly startedAt: Date;
+  readonly createdAt: Date;
   readonly expiresAt: Date;
   readonly answerCount: number;
   readonly emailCapturedAt: Date | null;
@@ -283,7 +283,7 @@ export interface AnonymousDemoSession {
 type SessionRow = {
   id: string;
   workspace_id: string;
-  started_at: string | Date;
+  created_at: string | Date;
   expires_at: string | Date;
   answer_count: number;
   email_captured_at: string | Date | null;
@@ -293,7 +293,7 @@ function rowToSession(row: SessionRow): AnonymousDemoSession {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
-    startedAt: new Date(row.started_at),
+    createdAt: new Date(row.created_at),
     expiresAt: new Date(row.expires_at),
     answerCount: Number(row.answer_count),
     emailCapturedAt: row.email_captured_at === null ? null : new Date(row.email_captured_at),
@@ -320,7 +320,7 @@ export async function startAnonymousDemoSession(input: {
   const rows = await internalQuery<SessionRow>(
     `INSERT INTO demo_anonymous_sessions (workspace_id, ip_hash, client_label, expires_at)
      VALUES ($1, $2, $3, $4)
-     RETURNING id, workspace_id, started_at, expires_at, answer_count, email_captured_at`,
+     RETURNING id, workspace_id, created_at, expires_at, answer_count, email_captured_at`,
     [input.workspaceId, hashDemoIp(input.ip), clientLabel, new Date(input.expiresAt).toISOString()],
   );
   const row = rows[0];
@@ -334,7 +334,7 @@ export async function loadAnonymousDemoSession(
 ): Promise<AnonymousDemoSession | null> {
   if (!hasInternalDB()) return null;
   const rows = await internalQuery<SessionRow>(
-    `SELECT id, workspace_id, started_at, expires_at, answer_count, email_captured_at
+    `SELECT id, workspace_id, created_at, expires_at, answer_count, email_captured_at
      FROM demo_anonymous_sessions WHERE id = $1 LIMIT 1`,
     [sessionId],
   );

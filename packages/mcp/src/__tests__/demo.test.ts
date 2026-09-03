@@ -116,7 +116,7 @@ function session(id: string, overrides: Partial<AnonymousDemoSession> = {}): Ano
   return {
     id,
     workspaceId: WS,
-    startedAt: new Date(),
+    createdAt: new Date(),
     expiresAt: new Date(Date.now() + 60_000),
     answerCount: 0,
     emailCapturedAt: null,

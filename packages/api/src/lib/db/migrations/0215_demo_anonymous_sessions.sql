@@ -10,8 +10,8 @@
 -- ## What the launch-cycle gate reads
 --
 -- The launch-cycle PRD (drafted under issue 5602) counts anonymous sessions as
--- `SELECT count(*) FROM demo_anonymous_sessions WHERE started_at >= <date>`.
--- `id` and `started_at` are therefore load-bearing names; the rest of the row
+-- `SELECT count(*) FROM demo_anonymous_sessions WHERE created_at >= <date>`.
+-- `id` and `created_at` are therefore load-bearing names (the PRD reads `created_at >= '<post ts>' AND created_at < '<read ts>'`); the rest of the row
 -- is the demo door's own bookkeeping.
 --
 -- ## No raw IP at rest
@@ -43,7 +43,7 @@
 CREATE TABLE IF NOT EXISTS demo_anonymous_sessions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id text NOT NULL,
-  started_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
   last_seen_at timestamptz NOT NULL DEFAULT now(),
   expires_at timestamptz NOT NULL,
   ip_hash text,
@@ -53,8 +53,8 @@ CREATE TABLE IF NOT EXISTS demo_anonymous_sessions (
 );
 
 -- The one query anyone has committed to write: the launch-cycle count over a
--- `started_at` window.
-CREATE INDEX IF NOT EXISTS idx_demo_anonymous_sessions_started
-  ON demo_anonymous_sessions (started_at);
+-- `created_at` window.
+CREATE INDEX IF NOT EXISTS idx_demo_anonymous_sessions_created
+  ON demo_anonymous_sessions (created_at);
 
-COMMENT ON TABLE demo_anonymous_sessions IS 'One row per minted anonymous demo identity (#5604). id = the principal; started_at = what the launch-cycle gate counts. ip_hash is an HMAC, never a raw IP. answer_count gates the optional, after-first-answer email hand-off (the email itself lives in demo_leads).';
+COMMENT ON TABLE demo_anonymous_sessions IS 'One row per minted anonymous demo identity (#5604). id = the principal; created_at = what the launch-cycle gate counts. ip_hash is an HMAC, never a raw IP. answer_count gates the optional, after-first-answer email hand-off (the email itself lives in demo_leads).';

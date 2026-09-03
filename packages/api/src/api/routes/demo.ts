@@ -979,7 +979,7 @@ demo.openapi(demoAnonymousStartRoute, async (c) => {
 
     // The signing key is checked BEFORE the session row is inserted: a row
     // whose token could never be minted would still be counted by the
-    // launch-cycle `started_at` query, silently inflating it.
+    // launch-cycle `created_at` query, silently inflating it.
     if (deriveDemoKey("demo-anon") === null) {
       log.error({ requestId }, "Anonymous demo mint refused — BETTER_AUTH_SECRET is not set");
       return c.json(

@@ -465,7 +465,7 @@ describe("runMigrations", () => {
     //   215.
     //   Plus 0215 (demo_anonymous_sessions — #5604: the anonymous demo
     //   principal's ledger. One row per minted MCP demo identity; `id` is the
-    //   principal and `started_at` is what the launch-cycle gate counts. A
+    //   principal and `created_at` is what the launch-cycle gate counts. A
     //   hashed IP, never a raw one; `answer_count` gates the optional,
     //   after-first-answer email hand-off) = 216.
     expect(count).toBe(216);

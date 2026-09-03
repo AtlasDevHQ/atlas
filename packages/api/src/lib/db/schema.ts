@@ -1049,8 +1049,8 @@ export const demoLeads = pgTable(
 
 /**
  * One row per minted anonymous demo identity (the MCP front door, #5604). The
- * row's `id` IS the principal; `started_at` is what the launch-cycle gate
- * counts (`SELECT count(*) … WHERE started_at >= <date>`). No raw IP at rest —
+ * row's `id` IS the principal; `created_at` is what the launch-cycle gate
+ * counts (`SELECT count(*) … WHERE created_at >= <date>`). No raw IP at rest —
  * `ip_hash` is an HMAC under a demo-derived key. The email a visitor may hand
  * over AFTER the first answer lives in `demo_leads`; this row keeps only the
  * timestamp of that act.
@@ -1060,7 +1060,7 @@ export const demoAnonymousSessions = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     workspaceId: text("workspace_id").notNull(),
-    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     ipHash: text("ip_hash"),
@@ -1069,7 +1069,7 @@ export const demoAnonymousSessions = pgTable(
     emailCapturedAt: timestamp("email_captured_at", { withTimezone: true }),
   },
   (t) => [
-    index("idx_demo_anonymous_sessions_started").on(t.startedAt),
+    index("idx_demo_anonymous_sessions_created").on(t.createdAt),
   ],
 );
 

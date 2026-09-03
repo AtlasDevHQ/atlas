@@ -229,8 +229,23 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
  */
 export type McpToolDispatch = McpDispatcher["dispatch"];
 
+export interface RegisterExecuteSqlToolOptions {
+  /**
+   * Connection used when the caller omits `connectionId`. The shared tool
+   * falls through to the registry's `"default"`, which the SaaS visibility
+   * gate never admits — a door whose whole datasource is one named install
+   * (the anonymous demo) names it here so a client that sends only `sql`
+   * reaches that install instead of a refusal.
+   */
+  readonly defaultConnectionId?: string;
+}
+
 /** Register `executeSQL` on `server`, routing every call through `dispatch`. */
-export function registerExecuteSqlTool(server: McpServer, dispatch: McpToolDispatch): void {
+export function registerExecuteSqlTool(
+  server: McpServer,
+  dispatch: McpToolDispatch,
+  options: RegisterExecuteSqlToolOptions = {},
+): void {
   server.registerTool(
     "executeSQL",
     {
@@ -259,8 +274,9 @@ export function registerExecuteSqlTool(server: McpServer, dispatch: McpToolDispa
       // re-parsing the text block (which is retained below).
       outputSchema: executeSqlOutputShape,
     },
-    async ({ sql, explanation, connectionId }, extra): Promise<CallToolResult> =>
-      dispatch(
+    async ({ sql, explanation, connectionId }, extra): Promise<CallToolResult> => {
+      const targetConnectionId = connectionId ?? options.defaultConnectionId;
+      return dispatch(
         "executeSQL",
         // Reaches a datasource → gate-0 billing (#3437/#3601). SELECT-only
         // (the 4-layer validator rejects DML/DDL) so it is read-only — no
@@ -292,7 +308,7 @@ export function registerExecuteSqlTool(server: McpServer, dispatch: McpToolDispa
             { startMessage: "Running query", endMessage: "Query complete" },
             async (_reporter, _signal) =>
               executeSQL.execute!(
-                { sql, explanation, connectionId },
+                { sql, explanation, connectionId: targetConnectionId },
                 { toolCallId: "mcp-executeSQL", messages: [] },
               ),
           );
@@ -358,7 +374,8 @@ export function registerExecuteSqlTool(server: McpServer, dispatch: McpToolDispa
             structuredContent: structured,
           };
         },
-      ),
+      );
+    },
   );
 }
 

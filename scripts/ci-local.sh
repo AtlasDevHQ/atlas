@@ -332,6 +332,7 @@ launch gate-fixtures-wired       bash scripts/check-gate-fixtures-wired.sh
 launch runtime-stage-upgrades    bash scripts/check-runtime-stage-upgrades.sh
 launch pricing-parity            bash scripts/check-pricing-parity.sh
 launch plugin-count              bash scripts/check-plugin-count.sh
+launch launch-sentence           bash scripts/check-launch-sentence.sh
 launch plugin-lockstep           bun scripts/check-plugin-lockstep.ts
 launch enforcement-parity        bash scripts/check-enforcement-parity.sh
 launch schema-drift              bash scripts/check-schema-drift.sh

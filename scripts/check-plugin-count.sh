@@ -109,7 +109,6 @@ echo ":: Canonical plugin count derived from plugins/: ${N} (${typed_dirs[*]})"
 SURFACES=(
   "apps/www/src/components/landing/comparison.tsx"
   "apps/www/src/app/blog/announcing-atlas/page.tsx"
-  "apps/www/public/llms.txt"
   "apps/www/content/social/twitter-launch.md"
   "apps/www/content/social/linkedin-launch.md"
   "apps/docs/content/shared/comparisons/metabase.mdx"

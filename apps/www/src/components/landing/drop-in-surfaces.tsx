@@ -10,35 +10,6 @@ function DropInItem({ name, desc }: DropInProps) {
 }
 
 /**
- * Queryable read datasources Atlas ships today (#3994). Verified against the
- * shipped connection/plugin code — every entry is a datasource you can connect
- * and query, not an action or write target. Elasticsearch and OpenSearch are
- * one unified engine, so they share a chip. Twenty (CRM action) and Obsidian
- * (a surface + vault-reader action) are intentionally absent — they aren't
- * analytics datasources.
- *
- * Postgres/MySQL are native (packages/api/src/lib/db/connection.ts); the
- * warehouses/search engines are `datasource`-typed plugins under plugins/;
- * Stripe/Notion/GitHub and arbitrary OpenAPI specs are REST/OpenAPI presets in
- * packages/api/src/lib/openapi/data-candidates.ts — so there is no plugins/
- * directory for them, and that's expected, not stale.
- */
-const DATASOURCES: ReadonlyArray<string> = [
-  "PostgreSQL",
-  "MySQL",
-  "ClickHouse",
-  "Snowflake",
-  "BigQuery",
-  "DuckDB",
-  "Elasticsearch / OpenSearch",
-  "Salesforce",
-  "Stripe",
-  "Notion",
-  "GitHub",
-  "any OpenAPI 3.x spec",
-];
-
-/**
  * The "drop-in surfaces" band. Carried over from the old Primitives section —
  * the four architecture cards were cut as too internal for a plain-language
  * page, but "use it wherever your team already works" is a real outcome, so the
@@ -88,27 +59,15 @@ export function DropInSurfaces() {
         </div>
       </div>
 
-      <div className="mt-8">
-        <p className="mb-3.5 font-mono text-[11px] tracking-[0.04em] text-fg-muted">
-          // connect anything — read-only, behind the same validators
-        </p>
-        <ul className="flex flex-wrap gap-2 p-0">
-          {DATASOURCES.map((name) => (
-            <li
-              key={name}
-              className="rounded-md border border-border px-2.5 py-1 font-mono text-[12px] text-fg-muted"
-              style={{ background: "var(--bg-raised)" }}
-            >
-              {name}
-            </li>
-          ))}
-        </ul>
-        <p className="mt-3 text-[12.5px] leading-[1.55] text-fg-muted">
-          SQL warehouses, search engines, and REST APIs all become datasources
-          you can ask in plain English. Bring any OpenAPI spec and Atlas reads
-          it like a table.
-        </p>
-      </div>
+      <p className="mt-6 text-[12.5px] leading-[1.55] text-fg-muted">
+        SQL warehouses, search engines and REST APIs all become datasources you
+        can ask in plain English, read-only, behind the same validators. The
+        full list lives in the docs:{" "}
+        <a href="https://docs.useatlas.dev/getting-started/connect-your-data" className="text-fg underline decoration-border-strong underline-offset-4 hover:text-accent">
+          connect your data
+        </a>
+        .
+      </p>
     </section>
   );
 }

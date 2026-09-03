@@ -1,5 +1,5 @@
 ---
-description: "Run the pre-PR gate — scripts/ci-local.sh, 43 ci-local gates, PASS/FAIL table. Mandatory before a PR. Iterate with bun test --parallel --changed instead."
+description: "Run the pre-PR gate — scripts/ci-local.sh, 44 ci-local gates, PASS/FAIL table. Mandatory before a PR. Iterate with bun test --parallel --changed instead."
 ---
 
 Run the same checks CI runs. This must pass before opening a PR.
@@ -138,7 +138,7 @@ pass); `CI_LOCAL_NO_NET=1` skips the two npm-registry gates for offline runs;
 It is a **superset of the historic /ci list** — it adds the drift gates real CI
 runs that the old /ci skipped (so you stop discovering them only after a push).
 The roster is `GATE_NAMES` in `scripts/ci-local.sh`, which is the authority; all
-43 ci-local gates, in run order:
+44 ci-local gates, in run order:
 `type`, `lint`, `lint-type-aware` (oxlint `--type-aware` via tsgolint — the
 promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
 `syncpack`, `dockerfile-bun-pins`, `dockerfile-workspace`,

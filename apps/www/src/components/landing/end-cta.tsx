@@ -1,7 +1,10 @@
+import { CopyCommand } from "../copy-command";
+import { MCP_DEMO_COMMAND, SENTENCE } from "./data";
+
 /**
  * Closing CTA — the page's one deep-green "drenched" band: a full-bleed forest
  * ground with cream text and the bright brand teal as the spark, echoing the
- * hero headline as a bookend. The only place the dark/green register returns on
+ * sentence as a bookend. The only place the dark/green register returns on
  * the otherwise light page. See PRODUCT.md › Aesthetic Direction.
  */
 export function EndCta() {
@@ -14,34 +17,21 @@ export function EndCta() {
         color: "var(--drench-fg)",
       }}
     >
-      <div className="mx-auto max-w-[720px] text-center">
-        <h2 className="m-0 mb-8 text-[40px] md:text-[56px] font-semibold leading-[1.05] tracking-[-0.035em]">
-          <span className="block">Ask your data anything.</span>
-          <em className="block font-semibold" style={{ color: "var(--drench-accent)" }}>
-            Trust the answer.
-          </em>
+      <div className="mx-auto max-w-[760px] text-center">
+        <h2 className="m-0 mb-8 text-[26px] md:text-[34px] font-semibold leading-[1.2] tracking-[-0.025em]">
+          {SENTENCE}
         </h2>
-        <div className="flex flex-wrap justify-center gap-2.5">
-          <a
-            href="https://app.useatlas.dev/signup"
-            className="inline-flex items-center rounded-lg px-[18px] py-[11px] text-[13.5px] font-semibold transition-opacity hover:opacity-90"
-            style={{ background: "var(--drench-accent)", color: "var(--drench-ink)" }}
-          >
-            Start free trial →
+        <CopyCommand command={MCP_DEMO_COMMAND} className="mx-auto max-w-[560px] text-left" />
+        <p className="mt-4 text-[13px]" style={{ color: "var(--drench-muted)" }}>
+          No account, no email.{" "}
+          <a href="https://app.useatlas.dev/signup" className="underline underline-offset-4" style={{ color: "var(--drench-fg)" }}>
+            Start a hosted trial
+          </a>{" "}
+          — 14 days, no credit card — or{" "}
+          <a href="https://docs.useatlas.dev/self-hosted/getting-started/quick-start" className="underline underline-offset-4" style={{ color: "var(--drench-fg)" }}>
+            self-host
           </a>
-          <a
-            href="https://app.useatlas.dev/demo"
-            className="inline-flex items-center rounded-lg border bg-transparent px-3.5 py-2.5 text-[13.5px] transition-colors hover:bg-white/5"
-            style={{ borderColor: "oklch(1 0 0 / 0.22)", color: "var(--drench-fg)" }}
-          >
-            Try the NovaMart demo →
-          </a>
-        </div>
-        <p className="mt-3.5 text-[13px]" style={{ color: "var(--drench-muted)" }}>
-          14-day trial, no credit card. Or self-host — free and open source:{" "}
-          <code className="font-mono text-[12px]" style={{ color: "var(--drench-fg)" }}>
-            bun create atlas-agent
-          </code>
+          , free and open source.
         </p>
       </div>
     </section>

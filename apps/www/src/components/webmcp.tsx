@@ -41,7 +41,28 @@ function openAndReport(url: string, openedText: string): {
   return { content: [{ type: "text", text }] };
 }
 
+const SENTENCE =
+  "Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC.";
+
+const MCP_DEMO_COMMAND = "bunx @useatlas/mcp init --hosted --demo --write";
+
 const TOOLS: ModelContextTool[] = [
+  {
+    name: "atlas_connect_agent_to_demo",
+    description:
+      `${SENTENCE} Returns the one terminal command that connects an MCP client (Claude Desktop, Cursor, Continue, or any other via --client generic) to the hosted NovaMart demo with no account and no email, plus the question to ask first.`,
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    async execute() {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Run this in a terminal, then restart the MCP client:\n\n${MCP_DEMO_COMMAND}\n\nThen ask: "What is NovaMart's return window?" The answer names its source, its date and the person who approved it, and shows the contradiction between Finance and Support without picking a side. Guide: https://docs.useatlas.dev/guides/mcp`,
+          },
+        ],
+      };
+    },
+  },
   {
     name: "atlas_start_free_trial",
     description:
@@ -58,7 +79,7 @@ const TOOLS: ModelContextTool[] = [
   {
     name: "atlas_open_live_demo",
     description:
-      "Open the Atlas live demo at app.useatlas.dev/demo against a sample database. No account required — just an email.",
+      "Open the Atlas web demo at app.useatlas.dev/demo in a browser. No account, but it asks for an email; for a no-email path use atlas_connect_agent_to_demo.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
       const url = "https://app.useatlas.dev/demo";

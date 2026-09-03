@@ -95,8 +95,9 @@ test("renderLlmsFullText renders EXACTLY the pages it is handed (page-selection 
   for (const p of pages) expect(out).toContain(`(${p.url})`);
   // No self-hosted URL was synthesized into the SaaS surface.
   expect(out).not.toContain("(/self-hosted");
-  // One `---` fence between each of the 3 page bodies.
-  expect(out.split("\n\n---\n\n")).toHaveLength(pages.length);
+  // One `---` fence between each of the 3 page bodies, plus the preamble
+  // section that opens the surface (#5608).
+  expect(out.split("\n\n---\n\n")).toHaveLength(pages.length + 1);
   // Input order is preserved — a coherent llms-full.txt needs the intro before
   // the deeper pages (guards against a race/settle-order concat refactor).
   const iRoot = out.indexOf("(/)");
@@ -193,4 +194,55 @@ test("twinStaticParams appends the index.md suffix to every section param", () =
     { slug: [MDX_TWIN_INDEX_SUFFIX] },
     { slug: [MDX_TWIN_INDEX_SUFFIX] },
   ]);
+});
+
+// #5608 — every machine surface opens with the launch cycle's sentence and an
+// MCP command, so an agent asked "how do I connect to Atlas" reads the command
+// before any guide. The SaaS surface prints the anonymous hosted demo; the
+// self-hosted surface prints the local stdio install and never the hosted demo
+// endpoint — the section partition applies to the preamble too. What would go
+// red: swap the audience branches in renderLlmsPreamble and both cross-leak
+// tests below fail.
+import {
+  renderLlmsPreamble,
+  renderLlmsIndex,
+  ATLAS_SENTENCE,
+  MCP_DEMO_COMMAND,
+  MCP_LOCAL_COMMAND,
+} from "@/lib/llms-surface";
+
+test("renderLlmsPreamble: the SaaS surface opens with the sentence, then the anonymous demo command", () => {
+  const out = renderLlmsPreamble("saas");
+  const lines = out.split("\n");
+  expect(lines[0]).toBe("# Atlas");
+  expect(lines[2]).toBe(`> ${ATLAS_SENTENCE}`);
+  expect(out.indexOf(ATLAS_SENTENCE)).toBeLessThan(out.indexOf(MCP_DEMO_COMMAND));
+  expect(out).toContain(MCP_DEMO_COMMAND);
+  expect(out).not.toContain(MCP_LOCAL_COMMAND);
+});
+
+test("renderLlmsPreamble: the self-hosted surface carries the sentence and the local command, never the hosted demo", () => {
+  const out = renderLlmsPreamble("self-hosted");
+  expect(out.split("\n")[2]).toBe(`> ${ATLAS_SENTENCE}`);
+  expect(out).toContain(MCP_LOCAL_COMMAND);
+  expect(out).not.toContain("--demo");
+  expect(out).not.toContain("mcp.useatlas.dev");
+});
+
+test("renderLlmsIndex: preamble first, then the generated index with absolutized links", () => {
+  const out = renderLlmsIndex("# Docs\n\n- [MCP](/guides/mcp)", "saas");
+  expect(out.startsWith("# Atlas\n")).toBe(true);
+  expect(out.indexOf(MCP_DEMO_COMMAND)).toBeLessThan(out.indexOf("# Docs"));
+  expect(out).toContain("](https://docs.useatlas.dev/guides/mcp)");
+});
+
+test("renderLlmsFullText: the preamble opens the full-text surface for its own audience only", async () => {
+  const page = fakePage("/x", "X", "body");
+  const saas = await renderLlmsFullText([page], "saas", "t");
+  const sh = await renderLlmsFullText([page], "self-hosted", "t");
+  expect(saas.startsWith("# Atlas\n")).toBe(true);
+  expect(saas).toContain(MCP_DEMO_COMMAND);
+  expect(saas.indexOf(MCP_DEMO_COMMAND)).toBeLessThan(saas.indexOf("# X (/x)"));
+  expect(sh).toContain(MCP_LOCAL_COMMAND);
+  expect(sh).not.toContain("--demo");
 });

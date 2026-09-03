@@ -163,7 +163,7 @@ To turn on traces + metrics in a hosted deployment:
    ```
 
 <Callout type="warn" title="Set the endpoint on every regional service">
-Railway **shared-scope** variables and `${{ service.VAR }}` references do **not** auto-inherit onto the per-service runtime — a shared `OTEL_EXPORTER_OTLP_ENDPOINT` resolves to an empty string at runtime. Set the OTel variables as explicit **per-service** overrides on `api`, `api-eu`, **and** `api-apac`, or two of the three regions will silently keep dropping telemetry.
+Railway **shared-scope** variables and `${{ service.VAR }}` references do **not** auto-inherit onto the per-service runtime — a shared `OTEL_EXPORTER_OTLP_ENDPOINT` resolves to an empty string at runtime. Set the OTel variables as explicit **per-service** overrides on `api`, `api-eu`, **and** `api-apac`, or every service you skipped will silently keep dropping telemetry — the parked `api-eu` and `api-apac` included, the moment one is un-parked.
 </Callout>
 
 3. **Verify export.** After redeploy, confirm a span arrives in your collector (filter service `atlas-api`) and that a metric series such as `atlas.mcp.tool.calls` or `atlas.abuse.escalations` appears. Both ride the single endpoint — see [Metrics](#metrics).

@@ -57,6 +57,7 @@ export async function renderLlmsFullText(
   audience: Audience,
   label: string,
 ): Promise<string> {
+  const preamble = renderLlmsPreamble(audience);
   const results = await Promise.all(
     pages.map(async (page) => {
       try {
@@ -68,7 +69,16 @@ export async function renderLlmsFullText(
       }
     }),
   );
-  return results.join("\n\n---\n\n");
+  return preamble + "\n---\n\n" + results.join("\n\n---\n\n");
+}
+
+/**
+ * The `llms.txt` body for a section: the audience's preamble, then fumadocs'
+ * generated index with its links absolutized. Both route handlers call this
+ * so the preamble-then-index shape is decided once.
+ */
+export function renderLlmsIndex(index: string, audience: Audience): string {
+  return renderLlmsPreamble(audience) + "\n" + absolutizeLlmsUrls(index);
 }
 
 /**
@@ -134,18 +144,18 @@ export function renderLlmsPreamble(audience: Audience): string {
   const lines = [`# Atlas`, ``, `> ${ATLAS_SENTENCE}`, ``];
   if (audience === "saas") {
     lines.push(
-      `To connect an AI agent to Atlas, run this in a terminal. It configures Claude Desktop, Cursor, Claude Code or any MCP client against the hosted NovaMart demo with no account and no email:`,
+      `To connect an AI agent to Atlas, run this in a terminal. It configures Claude Desktop, Cursor or Continue (or prints a config block for any other MCP client with \`--client generic\`) against the hosted NovaMart demo, with no account and no email:`,
       ``,
       "```bash",
       MCP_DEMO_COMMAND,
       "```",
       ``,
-      `Then ask the agent: "What is NovaMart's return window?" The answer names its source, its date and the person who approved it, surfaces the contradiction between Finance and Support without picking a side, and the coverage page shows which channels nobody has surveyed. Full guide: ${LLMS_BASE_URL}/guides/mcp. Your own workspace: \`bunx @useatlas/mcp init --hosted --write\`, or \`start_trial\` on the MCP onboarding endpoint.`,
+      `Then ask the agent: "What is NovaMart's return window?" The answer names its source, its date and the person who approved it, and surfaces the contradiction between Finance and Support without picking a side. Full guide: ${LLMS_BASE_URL}/guides/mcp. Your own workspace: \`bunx @useatlas/mcp init --hosted --write\`, or \`start_trial\` on the MCP onboarding endpoint.`,
       ``,
     );
   } else {
     lines.push(
-      `To connect an AI agent to a self-hosted Atlas, run this in a terminal. It configures Claude Desktop, Cursor, Claude Code or any MCP client against your local Atlas over stdio:`,
+      `To connect an AI agent to a self-hosted Atlas, run this in a terminal. It configures Claude Desktop, Cursor or Continue (or prints a config block for any other MCP client with \`--client generic\`) against your local Atlas over stdio:`,
       ``,
       "```bash",
       MCP_LOCAL_COMMAND,

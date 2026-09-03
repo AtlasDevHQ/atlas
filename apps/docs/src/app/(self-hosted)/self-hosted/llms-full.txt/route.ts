@@ -1,5 +1,5 @@
 import { selfHostedSource } from "@/lib/source";
-import { renderLlmsFullText, renderLlmsPreamble } from "@/lib/llms-surface";
+import { renderLlmsFullText } from "@/lib/llms-surface";
 
 // Self-hosted / on-prem full-text surface at /self-hosted/llms-full.txt.
 // Sourced from `selfHostedSource` (self-hosted + shared, never saas-only) and
@@ -15,7 +15,7 @@ export async function GET() {
     "self-hosted/llms-full.txt",
   );
 
-  return new Response(renderLlmsPreamble("self-hosted") + "\n---\n\n" + body, {
+  return new Response(body, {
     headers: { "Content-Type": "text/plain; charset=utf-8" },
   });
 }

@@ -10,7 +10,7 @@ import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
 ## Try it in sixty seconds — no account, no email
 
-One command points your MCP client at the hosted NovaMart demo. It mints an anonymous, read-only session scoped to the demo workspace and writes an `atlas-demo` server entry into the client config it detects (Claude Desktop, Cursor, Claude Code, Continue, VS Code):
+One command points your MCP client at the hosted NovaMart demo. It mints an anonymous, read-only session scoped to the demo workspace and writes an `atlas-demo` server entry into the client config it detects — Claude Desktop, Cursor or Continue — or prints a block to paste into Claude Code, VS Code or any other client when you pass `--client generic`:
 
 ```bash
 bunx @useatlas/mcp init --hosted --demo --write
@@ -20,7 +20,7 @@ Restart the client and ask:
 
 > What is NovaMart's return window?
 
-The answer carries a name. Finance says 30 days, in a dated message from the person who said it and the person who approved it; Support's macro says 14. Atlas shows both and picks neither. Ask *what has nobody surveyed?* and the coverage page names the channel with no one behind it. That is the whole product in one exchange: source, date, approver, the contradiction left open, the gap left visible.
+The answer carries a name. Finance says 30 days, in a dated message from the person who said it and the person who approved it; Support's macro says 14. Atlas shows both and picks neither. That is the product in one exchange: source, date, approver, and a contradiction left open rather than resolved by a model. The coverage page — the one that marks `#warehouse-ops` as a channel nobody has surveyed — lives in a workspace's admin console, not behind the anonymous door; it is the last beat of the recording, not of this command.
 
 <Callout type="info" title="On WSL2? Use `bun x` (space-separated)">
   Bun's `bunx` shim has resolution issues on some WSL2 setups — `bunx @useatlas/mcp init` may error with `Script not found "@useatlas/mcp"`. Run `bun x @useatlas/mcp init --hosted --demo --write` instead. Same for any other `bunx <pkg>` command on WSL.
@@ -45,7 +45,7 @@ Point your MCP client (Claude Desktop, Cursor, Claude Code, Continue, VS Code) a
 bunx @useatlas/mcp init --local --write
 ```
 
-The installer auto-detects the client, inherits `ATLAS_DATASOURCE_URL` from your shell or a running Atlas at `localhost:3001`, and merges a server block into the client config with a `.bak` first. Restart the client and ask a question about your data; the answer names the entity, the SQL it ran, and the trust tier it drew from. Details, per-client paths and the SSE transport are under [Install](#install).
+The installer auto-detects the client, inherits `ATLAS_DATASOURCE_URL` from your shell or a running Atlas at `localhost:3001`, and merges a server block into the client config with a `.bak` first. With no datasource configured it points at the bundled SQLite fixture so the first question works zero-config. Restart the client and ask a question about your data; the answer carries the entities it used and the exact SQL it ran. Details, per-client paths and the SSE transport are under [Install](#install).
 
 </WhenSelfHosted>
 

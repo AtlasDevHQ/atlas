@@ -1,0 +1,49 @@
+---
+title: Atlas vs Snowflake Cortex Analyst
+description: Atlas and Snowflake Cortex Analyst compared on the trust axis — who verified an answer, whether it is stale, whether you can run it yourself, and whether it refuses to guess.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info">
+  Checked against Snowflake's own documentation and pricing page on 2026-09-03. If something here is out of date, [open an issue](https://github.com/AtlasDevHQ/atlas/issues) and we will fix it.
+</Callout>
+
+[Cortex Analyst](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-analyst) is "a fully managed, LLM-powered Snowflake Cortex feature that helps you create applications capable of reliably answering business questions based on your structured data in Snowflake." It answers over a human-authored semantic model, as a REST API, inside your Snowflake account.
+
+Of everything on these pages, Cortex Analyst is the closest to Atlas on the trust axis, and it deserves the credit: its verified query repository records *who* verified a query and *when*, and it refuses ambiguous questions rather than guessing. Where the two part is scope. Cortex Analyst verifies SQL. Atlas records who attested a fact — the ones in tables and the ones people wrote down — and shows that person to whoever is asking.
+
+## The trust axis
+
+| | Atlas | Snowflake Cortex Analyst |
+|---|---|---|
+| **Who approved it** | Every attested fact carries the name of the person who approved it and the date, and the answer shows both. Warehouse answers carry the SQL and the rows | The verified query repository stores `verified_by` and `verified_at` per query. The API response says which verified query was used via its `confidence` field; whether the name and date reach the end user depends on the application you build |
+| **Is it stale** | Warehouse answers re-read live rows. Attested facts carry when they were observed; the coverage page reports measured lag where a source can report it and marks the rest unverified since a date | Warehouse answers re-read live tables. The semantic model and verified queries are files a human keeps current |
+| **Can you self-host it** | Yes. Complete under AGPL, in your VPC, free. Hosted in the US; EU and APAC regions are built and brought online on request | No. It runs inside your Snowflake account and nowhere else |
+| **Does it show what it does not know** | Yes. Contradictions are shown with both claims and both sources; unsurveyed regions are marked on the coverage page | Yes, for questions: ambiguous or non-data questions are rejected up front with a `suggestion` instead of SQL. It does not model facts outside tables, so there is no coverage map to show |
+| **Human review gate** | Nothing enters the authoritative record without a named person approving it; no setting turns this off | The semantic model (YAML or a native semantic view) and the verified queries are authored and verified by people ahead of time. Individual generated answers are not reviewed |
+| **Agent access** | Hosted MCP over OAuth 2.1, self-hosted MCP over stdio, and an anonymous demo endpoint. `bunx @useatlas/mcp init --hosted --demo --write` needs no account | A Snowflake-managed MCP server exposes Cortex Analyst to Claude, ChatGPT, Cursor and any HTTP MCP client, with Snowflake OAuth. It supports semantic views only, not YAML semantic models |
+| **Signup gate and price** | Two-week free hosted trial, no card; the MCP demo needs no email at all. Self-hosted is free | Needs a Snowflake account. The standalone Analyst API is billed per 1,000 messages in Snowflake credits |
+
+## Where Cortex Analyst wins
+
+If your data is in Snowflake, Cortex Analyst inherits everything Snowflake already governs — RBAC on semantic views, no data movement, no second system to secure — and the verified query repository is a genuinely good design that Atlas's warehouse tier does not improve on. Its refusal to answer ambiguous questions is the right behaviour and it ships that way by default. For a team whose whole question set is "what does the warehouse say", it is the more integrated choice.
+
+## Where Atlas wins
+
+Cortex Analyst's world ends where the table ends. The return window, the pricing exception a customer was promised on a call, the reason a project was shelved — these are facts a company runs on that never touch Snowflake, and Cortex Analyst cannot hold them. Atlas holds them with a name and a date on each, shows both sides of a contradiction, and shows the parts nobody has surveyed. Its warehouse tier — *Surveyed*, true by construction — outranks those attested facts wherever they overlap, so a person's recollection never overwrites the company's data.
+
+The second difference is where it runs. Cortex Analyst is a feature of one warehouse. Atlas is source under a license that keeps the working parts free, and it runs in your VPC over any of the datasources it supports, Snowflake included.
+
+## Choose Cortex Analyst if
+
+- Your data is in Snowflake and you want the agent governed by the same RBAC with nothing to operate
+- A verified query repository with named verifiers is exactly the review gate you need
+- You are building your own application on a REST API and do not need a knowledge tier
+
+## Choose Atlas if
+
+- Your agents need facts that live outside tables, each with the name of the person who stood behind it
+- You want contradictions shown and gaps visible, not only ambiguous questions refused
+- You need the whole thing self-hostable and readable, or you span more than one warehouse
+- Your users are on Claude Desktop, Cursor or Claude Code and you want them connected in one command with no account

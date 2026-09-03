@@ -1,0 +1,50 @@
+---
+title: Atlas vs Hyper
+description: Atlas and Hyper, the "self-driving company brain", compared on the trust axis — who approved a fact, whether it is stale, whether you can run it yourself, and whether it shows what it does not know.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info">
+  Checked against Hyper's own site, FAQ and pricing page on 2026-09-03. Hyper is early and moves fast; if something here is out of date, [open an issue](https://github.com/AtlasDevHQ/atlas/issues) and we will fix it.
+</Callout>
+
+[Hyper](https://heyhyper.ai/) is "the self-driving company brain": it "learns from your Docs, Slack, Email & Calendar, then plugs into your AI so it goes from forgetful intern to seasoned veteran." It is a Y Combinator company, hosted on managed AWS infrastructure by its own FAQ, with a desktop app, an MCP server and a lifecycle-hook integration that injects context into agents as they work.
+
+Hyper and Atlas are after the same buyer with opposite bets. Hyper bets that a brain should be *self-driving*: it extracts facts, scores them, resolves conflicts and demotes stale ones automatically, and it aims to be conflict-free. Atlas bets that a fact an agent will act on needs a person's name on it, that a contradiction should be shown rather than resolved by a model, and that the whole thing should run where you can read it.
+
+## The trust axis
+
+| | Atlas | Hyper |
+|---|---|---|
+| **Who approved it** | Every attested fact carries the name of the person who approved it and the date | No one. Hyper "thresholds every fact on quality before it ever makes it into the brain" — the threshold is automatic. It stores the source text alongside the extracted fact, so an answer can be grounded in what was said, but no human approves it and no approver is shown |
+| **Is it stale** | Warehouse facts re-read live rows and cannot go stale. Attested facts carry an observation date; the coverage page reports measured lag where a source can report it and marks the rest unverified since a date; nothing is demoted without a person | "Information is constantly demoted, updated, linked, and organized in the background" so the brain "always points to the current truth." Recency decides |
+| **Can you self-host it** | Yes. Complete under AGPL, in your VPC, free. Hosted in the US; EU and APAC regions are built and brought online on request | No. Hosted on Hyper's managed AWS; the Enterprise tier lists "custom deployment" without detail. Not open source |
+| **Does it show what it does not know** | Yes. Contradictions are shown with both claims and both sources and Atlas picks neither. Unsurveyed regions are marked on the coverage page | Not documented. Hyper's stated goal is a brain that is "organized, current, and conflict-free"; conflicts are resolved in the background, and there is no coverage map |
+| **Access control** | Per-fact audience, enforced fail-closed: when entitlement is unclear Atlas shows nothing | Not yet. Hyper's FAQ: "for some teams with more structure, access control is non-negotiable. This is a top priority for us on our roadmap" |
+| **Warehouse facts** | A first-class tier — *Surveyed*, true by construction — that outranks any written-down fact where they overlap | None. Hyper reads documents, chat, email and calendar; it does not query structured data |
+| **How it reaches your agent** | Always an explicit act, visible to the person it is done for: an MCP tool call. Atlas does not inject itself into other tools' prompts | Both: an MCP server (Claude, Claude Code, Cursor, Codex, ChatGPT documented) and lifecycle hooks that add context to every prompt without a tool call |
+| **Signup gate and price** | Two-week free hosted trial, no card; `bunx @useatlas/mcp init --hosted --demo --write` needs no account or email. Self-hosted is free | Waitlist on the homepage; a three-day free trial from the pricing page. Sprint $40 per seat per month ($30 yearly), Blitz $150 ($120 yearly), Enterprise custom; metered at 2,000 tokens per fact recorded and 500 per fact retrieved |
+
+## Where Hyper wins
+
+Adoption. Hyper's founders have said the field's problem is UX, not retrieval accuracy, and they built for it: install a desktop app, connect Notion, Drive, Gmail, Calendar, Slack, GitHub and Linear, and every agent you use gets context on every prompt with nothing to configure and nobody to ask. Silent injection is exactly what makes it feel magical, and for a small team that trusts each other it is a real product advantage. Atlas gives that up on purpose: consulting the Atlas is always an explicit, visible act, and that costs adoption.
+
+## Where Atlas wins
+
+The moment a fact is wrong and someone acted on it. With Hyper, the answer to "who said that?" is a source snippet and a confidence score; the answer to "who decided this was true?" is a model. With Atlas it is a named person, on a date, whose approval is on the record and can be revoked by another person. When the Head of Finance and the support macro disagree about the return window, Hyper resolves it toward the current truth in the background; Atlas shows both, with both names, and leaves it open until a person closes it.
+
+Then the things Hyper does not have today: per-fact access control, a warehouse tier, and any way to run it inside your own network or read its source.
+
+## Choose Hyper if
+
+- You want a brain that fills itself and shows up in every prompt, and you are willing to trust its scoring
+- Your company's knowledge lives in documents, chat and mail, not in a warehouse
+- Everyone in the workspace may see everything, at least for now
+
+## Choose Atlas if
+
+- An agent acting on a company fact needs a human's name on it, and a wrong one needs someone to hold to account
+- You need contradictions shown, gaps visible, and access control that fails closed
+- Your most valuable questions are answerable from data, and a recollection must never outrank the rows
+- You need to self-host, or to read the source before you trust it

@@ -1,0 +1,49 @@
+---
+title: Atlas vs Databricks Genie
+description: Atlas and Databricks AI/BI Genie compared on the trust axis — who approved an answer, whether it is stale, whether you can run it yourself, and whether it shows what it does not know.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info">
+  Checked against Databricks' own documentation and pricing page on 2026-09-03. Genie renamed "Genie Spaces" to "Genie Agents" during 2026; this page uses the current name. If something here is out of date, [open an issue](https://github.com/AtlasDevHQ/atlas/issues) and we will fix it.
+</Callout>
+
+[Genie](https://docs.databricks.com/aws/en/genie/) is, in Databricks' words, "the Databricks AI experience for users. It gives every user in your organization a single place to ask data questions in natural language." It answers from tables governed by Unity Catalog, inside a Databricks workspace, and it is very good at that.
+
+Atlas answers a different question. Genie tells you what the warehouse says. Atlas tells you what the company knows — the warehouse rows *and* the facts people wrote down — and on every part of the answer it says who stood behind it and when. The two overlap on the first half. This page is about where they differ on trust, not on feature count.
+
+## The trust axis
+
+| | Atlas | Databricks Genie |
+|---|---|---|
+| **Who approved it** | Every attested fact carries the name of the person who approved it and the date. Warehouse answers carry the SQL and the rows | A response built from a *trusted asset* (a parameterised example query or a Unity Catalog function, authored by an analyst with edit rights) is labelled "trusted". The label is a badge, not a name or a date |
+| **Is it stale** | Warehouse answers re-read live rows and cannot go stale. Attested facts carry when they were observed; the coverage page reports measured lag where a source can report it and marks the rest unverified since a date | Warehouse answers re-read live tables. The instructions and trusted assets are files a human keeps current; Genie holds no facts beyond the tables |
+| **Can you self-host it** | Yes. The complete Atlas — connect, extract, review, store, retrieve, correct — under AGPL, in your VPC, free. Hosted in the US; EU and APAC regions are built and brought online on request | No. Genie runs only inside a Databricks workspace on AWS, Azure or GCP |
+| **Does it show what it does not know** | Yes. Contradictions are shown with both claims and both sources and Atlas picks neither. The coverage page marks unsurveyed regions as unsurveyed | Not documented. Genie exposes the generated SQL so a reader can check it; it does not mark what the workspace has no data for |
+| **Human review gate** | Nothing enters the authoritative record without a named person approving it, and there is no setting that turns this off | Trusted assets and instructions are authored ahead of time by editors. Individual answers are not reviewed; a benchmark suite (up to 500 questions) scores accuracy after the fact |
+| **Agent access** | Hosted MCP over OAuth 2.1, self-hosted MCP over stdio, and an anonymous demo endpoint. `bunx @useatlas/mcp init --hosted --demo --write` needs no account | A Databricks-managed Genie MCP server at `/api/2.0/mcp/genie` with `genie_ask` and friends; Cursor and Claude Desktop documented; OAuth with a `genie` scope |
+| **Signup gate and price** | Two-week free hosted trial, no card; the MCP demo needs no email at all. Self-hosted is free | Needs a Databricks workspace. Genie's model usage is free up to 150 DBUs per identified user per month (Databricks quotes 150 DBUs as $10.50 in US East); the SQL compute underneath is billed separately |
+
+## Where Genie wins
+
+Be honest about this, because a reader who runs Databricks will be. Genie is warehouse-native: Unity Catalog governance, lineage and row filters apply to every answer with nothing to configure; dashboards, the benchmark harness and Databricks Apps sit in the same pane; and it scales to the largest lakehouses without you operating anything. If every question your company asks is answerable from tables, and everyone who asks has a Databricks seat, Genie is the shorter path and Atlas is not going to out-warehouse it. Atlas concedes breadth on purpose.
+
+## Where Atlas wins
+
+Genie stops at the edge of the table. "What is our return window?" is not in a table; it is in a Slack message from the Head of Finance and a support macro that disagrees with her. Atlas holds that fact with her name and the date, shows the disagreement rather than resolving it, and shows the channel nobody has surveyed. A coding agent, a chat client or a tool not built by Atlas gets the same labels and the same limits over MCP — it cannot get a cleaner-looking answer than a person would.
+
+The second difference is procurement. Genie is a feature of a cloud you already rent. Atlas is source you can read, under a license that keeps the working parts free, running inside your own network.
+
+## Choose Genie if
+
+- Your questions are warehouse questions and your users already live in Databricks
+- Unity Catalog is your governance plane and you want answers to inherit it for free
+- You want dashboards, benchmarks and the agent in one vendor's console
+
+## Choose Atlas if
+
+- Your agents need facts that live in messages, documents and people's heads, with a name and a date on each
+- A contradiction must be shown, not silently resolved, and a gap must be visible
+- You need to run the whole thing in your VPC, or read the source before you trust it
+- Your users are on Claude Desktop, Cursor or Claude Code and you want them connected in one command with no account

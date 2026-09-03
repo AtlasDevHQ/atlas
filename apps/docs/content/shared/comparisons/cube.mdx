@@ -24,13 +24,13 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **Chat integrations** | Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp | None built-in |
 | **Admin console** | Built-in (connections, users, plugins, semantic editor, analytics, billing) | Cube Cloud dashboard |
 | **Enterprise features** | SSO/SCIM, custom roles, IP allowlists, approval workflows, PII masking | Enterprise tier |
-| **Data residency** | 3-region deployment (US, EU, APAC) with misrouting detection | Cube Cloud regions |
+| **Data residency** | Hosted in the US; EU and APAC regions are built and brought online on request | Cube Cloud regions |
 
 ## Different Layers of the Stack
 
 **Cube** is infrastructure. It sits between your database and your application, providing a semantic layer with a powerful caching engine (pre-aggregations that materialize rollups). Applications query Cube via GraphQL, REST, or SQL APIs. The D3 platform adds AI agents that generate queries against the Cube semantic layer.
 
-**Atlas** is product. It's an end-to-end agent that reads a semantic layer, writes SQL, validates it, runs it, and returns results with charts and narrative. It deploys as a standalone application, embeds in yours, or runs as a hosted SaaS at [app.useatlas.dev](https://app.useatlas.dev) with 3-region deployment (US, EU, APAC).
+**Atlas** is product. It's an end-to-end agent that reads a semantic layer, writes SQL, validates it, runs it, and returns results with charts and narrative. It deploys as a standalone application, embeds in yours, or runs as a hosted SaaS at [app.useatlas.dev](https://app.useatlas.dev), US-hosted with EU and APAC regions on request.
 
 **Trade-off:** If you need a universal semantic layer that multiple tools query (BI dashboards, notebooks, AI agents), Cube is the right choice. If you need an AI agent that users interact with directly — embedded in your app or as a standalone tool — Atlas is purpose-built for that.
 

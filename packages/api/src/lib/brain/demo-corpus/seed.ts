@@ -19,7 +19,25 @@
  *                `promoteBrainFacts` — the one permitted `status` writer), in
  *                one transaction, under a request context whose user IS the
  *                approving human, so the audit row's `actor_id` names them the
- *                way the publish route's does.
+ *                way the publish route's does. Then the contradiction's
+ *                predicate is declared `single` a second time, keyed to the
+ *                `predicate_key` the published rival rows ACTUALLY carry (#5620).
+ *
+ * ## Two cardinality declarations, and why the literal one is not enough
+ *
+ * The ingest phase declares the literal surface (`CONTRADICTION_PREDICATE_SURFACE`)
+ * `single` so an admin's tension sweep is productive before any extraction has
+ * run. But `cardinalitySingleSql` matches on the rows' `predicate_key`, and the
+ * key is whatever the extractor said — measured on the staging demo it keyed
+ * both rivals `has return window of`, which the literal entry never meets, so
+ * the sweep minted nothing and (since #5618) the write-time anchor arm was
+ * licensed by nothing either. The approve phase therefore reads the key off
+ * the rows the expected-claim matcher found and declares THAT. Additive: the
+ * literal stays. Idempotent: `ON CONFLICT DO UPDATE` underneath. And refused
+ * when the two rivals carry different keys — a `single` entry on a key only
+ * one of them holds would license supersession in a slot the other never
+ * enters, which is worse than no entry, so the seed warns naming both keys and
+ * declares nothing beyond the literal.
  *
  * Registered as a caller of the gate — not a writer — in
  * `docs/development/content-mode.md` § "The demo-corpus seed approves through
@@ -38,7 +56,7 @@
  *   - **Writing a fact, edge or `status` itself.** Every write goes through the
  *     seam that owns it: `ingestEpisodes`, `captureActorIdentities`,
  *     `persistCoverageSnapshot`, `declarePredicateCardinalityForSurface`,
- *     `approve`. `scripts/check-brain-fact-promotion.sh` would refuse this file
+ *     `declarePredicateCardinality`, `approve`. `scripts/check-brain-fact-promotion.sh` would refuse this file
  *     otherwise, and that refusal is the design.
  *
  * ## On the approver's name
@@ -77,7 +95,10 @@ import {
   captureActorIdentities,
   type ActorIdentityCapture,
 } from "@atlas/api/lib/brain/actor-identity";
-import { declarePredicateCardinalityForSurface } from "@atlas/api/lib/brain/cardinality";
+import {
+  declarePredicateCardinality,
+  declarePredicateCardinalityForSurface,
+} from "@atlas/api/lib/brain/cardinality";
 import { identityAlias } from "@atlas/api/lib/brain/identity";
 import type { PredicateCardinality } from "@atlas/api/lib/brain/types";
 import {
@@ -89,6 +110,7 @@ import { approve } from "@atlas/api/lib/brain/review-gate";
 import type { EpisodeSource } from "@atlas/api/lib/brain/sources";
 import {
   CHANNELS,
+  CONTRADICTION_CLAIM_KEYS,
   CONTRADICTION_PREDICATE_SURFACE,
   DEMO_ID_MARKER,
   EPISODES,
@@ -431,6 +453,8 @@ interface CorpusFactRow extends Record<string, unknown> {
   readonly id: string;
   readonly subject: string;
   readonly predicate: string;
+  /** The slot key the row carries — what every cardinality lookup matches on, not the surface. */
+  readonly predicate_key: string;
   readonly object: string;
   readonly source_id: string;
 }
@@ -440,7 +464,7 @@ interface CorpusFactRow extends Record<string, unknown> {
  * corpus's own `source_id`s, so a draft extracted from anything else on the
  * demo workspace is not this phase's to touch.
  */
-const CORPUS_FACTS_SQL = `SELECT f.id, f.subject, f.predicate, f.object, e.source_id
+const CORPUS_FACTS_SQL = `SELECT f.id, f.subject, f.predicate, f.predicate_key, f.object, e.source_id
      FROM brain_facts f
      JOIN brain_episodes e ON e.workspace_id = f.workspace_id AND e.id = f.source_episode_id
     WHERE f.workspace_id = $1
@@ -450,6 +474,22 @@ const CORPUS_FACTS_SQL = `SELECT f.id, f.subject, f.predicate, f.object, e.sourc
     ORDER BY f.created_at ASC, f.id ASC`;
 
 const TENSION_EDGES_SQL = `SELECT count(*)::text AS n FROM brain_edges WHERE workspace_id = $1 AND edge_type = 'in-tension-with'`;
+
+/**
+ * What the approve phase did about the contradiction's cardinality, keyed to
+ * the published rivals' own `predicate_key`.
+ *
+ *   - `declared`     — one key under both rivals; it is now an approved `single` entry.
+ *   - `refused`      — one key, but the seam refused it (degenerate key or no author).
+ *   - `keys-differ`  — the rivals carry different keys; nothing declared beyond the
+ *                      literal, both keys named so a person can alias them.
+ *   - `not-found`    — fewer than two published rivals matched; nothing to key off.
+ */
+export type ApproveCardinalityOutcome =
+  | { readonly kind: "declared"; readonly predicateKey: string; readonly cardinality: PredicateCardinality }
+  | { readonly kind: "refused"; readonly predicateKey: string; readonly refusal: string; readonly message: string }
+  | { readonly kind: "keys-differ"; readonly predicateKeys: readonly string[] }
+  | { readonly kind: "not-found"; readonly found: number };
 
 export interface ApprovePhaseReport {
   readonly workspaceId: string;
@@ -463,6 +503,50 @@ export interface ApprovePhaseReport {
   /** Every expected claim, and whether a PUBLISHED corpus claim now matches it. */
   readonly expected: readonly { key: ExpectedClaim["key"]; found: boolean }[];
   readonly missing: readonly ExpectedClaim["key"][];
+  /** The keyed `single` declaration for the contradiction's slot (#5620). */
+  readonly cardinality: ApproveCardinalityOutcome;
+}
+
+/**
+ * Declare the contradiction's predicate `single` under the key the published
+ * rivals carry. Reads the rows the expected-claim matcher found — never the
+ * literal surface — and declares only when both rivals agree on one key.
+ */
+async function declareContradictionKey(
+  workspaceId: string,
+  published: readonly CorpusFactRow[],
+  authoredBy: string,
+): Promise<ApproveCardinalityOutcome> {
+  const rivals = CONTRADICTION_CLAIM_KEYS.flatMap((key) => {
+    const claim = EXPECTED_CLAIMS.find((c) => c.key === key);
+    if (claim === undefined) throw new Error(`demo corpus: EXPECTED_CLAIMS lost the contradiction claim "${key}"`);
+    return published.filter((row) => matchesExpectedClaim(row, claim));
+  });
+  if (rivals.length < CONTRADICTION_CLAIM_KEYS.length) {
+    return { kind: "not-found", found: rivals.length };
+  }
+  const predicateKeys = [...new Set(rivals.map((r) => r.predicate_key))].sort();
+  if (predicateKeys.length !== 1) {
+    log.warn(
+      { workspaceId, predicateKeys },
+      "demo corpus: the contradiction's published rivals carry different predicate keys — declaring neither single beyond the literal surface, because an entry on a key only one rival holds would license supersession in a slot the other never enters; alias the keys together, then re-run approve",
+    );
+    return { kind: "keys-differ", predicateKeys };
+  }
+  const predicateKey = predicateKeys[0] as string;
+  const declared = await declarePredicateCardinality(executor, workspaceId, {
+    predicateKey,
+    cardinality: "single",
+    authoredBy,
+  });
+  if (!declared.ok) {
+    log.warn(
+      { workspaceId, predicateKey, refusal: declared.refusal, message: declared.message },
+      "demo corpus: keyed cardinality declaration refused — the sweep and the anchor arm will not see the contradiction's slot as single",
+    );
+    return { kind: "refused", predicateKey, refusal: declared.refusal, message: declared.message };
+  }
+  return { kind: "declared", predicateKey, cardinality: declared.cardinality };
 }
 
 export async function seedDemoCorpusApprove(params: {
@@ -510,10 +594,10 @@ export async function seedDemoCorpusApprove(params: {
       // tension pass on that per-claim hint). When the live model did not, the
       // edge is NOT minted here: ADR-0037 §7's amendment pins the tension sweep
       // to exactly one non-test caller — the admin route a human presses — and
-      // `tension-sweep.test.ts` asserts it. The ingest phase's `single`
-      // declaration is what makes that sweep productive on this workspace; a
-      // zero below means "an admin runs the sweep from the facts page", and
-      // the operator prints so.
+      // `tension-sweep.test.ts` asserts it. The `single` declarations — the
+      // ingest phase's literal one and the keyed one made below — are what make
+      // that sweep productive on this workspace; a zero below means "an admin
+      // runs the sweep from the facts page", and the operator prints so.
       const edgeRows = await internalQuery<{ n: string }>(TENSION_EDGES_SQL, [workspaceId]);
       const tensionEdges = Number(edgeRows[0]?.n ?? 0);
 
@@ -523,6 +607,8 @@ export async function seedDemoCorpusApprove(params: {
         found: published.some((row) => matchesExpectedClaim(row, claim)),
       }));
       const missing = expected.filter((e) => !e.found).map((e) => e.key);
+
+      const cardinality = await declareContradictionKey(workspaceId, published, params.approvedBy);
 
       await logAdminActionAwait({
         actionType: ADMIN_ACTIONS.brain.demoCorpusSeed,
@@ -534,6 +620,7 @@ export async function seedDemoCorpusApprove(params: {
           refused,
           tensionEdges,
           missingExpectedClaims: missing,
+          cardinality,
           marker: DEMO_ID_MARKER,
         },
       });
@@ -553,6 +640,7 @@ export async function seedDemoCorpusApprove(params: {
         tensionEdges,
         expected,
         missing,
+        cardinality,
       };
     },
   );

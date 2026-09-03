@@ -365,6 +365,15 @@ export interface ExpectedClaim {
  */
 export const CONTRADICTION_PREDICATE_SURFACE = "return window" as const;
 
+/**
+ * The two expected claims that ARE the contradiction. The seed's approve phase
+ * reads the `predicate_key` off the published rows these match and declares
+ * that key `single` (#5620), because the extractor's phrasing — not the
+ * literal surface above — is what the rows carry and what the sweep and the
+ * write-time anchor gate look up.
+ */
+export const CONTRADICTION_CLAIM_KEYS = ["return-window-30", "return-window-14"] as const;
+
 export const EXPECTED_CLAIMS: readonly ExpectedClaim[] = Object.freeze([
   {
     key: "return-window-30",

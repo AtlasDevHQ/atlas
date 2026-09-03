@@ -14,10 +14,13 @@
  * driven with a deterministic `extract` that maps each corpus episode to the
  * claims it was written to yield. That is the injection seam the cycle exists
  * to offer, and it is what makes this a test of the SEED rather than of a
- * model's mood. Two arms cover the two things a live model can do with the
+ * model's mood. Four arms cover what a live model can do with the
  * contradiction: hint the predicate `single` (reconcile mints the edge at
  * write time) or not (nothing is minted until an admin's sweep, which the
- * ingest phase's declaration makes productive). Both are exercised.
+ * seed's declarations make productive); phrase the predicate as something
+ * other than the literal surface (the approve phase's keyed declaration is
+ * what the sweep then matches, #5620); or phrase the two rivals differently
+ * from each other (nothing is declared beyond the literal, both keys named).
  *
  * Run with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
@@ -64,9 +67,11 @@ const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
 const PG_TEST_TIMEOUT_MS = 120_000;
 
-/** The demo org, and a second row with the SAME slug for the no-hint arm. */
+/** The demo org, and further rows with the SAME slug, one per arm. */
 const DEMO_ORG = "org_nmd_demo_test";
 const DEMO_ORG_NO_HINT = "org_nmd_demo_nohint_test";
+const DEMO_ORG_REPHRASED = "org_nmd_demo_rephrased_test";
+const DEMO_ORG_SPLIT_KEYS = "org_nmd_demo_splitkeys_test";
 const TENANT_ORG = "org_nmd_tenant_test";
 const APPROVER = "user_nmd_reviewer";
 
@@ -106,9 +111,15 @@ function authoringPairs(): number {
  *
  * `hintSingle` decides whether the two return-window candidates carry the
  * extractor's per-claim `predicateCardinality: "single"` hint — the thing
- * reconcile's write-time tension pass is gated on.
+ * reconcile's write-time tension pass is gated on. `rivalPredicates` is the
+ * surface each rival's predicate is phrased as, in corpus order (30 then 14):
+ * the literal by default, or the live extractor's own phrasing, which is what
+ * the rows' `predicate_key` — and every cardinality lookup — is made of.
  */
-function deterministicClaims(hintSingle: boolean): ReadonlyMap<string, readonly FactCandidate[]> {
+function deterministicClaims(
+  hintSingle: boolean,
+  rivalPredicates: readonly [string, string] = ["return window", "return window"],
+): ReadonlyMap<string, readonly FactCandidate[]> {
   const out = new Map<string, readonly FactCandidate[]>();
   const set = (episode: DemoEpisode | undefined, claims: readonly FactCandidate[]) => {
     if (episode === undefined) throw new Error("test fixture references an episode the corpus no longer has");
@@ -120,9 +131,9 @@ function deterministicClaims(hintSingle: boolean): ReadonlyMap<string, readonly 
   const [engineeringDecision] = chatIn("engineering");
   const [leadershipThreshold] = chatIn("leadership");
 
-  set(finance30, [{ subject: "NovaMart", predicate: "return window", object: "30 days from delivery", ...hint }]);
+  set(finance30, [{ subject: "NovaMart", predicate: rivalPredicates[0], object: "30 days from delivery", ...hint }]);
   set(financeGmv, [{ subject: "NovaMart", predicate: "GMV for December 2024", object: "about $1.9M" }]);
-  set(support14, [{ subject: "NovaMart", predicate: "return window", object: "14 days from delivery", ...hint }]);
+  set(support14, [{ subject: "NovaMart", predicate: rivalPredicates[1], object: "14 days from delivery", ...hint }]);
   set(engineeringDecision, [
     { subject: "nightly ETL", predicate: "runs at", object: "02:00 UTC" },
     { subject: "nightly ETL", predicate: "owned by", object: "Dana Okafor" },
@@ -138,6 +149,17 @@ function deterministicClaims(hintSingle: boolean): ReadonlyMap<string, readonly 
     { subject: "NovaMart", predicate: "holiday cutoff for express shipping", object: "21 December 2026" },
   ]);
   return out;
+}
+
+/** The approved `single` keys a workspace holds — what `cardinalitySingleSql` can match. */
+async function approvedSingleKeys(pool: Pool, workspaceId: string): Promise<string[]> {
+  const { rows } = await pool.query<{ predicate_key: string }>(
+    `SELECT predicate_key FROM brain_predicate_cardinality
+      WHERE workspace_id = $1 AND cardinality = 'single' AND status = 'approved'
+      ORDER BY predicate_key`,
+    [workspaceId],
+  );
+  return rows.map((r) => r.predicate_key);
 }
 
 async function extractWith(claims: ReadonlyMap<string, readonly FactCandidate[]>) {
@@ -184,9 +206,11 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
       `INSERT INTO organization (id, name, slug, "createdAt") VALUES
          ($1, 'NovaMart Demo', $2, now()),
          ($3, 'NovaMart Demo (no hint)', $2, now()),
-         ($4, 'Tenant X', 'tenant-x', now())
+         ($4, 'Tenant X', 'tenant-x', now()),
+         ($5, 'NovaMart Demo (rephrased)', $2, now()),
+         ($6, 'NovaMart Demo (split keys)', $2, now())
        ON CONFLICT DO NOTHING`,
-      [DEMO_ORG, DEMO_ATLAS_WORKSPACE_SLUG, DEMO_ORG_NO_HINT, TENANT_ORG],
+      [DEMO_ORG, DEMO_ATLAS_WORKSPACE_SLUG, DEMO_ORG_NO_HINT, TENANT_ORG, DEMO_ORG_REPHRASED, DEMO_ORG_SPLIT_KEYS],
     );
   }, PG_TEST_TIMEOUT_MS);
 
@@ -322,6 +346,10 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     expect(report.refused).toEqual([]);
     expect(report.missing).toEqual([]);
     expect(report.expected.every((e) => e.found)).toBe(true);
+    // The rivals carry the literal key here, so the keyed declaration lands on
+    // the same entry the ingest phase wrote — one entry, not two.
+    expect(report.cardinality).toEqual({ kind: "declared", predicateKey: "return window", cardinality: "single" });
+    expect(await approvedSingleKeys(pool, DEMO_ORG)).toEqual(["return window"]);
 
     // Every published corpus claim matches at least one expected claim — the
     // reporting contract is two-sided, or a stray extraction could publish
@@ -397,5 +425,70 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
       [DEMO_ORG_NO_HINT],
     );
     expect(Number(edges.rows[0]?.n)).toBeGreaterThanOrEqual(1);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("rivals phrased as the live extractor phrases them, no hint: approve declares THEIR key single, additively and idempotently, and the sweep mints the edge (#5620)", async () => {
+    const ingest = await seedDemoCorpusIngest({ workspaceRef: DEMO_ORG_REPHRASED, authoredBy: APPROVER });
+    expect(ingest.cardinality).toEqual({ ok: true, cardinality: "single" });
+    // Only the literal is declared before extraction — the key the rows will
+    // carry does not exist yet to be read.
+    expect(await approvedSingleKeys(pool, DEMO_ORG_REPHRASED)).toEqual(["return window"]);
+
+    const cycle = await extractWith(deterministicClaims(false, ["has return window of", "has return window of"]));
+    expect(cycle.status).toBe("success");
+
+    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_REPHRASED, approvedBy: APPROVER });
+    expect(report.missing).toEqual([]);
+    expect(report.tensionEdges).toBe(0);
+    expect(report.cardinality).toEqual({
+      kind: "declared",
+      predicateKey: "has return window of",
+      cardinality: "single",
+    });
+    // Additive: the literal entry is still there beside the keyed one.
+    expect(await approvedSingleKeys(pool, DEMO_ORG_REPHRASED)).toEqual(["has return window of", "return window"]);
+    const entry = await pool.query<{ source_class: string; proposed_by: string; reviewed_by: string }>(
+      `SELECT source_class, proposed_by, reviewed_by FROM brain_predicate_cardinality WHERE workspace_id = $1 AND predicate_key = $2`,
+      [DEMO_ORG_REPHRASED, "has return window of"],
+    );
+    expect(entry.rows[0]).toEqual({ source_class: "human", proposed_by: APPROVER, reviewed_by: APPROVER });
+
+    // Idempotent: a second approve re-declares the same key and adds no entry.
+    const again = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_REPHRASED, approvedBy: APPROVER });
+    expect(again.promoted).toEqual([]);
+    expect(again.cardinality).toEqual({
+      kind: "declared",
+      predicateKey: "has return window of",
+      cardinality: "single",
+    });
+    expect(await approvedSingleKeys(pool, DEMO_ORG_REPHRASED)).toEqual(["has return window of", "return window"]);
+
+    // The sweep matches on the rows' key. Before #5620 only the literal was
+    // declared, the rows carried this key, and this minted nothing.
+    const sweep = await sweepTensionEdges(DEMO_ORG_REPHRASED);
+    expect(sweep.kind).toBe("swept");
+    if (sweep.kind !== "swept") throw new Error("unreachable");
+    expect(sweep.report.minted).toBeGreaterThanOrEqual(1);
+    const edges = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM brain_edges WHERE workspace_id = $1 AND edge_type = 'in-tension-with'`,
+      [DEMO_ORG_REPHRASED],
+    );
+    expect(Number(edges.rows[0]?.n)).toBeGreaterThanOrEqual(1);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("rivals under DIFFERENT keys: approve warns naming both and declares nothing beyond the literal (#5620)", async () => {
+    await seedDemoCorpusIngest({ workspaceRef: DEMO_ORG_SPLIT_KEYS, authoredBy: APPROVER });
+    const cycle = await extractWith(deterministicClaims(false, ["return window", "has return window of"]));
+    expect(cycle.status).toBe("success");
+
+    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_SPLIT_KEYS, approvedBy: APPROVER });
+    expect(report.missing).toEqual([]);
+    expect(report.cardinality).toEqual({
+      kind: "keys-differ",
+      predicateKeys: ["has return window of", "return window"],
+    });
+    // A wrong-key declaration is worse than none: only the ingest phase's
+    // literal entry exists, and it is the one a person would alias onto.
+    expect(await approvedSingleKeys(pool, DEMO_ORG_SPLIT_KEYS)).toEqual(["return window"]);
   }, PG_TEST_TIMEOUT_MS);
 });

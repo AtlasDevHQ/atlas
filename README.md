@@ -11,10 +11,6 @@
 </p>
 
 <p align="center">
-  <a href="https://docs.useatlas.dev/guides/mcp">MCP guide</a> · <a href="https://docs.useatlas.dev">Documentation</a> · <a href="https://app.useatlas.dev">Hosted</a> · <a href="https://docs.useatlas.dev/self-hosted/getting-started/quick-start">Self-host</a>
-</p>
-
-<p align="center">
   <img src="assets/demo.svg" alt="Atlas demo — one command into Claude Desktop, one question, one answer with a name on it" width="820">
 </p>
 
@@ -28,7 +24,7 @@ Restart the client and ask:
 
 > **What is NovaMart's return window?**
 
-The answer carries a name. Finance says 30 days — Priya Natarajan, Head of Finance, in `#finance`, on a date, approved by a person whose name is on the record. Support's macro says 14. Atlas shows both and picks neither. Ask what the warehouse says and the live rows come back with the exact SQL that read them. (Claude Code, VS Code and other clients: the same command with `--client generic` prints a block to paste. On WSL2, write `bun x` instead of `bunx`.)
+The answer carries a name. Finance says 30 days — Priya Natarajan, Head of Finance, in `#finance`, on a date, a claim a person approved before it counted. Support's macro says 14. Atlas shows both and picks neither. Ask what the warehouse says and the live rows come back with the exact SQL that read them. (Claude Code, VS Code and other clients: the same command with `--client generic` prints a block to paste. On WSL2, write `bun x` instead of `bunx`.)
 
 ## How it works
 
@@ -60,6 +56,9 @@ This README used to inventory the whole product. Each section now lives on one d
 - The SQL validation pipeline and sandbox threat model — [SQL validation](https://docs.useatlas.dev/security/sql-validation), [Sandbox architecture](https://docs.useatlas.dev/architecture/sandbox)
 - Environment variables — [Reference](https://docs.useatlas.dev/reference/environment-variables) and [`.env.example`](.env.example)
 - Plugins, datasources, chat platforms and connectors — [Plugin authoring](https://docs.useatlas.dev/plugins/authoring-guide), [Integrations](https://docs.useatlas.dev/guides/integrations)
+- Supported databases and LLM providers — [Connect your data](https://docs.useatlas.dev/getting-started/connect-your-data), [Model routing](https://docs.useatlas.dev/guides/model-routing)
+- The Knowledge Base, dashboards, and bringing your own frontend — [Knowledge Base](https://docs.useatlas.dev/guides/knowledge-base), [Dashboards](https://docs.useatlas.dev/guides/dashboards), [Frameworks](https://docs.useatlas.dev/self-hosted/frameworks/overview)
+- The CLI (`atlas init`, `atlas diff`, and the rest) — [CLI reference](https://docs.useatlas.dev/reference/cli)
 - The monorepo layout and dev setup — [CONTRIBUTING.md](CONTRIBUTING.md)
 - What is open source and what is commercial — [Enterprise boundary](https://docs.useatlas.dev/architecture/enterprise)
 

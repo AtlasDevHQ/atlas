@@ -1,0 +1,50 @@
+---
+title: Atlas vs Glean
+description: Atlas and Glean compared on the trust axis — who verified a document, whether it is stale, whether you can run it yourself, and whether it shows what it does not know. Glean wins on breadth; that is conceded up front.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info">
+  Checked against Glean's own documentation on 2026-09-03. Glean publishes its pricing model but no prices; nothing here quotes one. If something is out of date, [open an issue](https://github.com/AtlasDevHQ/atlas/issues) and we will fix it.
+</Callout>
+
+[Glean](https://www.glean.com/) is enterprise search and a knowledge graph over everything a company has connected — documents, people and activity — with an assistant, agents and an MCP server on top. It is the vendor a Show HN reader names in the first comment, and the comparison it wins is the one Atlas is not trying to have.
+
+**Glean wins on breadth, and Atlas concedes that on purpose.** Atlas's product decision is a smaller set of facts you can actually trust, each with a name and a date, on a warehouse spine, running where you can read it. Losing a connector-count comparison to Glean is an expected outcome, not a defect. What follows is the comparison on the trust axis, where the two are closer than the size difference suggests and where Glean has done real work.
+
+## The trust axis
+
+| | Atlas | Glean |
+|---|---|---|
+| **Who approved it** | Every attested fact carries the name of the person who approved it and the date, and the answer shows both. Warehouse answers carry the SQL and the rows | Document *verification*: an owner stamps a document as accurate, it shows a green badge, and hovering shows who verified it and when. The unit is the document, not the claim: a verified page can still contain three facts of different ages |
+| **Is it stale** | Warehouse facts re-read live rows and cannot go stale. Attested facts carry an observation date; the coverage page reports measured lag per source | Verifiers set a re-verification reminder; when it lapses the document returns to the owner's task list. Unverified content ages silently |
+| **Can you self-host it** | Yes. Complete under AGPL, in your VPC, free. Hosted in the US; EU and APAC regions are built and brought online on request | No. Two models — Glean-hosted SaaS, or *customer hosted*, a single-tenant deployment Glean operates inside your own GCP or AWS account. Glean's docs describe the second as "equivalent to a hosted-SaaS model." Not open source |
+| **Does it show what it does not know** | Yes. Contradictions are shown with both claims and both sources; unsurveyed regions are marked on the coverage page | Not documented. Search returns what it indexed and ranks it; there is no coverage map and no contradiction surface |
+| **Human review gate** | Nothing enters the authoritative record without a named person approving it; no setting turns this off | Optional. Verification and curated *Answers* are opt-in acts on top of an index that is authoritative by default |
+| **Warehouse facts** | A first-class tier — *Surveyed*, true by construction — that outranks any written-down fact where they overlap | Glean's own writing concedes that exhaustive, deterministic questions need a structured store rather than probabilistic generation. It approximates structure by building a graph over crawled documents; it does not query your warehouse |
+| **Agent access** | Hosted MCP over OAuth 2.1, self-hosted MCP over stdio, and an anonymous demo endpoint. `bunx @useatlas/mcp init --hosted --demo --write` needs no account | A remote MCP server (search, chat, read document, code search, people, plus Glean agents as tools) with OAuth 2.1 and PKCE; Claude Desktop and Teams, Cursor, ChatGPT, VS Code, Copilot Studio and Gemini Enterprise documented |
+| **Signup gate and price** | Two-week free hosted trial, no card; the MCP demo needs no email at all. Self-hosted is free | Sales-led. Glean Enterprise Flex is per-user seats plus FlexCredits per task; the rate card is published, the prices are not. No self-serve trial |
+
+## Where Glean wins
+
+Everything that is about size. The connector catalogue is the widest in the category and it mirrors source permissions item by item; the knowledge graph links people, content and activity so "who knows about the EU migration" has an answer; the MCP client matrix is the broadest tested; and single-tenant deployment in your own cloud account satisfies most procurement teams. If the job is "make everything findable for ten thousand people", Glean is the product and Atlas is not competing for it.
+
+## Where Atlas wins
+
+Granularity and enforcement of trust. Glean verifies a document; Atlas attests a claim, so the answer to "what is the return window" carries the name of the person who approved *that* fact, not the page it sits on. Glean's review acts are optional on top of an authoritative index; in Atlas nothing is authoritative until a person makes it so, and that cannot be switched off. Glean resolves search by ranking; Atlas shows a contradiction as a contradiction and shows the channels nobody has surveyed.
+
+Then the two things Glean will not do because they cut against its business: put your warehouse rows above extracted text as the authoritative tier, and hand you the source to run inside your own network under a license that keeps the working parts free.
+
+## Choose Glean if
+
+- You need everything indexed, permission-mirrored and findable, across hundreds of sources, for a large company
+- People and activity graphs — who owns what, who knows what — are part of the job
+- A vendor-operated single tenant in your cloud account is self-hosted enough
+
+## Choose Atlas if
+
+- An agent acting on a company fact needs a human's name on that fact, and the review gate must not be optional
+- Your most valuable questions are answerable from data, and a document must never outrank the rows
+- Contradictions must be shown and gaps must be visible
+- You need to run the whole thing in your VPC, or read the source, or start without a sales call

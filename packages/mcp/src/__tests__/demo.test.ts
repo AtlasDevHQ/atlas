@@ -17,6 +17,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
+import { getRequestContext } from "@atlas/api/lib/logger";
 import { Hono } from "hono";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -24,14 +25,21 @@ import { parseAtlasMcpToolError } from "@useatlas/types/mcp";
 
 // ── Module-scope mocks (every named export, per testing.md) ─────────────
 
-const mockExecuteSQLExecute = mock<(...args: unknown[]) => Promise<unknown>>(async () => ({
-  success: true,
-  explanation: "Count orders",
-  row_count: 1,
-  columns: ["count"],
-  rows: [{ count: 42 }],
-  truncated: false,
-}));
+// The request-context frame the tool body actually runs in — what
+// `resolveExecutionTarget` reads. Captured here because the shared dispatch
+// opens its own frame per call, and a pin set by the door has to survive it.
+let executeSqlFrameConnectionId: string | undefined;
+const mockExecuteSQLExecute = mock<(...args: unknown[]) => Promise<unknown>>(async () => {
+  executeSqlFrameConnectionId = getRequestContext()?.connectionId;
+  return {
+    success: true,
+    explanation: "Count orders",
+    row_count: 1,
+    columns: ["count"],
+    rows: [{ count: 42 }],
+    truncated: false,
+  };
+});
 const notInDemoTest = (name: string) => () => {
   throw new Error(`${name} called from demo test — only executeSQL.execute is exercised here`);
 };
@@ -339,6 +347,7 @@ describe("/mcp/demo — the anonymous principal's reach", () => {
   afterEach(async () => {
     for (const live of opened.splice(0)) await live.close();
     mockExecuteSQLExecute.mockClear();
+    executeSqlFrameConnectionId = undefined;
     mockSearchBrainExecute.mockClear();
   });
 
@@ -363,10 +372,30 @@ describe("/mcp/demo — the anonymous principal's reach", () => {
     });
     expect(result.isError).toBeFalsy();
     expect(mockExecuteSQLExecute).toHaveBeenCalledTimes(1);
+    // The visitor sent only `sql`; the door targets the demo install, never
+    // the registry's `"default"` (which SaaS never admits).
+    const args = mockExecuteSQLExecute.mock.calls[0]?.[0] as { connectionId?: string };
+    expect(args.connectionId).toBe("__demo__");
+    // ...and the frame the body ran in carries the same pin, so
+    // `resolveExecutionTarget` reads the call as the all-sources self target.
+    expect(executeSqlFrameConnectionId).toBe("__demo__");
     // The gate consulted the limits with this session's identity.
     expect(h.limitCalls.length).toBeGreaterThanOrEqual(1);
     expect(h.limitCalls.at(-1)?.sessionId).toBe(SID_A);
     expect(h.answers).toEqual([SID_A]);
+  });
+
+  it("passes an explicit executeSQL connectionId through untouched", async () => {
+    const h = makeHarness();
+    const live = await connect(appFor(h.deps), tokenFor(SID_A));
+    opened.push(live);
+    const result = await live.client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT 1", explanation: "probe", connectionId: "warehouse" },
+    });
+    expect(result.isError).toBeFalsy();
+    const args = mockExecuteSQLExecute.mock.calls[0]?.[0] as { connectionId?: string };
+    expect(args.connectionId).toBe("warehouse");
   });
 
   it("refuses at the per-IDENTITY budget BEFORE the body runs, with a rate_limited envelope", async () => {

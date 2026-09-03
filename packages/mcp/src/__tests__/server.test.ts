@@ -212,5 +212,10 @@ describe("MCP server integration", () => {
       clientId: "claude-desktop",
       toolName: "explore",
     });
+    // The dispatch frame carries a `connectionId` pin only when the door that
+    // mounted it set one (the anonymous demo does). The hosted server pins
+    // nothing, so its tools resolve their own default — asserted here so the
+    // carry-through can never turn into an implicit pin on this route.
+    expect(observed!.connectionId).toBeUndefined();
   });
 });

@@ -37,6 +37,7 @@ import { getConfig } from "@atlas/api/lib/config";
 import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import { isDemoEnabled } from "@atlas/api/lib/demo";
+import { DEMO_INSTALL_ID } from "@atlas/api/lib/integrations/installed-connection";
 import {
   ANONYMOUS_DEMO_SCOPES,
   anonymousDemoActor,
@@ -216,7 +217,8 @@ export function createDemoMcpServer(
   // The whole surface: two reads, plus the optional hand-off. Registration
   // order is what `tools/list` shows a client first.
   registerSearchAtlasTool(server, dispatch);
-  registerExecuteSqlTool(server, dispatch);
+  // A visitor's client sends only `sql`; the demo install is the target.
+  registerExecuteSqlTool(server, dispatch, { defaultConnectionId: DEMO_INSTALL_ID });
   registerShareEmailTool(server, { sessionId, deps: d });
 
   return server;
@@ -504,8 +506,23 @@ export function createDemoMcpRouter(deps: DemoMcpDeps = {}): Hono {
     const mcpSessionId = c.req.raw.headers.get("mcp-session-id");
 
     try {
+      // `connectionId` pins the execution target to the platform demo
+      // install the demo workspace was set up with (`/use-demo`). The
+      // registry's `"default"` is never visible on SaaS, and `/use-demo`
+      // imports the demo entities with no connection group, so the
+      // whitelist keys them under its `"default"` bucket rather than the
+      // install's. A target that is both the request's connection and the
+      // tool's makes `resolveExecutionTarget` read it as the all-sources
+      // self target, and the whitelist union then admits the demo tables.
       return await withRequestContext(
-        { requestId, user: actor, atlasMode: "published", agentOrigin: "mcp", clientIp: ip },
+        {
+          requestId,
+          user: actor,
+          atlasMode: "published",
+          agentOrigin: "mcp",
+          clientIp: ip,
+          connectionId: DEMO_INSTALL_ID,
+        },
         () =>
           withDemoRequestFrame({ ip, requestId }, async () => {
             if (mcpSessionId) {

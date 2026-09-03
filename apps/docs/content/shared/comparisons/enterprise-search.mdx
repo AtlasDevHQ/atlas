@@ -1,0 +1,52 @@
+---
+title: Atlas vs Dust and Onyx
+description: Atlas compared with the open-core assistant platforms a Show HN reader will name — Dust and Onyx — on the trust axis. Both are MIT-cored, both are broader; neither puts a named person between a retrieved passage and an agent.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info">
+  Checked against each vendor's own pricing page, repository and documentation on 2026-09-03. Both repositories were pushed to on the day of checking. If something is out of date, [open an issue](https://github.com/AtlasDevHQ/atlas/issues) and we will fix it.
+</Callout>
+
+[Dust](https://dust.tt/) ("the platform for AI Operators") and [Onyx](https://onyx.app/) (formerly Danswer; "the application layer for LLMs") are the two open-core platforms closest to Atlas in shape: an MIT core on GitHub, connectors into the tools a company uses, retrieval-augmented answers with citations, agents you configure, and MCP in both directions. They share one page because they share one difference from Atlas.
+
+The difference is what stands between a retrieved passage and an agent acting on it. In Dust and Onyx, retrieval is the authority: an answer cites the passages it drew on, and the passages are as good as the documents. In Atlas, a person is the authority: a fact becomes usable when someone whose name is on the record approves it, the answer says who and when, and a contradiction or a gap is shown instead of ranked away.
+
+## The trust axis
+
+| | Atlas | Dust | Onyx |
+|---|---|---|---|
+| **Who approved it** | Every attested fact carries the name of the person who approved it and the date | No one. Answers cite the retrieved documents; authority is the source system's | No one. Answers cite retrieved passages with links to the originals; authority is the source system's |
+| **Is it stale** | Warehouse facts re-read live rows. Attested facts carry an observation date; the coverage page reports measured lag per source | As fresh as the last sync of the connector | As fresh as the last index run of the connector |
+| **Can you self-host it** | Yes. Complete under AGPL, in your VPC, free. Hosted in the US; EU and APAC regions are built and brought online on request | The source is MIT and actively developed, but self-hosting is not an offered or documented product. The product is hosted, with US or EU residency on every paid plan | Yes, first-class: a one-command installer, MIT core. Enterprise features live under `ee/` directories on a separate commercial license |
+| **Does it show what it does not know** | Yes. Contradictions with both claims and both sources; unsurveyed regions marked on the coverage page | Not documented | Not documented |
+| **Human review gate** | Nothing enters the authoritative record without a named person approving it; no setting turns this off | None found | None found |
+| **Warehouse facts** | A first-class tier — *Surveyed*, true by construction — that outranks any written-down fact where they overlap | Not a first-class tier; structured data reaches an agent through tools | Not a first-class tier; structured data reaches an agent through tools |
+| **Agent access** | Hosted MCP over OAuth 2.1, self-hosted MCP over stdio, and an anonymous demo endpoint. `bunx @useatlas/mcp init --hosted --demo --write` needs no account | MCP client to remote servers (capped at five on Business plans); the developer API on Business is the conversation API only | MCP server ("connect Claude, Cursor, and other AI tools to your Onyx knowledge base") and MCP client |
+| **Signup gate and price** | Two-week free hosted trial, no card; the MCP demo needs no email at all. Self-hosted is free | Signup required. Free seat with 500 lifetime credits; Pro $30 per seat per month ($24 yearly); Max $150 ($120 yearly); Enterprise custom, single-tenant, SCIM and audit logs | Self-host free. Business $20 per user per month on annual billing; Enterprise custom with SSO, on-premise and region-specific deployment. Free trial offered |
+
+## Where Dust wins
+
+Breadth of models and orchestration: twenty-plus frontier models with per-agent choice, multi-agent workflows on schedules and event triggers, and EU data residency at a self-serve price, which is rare. If the job is "build and run a fleet of agents for an operations team", Dust is the more finished workbench.
+
+## Where Onyx wins
+
+Self-hosting and surface area. It installs in one command, the core is MIT, the connector count is past fifty, and deep research, code execution, web search and voice ship in the open-source tier. If the job is "a private ChatGPT over everything, on our own machines, by Friday", Onyx is hard to beat, and its license is more permissive than Atlas's AGPL.
+
+## Where Atlas wins
+
+Neither product puts a named person between a passage and an agent, and neither shows a contradiction or a gap as such. Atlas does, and that is the whole product. It also holds warehouse rows as the tier that cannot be wrong, above anything extracted from text, so a recollection never overwrites the data. And the MCP door is open before signup: one command, one question, an answer with a name on it.
+
+## Choose Dust or Onyx if
+
+- You want an assistant platform — many models, many agents, many connectors — and retrieval quality is trust enough
+- Breadth of sources matters more than the provenance of any one fact
+- For Onyx: a permissive license and a one-command self-host of the whole surface are the priority
+
+## Choose Atlas if
+
+- An agent acting on a company fact needs a human's name on it, and the gate must not be optional
+- Contradictions must be shown and gaps visible, not ranked away
+- Data must outrank documents wherever they overlap
+- You want the complete product self-hostable under a license that keeps the working parts free, and a demo that needs no account

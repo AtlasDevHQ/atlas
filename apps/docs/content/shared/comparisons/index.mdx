@@ -1,17 +1,56 @@
 ---
 title: Atlas vs Alternatives
-description: Feature-by-feature comparison of Atlas, WrenAI, Vanna, Metabase, Cube, and ThoughtSpot for text-to-SQL and data querying.
+description: How Atlas compares on the trust axis — who approved it, is it stale, can you self-host it, does it show what it does not know — to the warehouse analysts (Genie, Cortex Analyst) and the company-brain entrants (Hyper, Glean, Dust, Onyx), plus the older text-to-SQL peers.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
+import { Cards, Card } from "fumadocs-ui/components/card";
 
 <Callout type="info">
-  All comparisons are based on publicly available documentation and source code as of April 2026. If something is inaccurate, [open an issue](https://github.com/AtlasDevHQ/atlas/issues) and we'll fix it.
+  The company-brain and warehouse-analyst pages were checked against each vendor's own documentation and pricing on 2026-09-03; the text-to-SQL peer pages date from April 2026 and are marked where a product has since changed. If something is inaccurate, [open an issue](https://github.com/AtlasDevHQ/atlas/issues) and we'll fix it.
 </Callout>
 
-Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping problems in different ways -- this page helps you decide which fits your use case.
+Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC.
 
-## Feature Matrix
+Every page here compares on that axis — **who approved it, is it stale, can you self-host it, does it show what it does not know** — and not on feature count. Where a competitor wins on breadth, the page says so. Atlas concedes breadth on purpose: a smaller set of facts you can actually trust is the product, and losing a connector-count comparison to an enterprise search vendor is an expected outcome, not a defect.
+
+Two fields compare themselves to Atlas, and a reader usually arrives from one of them.
+
+## If you are evaluating a company brain
+
+Products that hold what a company knows and hand it to agents. The question that separates them from Atlas is what stands between a fact and an agent acting on it: a model's score, or a person's name.
+
+<Cards>
+  <Card title="Atlas vs Hyper" href="/comparisons/hyper" description="The self-driving brain. Extracts, scores and resolves conflicts automatically, injects on every prompt; no review gate, no access control yet, no self-host." />
+  <Card title="Atlas vs Glean" href="/comparisons/glean" description="Enterprise search and a knowledge graph. Verifies documents with a name and a date; wins on breadth, which Atlas concedes; no self-host, no warehouse tier." />
+  <Card title="Atlas vs Dust and Onyx" href="/comparisons/enterprise-search" description="The MIT-cored assistant platforms. Citations to passages, many models, many connectors; nobody between a passage and an agent." />
+</Cards>
+
+## If you are evaluating a warehouse analyst
+
+Products that answer questions from tables inside one cloud. They are very good at that, and the tier of Atlas that does the same job — *Surveyed*, true by construction — is not trying to beat them at it. The difference is everything outside the table, and where the thing runs.
+
+<Cards>
+  <Card title="Atlas vs Databricks Genie" href="/comparisons/genie" description="Trusted assets label an answer verified; no name or date on it, no facts beyond tables, Databricks-only." />
+  <Card title="Atlas vs Snowflake Cortex Analyst" href="/comparisons/cortex-analyst" description="The closest on trust: verified queries record who and when, ambiguous questions are refused. Snowflake-only, tables-only." />
+  <Card title="Atlas vs raw MCP" href="/comparisons/raw-mcp" description="Pointing an agent straight at a database: no context, no validation, no audit trail." />
+</Cards>
+
+Google's equivalent is **Conversational Analytics in BigQuery** (its reusable objects are called *data agents*), generally available since June 2026 for BigQuery and Looker. It sits in the same place as Genie and Cortex Analyst — tables, inside one cloud — and the Genie page's trade-offs read across to it.
+
+## The text-to-SQL peers
+
+The pages Atlas started with, kept because readers still search for them. Two of the products they describe have changed shape: **Vanna** archived its open-source repository on 2026-03-29 and continues as a hosted product (its page says so at the top), and **Dataherald**, which earlier drafts of these pages named, has had no commits since July 2024 and its website is offline, so it is not compared here.
+
+- [Atlas vs WrenAI](/comparisons/wrenai) -- Semantic layer approaches, deployment model, license implications
+- [Atlas vs Vanna](/comparisons/vanna) -- Python vs TypeScript, training vs semantic layer; the archived core and the hosted product
+- [Atlas vs Metabase](/comparisons/metabase) -- Embedded analytics vs embedded agent, BI platform vs composable component
+- [Atlas vs Cube](/comparisons/cube) -- Embeddable agent vs enterprise semantic layer platform, caching trade-offs
+- [Atlas vs ThoughtSpot](/comparisons/thoughtspot) -- Open-source agent vs enterprise agentic analytics, market positioning
+
+## Feature matrix (text-to-SQL peers)
+
+The original matrix, kept for the readers who want it. Vanna's column describes the archived v2.0.2 core.
 
 | Feature | Atlas | WrenAI | Vanna | Metabase |
 |---|---|---|---|---|
@@ -41,7 +80,7 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 | **SDK** | TypeScript SDK (`@useatlas/sdk`) with streaming | No | Python package | Embedding SDK (React, paid) |
 | **Dynamic learning** | `atlas learn` CLI + runtime learned_patterns with admin review | No | RAG training (learns from usage) | No |
 | **Enterprise features** | SSO, SCIM, custom roles, IP allowlists, approval workflows, PII masking, data residency | No | No | SSO, permissions (Pro) |
-| **Data residency** | 3-region deployment (US, EU, APAC) with misrouting detection | No | No | No |
+| **Data residency** | Hosted in the US; EU and APAC regions are built and brought online on request | No | No | No |
 | **Primary language** | TypeScript + Effect.ts | TypeScript + Rust | Python | Clojure + JavaScript |
 
 ## When to Choose What
@@ -49,7 +88,7 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 ### Choose Atlas if you need to...
 
 - **Embed data querying in your own product** -- Atlas is designed as a component, not a standalone tool. Script tag, React component, or raw API.
-- **Skip infrastructure** -- Sign up at [app.useatlas.dev](https://app.useatlas.dev), connect your database, and start querying. 3-region deployment (US, EU, APAC) with data residency.
+- **Skip infrastructure** -- Sign up at [app.useatlas.dev](https://app.useatlas.dev), connect your database, and start querying. US-hosted, with EU and APAC on request with data residency.
 - **Control the AI's reasoning with code** -- The YAML semantic layer lives in your repo, versioned with git, reviewed in PRs. Or use the web editor with autocomplete and version history.
 - **An agent that learns** -- `atlas learn` proposes YAML improvements from your query history. The dynamic learning layer captures patterns at runtime with admin review.
 - **Support multiple datasources with plugins** -- Connect Postgres, MySQL, BigQuery, Snowflake, ClickHouse, DuckDB, Salesforce, and Elasticsearch/OpenSearch. Browse and install plugins from the marketplace.
@@ -73,12 +112,3 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 - **A full BI platform with dashboards** -- Metabase is a complete business intelligence tool with dashboards, scheduled reports, and team features.
 - **A mature, battle-tested product** -- Metabase has been in production at thousands of companies for years.
 - **Visual query builder + SQL** -- Not just AI-driven querying, but a visual point-and-click query builder too.
-
-## Detailed Comparisons
-
-- [Atlas vs Raw MCP](/comparisons/raw-mcp) -- Why connecting AI directly to your database via MCP servers lacks context, validation, and governance
-- [Atlas vs WrenAI](/comparisons/wrenai) -- Semantic layer approaches, deployment model, license implications
-- [Atlas vs Vanna](/comparisons/vanna) -- Python vs TypeScript, training vs semantic layer, embedding model
-- [Atlas vs Metabase](/comparisons/metabase) -- Embedded analytics vs embedded agent, BI platform vs composable component
-- [Atlas vs Cube](/comparisons/cube) -- Embeddable agent vs enterprise semantic layer platform, caching trade-offs
-- [Atlas vs ThoughtSpot](/comparisons/thoughtspot) -- Open-source agent vs enterprise agentic analytics, market positioning

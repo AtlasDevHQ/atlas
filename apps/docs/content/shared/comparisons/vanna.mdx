@@ -1,21 +1,25 @@
 ---
 title: Atlas vs Vanna
-description: Comparing Atlas and Vanna for text-to-SQL -- Python vs TypeScript, training vs semantic layer, embedding approaches.
+description: Comparing Atlas and Vanna for text-to-SQL. Vanna's open-source repository was archived on 2026-03-29; the MIT code remains installable and development continues in the hosted product.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-[Vanna](https://vanna.ai/) is a Python package for text-to-SQL that uses RAG (retrieval-augmented generation) to improve accuracy. Atlas and Vanna solve the same core problem but for different audiences and deployment models.
+<Callout type="warn" title="Vanna's open-source repository is archived (checked 2026-09-03)">
+  `vanna-ai/vanna` was archived on GitHub on **2026-03-29** and is read-only. The last release is v2.0.2 (2026-02-02), still MIT and still installable with `pip install vanna`, but it will not change again. Development continues in the hosted product: Vanna Cloud at app.vanna.ai (Explorer $50 per month for 20 questions a day, Team $500 per month for 300, Enterprise custom with on-premises deployment). The rows below describe the frozen open-source core where they say "Vanna"; the hosted product is noted where it differs.
+</Callout>
+
+[Vanna](https://vanna.ai/) is a Python package for text-to-SQL that uses RAG (retrieval-augmented generation) to improve accuracy. Atlas and Vanna solve the same core problem but for different audiences and deployment models. The frozen core still works; the trade-offs below still hold; the thing that changed is that only one of the two is still being built in the open.
 
 ## Quick Comparison
 
 | | Atlas | Vanna |
 |---|---|---|
-| **License** | AGPL-3.0 core, MIT client libs | MIT |
+| **License** | AGPL-3.0 core, MIT client libs | MIT (open-source core, archived 2026-03-29); hosted product proprietary |
 | **Language** | TypeScript | Python |
 | **Approach** | Semantic layer (YAML) | RAG training (DDL + docs + SQL pairs) |
 | **Embeddable** | Script tag, React component, SDK with streaming | Web component (`<vanna-chat>`), Flask UI, Streamlit |
-| **Deployment** | Self-hosted (Docker, Railway, Vercel) or Atlas Cloud (US; EU and APAC on request) | Python script, notebook, or app.vanna.ai |
+| **Deployment** | Self-hosted (Docker, Railway, Vercel) or Atlas Cloud (US; EU and APAC on request) | Python script, notebook (frozen core), or Vanna Cloud at app.vanna.ai from $50 per month |
 | **Plugin system** | Plugin SDK + 24 plugins + marketplace | Swappable LLM/vector store backends |
 | **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Salesforce, Snowflake, Elasticsearch/OpenSearch | Postgres, MySQL, BigQuery, Snowflake, DuckDB, SQLite, Oracle, SQL Server, ClickHouse, Redshift |
 | **Auth model** | Managed (Better Auth), BYOT, API key, SSO/SCIM | BYOT (`UserResolver` class) |
@@ -25,7 +29,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **SQL validation** | 7-layer pipeline (empty check, regex guard, AST parse, table whitelist, RLS, auto-LIMIT, timeout) | Basic (parameterized queries, RLS in v2.0) |
 | **Learning approach** | `atlas learn` CLI (auditable YAML proposals) + dynamic learned_patterns DB with admin review | RAG training (DDL + docs + SQL pairs in vector DB) |
 | **Enterprise features** | SSO, SCIM, custom roles, IP allowlists, approval workflows, PII masking, audit retention, data residency | None |
-| **Data residency** | 3-region deployment (US, EU, APAC) with misrouting detection | No |
+| **Data residency** | Hosted in the US; EU and APAC regions are built and brought online on request | No |
 | **Backend architecture** | Effect.ts (structured concurrency, typed errors, composable Layers, @effect/ai agent loop) | Standard Python |
 
 ## Context Approach
@@ -42,7 +46,7 @@ Atlas also learns from usage, but through a different mechanism: `atlas learn` r
 
 **Atlas** deploys as a standalone API server with a built-in frontend, or as a hosted SaaS at [app.useatlas.dev](https://app.useatlas.dev). It's designed for production: managed auth (SSO/SCIM), rate limiting, audit logging, admin console with semantic editor, plugin marketplace, embeddable widget, and 8 integrations via Chat SDK (6 chat platforms plus GitHub and Linear). Deploy on Docker, Railway, or Vercel, or skip infrastructure entirely with Atlas Cloud (US; EU and APAC on request).
 
-**Vanna** is a Python package you import and call. The simplest deployment is a Jupyter notebook or Python script. Vanna also provides a `<vanna-chat>` web component for embedding, a Flask-based UI, and Streamlit integration. The cloud-hosted version (app.vanna.ai) adds observability, access control, and audit logs.
+**Vanna** is a Python package you import and call. The simplest deployment is a Jupyter notebook or Python script. Vanna also provides a `<vanna-chat>` web component for embedding, a Flask-based UI, and Streamlit integration. Since the repository was archived, new work lands only in the cloud-hosted version (app.vanna.ai), which adds observability, access control, and audit logs and starts at $50 per month.
 
 **Trade-off:** Vanna gives you more flexibility if you're already running Python services and want to integrate text-to-SQL into an existing Python API. Atlas gives you a complete production stack out of the box — including enterprise features, multi-region deployment, and a managed SaaS option.
 
@@ -64,7 +68,7 @@ Vanna has a modular architecture where you can swap the LLM backend (OpenAI, Mis
 
 ## Enterprise Readiness
 
-Atlas ships with enterprise features out of the box: SSO (SAML/OIDC) and SCIM provisioning, custom role definitions, IP allowlists, approval workflows for sensitive operations, configurable audit log retention with CSV export, PII detection and column masking, compliance reporting, data residency controls with 3-region deployment, custom domains, and SLA monitoring. The backend uses Effect.ts for structured concurrency, typed errors, graceful shutdown, and circuit breaking — with @effect/ai powering the agent loop and @effect/sql for native database clients.
+Atlas ships with enterprise features out of the box: SSO (SAML/OIDC) and SCIM provisioning, custom role definitions, IP allowlists, approval workflows for sensitive operations, configurable audit log retention with CSV export, PII detection and column masking, compliance reporting, data residency controls with EU and APAC regions on request, custom domains, and SLA monitoring. The backend uses Effect.ts for structured concurrency, typed errors, graceful shutdown, and circuit breaking — with @effect/ai powering the agent loop and @effect/sql for native database clients.
 
 Vanna v2.0 added RLS, audit logs, and rate limiting, but enterprise identity management (SSO, SCIM), approval workflows, and structured error handling are not part of the library.
 
@@ -74,4 +78,4 @@ Vanna v2.0 added RLS, audit logs, and rate limiting, but enterprise identity man
 - You want a library, not a product -- minimal opinions about deployment, auth, or UI
 - You prefer RAG-style training over a declarative semantic layer
 - You're prototyping or building a one-off analysis tool, not a production embedded feature
-- Fully MIT license matters (Atlas server is AGPL-3.0, though client libs are MIT)
+- Fully MIT license matters (Atlas server is AGPL-3.0, though client libs are MIT) — and you are comfortable pinning a frozen v2.0.2, or paying for Vanna Cloud

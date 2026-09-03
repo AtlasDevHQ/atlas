@@ -118,8 +118,17 @@ on:
   # Mondays, 06:00 UTC. Scheduled runs only ever fire on the default branch.
   schedule:
     - cron: "0 6 * * 1"
-  # So a drift investigation does not have to wait for Monday.
+  # So a drift investigation does not have to wait for Monday — and so a
+  # candidate model can be measured against the 18/20 floor before it is
+  # made the demo default (`ATLAS_DEMO_MODEL`). The input is a GATEWAY model
+  # id (`<provider>/<model>`); blank runs the pinned default below.
   workflow_dispatch:
+    inputs:
+      model:
+        description: "Gateway model id to evaluate (blank = anthropic/claude-haiku-4.5)"
+        required: false
+        default: "anthropic/claude-haiku-4.5"
+        type: string
 
 # ⚠️ COST CONTROL, and the numbers are measured rather than estimated.
 #
@@ -137,8 +146,13 @@ on:
 # `cancel-in-progress` is scoped to the ref, so it only ever kills a run whose
 # commit is already stale. Tag pushes and the Monday cron get distinct groups
 # from any PR and cannot cancel each other.
+#
+# The dispatch model input is part of the group so that several candidate
+# models dispatched on one ref run side by side instead of cancelling each
+# other; outside `workflow_dispatch` the input is empty and the group is
+# unchanged.
 concurrency:
-  group: eval-llm-${{ github.workflow }}-${{ github.ref }}
+  group: eval-llm-${{ github.workflow }}-${{ github.ref }}-${{ inputs.model }}
   cancel-in-progress: true
 
 permissions:
@@ -291,7 +305,7 @@ jobs:
         continue-on-error: true
         if: ${{ env.ATLAS_LLM_EVAL_SKIPPED != '1' }}
         env:
-          ATLAS_MODEL: anthropic/claude-haiku-4.5
+          ATLAS_MODEL: ${{ inputs.model || 'anthropic/claude-haiku-4.5' }}
         run: |
           set -euo pipefail
           code=$(curl -s -o /tmp/gateway.json -w "%{http_code}" \
@@ -318,9 +332,9 @@ jobs:
         # (SKIP_TOLERANT_LABELS, #5040).
         if: ${{ steps.preflight.outcome == 'success' }}
         env:
-          # Cheap-and-fast default: Haiku for the eval. Operators can
-          # override at the workflow-dispatch level by setting these
-          # at the job env: layer above. AI_GATEWAY_API_KEY is bound at
+          # Cheap-and-fast default: Haiku for the eval. A workflow_dispatch
+          # overrides it through the `model` input — the same expression
+          # feeds the preflight above. AI_GATEWAY_API_KEY is bound at
           # the job level so it's already in scope here.
           #
           # ⚠️ The model id is the GATEWAY spelling — `anthropic/claude-haiku-4.5`,
@@ -329,7 +343,7 @@ jobs:
           # Keep it identical to the preflight's `ATLAS_MODEL` above, or the
           # preflight validates a model the eval never runs.
           ATLAS_PROVIDER: gateway
-          ATLAS_MODEL: anthropic/claude-haiku-4.5
+          ATLAS_MODEL: ${{ inputs.model || 'anthropic/claude-haiku-4.5' }}
           ATLAS_DATASOURCE_URL: postgres://atlas:atlas@127.0.0.1:5432/atlas_demo
           # DATABASE_URL deliberately unset — the in-process auth fixture
           # short-circuits audit writes via `hasInternalDB() === false`.

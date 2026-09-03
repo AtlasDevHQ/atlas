@@ -138,6 +138,14 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
       await bootstrap.end();
     }
     await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+    // Better Auth owns the real `organization` table and its migrations are
+    // skipped above; the seed's guard reads `id` and `slug`, so a stub with
+    // those columns keeps the refusal real without the auth stack — and
+    // creating it in the test schema shadows any `public.organization` a
+    // local dev DB carries, so the assertions never read dev data.
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS organization (id text PRIMARY KEY, name text, slug text, "createdAt" timestamptz)`,
+    );
     _resetPool(pool);
     await pool.query(
       `INSERT INTO organization (id, name, slug, "createdAt") VALUES ($1, 'NovaMart Demo', $2, now()), ($3, 'Tenant X', 'tenant-x', now())

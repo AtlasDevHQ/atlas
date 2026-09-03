@@ -66,6 +66,27 @@ describe("parseInitArgs", () => {
     const { parseInitArgs } = await import("../bin/cli.js");
     expect(() => parseInitArgs(["--frobnicate"])).toThrow(/Unknown flag: --frobnicate/);
   });
+
+  // #5604 — the anonymous demo door.
+  it("--demo selects demo mode, alone or alongside --hosted in either order", async () => {
+    const { parseInitArgs } = await import("../bin/cli.js");
+    expect(parseInitArgs(["--demo"]).mode).toBe("demo");
+    expect(parseInitArgs(["--hosted", "--demo"]).mode).toBe("demo");
+    expect(parseInitArgs(["--demo", "--hosted"]).mode).toBe("demo");
+    expect(parseInitArgs(["--demo", "--write", "--client", "cursor"])).toEqual({
+      mode: "demo",
+      client: "cursor",
+      write: true,
+      apiUrl: undefined,
+      help: false,
+    });
+  });
+
+  it("rejects --demo combined with --local (the demo is hosted-only)", async () => {
+    const { parseInitArgs, CliUsageError } = await import("../bin/cli.js");
+    expect(() => parseInitArgs(["--local", "--demo"])).toThrow(CliUsageError);
+    expect(() => parseInitArgs(["--demo", "--local"])).toThrow(/hosted-only/);
+  });
 });
 
 describe("parseServeArgs", () => {

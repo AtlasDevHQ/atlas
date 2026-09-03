@@ -17882,6 +17882,240 @@
         "operationId": "getDemoConversationsById"
       }
     },
+    "/api/v1/demo/anonymous": {
+      "post": {
+        "tags": [
+          "Demo"
+        ],
+        "summary": "Mint an anonymous demo principal (MCP)",
+        "description": "Mints a short-lived anonymous demo identity for the hosted MCP demo endpoint (/mcp/demo) — no account, no email. The principal is scoped to the demo workspace only, carries read-only reach (searchAtlas + executeSQL), and is rate-limited per client IP and per minted identity. Email capture is optional and only possible after the first answer (see POST /anonymous/email). Fails closed with a request id when the demo workspace cannot be resolved.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "client": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "Free-text label for the MCP client being configured (e.g. claude-desktop). Stored for counting, never shown."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Anonymous demo principal minted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "description": "Bearer for the /mcp/demo endpoint. Expires at `expiresAt`."
+                    },
+                    "expiresAt": {
+                      "type": "number",
+                      "description": "Epoch milliseconds."
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "description": "The minted identity — the `demo_anonymous_sessions.id` row."
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "description": "The ONE workspace this principal can reach."
+                    },
+                    "mcpUrl": {
+                      "type": "string",
+                      "description": "The Streamable HTTP MCP endpoint to point the client at."
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "expiresAt",
+                    "sessionId",
+                    "workspaceId",
+                    "mcpUrl"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded (IP-based)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Demo mode not properly configured, or the session could not be recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The demo workspace could not be resolved — the anonymous door refuses (fail-closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postDemoAnonymous"
+      }
+    },
+    "/api/v1/demo/anonymous/email": {
+      "post": {
+        "tags": [
+          "Demo"
+        ],
+        "summary": "Optionally share an email from an anonymous demo session",
+        "description": "Attaches an email to an anonymous demo session AFTER it has received at least one answer. Before the first answer the request is refused with 409 answer_required — email capture is never a precondition on this door. The email is recorded through the same lead-capture path the email demo uses.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  }
+                },
+                "required": [
+                  "email"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Email recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "returning": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "returning"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Valid anonymous demo token required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The session has not received an answer yet — email capture comes after the first answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error (invalid email)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to record the email",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postDemoAnonymousEmail"
+      }
+    },
     "/api/v1/actions": {
       "get": {
         "tags": [

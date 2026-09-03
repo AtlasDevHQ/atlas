@@ -1,6 +1,6 @@
 ---
 title: Demo Mode
-description: Enable an interactive, email-gated demo of Atlas at /demo for lead capture and evaluation.
+description: Enable an interactive demo of Atlas — the email-gated web demo at /demo, and the anonymous MCP demo that answers before it asks for an email.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -10,6 +10,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 </Callout>
 
 Demo mode lets you expose a public, email-gated preview of Atlas at `/demo`. Visitors enter their email to start a sandboxed chat session — no account creation required. It's designed for lead capture and product evaluation with built-in rate limiting and reduced agent capabilities.
+
+It also enables a second, narrower door: the [anonymous MCP demo](#anonymous-mcp-demo), which lets an MCP client (Claude Desktop, Cursor, Claude Code) query the demo workspace with **no account and no email** — the email is an optional act *after* the first answer. The email-gated web demo is unchanged by it.
 
 <Callout title="Prerequisites">
 - `ATLAS_DEMO_ENABLED=true`
@@ -116,6 +118,66 @@ curl -X POST https://your-atlas.example.com/api/v1/demo/chat \
 
 ---
 
+## Anonymous MCP demo
+
+The web demo asks for an email before the first answer. An MCP client has no form to put one in, so the hosted MCP endpoint exposes a second door, `/mcp/demo`, that answers first: it mints an **anonymous demo principal** — an identity that is not an email — scoped to the demo workspace only.
+
+```bash
+bunx @useatlas/mcp init --hosted --demo --write
+```
+
+That one command mints a session against the hosted demo (`https://mcp.useatlas.dev` by default; `--api-url` overrides) and writes an `atlas-demo` server entry into your MCP client's config, pointed at `/mcp/demo` with a short-lived bearer. Restart the client and ask it a question about NovaMart. Re-run the command when the token expires.
+
+### What the anonymous principal can do
+
+- Call `searchAtlas` against the demo workspace's Company Atlas — the facts granted to the whole workspace. Facts scoped to a private channel or audience are not visible.
+- Call `executeSQL` against the demo workspace's datasource, through the same SELECT-only validation pipeline every other caller gets.
+- Optionally call `shareEmail` **after** it has received at least one answer, to leave an email for updates. Before the first answer the call is refused; it is never required to keep querying.
+
+### What it cannot do
+
+- Reach any workspace other than the demo one. The workspace is resolved server-side from the `ATLAS_DEMO_WORKSPACE_SLUG` setting on every request, never from the request itself. A token minted for a different workspace, a session whose stored workspace disagrees, or an unresolvable slug all **fail closed** with a request id.
+- Use `explore`, the semantic-layer tools, the NL `query` tool, prompts, resources, datasource-lifecycle tools, plugin tools, or anything that writes. The principal is a `member` carrying `mcp:read` only, and it runs the full MCP dispatch gate (billing → action policy → scope → RBAC → approval) like any hosted actor.
+- Outlive its token. The default lifetime is two hours (`ATLAS_DEMO_ANON_TOKEN_TTL_MINUTES`), against the web demo's 24.
+- Exceed either of two budgets: requests per minute per client IP (session mints and tool calls share it) and tool calls per minute per minted identity. Both are settings-registry entries.
+
+Anonymous means **less reach than the email demo, never more**. The email demo runs the agent loop with its full default tool set; the anonymous door registers exactly the three tools above.
+
+### Settings
+
+All four are platform-scoped, hot-reloadable, and hidden from workspace admins on SaaS. `ATLAS_DEMO_ENABLED=true` and `BETTER_AUTH_SECRET` are still the prerequisites, and the door needs an internal database (`DATABASE_URL`): it is where the demo workspace is looked up and where sessions are counted.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ATLAS_DEMO_WORKSPACE_SLUG` | `novamart-demo` | Slug of the one organization the anonymous principal may reach |
+| `ATLAS_DEMO_ANON_IP_RATE_LIMIT_RPM` | `20` | Anonymous-demo requests per minute per client IP — mints and tool calls share the bucket (0 = disabled) |
+| `ATLAS_DEMO_ANON_RATE_LIMIT_RPM` | `10` | Tool calls per minute per minted identity (0 = disabled) |
+| `ATLAS_DEMO_ANON_TOKEN_TTL_MINUTES` | `120` | Token lifetime, 1–1440 minutes |
+
+### Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/api/v1/demo/anonymous` | None (rate-limited by IP) | Mint an anonymous demo principal. Optional body `{ "client": "<label>" }`. Returns `token`, `expiresAt`, `sessionId`, `workspaceId`, `mcpUrl` |
+| `POST` | `/api/v1/demo/anonymous/email` | Bearer anonymous demo token | Optionally attach an email — `409 answer_required` before the first answer |
+| `POST` / `GET` / `DELETE` | `/mcp/demo` | Bearer anonymous demo token | The Streamable HTTP MCP endpoint (the `/mcp/demo/sse` alias also resolves) |
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/demo/anonymous \
+  -H "Content-Type: application/json" \
+  -d '{ "client": "curl" }'
+```
+
+### What is stored
+
+Every mint inserts one row in `demo_anonymous_sessions` — `id` (the identity), `started_at`, `expires_at`, `workspace_id`, a hashed IP (`ip_hash`, an HMAC under a key derived from `BETTER_AUTH_SECRET`; **no raw IP at rest**), the client label, `answer_count`, and `email_captured_at`. An email shared through `shareEmail` or the REST endpoint goes to `demo_leads` through the same lead-capture path the web demo uses; the session row keeps only the timestamp. To count anonymous sessions in a window:
+
+```sql
+SELECT count(*) FROM demo_anonymous_sessions WHERE started_at >= '2026-10-01';
+```
+
+---
+
 ## Operator: demo funnel analytics
 
 The endpoints above are the visitor path. Operators watch the funnel — who started a demo, what they asked, and what it cost — from a separate **platform-admin** surface mounted at `/api/v1/platform/demo`. Every route requires the `platform_admin` role **and** MFA, and needs an internal database (`DATABASE_URL`). Lead emails and the questions visitors ask are PII-adjacent, so platform-admin gating *is* the access control for this data.
@@ -135,6 +197,8 @@ The endpoints above are the visitor path. Operators watch the funnel — who sta
 ---
 
 ## Limitations
+
+These apply to the email-gated web demo. The [anonymous MCP demo](#anonymous-mcp-demo) is narrower still — see its own list.
 
 - **No plugin tools** — demo sessions use default tools only (executeSQL, explore). Custom actions and plugin-provided tools are not available
 - **No write operations** — actions are disabled in demo mode

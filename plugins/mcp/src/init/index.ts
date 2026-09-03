@@ -22,6 +22,7 @@ import {
   type OpenBrowserImpl,
   type ServeImpl,
 } from "./hosted.js";
+import { DemoFlowError, runDemoMintFlow } from "./demo.js";
 
 // Re-exported so downstream packages (the canonical MCP eval in
 // packages/mcp/src/__tests__/canonical-mcp-auth.ts) can drive the
@@ -42,8 +43,12 @@ export {
   type OpenBrowserResult,
   type ServeImpl,
 } from "./hosted.js";
+export { DemoFlowError, runDemoMintFlow, type DemoFlowErrorCode, type DemoFlowOptions, type DemoFlowResult } from "./demo.js";
 
 const SERVER_NAME = "atlas";
+// #5604 — the anonymous demo is written under its OWN server name so a
+// `--demo` run never clobbers a real workspace's `atlas` entry (and vice versa).
+const DEMO_SERVER_NAME = "atlas-demo";
 // #2068 — `mcp.useatlas.dev` is the brand surface for the hosted MCP
 // endpoint. DNS CNAMEs fan it (and the regional siblings
 // `mcp-eu`/`mcp-apac.useatlas.dev`) into the same Railway services as
@@ -116,17 +121,83 @@ export interface HostedInitOptions {
   workspacePromptImpl?: WorkspacePromptImpl;
 }
 
-export type RunInitOptions = LocalInitOptions | HostedInitOptions;
+/**
+ * `init --demo` (#5604): mint an anonymous demo principal against the hosted
+ * NovaMart demo and write it as `atlas-demo`. No account, no email, no OAuth.
+ */
+export interface DemoInitOptions {
+  mode: "demo";
+  /** Override the hosted Atlas API base. Defaults to `https://mcp.useatlas.dev`. */
+  apiUrl?: string;
+  client?: McpClientId;
+  write?: boolean;
+  /** Override the resolved config file path (test seam). */
+  configPathOverride?: string;
+  /** Process env (test seam). Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+  /** Test seam — defaults to global `fetch`. */
+  fetchImpl?: typeof fetch;
+  detectClientsImpl?: () => ClientInfo[];
+}
+
+export type RunInitOptions = LocalInitOptions | HostedInitOptions | DemoInitOptions;
 
 export interface RunInitResult {
   exitCode: number;
 }
 
 export async function runInit(options: RunInitOptions): Promise<RunInitResult> {
+  if (options.mode === "demo") {
+    return runDemo(options);
+  }
   if (options.mode === "hosted") {
     return runHosted(options);
   }
   return runLocal(options);
+}
+
+async function runDemo(opts: DemoInitOptions): Promise<RunInitResult> {
+  const env = opts.env ?? process.env;
+  const apiUrl = opts.apiUrl ?? env.ATLAS_PUBLIC_API_URL ?? DEFAULT_HOSTED_API_URL;
+  const clientId = opts.client ?? pickDefaultClient(opts.detectClientsImpl);
+
+  let result;
+  try {
+    result = await runDemoMintFlow({ apiUrl, client: clientId, fetchImpl: opts.fetchImpl });
+  } catch (err) {
+    if (err instanceof DemoFlowError) {
+      console.error(`[atlas-mcp init --demo] ${err.message}`);
+      return { exitCode: 1 };
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[atlas-mcp init --demo] Unexpected error: ${msg}`);
+    return { exitCode: 1 };
+  }
+
+  const serverCfg = buildHostedServerConfig({
+    url: result.mcpUrl,
+    accessToken: result.accessToken,
+  });
+  const configPath = opts.configPathOverride ?? getDefaultConfigPath(clientId);
+
+  console.log(
+    `Anonymous demo session minted against ${apiUrl} (demo workspace ${result.workspaceId}). ` +
+      `No account, no email — read-only, scoped to the NovaMart demo.`,
+  );
+  console.log(
+    `The token expires at ${new Date(result.expiresAt).toISOString()}; re-run this command to mint a fresh one.`,
+  );
+  console.log(
+    "After your first answer you may share an email with the `shareEmail` tool — optional, never required.",
+  );
+
+  return writeOrPrint({
+    clientId,
+    serverName: DEMO_SERVER_NAME,
+    serverCfg,
+    configPath,
+    write: opts.write ?? false,
+  });
 }
 
 async function runHosted(opts: HostedInitOptions): Promise<RunInitResult> {
@@ -296,6 +367,55 @@ function chooseDatasourceUrl(args: {
   return resolveFixturePaths().sqliteUrl;
 }
 
+/**
+ * The shared tail of every init mode: print a paste snippet (default, or when
+ * the client has no config path), or merge into the client's config with a
+ * `.bak` of the previous file.
+ */
+async function writeOrPrint(args: {
+  clientId: McpClientId;
+  serverName: string;
+  serverCfg: ServerConfig;
+  configPath: string | null;
+  write: boolean;
+}): Promise<RunInitResult> {
+  const { clientId, serverName, serverCfg, configPath, write } = args;
+  if (!write || configPath === null) {
+    printPasteSnippet(clientId, serverCfg, configPath, serverName);
+    return { exitCode: 0 };
+  }
+
+  const existing = readConfigOrNull(configPath);
+  let merged: string;
+  try {
+    merged = mergeMcpServerConfig(existing, serverName, serverCfg);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[atlas-mcp init] could not merge into existing config (${configPath}): ${msg}`);
+    console.error("Aborting — your config was not modified. Re-run without --write to print a snippet instead.");
+    return { exitCode: 1 };
+  }
+
+  let writeResult;
+  try {
+    writeResult = await writeConfigWithBackup(configPath, merged);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[atlas-mcp init] failed to write ${configPath}: ${msg}`);
+    if (existing !== null) {
+      console.error("Your existing config was not modified — the new content was staged in a sibling tmp file and the rename never happened.");
+    }
+    return { exitCode: 1 };
+  }
+
+  console.log(`Wrote ${configPath}`);
+  if (writeResult.backupPath) {
+    console.log(`Backed up the previous config to ${writeResult.backupPath}`);
+  }
+  console.log("Restart your MCP client to pick up the new server.");
+  return { exitCode: 0 };
+}
+
 function pickDefaultClient(impl?: () => ClientInfo[]): McpClientId {
   const clients = (impl ?? detectClients)();
   const detected = clients.find((c) => c.detected && c.id !== "generic");
@@ -306,8 +426,9 @@ function printPasteSnippet(
   clientId: McpClientId,
   serverCfg: ServerConfig,
   configPath: string | null,
+  serverName: string = SERVER_NAME,
 ) {
-  const snippet = JSON.stringify({ mcpServers: { [SERVER_NAME]: serverCfg } }, null, 2);
+  const snippet = JSON.stringify({ mcpServers: { [serverName]: serverCfg } }, null, 2);
   console.log(`# ${clientId}${configPath ? ` — ${configPath}` : ""}`);
   console.log("# Paste the following into your MCP client config:");
   console.log(snippet);

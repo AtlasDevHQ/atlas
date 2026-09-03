@@ -734,6 +734,25 @@ try {
   );
 }
 
+// Anonymous demo door (#5604) — the second pre-OAuth mount, and like the
+// onboarding one it sits BEFORE the hosted router so the literal `demo`
+// segment is never read as a workspace id. Unlike onboarding it DOES bind an
+// actor: a minted, member-role principal scoped to the demo workspace, which
+// runs the full dispatch gate. Registered unconditionally for the same #3886
+// reason; the `ATLAS_DEMO_ENABLED` gate is per request inside the handler.
+try {
+  const { createDemoMcpRouter } = await import(
+    /* turbopackIgnore: true */ "@atlas/mcp/demo"
+  );
+  app.route("/mcp/demo", createDemoMcpRouter());
+  log.info("Anonymous demo MCP endpoint mounted at /mcp/demo (gated per request on ATLAS_DEMO_ENABLED)");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err.message : String(err) },
+    "Anonymous demo MCP endpoint not available in this build — `bunx @useatlas/mcp init --demo` will be unable to connect. If you intended to serve it, verify packages/mcp is shipped in the runtime container.",
+  );
+}
+
 try {
   const { createHostedMcpRouter } = await import(
     /* turbopackIgnore: true */ "@atlas/mcp/hosted"

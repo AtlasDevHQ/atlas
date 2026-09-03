@@ -31,7 +31,8 @@ export class CliUsageError extends Error {
 }
 
 export interface InitFlags {
-  mode: "local" | "hosted";
+  /** `demo` = the anonymous NovaMart demo over the hosted endpoint (#5604): no account, no email. */
+  mode: "local" | "hosted" | "demo";
   client: McpClientId | undefined;
   write: boolean;
   apiUrl: string | undefined;
@@ -51,10 +52,20 @@ export function parseInitArgs(argv: string[]): InitFlags {
     const a = argv[i];
     switch (a) {
       case "--local":
+        if (flags.mode === "demo") {
+          throw new CliUsageError(`[atlas-mcp init] --demo is hosted-only; it cannot be combined with --local`);
+        }
         flags.mode = "local";
         break;
       case "--hosted":
-        flags.mode = "hosted";
+        // `--hosted --demo` in either order means demo; a bare --hosted is OAuth.
+        if (flags.mode !== "demo") flags.mode = "hosted";
+        break;
+      case "--demo":
+        if (flags.mode === "local" && argv.slice(0, i).includes("--local")) {
+          throw new CliUsageError(`[atlas-mcp init] --demo is hosted-only; it cannot be combined with --local`);
+        }
+        flags.mode = "demo";
         break;
       case "--write":
         flags.write = true;
@@ -106,6 +117,8 @@ const INIT_HELP = `bunx @useatlas/mcp init [options]
 
   --local            Configure for a local Atlas (default)
   --hosted           Configure for hosted Atlas via OAuth 2.1 loopback flow
+  --demo             Configure for the hosted NovaMart demo — no account, no email
+                     (anonymous, read-only, scoped to the demo workspace, short-lived token)
   --client <id>      Force a specific client: claude-desktop | cursor | continue | generic
   --write            Merge into the client's config file (with a .bak backup)
   --api-url <url>    Override the API base URL (default: http://localhost:3001 for --local,
@@ -118,6 +131,7 @@ Examples:
   bunx @useatlas/mcp init --local --client cursor --write
   bunx @useatlas/mcp init --hosted --write
   bunx @useatlas/mcp init --hosted --api-url https://api-eu.useatlas.dev --write
+  bunx @useatlas/mcp init --hosted --demo --write
 `;
 
 const SERVE_HELP = `bunx @useatlas/mcp serve [options]
@@ -140,19 +154,26 @@ export async function runInitCommand(argv: string[]): Promise<number> {
   }
 
   const opts: RunInitOptions =
-    flags.mode === "hosted"
+    flags.mode === "demo"
       ? {
-          mode: "hosted",
+          mode: "demo",
           client: flags.client,
           write: flags.write,
           apiUrl: flags.apiUrl,
         }
-      : {
-          mode: "local",
-          client: flags.client,
-          write: flags.write,
-          apiUrl: flags.apiUrl,
-        };
+      : flags.mode === "hosted"
+        ? {
+            mode: "hosted",
+            client: flags.client,
+            write: flags.write,
+            apiUrl: flags.apiUrl,
+          }
+        : {
+            mode: "local",
+            client: flags.client,
+            write: flags.write,
+            apiUrl: flags.apiUrl,
+          };
   const { exitCode } = await runInit(opts);
   return exitCode;
 }

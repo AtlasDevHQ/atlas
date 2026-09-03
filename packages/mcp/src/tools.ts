@@ -51,7 +51,7 @@ import {
   envelope,
   toEnvelopeResult,
 } from "./error-envelope.js";
-import { createMcpDispatch } from "./mcp-dispatch.js";
+import { createMcpDispatch, type McpDispatcher } from "./mcp-dispatch.js";
 import { approvalRequiredResult, executeSqlOutputShape } from "./structured-output.js";
 import { withProgressAndCancellation } from "./progress.js";
 
@@ -212,7 +212,25 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
       ),
   );
 
-  // --- executeSQL ---
+  registerExecuteSqlTool(server, dispatch);
+  registerSearchAtlasTool(server, dispatch);
+
+  // --- typed semantic-layer tools ---
+  registerSemanticTools(server, { actor, transport, workspaceId, deployMode, ...(clientId !== undefined ? { clientId } : {}), ...(scopes !== undefined ? { scopes } : {})});
+}
+
+/**
+ * A tool-dispatch function bound to one server's actor/transport/workspace —
+ * the `dispatch` half of {@link McpDispatcher}. The two read tools below take
+ * it as a parameter (rather than constructing their own) so a second surface
+ * can wrap it: the anonymous demo door (#5604) composes its per-identity /
+ * per-IP gate and its answer counter around the same dispatch and registers
+ * the SAME tool bodies, so "what executeSQL does" is defined exactly once.
+ */
+export type McpToolDispatch = McpDispatcher["dispatch"];
+
+/** Register `executeSQL` on `server`, routing every call through `dispatch`. */
+export function registerExecuteSqlTool(server: McpServer, dispatch: McpToolDispatch): void {
   server.registerTool(
     "executeSQL",
     {
@@ -342,9 +360,10 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         },
       ),
   );
+}
 
-  // --- searchAtlas ---
-  //
+/** Register `searchAtlas` on `server`, routing every call through `dispatch`. */
+export function registerSearchAtlasTool(server: McpServer, dispatch: McpToolDispatch): void {
   // #4773 — ADDITIVE on this surface. Its predecessor `searchKnowledge` was
   // only ever an agent-registry tool and was never exposed over MCP, so nothing
   // is removed here and the frozen-tool-name rule in
@@ -460,7 +479,4 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         },
       ),
   );
-
-  // --- typed semantic-layer tools ---
-  registerSemanticTools(server, { actor, transport, workspaceId, deployMode, ...(clientId !== undefined ? { clientId } : {}), ...(scopes !== undefined ? { scopes } : {})});
 }

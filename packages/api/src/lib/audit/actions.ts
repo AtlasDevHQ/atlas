@@ -698,10 +698,13 @@ export const ADMIN_ACTIONS = {
     /**
      * `atlas-operator seed demo-atlas` approve phase (#5603) — the drafts
      * extracted from the synthetic NovaMart corpus were promoted through the
-     * review gate on the DEMO workspace. `targetId` is the demo org id;
-     * metadata carries the promoted draft ids and `approvedBy`, the human who
-     * ran the seed. Never emitted for a workspace whose slug is not the demo's —
-     * `lib/brain/demo-corpus/seed.ts` refuses before any write.
+     * review gate on the DEMO workspace. `targetId` is the demo org id; the
+     * ACTOR is the human who ran the seed (the seed runs its approve phase
+     * under a request context whose user is that person, so `actor_id` names
+     * them the way the publish route's row does — never a `system:` principal).
+     * Metadata carries the draft ids the gate promoted and, separately, the
+     * ones it refused with reasons. Never emitted for a workspace whose slug is
+     * not the demo's — `lib/brain/demo-corpus/seed.ts` refuses before any write.
      */
     demoCorpusSeed: "brain.demo_corpus_seed",
   },

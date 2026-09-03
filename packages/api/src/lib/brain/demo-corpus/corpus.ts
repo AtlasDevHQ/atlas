@@ -37,9 +37,11 @@
  *   3. **One department nobody has surveyed.** `#warehouse-ops` exists in the
  *      roster and has NO episodes, so the coverage page shows it as
  *      unsurveyed — the honest, most useful state (PRD "What a person can do" §7).
- *   4. **A claim that overlaps the warehouse.** Priya misremembers July GMV
- *      in `#finance`. The live rows outrank her recollection (Surveyed beats
- *      Attested), which is the demo's tier argument made visible.
+ *   4. **A claim that overlaps the warehouse.** Priya misremembers December
+ *      2024 GMV in `#finance` — a month the NovaMart orders table actually
+ *      covers (its rows run 2020 to early 2025), so the live rows can outrank
+ *      her recollection (Surveyed beats Attested). Whether the AGENT does so is
+ *      the recording's to show; the corpus only guarantees the overlap exists.
  *
  * ## Why the text reads the way it does
  *
@@ -228,7 +230,7 @@ export const EPISODES: readonly DemoEpisode[] = Object.freeze([
     "priya",
     "1754308800.000300",
     "2026-08-04T12:00:00.000Z",
-    "Quick sanity check before the board deck goes out: NovaMart's GMV for July 2026 was about $1.9M by my count. Dana, shout if the warehouse says otherwise — I am going from memory.",
+    "Quick sanity check before the board deck goes out: NovaMart's GMV for December 2024 was about $1.9M by my count — I want to quote it as the holiday baseline. Dana, shout if the warehouse says otherwise; I am going from memory.",
   ),
   chat(
     "finance",
@@ -355,8 +357,6 @@ export interface ExpectedClaim {
   readonly subjectHint: string;
   readonly predicateHint: string;
   readonly objectHints: readonly string[];
-  /** Which demo property this claim carries. */
-  readonly demonstrates: "named-approver" | "contradiction" | "warehouse-overlap" | "acl-private";
 }
 
 /**
@@ -371,63 +371,54 @@ export const EXPECTED_CLAIMS: readonly ExpectedClaim[] = Object.freeze([
     subjectHint: "novamart",
     predicateHint: "return window",
     objectHints: ["30 day"],
-    demonstrates: "contradiction",
   },
   {
     key: "return-window-14",
     subjectHint: "novamart",
     predicateHint: "return window",
     objectHints: ["14 day"],
-    demonstrates: "contradiction",
   },
   {
-    key: "gmv-july-2026",
+    key: "gmv-december-2024",
     subjectHint: "novamart",
     predicateHint: "gmv",
     objectHints: ["1.9"],
-    demonstrates: "warehouse-overlap",
   },
   {
     key: "etl-schedule",
     subjectHint: "etl",
     predicateHint: "",
     objectHints: ["02:00", "2:00", "2am"],
-    demonstrates: "named-approver",
   },
   {
     key: "etl-owner",
     subjectHint: "etl",
     predicateHint: "own",
     objectHints: ["dana"],
-    demonstrates: "named-approver",
   },
   {
     key: "support-headcount-q4",
     subjectHint: "support",
     predicateHint: "",
     objectHints: ["two", "2"],
-    demonstrates: "named-approver",
   },
   {
     key: "holiday-cutoff-standard",
     subjectHint: "",
     predicateHint: "standard",
     objectHints: ["18 december", "december 18", "2026-12-18"],
-    demonstrates: "named-approver",
   },
   {
     key: "holiday-cutoff-express",
     subjectHint: "",
     predicateHint: "express",
     objectHints: ["21 december", "december 21", "2026-12-21"],
-    demonstrates: "named-approver",
   },
   {
     key: "free-shipping-threshold-q4",
     subjectHint: "",
     predicateHint: "free",
     objectHints: ["75"],
-    demonstrates: "acl-private",
   },
 ]);
 

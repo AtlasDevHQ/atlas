@@ -8,14 +8,14 @@
  * on a workspace whose drafts have not been extracted yet promotes nothing and
  * says so.
  *
- *   atlas-operator seed demo-atlas --phase ingest
+ *   atlas-operator seed demo-atlas --phase ingest --approved-by <user id>
  *   atlas-operator seed demo-atlas --phase coverage
  *   atlas-operator seed demo-atlas --phase approve --approved-by <user id>
  *   atlas-operator seed demo-atlas --extract --approved-by <user id>   # all three, one cycle between
  *
- * The workspace defaults to the demo slug and the seed REFUSES any other —
- * `--workspace` exists only so a staging copy under a different id can be
- * addressed, and it still has to carry the demo slug to pass the guard.
+ * The workspace is always the one whose slug is the demo's; there is no flag
+ * to point it elsewhere, because the seed would refuse anyway and a flag that
+ * can only ever hold one value is a place for a typo.
  *
  * Targets the tenant Postgres at ATLAS_TEAM_PG_URL (falling back to
  * DATABASE_URL), like the other `seed` subcommands; binds the API's internal
@@ -37,17 +37,28 @@ function parsePhase(raw: string | undefined): Phase {
   process.exit(1);
 }
 
-export async function handleSeedDemoAtlas(args: string[]): Promise<void> {
-  const phase = parsePhase(getFlag(args, "--phase"));
-  const extract = args.includes("--extract");
+/**
+ * `--approved-by` is the human on the audit row and on the cardinality
+ * declaration. Required for every phase that names a person; no default,
+ * because "who approved this" is the one question the demo must never answer
+ * with a placeholder.
+ */
+function requireApprover(args: string[], phase: Phase): string | null {
   const approvedBy = getFlag(args, "--approved-by");
-  const needsApprover = phase === "approve" || phase === "all";
-  if (needsApprover && !approvedBy) {
+  const needed = phase !== "coverage";
+  if (needed && !approvedBy) {
     console.error(
-      `${TAG} Error: --approved-by <user id> is required for the approve phase — the audit row names the human who promoted the corpus's claims, and there is no default.`,
+      `${TAG} Error: --approved-by <user id> is required for the ${phase} phase — the audit row and the cardinality declaration name the human who ran the seed, and there is no default.`,
     );
     process.exit(1);
   }
+  return approvedBy ?? null;
+}
+
+export async function handleSeedDemoAtlas(args: string[]): Promise<void> {
+  const phase = parsePhase(getFlag(args, "--phase"));
+  const extract = args.includes("--extract");
+  const approvedBy = requireApprover(args, phase);
 
   // Bind the API's internal pool to the tenant DB BEFORE the lib is imported:
   // `getInternalDB()` reads DATABASE_URL lazily on first use, so the order is
@@ -55,18 +66,18 @@ export async function handleSeedDemoAtlas(args: string[]): Promise<void> {
   process.env.DATABASE_URL = resolveTenantUrl();
   const { closeInternalDB } = await import("@atlas/api/lib/db/internal");
   const seed = await import("@atlas/api/lib/brain/demo-corpus/seed");
-  const workspaceRef = getFlag(args, "--workspace") ?? seed.DEMO_ATLAS_WORKSPACE_SLUG;
+  const workspaceRef = seed.DEMO_ATLAS_WORKSPACE_SLUG;
 
   try {
-    if (phase === "ingest" || phase === "all") {
-      const r = await seed.seedDemoCorpusIngest({
-        workspaceRef,
-        authoredBy: approvedBy ?? "local-operator",
-      });
+    if ((phase === "ingest" || phase === "all") && approvedBy !== null) {
+      const r = await seed.seedDemoCorpusIngest({ workspaceRef, authoredBy: approvedBy });
       for (const [source, n] of Object.entries(r.episodes)) {
         console.log(`${TAG} ingest ${source}: inserted=${n.inserted} duplicate=${n.duplicate} refused=${n.refused}`);
       }
-      console.log(`${TAG} identities captured=${r.identitiesCaptured} cardinality=${r.cardinality}`);
+      const card = r.cardinality.ok
+        ? `declared ${r.cardinality.cardinality}`
+        : `REFUSED (${r.cardinality.refusal}): ${r.cardinality.message}`;
+      console.log(`${TAG} identities captured=${r.identitiesCaptured} cardinality=${card}`);
     }
 
     if (phase === "coverage" || phase === "all") {
@@ -81,9 +92,10 @@ export async function handleSeedDemoAtlas(args: string[]): Promise<void> {
       console.log(`${TAG} extraction cycle: ${JSON.stringify(result)}`);
     }
 
-    if (phase === "approve" || phase === "all") {
-      const r = await seed.seedDemoCorpusApprove({ workspaceRef, approvedBy: approvedBy! });
-      console.log(`${TAG} approve promoted=${r.promoted.length} refused=${r.refused} tensionEdges=${r.tensionEdges}`);
+    if ((phase === "approve" || phase === "all") && approvedBy !== null) {
+      const r = await seed.seedDemoCorpusApprove({ workspaceRef, approvedBy });
+      console.log(`${TAG} approve promoted=${r.promoted.length} refused=${r.refused.length} tensionEdges=${r.tensionEdges}`);
+      for (const ref of r.refused) console.log(`${TAG}   refused ${ref.id}: ${ref.reasons.join(", ")}`);
       for (const e of r.expected) console.log(`${TAG}   ${e.found ? "✓" : "✗"} ${e.key}`);
       if (r.promoted.length > 0 && r.tensionEdges === 0) {
         console.log(

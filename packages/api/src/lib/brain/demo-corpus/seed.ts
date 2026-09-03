@@ -5,25 +5,32 @@
  *
  *   `ingest`   — the corpus enters as episodes through the ordinary intake seam
  *                (`ingestEpisodes`), the fictional authors are captured as
- *                `directory` identities so claims render a name, the roster of
- *                channels is persisted so the coverage page has a denominator,
- *                and the contradiction's predicate is declared `single` so the
- *                two rival claims can be put in tension. Nothing here writes a
- *                fact.
+ *                `directory` identities so claims render a name, and the
+ *                contradiction's predicate is declared `single` so the two
+ *                rival claims can be put in tension. Nothing here writes a fact.
  *   (extraction) — NOT this module. The real extraction fiber drains the
  *                episodes into draft claims exactly as it would a customer's.
  *                The operator command can trigger one cycle for convenience;
  *                the seed itself never composes a claim.
+ *   `coverage` — the roster of channels is persisted so the coverage page has
+ *                a denominator, with `#warehouse-ops` carrying no evidence.
  *   `approve`  — the drafts extracted FROM CORPUS EPISODES are promoted through
  *                the review gate's own adapter (`review-gate.approve`, which is
  *                `promoteBrainFacts` — the one permitted `status` writer), in
- *                one transaction, with an audit row naming who approved.
+ *                one transaction, under a request context whose user IS the
+ *                approving human, so the audit row's `actor_id` names them the
+ *                way the publish route's does.
+ *
+ * Registered as a caller of the gate — not a writer — in
+ * `docs/development/content-mode.md` § "The demo-corpus seed approves through
+ * the gate's adapter". It is not on `check-brain-fact-promotion.sh`'s allowlist
+ * and must never need to be.
  *
  * ## What this module refuses, by construction
  *
  *   - **Any workspace that is not the demo.** `resolveDemoWorkspace` requires
  *     the organization's slug to be exactly {@link DEMO_ATLAS_WORKSPACE_SLUG}.
- *     A tenant workspace cannot receive fiction by a typo in `--workspace`.
+ *     A tenant workspace cannot receive fiction by a typo.
  *   - **Approving anything the corpus did not produce.** The approve phase
  *     selects drafts by joining to the corpus's own episode `source_id`s. A
  *     draft that arrived from a real connector on the demo workspace is left in
@@ -31,24 +38,34 @@
  *   - **Writing a fact, edge or `status` itself.** Every write goes through the
  *     seam that owns it: `ingestEpisodes`, `captureActorIdentities`,
  *     `persistCoverageSnapshot`, `declarePredicateCardinalityForSurface`,
- *     `approve`. `scripts/check-brain-fact-promotion.sh`
- *     would refuse this file otherwise, and that refusal is the design.
+ *     `approve`. `scripts/check-brain-fact-promotion.sh` would refuse this file
+ *     otherwise, and that refusal is the design.
  *
  * ## On the approver's name
  *
- * The audit row records `approvedBy` — the id of the HUMAN who ran the seed —
- * as the actor, never a fictional colleague. The fiction is in the episodes'
+ * The audit row's actor is the HUMAN who ran the seed — never a fictional
+ * colleague, and never a `system:` principal. The fiction is in the episodes'
  * AUTHORS (who said it), which is what `searchAtlas` renders as "who"; the
  * approval stays attributed to a real person, because PRD finish condition 2
  * admits no exception for seeds and a demo that lies about its own approver
- * would be demonstrating the wrong thing.
+ * would be demonstrating the wrong thing. #5603 asked for "a named fictional
+ * reviewer"; this is the recorded deviation, and the issue says so.
+ *
+ * ## On "marked synthetic in metadata"
+ *
+ * `brain_episodes` has no metadata column, and the seed adds none. What keeps a
+ * customer's coverage count clean is the WORKSPACE boundary — coverage is
+ * counted per workspace, and this corpus can only ever land in the one whose
+ * slug is the demo's — plus the `NMD` marker every vendor id carries, which is
+ * what a human grepping a row reads. Recorded on #5603 as the deviation it is.
  */
 
 import { Effect } from "effect";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { withInternalTransaction } from "@atlas/api/lib/db/with-internal-transaction";
 import { logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { ingestEpisodes } from "@atlas/api/lib/brain/ingest/episodes";
 import type { BrainEpisodeRecord } from "@atlas/api/lib/brain/ingest/types";
 import { deriveChatChannelGrant } from "@atlas/api/lib/brain/ingest/grant";
@@ -62,8 +79,10 @@ import {
 } from "@atlas/api/lib/brain/actor-identity";
 import { declarePredicateCardinalityForSurface } from "@atlas/api/lib/brain/cardinality";
 import { identityAlias } from "@atlas/api/lib/brain/identity";
+import type { PredicateCardinality } from "@atlas/api/lib/brain/types";
 import {
   persistCoverageSnapshot,
+  type CoveragePersistReport,
   type EnumeratedSurveyUnit,
 } from "@atlas/api/lib/brain/coverage-enumeration";
 import { approve } from "@atlas/api/lib/brain/review-gate";
@@ -77,8 +96,11 @@ import {
   PEOPLE,
   matchesExpectedClaim,
   type DemoChannelKey,
+  type DemoChatMessage,
   type DemoEpisode,
+  type DemoMail,
   type DemoPerson,
+  type DemoTranscript,
   type ExpectedClaim,
 } from "./corpus";
 
@@ -94,11 +116,10 @@ export const DEMO_ATLAS_WORKSPACE_SLUG = "novamart-demo" as const;
 
 /**
  * The synthetic recording-file id every transcript episode carries. Zoom's
- * `source_id` is `<meetingUuid>:<recordingFileId>`; there is one file per
- * synthetic meeting.
+ * `source_id` is `<meetingUuid>:<recordingFileId>`, and the builder refuses
+ * anything but a GUID here — the `NMD` marker cannot live in hex, so it lives
+ * in the meeting uuid instead.
  */
-// A GUID because `zoomEpisodeSourceId` refuses any other shape; the marker
-// cannot live in hex, so it lives in the meeting uuid instead.
 const DEMO_RECORDING_FILE_ID = "00000000-0000-4000-8000-00000000d3a0";
 
 // ---------------------------------------------------------------------------
@@ -133,104 +154,117 @@ export async function resolveDemoWorkspace(ref: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Corpus → episode records, per source
+// Corpus → episode records, one table keyed by kind
 // ---------------------------------------------------------------------------
 
-/** The `source_id` a corpus episode is stored under. Exported for the approve join and the test. */
+/** What one episode kind knows: its connector, its stored id, its record, and who authored it. */
+interface EpisodeKindSpec<E extends DemoEpisode> {
+  readonly source: EpisodeSource;
+  readonly sourceId: (episode: E) => string;
+  /** The vendor-side author handle — what `brain_episodes.source_actor` stores. */
+  readonly author: (episode: E) => { person: DemoPerson; vendorUserId: string };
+  readonly record: (episode: E) => BrainEpisodeRecord;
+}
+
+const CHAT_KIND: EpisodeKindSpec<DemoChatMessage> = {
+  source: "slack",
+  sourceId: (e) => slackEpisodeSourceId(CHANNELS[e.channel].id, e.ts),
+  author: (e) => ({ person: PEOPLE[e.author], vendorUserId: PEOPLE[e.author].slackId }),
+  record: (e) => {
+    const channel = CHANNELS[e.channel];
+    // The REAL deriver, so a private channel gets exactly the audience grant a
+    // live Slack message would — not a hand-typed token that could drift from
+    // the grammar the ACL predicate parses.
+    const grant = deriveChatChannelGrant({
+      source: "slack",
+      channelId: channel.id,
+      isPrivate: channel.isPrivate,
+    });
+    if (grant === null) throw new Error(`demo corpus: no grant derivable for channel ${channel.id}`);
+    return {
+      sourceId: CHAT_KIND.sourceId(e),
+      sourceActor: CHAT_KIND.author(e).vendorUserId,
+      body: e.body,
+      occurredAt: new Date(e.occurredAt),
+      visibleTo: grant,
+    };
+  },
+};
+
+const TRANSCRIPT_KIND: EpisodeKindSpec<DemoTranscript> = {
+  source: "zoom",
+  sourceId: (e) => zoomEpisodeSourceId(e.meetingId, DEMO_RECORDING_FILE_ID),
+  author: (e) => ({ person: PEOPLE[e.host], vendorUserId: PEOPLE[e.host].zoomId }),
+  // `deriveMeetingParticipantGrant` is deliberately NOT used: it derives an
+  // audience from a vendor roster, and there is no vendor here. The synthetic
+  // all-hands declares its own audience — the whole company — which is the
+  // one grant a company-wide recording honestly carries.
+  record: (e) => ({
+    sourceId: TRANSCRIPT_KIND.sourceId(e),
+    sourceActor: TRANSCRIPT_KIND.author(e).vendorUserId,
+    body: e.body,
+    occurredAt: new Date(e.occurredAt),
+    visibleTo: [ORG_PRINCIPAL],
+  }),
+};
+
+const MAIL_KIND: EpisodeKindSpec<DemoMail> = {
+  source: "outlook",
+  sourceId: (e) => outlookEpisodeSourceId(e.messageId),
+  author: (e) => ({ person: PEOPLE[e.from], vendorUserId: PEOPLE[e.from].email }),
+  // Same reasoning as the transcript: the mail is addressed to everyone, and
+  // the recipient-set lower bound `deriveEmailRecipientGrant` computes from
+  // headers has no headers to read.
+  record: (e) => ({
+    sourceId: MAIL_KIND.sourceId(e),
+    sourceActor: MAIL_KIND.author(e).vendorUserId,
+    body: e.body,
+    occurredAt: new Date(e.occurredAt),
+    visibleTo: [ORG_PRINCIPAL],
+  }),
+};
+
+function kindOf(episode: DemoEpisode): EpisodeKindSpec<DemoEpisode> {
+  switch (episode.kind) {
+    case "chat":
+      return CHAT_KIND as EpisodeKindSpec<DemoEpisode>;
+    case "transcript":
+      return TRANSCRIPT_KIND as EpisodeKindSpec<DemoEpisode>;
+    case "email":
+      return MAIL_KIND as EpisodeKindSpec<DemoEpisode>;
+  }
+}
+
+/** The `source_id` a corpus episode is stored under. Exported for the test's joins. */
 export function corpusSourceId(episode: DemoEpisode): string {
-  switch (episode.kind) {
-    case "chat":
-      return slackEpisodeSourceId(CHANNELS[episode.channel].id, episode.ts);
-    case "transcript":
-      return zoomEpisodeSourceId(episode.meetingId, DEMO_RECORDING_FILE_ID);
-    case "email":
-      return outlookEpisodeSourceId(episode.messageId);
-  }
+  return kindOf(episode).sourceId(episode);
 }
 
-function corpusSource(episode: DemoEpisode): EpisodeSource {
-  switch (episode.kind) {
-    case "chat":
-      return "slack";
-    case "transcript":
-      return "zoom";
-    case "email":
-      return "outlook";
-  }
-}
-
-function toRecord(episode: DemoEpisode): BrainEpisodeRecord {
-  const occurredAt = new Date(episode.occurredAt);
-  switch (episode.kind) {
-    case "chat": {
-      const channel = CHANNELS[episode.channel];
-      // The REAL deriver, so a private channel gets exactly the audience grant a
-      // live Slack message would — not a hand-typed token that could drift from
-      // the grammar the ACL predicate parses.
-      const grant = deriveChatChannelGrant({
-        source: "slack",
-        channelId: channel.id,
-        isPrivate: channel.isPrivate,
-      });
-      if (grant === null) {
-        throw new Error(`demo corpus: no grant derivable for channel ${channel.id}`);
-      }
-      return {
-        sourceId: corpusSourceId(episode),
-        sourceActor: PEOPLE[episode.author].slackId,
-        body: episode.body,
-        occurredAt,
-        visibleTo: grant,
-      };
-    }
-    case "transcript":
-      // `deriveMeetingParticipantGrant` is deliberately NOT used: it derives an
-      // audience from a vendor roster, and there is no vendor here. The
-      // synthetic all-hands declares its own audience — the whole company —
-      // which is the one grant a company-wide recording honestly carries.
-      return {
-        sourceId: corpusSourceId(episode),
-        sourceActor: PEOPLE[episode.host].zoomId,
-        body: episode.body,
-        occurredAt,
-        visibleTo: [ORG_PRINCIPAL],
-      };
-    case "email":
-      // Same reasoning as the transcript: the mail is addressed to everyone, and
-      // the recipient-set lower bound `deriveEmailRecipientGrant` computes from
-      // headers has no headers to read.
-      return {
-        sourceId: corpusSourceId(episode),
-        sourceActor: PEOPLE[episode.from].email,
-        body: episode.body,
-        occurredAt,
-        visibleTo: [ORG_PRINCIPAL],
-      };
-  }
-}
-
-/** Every corpus `source_id`, for the approve join. */
-export function corpusSourceIds(): readonly string[] {
-  return EPISODES.map(corpusSourceId);
-}
-
+/**
+ * One `directory` identity per (source, author) pair that actually authored
+ * an episode — not one per person per source. The actor key is
+ * `<source>:<vendorUserId>`, the shape `authoringPrincipalSql` composes from
+ * `brain_episodes.source || ':' || source_actor`, so the join that names an
+ * author finds these rows.
+ */
 function identityCaptures(): readonly ActorIdentityCapture[] {
-  const out: ActorIdentityCapture[] = [];
-  for (const person of Object.values(PEOPLE) as readonly DemoPerson[]) {
-    const directory = {
-      state: "directory" as const,
+  const seen = new Map<string, ActorIdentityCapture>();
+  for (const episode of EPISODES) {
+    const kind = kindOf(episode);
+    const { person, vendorUserId } = kind.author(episode);
+    const actor = `${kind.source}:${vendorUserId}`;
+    if (seen.has(actor)) continue;
+    seen.set(actor, {
+      actor,
+      source: kind.source,
+      vendorUserId,
+      state: "directory",
       displayName: person.displayName,
       realName: person.realName,
       email: person.email,
-    };
-    // `actor` is `<source>:<vendorUserId>` — the shape `authoringPrincipalSql`
-    // composes from `brain_episodes.source || ':' || source_actor`, so the join
-    // that names an author finds these rows.
-    out.push({ ...directory, actor: `slack:${person.slackId}`, source: "slack", vendorUserId: person.slackId });
-    out.push({ ...directory, actor: `zoom:${person.zoomId}`, source: "zoom", vendorUserId: person.zoomId });
-    out.push({ ...directory, actor: `outlook:${person.email}`, source: "outlook", vendorUserId: person.email });
+    });
   }
-  return out;
+  return [...seen.values()];
 }
 
 // ---------------------------------------------------------------------------
@@ -247,11 +281,24 @@ const executor = {
 // Phase: ingest
 // ---------------------------------------------------------------------------
 
+/** What `ingestEpisodes` did with one source's batch. */
+export interface IngestCounts {
+  readonly inserted: number;
+  readonly duplicate: number;
+  readonly refused: number;
+}
+
+/** The cardinality declaration's outcome, as the seam reports it. */
+export type CardinalityOutcome =
+  | { readonly ok: true; readonly cardinality: PredicateCardinality }
+  | { readonly ok: false; readonly refusal: string; readonly message: string };
+
 export interface IngestPhaseReport {
   readonly workspaceId: string;
-  readonly episodes: Readonly<Record<EpisodeSource, { inserted: number; duplicate: number; refused: number }>>;
+  /** Per source the corpus carries. A source absent here had no corpus episodes. */
+  readonly episodes: Readonly<Partial<Record<EpisodeSource, IngestCounts>>>;
   readonly identitiesCaptured: number;
-  readonly cardinality: string;
+  readonly cardinality: CardinalityOutcome;
 }
 
 export async function seedDemoCorpusIngest(params: {
@@ -263,13 +310,13 @@ export async function seedDemoCorpusIngest(params: {
 
   const bySource = new Map<EpisodeSource, BrainEpisodeRecord[]>();
   for (const episode of EPISODES) {
-    const source = corpusSource(episode);
-    const list = bySource.get(source) ?? [];
-    list.push(toRecord(episode));
-    bySource.set(source, list);
+    const kind = kindOf(episode);
+    const list = bySource.get(kind.source) ?? [];
+    list.push(kind.record(episode));
+    bySource.set(kind.source, list);
   }
 
-  const episodes: Record<string, { inserted: number; duplicate: number; refused: number }> = {};
+  const episodes: Partial<Record<EpisodeSource, IngestCounts>> = {};
   for (const [source, records] of bySource) {
     const report = await ingestEpisodes({ workspaceId, source, episodes: records });
     const refused = Object.values(report.refused).reduce((a, b) => a + b, 0);
@@ -287,12 +334,16 @@ export async function seedDemoCorpusIngest(params: {
     authoredBy: params.authoredBy,
     predicateAlias: identityAlias,
   });
-
-  const cardinality = declared.ok
-    ? `declared:${declared.cardinality}`
-    : `refused:${declared.refusal}`;
-  if (!declared.ok) {
-    log.warn({ workspaceId, refusal: declared.refusal, message: declared.message }, "demo corpus: cardinality declaration refused — the contradiction will not carry a tension edge");
+  // `ON CONFLICT DO UPDATE` underneath, so a re-run is `ok` again — the seam
+  // only refuses a degenerate key or a missing author, never a repeat.
+  const cardinality: CardinalityOutcome = declared.ok
+    ? { ok: true, cardinality: declared.cardinality }
+    : { ok: false, refusal: declared.refusal, message: declared.message };
+  if (!cardinality.ok) {
+    log.warn(
+      { workspaceId, refusal: cardinality.refusal, message: cardinality.message },
+      "demo corpus: cardinality declaration refused — the contradiction will not carry a tension edge until a human declares the predicate single",
+    );
   }
 
   log.info(
@@ -300,12 +351,7 @@ export async function seedDemoCorpusIngest(params: {
     "demo corpus: ingest phase complete",
   );
 
-  return {
-    workspaceId,
-    episodes: episodes as IngestPhaseReport["episodes"],
-    identitiesCaptured: written.size,
-    cardinality,
-  };
+  return { workspaceId, episodes, identitiesCaptured: written.size, cardinality };
 }
 
 // ---------------------------------------------------------------------------
@@ -316,7 +362,7 @@ export interface CoveragePhaseReport {
   readonly workspaceId: string;
   readonly units: number;
   readonly unsurveyed: readonly string[];
-  readonly persist: string;
+  readonly persist: CoveragePersistReport["status"];
 }
 
 /**
@@ -369,7 +415,10 @@ export async function seedDemoCorpusCoverage(params: {
     cycleAt,
   });
 
-  log.info({ workspaceId, units: units.length, unsurveyed, persist: persist.status }, "demo corpus: coverage phase complete");
+  log.info(
+    { workspaceId, units: units.length, unsurveyed, persist: persist.status },
+    "demo corpus: coverage phase complete",
+  );
   return { workspaceId, units: units.length, unsurveyed, persist: persist.status };
 }
 
@@ -377,7 +426,8 @@ export async function seedDemoCorpusCoverage(params: {
 // Phase: approve
 // ---------------------------------------------------------------------------
 
-interface DraftRow extends Record<string, unknown> {
+/** A `brain_facts` row whose evidence is a corpus episode, at either status. */
+interface CorpusFactRow extends Record<string, unknown> {
   readonly id: string;
   readonly subject: string;
   readonly predicate: string;
@@ -386,9 +436,9 @@ interface DraftRow extends Record<string, unknown> {
 }
 
 /**
- * Drafts (or, with `status`, published rows) whose evidence is a corpus
- * episode. The join is on the corpus's own `source_id`s, so a draft extracted
- * from anything else on the demo workspace is not this phase's to touch.
+ * Facts at one status whose evidence is a corpus episode. The join is on the
+ * corpus's own `source_id`s, so a draft extracted from anything else on the
+ * demo workspace is not this phase's to touch.
  */
 const CORPUS_FACTS_SQL = `SELECT f.id, f.subject, f.predicate, f.object, e.source_id
      FROM brain_facts f
@@ -404,10 +454,11 @@ const TENSION_EDGES_SQL = `SELECT count(*)::text AS n FROM brain_edges WHERE wor
 export interface ApprovePhaseReport {
   readonly workspaceId: string;
   readonly approvedBy: string;
-  /** Draft ids promoted this run. Empty on a re-run, which is the idempotent outcome. */
+  /** Draft ids the gate actually promoted this run. Empty on a re-run, which is the idempotent outcome. */
   readonly promoted: readonly string[];
-  readonly refused: number;
-  /** `in-tension-with` edges on the workspace after this run — the contradiction's, when reconcile minted it. */
+  /** Draft ids the gate refused, with its reasons — left `draft` for a person. */
+  readonly refused: readonly { readonly id: string; readonly reasons: readonly string[] }[];
+  /** `in-tension-with` edges on the workspace after this run. */
   readonly tensionEdges: number;
   /** Every expected claim, and whether a PUBLISHED corpus claim now matches it. */
   readonly expected: readonly { key: ExpectedClaim["key"]; found: boolean }[];
@@ -416,75 +467,93 @@ export interface ApprovePhaseReport {
 
 export async function seedDemoCorpusApprove(params: {
   readonly workspaceRef: string;
-  /** The human approving — a user id, or `local-operator`. Stamped on the audit row. */
+  /** The human approving — a user id, or `local-operator`. Becomes the audit row's actor. */
   readonly approvedBy: string;
+  readonly requestId?: string;
 }): Promise<ApprovePhaseReport> {
   const workspaceId = await resolveDemoWorkspace(params.workspaceRef);
-  const sourceIds = corpusSourceIds();
+  const sourceIds = EPISODES.map(corpusSourceId);
+  const requestId = params.requestId ?? crypto.randomUUID();
 
-  const drafts = await internalQuery<DraftRow>(CORPUS_FACTS_SQL, [workspaceId, "draft", sourceIds]);
-  const draftIds = drafts.map((d) => d.id);
+  // The approving human is the request context's user, so `logAdminAction`
+  // resolves them as `actor_id` exactly as it does for the publish route —
+  // not a `system:` principal with the person tucked into metadata.
+  const approver = createAtlasUser(params.approvedBy, "simple-key", params.approvedBy);
 
-  let promoted = 0;
-  let refused = 0;
-  if (draftIds.length > 0) {
-    const report = await withInternalTransaction("demo-corpus-approve", (client) =>
-      Effect.runPromise(approve(client, workspaceId, draftIds)),
-    );
-    promoted = report.promoted;
-    refused = report.refused?.length ?? 0;
-  }
+  return withRequestContext(
+    { requestId, user: approver, agentOrigin: "chat", actor: { kind: "human" } },
+    async () => {
+      const drafts = await internalQuery<CorpusFactRow>(CORPUS_FACTS_SQL, [workspaceId, "draft", sourceIds]);
+      const draftIds = drafts.map((d) => d.id);
 
-  // The contradiction's edge is minted by reconcile at WRITE time when the
-  // extractor hinted the predicate `single` (`reconcile.ts` gates its tension
-  // pass on that per-claim hint). When the live model did not, the edge is
-  // NOT minted here: ADR-0037 §7's amendment pins the tension sweep to exactly
-  // one non-test caller — the admin route a human presses — and
-  // `tension-sweep.test.ts` asserts it. The ingest phase's `single` declaration
-  // is what makes that sweep productive on this workspace; a zero below means
-  // "an admin runs the sweep from the facts page", and the operator prints so.
-  const edgeRows = await internalQuery<{ n: string }>(TENSION_EDGES_SQL, [workspaceId]);
-  const tensionEdges = Number(edgeRows[0]?.n ?? 0);
+      let promoted: string[] = [];
+      let refused: { id: string; reasons: readonly string[] }[] = [];
+      if (draftIds.length > 0) {
+        const report = await withInternalTransaction("demo-corpus-approve", (client) =>
+          Effect.runPromise(approve(client, workspaceId, draftIds)),
+        );
+        refused = (report.refused ?? []).map((r) => ({ id: r.rowId, reasons: r.reasons }));
+        const refusedIds = new Set(refused.map((r) => r.id));
+        promoted = draftIds.filter((id) => !refusedIds.has(id));
+        if (promoted.length !== report.promoted) {
+          // The adapter's count and the id arithmetic disagree — report the
+          // count's truth, and say so, rather than a list that overstates it.
+          log.warn(
+            { workspaceId, promotedIds: promoted.length, promotedCount: report.promoted },
+            "demo corpus: promoted-id list and the adapter's promoted count disagree — trusting the count",
+          );
+        }
+      }
 
-  const published = await internalQuery<DraftRow>(CORPUS_FACTS_SQL, [workspaceId, "published", sourceIds]);
-  const expected = EXPECTED_CLAIMS.map((claim) => ({
-    key: claim.key,
-    found: published.some((row) => matchesExpectedClaim(row, claim)),
-  }));
-  const missing = expected.filter((e) => !e.found).map((e) => e.key);
+      // The contradiction's edge is minted by reconcile at WRITE time when the
+      // extractor hinted the predicate `single` (`reconcile.ts` gates its
+      // tension pass on that per-claim hint). When the live model did not, the
+      // edge is NOT minted here: ADR-0037 §7's amendment pins the tension sweep
+      // to exactly one non-test caller — the admin route a human presses — and
+      // `tension-sweep.test.ts` asserts it. The ingest phase's `single`
+      // declaration is what makes that sweep productive on this workspace; a
+      // zero below means "an admin runs the sweep from the facts page", and
+      // the operator prints so.
+      const edgeRows = await internalQuery<{ n: string }>(TENSION_EDGES_SQL, [workspaceId]);
+      const tensionEdges = Number(edgeRows[0]?.n ?? 0);
 
-  await logAdminActionAwait({
-    actionType: ADMIN_ACTIONS.brain.demoCorpusSeed,
-    targetType: "brain",
-    targetId: workspaceId,
-    scope: "platform",
-    systemActor: "system:atlas-operator",
-    metadata: {
-      phase: "approve",
-      approvedBy: params.approvedBy,
-      promotedFactIds: draftIds,
-      promoted,
-      refused,
-      tensionEdges,
-      missingExpectedClaims: missing,
-      marker: DEMO_ID_MARKER,
+      const published = await internalQuery<CorpusFactRow>(CORPUS_FACTS_SQL, [workspaceId, "published", sourceIds]);
+      const expected = EXPECTED_CLAIMS.map((claim) => ({
+        key: claim.key,
+        found: published.some((row) => matchesExpectedClaim(row, claim)),
+      }));
+      const missing = expected.filter((e) => !e.found).map((e) => e.key);
+
+      await logAdminActionAwait({
+        actionType: ADMIN_ACTIONS.brain.demoCorpusSeed,
+        targetType: "brain",
+        targetId: workspaceId,
+        metadata: {
+          phase: "approve",
+          promotedFactIds: promoted,
+          refused,
+          tensionEdges,
+          missingExpectedClaims: missing,
+          marker: DEMO_ID_MARKER,
+        },
+      });
+
+      if (missing.length > 0) {
+        log.warn(
+          { workspaceId, missing },
+          "demo corpus: expected claims the extractor did not produce — the corpus or the extractor needs attention; nothing was inserted in their place",
+        );
+      }
+
+      return {
+        workspaceId,
+        approvedBy: params.approvedBy,
+        promoted,
+        refused,
+        tensionEdges,
+        expected,
+        missing,
+      };
     },
-  });
-
-  if (missing.length > 0) {
-    log.warn(
-      { workspaceId, missing },
-      "demo corpus: expected claims the extractor did not produce — the corpus or the extractor needs attention; nothing was inserted in their place",
-    );
-  }
-
-  return {
-    workspaceId,
-    approvedBy: params.approvedBy,
-    promoted: promoted > 0 ? draftIds : [],
-    refused,
-    tensionEdges,
-    expected,
-    missing,
-  };
+  );
 }

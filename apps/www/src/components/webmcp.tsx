@@ -2,6 +2,8 @@
 
 import { useEffect } from "react";
 
+import { DEMO_QUESTION, MCP_DEMO_COMMAND, SENTENCE } from "./landing/data";
+
 // Provides tools to in-browser agents via Chrome's experimental webmcp
 // proposal (navigator.modelContext). No-op elsewhere. The response
 // envelope mirrors MCP server tools/call (`{ content: [{type, text}] }`)
@@ -43,6 +45,22 @@ function openAndReport(url: string, openedText: string): {
 
 const TOOLS: ModelContextTool[] = [
   {
+    name: "atlas_connect_agent_to_demo",
+    description:
+      `${SENTENCE} Returns the one terminal command that connects an MCP client (Claude Desktop, Cursor, Continue, or any other via --client generic) to the hosted NovaMart demo with no account and no email, plus the question to ask first.`,
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    async execute() {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Run this in a terminal, then restart the MCP client:\n\n${MCP_DEMO_COMMAND}\n\nThen ask: "${DEMO_QUESTION}" The answer names who said it, where and when, marks that a person approved it before it counted, and shows the contradiction between Finance and Support without picking a side. Guide: https://docs.useatlas.dev/guides/mcp`,
+          },
+        ],
+      };
+    },
+  },
+  {
     name: "atlas_start_free_trial",
     description:
       "Open the Atlas hosted SaaS signup at app.useatlas.dev. Returns the URL so the agent can offer it to the user.",
@@ -58,7 +76,7 @@ const TOOLS: ModelContextTool[] = [
   {
     name: "atlas_open_live_demo",
     description:
-      "Open the Atlas live demo at app.useatlas.dev/demo against a sample database. No account required — just an email.",
+      "Open the Atlas web demo at app.useatlas.dev/demo in a browser. No account, but it asks for an email; for a no-email path use atlas_connect_agent_to_demo.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
       const url = "https://app.useatlas.dev/demo";

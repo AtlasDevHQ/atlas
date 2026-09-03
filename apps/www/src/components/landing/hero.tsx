@@ -1,134 +1,117 @@
-import { Fragment } from "react";
-
-import { CATEGORY_ROWS, TOP_CATEGORY_QUESTION } from "./data";
-
-const HEADLINE_LINES = ["Ask your data anything.", "Trust the answer."] as const;
-const ITALIC_LINE_INDEX = 1;
-
-const SUBHEAD =
-  "Atlas is the AI data analyst you can run anywhere. It turns plain-English questions into trustworthy answers across your SQL warehouses and REST APIs, grounded in a semantic layer you control.";
+import { CopyCommand } from "../copy-command";
+import { DEMO_EXCHANGE, DEMO_QUESTION, MCP_DEMO_COMMAND, SENTENCE, TRUST_TIERS } from "./data";
 
 /**
- * The hero's payload: a plain-English question and the validated answer it
- * returns. No SQL here — the mechanism (YAML + generated SQL) lives in the
- * YAML section below, so the two surfaces don't duplicate.
+ * The hero visual: the demo exchange, rendered as the hosted NovaMart corpus
+ * answers it. The hero shows the exchange the recording shows, so the page
+ * and the take never disagree about what the demo says; the recording, when
+ * present, occupies this slot.
  */
-function AnswerCard() {
+function DemoExchange() {
+  const { attested, contradiction } = DEMO_EXCHANGE;
   return (
-    <div
-      className="relative overflow-hidden rounded-xl border border-white/10 shadow-pane"
-      style={{ background: "oklch(0.14 0 0)" }}
-    >
-      <div
-        className="flex items-center gap-2 border-b border-white/5 px-3.5 py-2.5"
-        style={{ background: "oklch(0.16 0 0)" }}
-      >
+    <div className="relative overflow-hidden rounded-xl border border-code-border bg-code-bg shadow-pane">
+      <div className="flex items-center gap-2 border-b border-code-border bg-code-chrome px-3.5 py-2.5">
         <span className="h-2 w-2 rounded-full" style={{ background: "var(--atlas-spark)" }} />
-        <span className="font-mono text-[11px] text-zinc-400">atlas · agent reply</span>
+        <span className="font-mono text-[11px] text-zinc-400">claude desktop · atlas-demo</span>
         <span className="ml-auto rounded border border-white/10 px-2 py-[2px] font-mono text-[10px] text-zinc-400">
-          chat · mcp · widget
+          searchAtlas
         </span>
       </div>
 
       <div className="flex flex-col gap-4 px-4 py-5">
         <div>
-          <p className="mb-1.5 font-mono text-[11px] tracking-[0.06em] text-brand">
-            // asked in plain english
-          </p>
-          <p className="m-0 text-[15px] leading-snug text-zinc-100">{TOP_CATEGORY_QUESTION}</p>
+          <p className="mb-1.5 font-mono text-[11px] tracking-[0.06em] text-brand">// you ask</p>
+          <p className="m-0 text-[15px] leading-snug text-zinc-100">{DEMO_QUESTION}</p>
         </div>
 
         <div>
-          <p className="mb-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">
-            // validated answer
-          </p>
-          <div
-            className="overflow-hidden rounded-md border border-white/10"
-            style={{ background: "oklch(0.10 0 0)" }}
-          >
-            <div className="grid grid-cols-[1fr_auto_auto] gap-4 border-b border-white/5 px-3 py-2 font-mono text-[11px] uppercase tracking-[0.06em] text-zinc-400">
-              <span>category</span>
-              <span className="text-right">gmv</span>
-              <span className="text-right">orders</span>
+          <p className="mb-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">// the answer, with a name on it</p>
+          <div className="rounded-md border border-code-border bg-code-well px-3 py-3">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="rounded border border-brand/40 px-2 py-[2px] font-mono text-[10px] uppercase tracking-[0.06em] text-brand">
+                Attested
+              </span>
+              <span className="font-mono text-[11px] text-zinc-400">
+                {attested.speaker} · {attested.role} · {attested.channel} · {attested.date}
+              </span>
             </div>
-            {CATEGORY_ROWS.slice(0, 3).map((row, i) => (
-              <div
-                key={row.category}
-                className="grid grid-cols-[1fr_auto_auto] gap-4 px-3 py-2 font-mono text-[12.5px] text-zinc-200"
-                style={{ background: i % 2 ? "oklch(0.12 0 0)" : "transparent" }}
-              >
-                <span>{row.category}</span>
-                <span className="text-right text-brand">{row.gmv}</span>
-                <span className="text-right text-zinc-400">{row.orders}</span>
-              </div>
-            ))}
+            <p className="m-0 text-[14px] leading-snug text-zinc-100">{attested.claim}</p>
+            <p className="m-0 mt-2 font-mono text-[11px] text-zinc-400">
+              who said it · where · when — approved before it counted
+            </p>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 font-mono text-[11px] text-zinc-400">
-          <span className="flex items-center gap-1.5 text-brand">
-            <span aria-hidden>✓</span> 7 validators
-          </span>
-          <span aria-hidden className="text-zinc-700">·</span>
-          <span>read-only</span>
-          <span aria-hidden className="text-zinc-700">·</span>
-          <span>row-limited</span>
-          <span aria-hidden className="text-zinc-700">·</span>
-          <span>audited</span>
+        <div>
+          <p className="mb-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">// also attested — Atlas shows both and picks neither</p>
+          <div className="rounded-md border border-amber-300/25 bg-code-well px-3 py-3">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="rounded border border-brand/40 px-2 py-[2px] font-mono text-[10px] uppercase tracking-[0.06em] text-brand">
+                Attested
+              </span>
+              <span className="rounded border border-amber-300/40 px-2 py-[2px] font-mono text-[10px] uppercase tracking-[0.06em] text-amber-200/90">
+                In tension
+              </span>
+              <span className="font-mono text-[11px] text-zinc-400">
+                {contradiction.speaker} · {contradiction.role} · {contradiction.channel} · {contradiction.date}
+              </span>
+            </div>
+            <p className="m-0 text-[14px] leading-snug text-zinc-100">{contradiction.claim}</p>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-type Stage = { readonly label: string; readonly value: string; readonly highlight: boolean };
-
-const STAGES: ReadonlyArray<Stage> = [
-  { label: "ask",            value: '"top category by gmv…"', highlight: false },
-  { label: "semantic layer", value: "your YAML",              highlight: false },
-  { label: "validate",       value: "7 checks · read-only",   highlight: false },
-  { label: "answer",         value: "grounded · audited",     highlight: true  },
-];
-
 /**
- * The four-stage path: ask → semantic layer → validate → answer. One straight
- * read left-to-right; the highlight lands on the answer to reinforce the
- * headline's promise (a grounded, audited result you can trust).
+ * The three kinds of thing that live in the Atlas, in the PRD's language.
+ * Sits under the fold as the first thing a reader meets after the exchange,
+ * so the chip on the card above ("Attested") is explained one screen later.
  */
-function PipelineStrip() {
+function TierStrip() {
   return (
     <div className="animate-fade-in-up delay-400 mt-12 md:mt-16">
       <p className="mb-3.5 font-mono text-[11px] tracking-[0.04em] text-fg-muted">
-        // every question takes the same path
+        // three kinds of thing live in the Atlas — every answer says which it is drawing on
       </p>
-      <div className="grid gap-3 md:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] md:items-center">
-        {STAGES.map((stage, i) => (
-          <Fragment key={stage.label}>
-            <div
-              className="flex flex-col gap-1 rounded-lg border px-4 py-3.5"
-              style={{
-                background: stage.highlight ? "var(--accent-quiet)" : "var(--bg-raised)",
-                borderColor: stage.highlight ? "var(--accent)" : "var(--border)",
-              }}
-            >
-              <span className="text-[13px] font-semibold text-fg">{stage.label}</span>
-              <span className="font-mono text-[11px] text-fg-muted">{stage.value}</span>
-            </div>
-            {i < STAGES.length - 1 && (
-              <span aria-hidden className="hidden justify-center font-mono text-accent md:flex">
-                →
-              </span>
-            )}
-          </Fragment>
+      <div className="grid gap-3 md:grid-cols-3">
+        {TRUST_TIERS.map((tier) => (
+          <div
+            key={tier.name}
+            className="flex flex-col gap-1.5 rounded-lg border px-4 py-3.5"
+            style={{
+              background: tier.name === "Surveyed" ? "var(--accent-quiet)" : "var(--bg-raised)",
+              borderColor: tier.name === "Surveyed" ? "var(--accent)" : "var(--border)",
+            }}
+          >
+            <span className="text-[13px] font-semibold text-fg">{tier.name}</span>
+            <span className="text-[12.5px] leading-[1.5] text-fg">{tier.what}</span>
+            <span className="text-[12px] leading-[1.5] text-fg-muted">{tier.why}</span>
+          </div>
         ))}
       </div>
+      <p className="mt-3 text-[12.5px] text-fg-muted">
+        Surveyed outranks Attested wherever they overlap: a recollection never overwrites the data.
+        Nothing becomes Attested without a person approving it, and there is no setting that turns that off.
+      </p>
     </div>
   );
 }
 
+// Split for line layout only. The tail keeps its leading space so the h1's
+// text content — what assistive tech and scrapers read — is the sentence
+// character for character.
+const [SENTENCE_HEAD, SENTENCE_TAIL] = (() => {
+  const i = SENTENCE.indexOf(":");
+  if (i < 0) return [SENTENCE, ""];
+  return [SENTENCE.slice(0, i + 1), SENTENCE.slice(i + 1)];
+})();
+
 export function Hero() {
   return (
-    <section className="relative overflow-hidden border-b border-border-soft px-content pt-16 pb-16 md:pt-24 md:pb-20">
+    <section className="relative overflow-hidden border-b border-border-soft px-content pt-14 pb-16 md:pt-20 md:pb-20">
       <div
         aria-hidden
         className="pointer-events-none absolute -top-32 right-0 h-[560px] w-[560px] rounded-full"
@@ -138,56 +121,48 @@ export function Hero() {
       />
 
       {/*
-        The above-the-fold hero text (h1, subhead, CTAs, trial note) paints
-        immediately — no `animate-fade-in-up`. That keyframe starts at
-        `opacity: 0`, and Chrome's LCP algorithm won't register an element
-        painted transparent as an LCP candidate at its paint time. With the
-        headline (the mobile LCP element) fading in, Lighthouse mobile reported
-        `NO_LCP` and an inflated Speed Index (content still settling ~2.6s after
-        FCP). Entrance polish stays on below-the-fold / non-LCP surfaces
-        (PipelineStrip); the decorative AnswerCard also paints immediately so it
-        can't become a late LCP candidate on narrow viewports.
+        The above-the-fold text (h1, command, links) paints immediately — no
+        `animate-fade-in-up`. That keyframe starts at `opacity: 0`, and
+        Chrome's LCP algorithm won't register an element painted transparent
+        as an LCP candidate at its paint time (Lighthouse reported `NO_LCP`
+        when the headline faded in). Entrance polish stays below the fold
+        (TierStrip); the DemoExchange also paints immediately so it can't
+        become a late LCP candidate on narrow viewports.
       */}
       <div className="relative grid gap-10 md:grid-cols-2 md:items-center md:gap-12">
-        <div className="max-w-[520px]">
-          <h1 className="m-0 text-[44px] sm:text-[56px] md:text-[64px] font-semibold leading-[1.02] tracking-[-0.035em] text-fg">
-            {HEADLINE_LINES.map((line, i) => (
-              <span key={line} className="block">
-                {i === ITALIC_LINE_INDEX ? (
-                  <em className="font-semibold text-accent">{line}</em>
-                ) : (
-                  line
-                )}
-              </span>
-            ))}
+        <div className="max-w-[560px]">
+          <h1 className="m-0 text-[30px] sm:text-[36px] md:text-[40px] font-semibold leading-[1.12] tracking-[-0.03em] text-fg">
+            <span className="block">{SENTENCE_HEAD}</span>
+            <span className="block text-fg-muted">{SENTENCE_TAIL}</span>
           </h1>
-          <p className="mt-6 max-w-[460px] text-base leading-[1.6] text-fg-muted">{SUBHEAD}</p>
-          <div className="mt-7 flex flex-wrap gap-2.5">
-            <a
-              href="https://app.useatlas.dev/signup"
-              className="inline-flex items-center gap-2 rounded-lg bg-accent px-[18px] py-[11px] text-[13.5px] font-semibold text-accent-ink transition-colors hover:bg-accent-hover"
-            >
-              Start free trial →
+
+          <p className="mt-6 text-[13px] text-fg-muted">
+            One command into Claude Desktop, Cursor or Continue. No account, no email. Then ask:{" "}
+            <em className="text-fg">{DEMO_QUESTION}</em>
+          </p>
+          <CopyCommand command={MCP_DEMO_COMMAND} className="mt-3" />
+
+          <p className="mt-4 text-[13px] text-fg-muted">
+            <a href="https://app.useatlas.dev/demo" className="text-fg underline decoration-border-strong underline-offset-4 hover:text-accent">
+              Try it in the browser
             </a>
-            <a
-              href="https://app.useatlas.dev/demo"
-              className="inline-flex items-center rounded-lg border border-border bg-transparent px-3.5 py-2.5 text-[13.5px] text-fg transition-colors hover:border-border-strong hover:bg-bg-sunken"
-            >
-              Try the live demo →
+            <span aria-hidden className="mx-2 text-border-strong">·</span>
+            <a href="https://docs.useatlas.dev/self-hosted/getting-started/quick-start" className="text-fg underline decoration-border-strong underline-offset-4 hover:text-accent">
+              Self-host it
             </a>
-          </div>
-          <p className="mt-3.5 text-[13px] text-fg-muted">
-            14-day trial, no credit card. Or self-host — free and open source:{" "}
-            <code className="font-mono text-[12px] text-fg">bun create atlas-agent</code>
+            <span aria-hidden className="mx-2 text-border-strong">·</span>
+            <a href="https://docs.useatlas.dev/guides/mcp" className="text-fg underline decoration-border-strong underline-offset-4 hover:text-accent">
+              MCP guide
+            </a>
           </p>
         </div>
 
         <div className="relative">
-          <AnswerCard />
+          <DemoExchange />
         </div>
       </div>
 
-      <PipelineStrip />
+      <TierStrip />
     </section>
   );
 }

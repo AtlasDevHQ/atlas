@@ -161,8 +161,9 @@ function AnswerPane() {
         </div>
 
         <div>
-          <p className="mb-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">
-            // result · {CATEGORY_ROWS.length} rows · 7 validators passed
+          <p className="mb-2 flex flex-wrap items-center gap-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">
+            <span className="rounded border border-brand/40 px-2 py-[2px] text-[10px] uppercase text-brand">Surveyed</span>
+            <span>// result · {CATEGORY_ROWS.length} rows · 7 validators passed</span>
           </p>
           <div
             className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded-md border border-white/10 px-3 py-2.5 font-mono text-[12.5px]"
@@ -195,15 +196,17 @@ export function HowItWorks() {
       style={{ background: "var(--bg-raised)" }}
     >
       <header className="mb-10 max-w-[760px]">
+        <p className="mb-3 font-mono text-[11px] tracking-[0.06em] text-accent">// surveyed</p>
         <h2 className="m-0 mb-4 text-[36px] md:text-[46px] font-semibold leading-[1.05] tracking-[-0.03em] text-fg">
-          Why you can trust the answer.
+          Why a Surveyed answer cannot be wrong.
         </h2>
         <p className="m-0 text-base leading-[1.65] text-fg-muted">
           You define your data once in YAML — the entities, joins, and the terms
           your team actually uses. Atlas reads it on every question, writes the
           SQL, and runs it read-only behind seven validators, so you see exactly
-          what ran. Self-host Atlas and that YAML lives in your own repo,
-          versioned and reviewed in pull requests like the rest of your code.
+          what ran and the rows it read. Self-host Atlas and that YAML lives in
+          your own repo, versioned and reviewed in pull requests like the rest of
+          your code.
         </p>
       </header>
 

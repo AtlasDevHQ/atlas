@@ -1,3 +1,5 @@
+> **Superseded by docs/prd/launch-cycle.md (2026-09-03).** This draft describes a text-to-SQL product under an MIT license and must not be reused; the launch post is `apps/www/src/app/blog/a-name-on-every-fact` and the Show HN body is written from the PRD.
+
 # Why We Built Atlas: Text-to-SQL Is a Feature, Not a Product
 
 Every data-heavy application eventually gets the same feature request: "Can I just ask a question about my data?" Sales teams want pipeline numbers without opening a BI tool. Support teams want to look up customer metrics mid-conversation. Product managers want to check engagement data without waiting for an analyst.

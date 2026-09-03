@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Sora, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import WebMCP from "@/components/webmcp";
+import { SENTENCE } from "@/components/landing/data";
 
 const sora = Sora({
   subsets: ["latin"],
@@ -18,15 +19,13 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://www.useatlas.dev"),
   title: {
-    default: "Atlas — Ask your data anything, trust the answer.",
+    default: "Atlas — the company facts your AI agents can trust",
     template: "%s — Atlas",
   },
-  description:
-    "Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs, grounded in a semantic layer you control. Run it in the cloud or self-host it — open source.",
+  description: SENTENCE,
   openGraph: {
-    title: "Atlas — Ask your data anything, trust the answer.",
-    description:
-      "Atlas reads your semantic layer, writes the SQL, and runs it read-only behind 7 validators — SELECT-only, single-statement, whitelisted to your schema. Cloud or self-hosted.",
+    title: "Atlas — the company facts your AI agents can trust",
+    description: SENTENCE,
     url: "https://www.useatlas.dev",
     siteName: "Atlas",
     type: "website",
@@ -36,15 +35,14 @@ export const metadata: Metadata = {
         url: "/og.png",
         width: 1200,
         height: 630,
-        alt: "Atlas — Ask your data anything, trust the answer.",
+        alt: "Atlas — the company facts your AI agents can trust",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Atlas — Ask your data anything, trust the answer.",
-    description:
-      "Plain-English questions answered across your SQL warehouses and REST APIs, grounded in a semantic layer you control. Cloud or self-hosted, open source.",
+    title: "Atlas — the company facts your AI agents can trust",
+    description: SENTENCE,
     images: ["/og.png"],
   },
 };

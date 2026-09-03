@@ -1,3 +1,8 @@
+/**
+ * The Surveyed tier's introduction: the analyst is the tier that cannot be
+ * wrong. The "0" is writes — every query is SELECT-only — and the copy says
+ * why the data outranks anyone's recollection.
+ */
 export function BigStat() {
   return (
     <section
@@ -8,10 +13,11 @@ export function BigStat() {
         0
       </div>
       <div className="max-w-[720px]">
+        <p className="mb-3 font-mono text-[11px] tracking-[0.06em] text-accent">// surveyed — the tier that cannot be wrong</p>
         <p className="m-0 mb-3 text-xl md:text-[28px] font-medium leading-[1.3] tracking-[-0.02em] text-fg">
-          writes. Every query Atlas runs is SELECT-only, single-statement, and
-          whitelisted to your semantic layer — enforced by seven validators, not
-          suggested by a prompt.
+          writes. Every Surveyed answer is a SELECT-only, single-statement query,
+          whitelisted to a semantic layer you author, re-read from live rows —
+          so the data outranks what anyone remembers.
         </p>
         <p className="m-0 font-mono text-[12px] tracking-[0.04em] text-fg-muted">
           // empty check · mutation guard · AST parse · table whitelist · row-level security · auto LIMIT · statement timeout

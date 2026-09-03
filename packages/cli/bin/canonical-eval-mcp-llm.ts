@@ -630,6 +630,27 @@ type _AssertContractsDisjoint =
 const _contractsAreDisjoint: _AssertContractsDisjoint = true;
 
 /**
+ * Render a thrown non-Error for the artifact bundle — both the transport
+ * envelope in `bindMcpToolsForLlm` and the `streamText` catch in
+ * `runOneQuestion` read it. `String(obj)` is
+ * `[object Object]`; JSON keeps whatever the provider put in the payload
+ * (status, message, body). Falls back to `String` for values JSON cannot
+ * take (bigint, cycles).
+ */
+function describeNonError(err: unknown): string {
+  if (typeof err === "string") return err;
+  try {
+    return JSON.stringify(err) ?? String(err);
+  } catch (jsonErr) {
+    // stderr, not console: fd 1 is the `--json` artifact and is pinned.
+    process.stderr.write(
+      `[mcp-llm-eval] non-Error throw not serialisable (${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)})\n`,
+    );
+    return String(err);
+  }
+}
+
+/**
  * Translate the MCP tool surface to a Vercel AI SDK `ToolSet`. Every
  * tool's `execute` dispatches back through the MCP transport so the
  * round-trip the LLM sees is identical to what an external client
@@ -700,7 +721,7 @@ function bindMcpToolsForLlm(
           // typed `AtlasMcpToolError` recovery case.
           const transportEnvelope: TransportErrorEnvelope = {
             __transport: true,
-            error: err instanceof Error ? err.message : String(err),
+            error: err instanceof Error ? err.message : describeNonError(err),
             errorName: err instanceof Error ? err.name : "Unknown",
             stack: err instanceof Error ? err.stack : undefined,
           };
@@ -2403,25 +2424,6 @@ interface FailOutcomeInput {
   readonly summary: string;
 }
 
-/**
- * Render a thrown non-Error for the artifact bundle. `String(obj)` is
- * `[object Object]`; JSON keeps whatever the provider put in the payload
- * (status, message, body). Falls back to `String` for values JSON cannot
- * take (bigint, cycles).
- */
-function describeNonError(err: unknown): string {
-  if (typeof err === "string") return err;
-  try {
-    return JSON.stringify(err) ?? String(err);
-  } catch (jsonErr) {
-    // stderr, not console: fd 1 is the `--json` artifact and is pinned.
-    process.stderr.write(
-      `canonical-eval: non-Error throw not serialisable (${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)})\n`,
-    );
-    return String(err);
-  }
-}
-
 function failOutcome(input: FailOutcomeInput): McpLlmOutcome {
   const questionId = input.question.id;
   return {
@@ -2530,6 +2532,7 @@ function isTransportFail(c: RecordedToolCall): c is ErrorCall {
  */
 export const __forTesting__ = {
   grade: (input: GradeInput) => grade(input),
+  describeNonError,
   gradeMetric,
   gradeGlossary,
   gradePattern,

@@ -42,7 +42,7 @@ import {
   type DemoTokenRollup,
 } from "@/ui/lib/admin-schemas";
 import { demoSearchParams } from "./search-params";
-import { Inbox, Users } from "lucide-react";
+import { AlertTriangle, Inbox, Users } from "lucide-react";
 
 // ── Formatting helpers ───────────────────────────────────────────────
 
@@ -169,6 +169,11 @@ function ConfigPanel() {
     schema: GatewayCatalogResponseSchema,
   });
 
+  // Same rule as /admin/billing: a refetch error on top of a catalog we
+  // already hold keeps the picker (the stale list is still usable); only a
+  // catalog we never got falls back to the raw id.
+  const catalogFailed = !catalogLoading && catalogError !== null && catalog === undefined;
+
   const fields = form.fields;
   const maxStepsNum = fields ? Number(fields.maxSteps.value) : NaN;
   const rpmNum = fields ? Number(fields.rpm.value) : NaN;
@@ -179,7 +184,12 @@ function ConfigPanel() {
     !Number.isInteger(rpmNum) ||
     rpmNum < 0;
 
+  // `null` once the config has loaded means a non-gateway deploy: the demo
+  // runs the platform default and a gateway id would be passed verbatim to
+  // a provider that does not serve it, so the picker (gateway ids only)
+  // does not apply there.
   const effective = form.data?.effectiveModel ?? null;
+  const gatewayDeploy = effective !== null;
 
   return (
     <Card>
@@ -200,19 +210,43 @@ function ConfigPanel() {
                 <Label htmlFor="demo-model">Demo model</Label>
                 <div className="flex max-w-md items-start gap-2">
                   <div className="min-w-0 flex-1">
-                    {catalogError ? (
-                      // Catalog unreachable (or this operator lacks
-                      // `admin:settings` on the active workspace): fall back
-                      // to the raw id so the setting stays editable.
-                      <Input
-                        id="demo-model"
-                        value={fields.model.value}
-                        onChange={(e) => fields.model.set(e.target.value)}
-                        placeholder={effective ?? "Platform default"}
-                        className="font-mono text-sm"
-                      />
+                    {!gatewayDeploy || catalogFailed ? (
+                      // Raw id when the picker does not apply (non-gateway
+                      // deploy) or the catalog never loaded (gateway
+                      // unreachable, or this operator lacks `admin:settings`
+                      // on the active workspace) — and in the second case,
+                      // say why the picker is gone.
+                      <div className="space-y-1.5">
+                        <Input
+                          id="demo-model"
+                          value={fields.model.value}
+                          onChange={(e) => fields.model.set(e.target.value)}
+                          placeholder={effective ?? "Platform default"}
+                          className="font-mono text-sm"
+                        />
+                        {catalogFailed && (
+                          <div className="flex items-center gap-2 text-[11px] text-destructive">
+                            <AlertTriangle className="size-3 shrink-0" />
+                            <span>
+                              Couldn&apos;t load the model catalog — enter a
+                              gateway model id by hand.
+                            </span>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-2 text-[11px]"
+                              onClick={() => void refetchCatalog()}
+                            >
+                              Retry
+                            </Button>
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <GatewayModelPicker
+                        id="demo-model"
+                        placeholder={`Default · ${effective}`}
                         models={catalog?.models ?? []}
                         value={fields.model.value}
                         onChange={fields.model.set}
@@ -234,7 +268,9 @@ function ConfigPanel() {
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Pick a gateway model, or use the default
+                  {gatewayDeploy
+                    ? "Pick a gateway model, or use the default"
+                    : "Model id for the configured provider; blank uses the default"}
                   {effective ? (
                     <>
                       {" "}

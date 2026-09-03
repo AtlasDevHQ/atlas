@@ -47,20 +47,23 @@ function DemoExchange() {
             </div>
             <p className="m-0 text-[14px] leading-snug text-zinc-100">{attested.claim}</p>
             <p className="m-0 mt-2 font-mono text-[11px] text-zinc-400">
-              approved by a named person · source and date on the record
+              who said it · where · when — approved before it counted
             </p>
           </div>
         </div>
 
         <div>
-          <p className="mb-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">// also on the record — Atlas picks neither</p>
+          <p className="mb-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">// also attested — Atlas shows both and picks neither</p>
           <div
             className="rounded-md border border-amber-300/25 px-3 py-3"
             style={{ background: "oklch(0.10 0 0)" }}
           >
             <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="rounded border border-brand/40 px-2 py-[2px] font-mono text-[10px] uppercase tracking-[0.06em] text-brand">
+                Attested
+              </span>
               <span className="rounded border border-amber-300/40 px-2 py-[2px] font-mono text-[10px] uppercase tracking-[0.06em] text-amber-200/90">
-                Contradiction
+                In tension
               </span>
               <span className="font-mono text-[11px] text-zinc-400">
                 {contradiction.speaker} · {contradiction.role} · {contradiction.channel} · {contradiction.date}
@@ -109,9 +112,12 @@ function TierStrip() {
   );
 }
 
+// Split for line layout only. The tail keeps its leading space so the h1's
+// text content — what assistive tech and scrapers read — is the sentence
+// character for character.
 const [SENTENCE_HEAD, SENTENCE_TAIL] = (() => {
   const i = SENTENCE.indexOf(":");
-  return [SENTENCE.slice(0, i + 1), SENTENCE.slice(i + 1).trim()];
+  return [SENTENCE.slice(0, i + 1), SENTENCE.slice(i + 1)];
 })();
 
 export function Hero() {

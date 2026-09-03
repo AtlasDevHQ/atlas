@@ -55,7 +55,7 @@ export const TRUST_TIERS: ReadonlyArray<TrustTier> = [
   {
     name: "Surveyed",
     what: "Drawn directly from the company's own data.",
-    why: "True by construction — the answer re-reads the live rows. Nobody interpreted anything, and it cannot go stale between readings.",
+    why: "True by construction — the answer re-reads the live rows. Nobody interpreted anything, so nothing can have been interpreted wrong, and it cannot go stale between readings.",
   },
   {
     name: "Attested",
@@ -65,7 +65,7 @@ export const TRUST_TIERS: ReadonlyArray<TrustTier> = [
   {
     name: "On the record",
     what: "The raw source material itself.",
-    why: "Not a claim about what is true — what was actually said, unedited. Trustworthy as testimony, not as fact.",
+    why: "It is not a claim about what is true — it is what was actually said, unedited. Trustworthy as testimony, not as fact.",
   },
 ];
 

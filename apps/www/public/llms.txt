@@ -14,15 +14,10 @@ Three kinds of thing live in the Atlas, and every answer says which it is drawin
 
 ## Core capabilities
 
-- **Text-to-SQL agent**: Multi-step reasoning powered by Vercel AI SDK. Explores schema, writes validated SQL, runs Python analysis, returns charts and narrative.
-- **Semantic layer**: YAML-based entity definitions with auto-profiling, glossary terms, metrics, joins, and LLM enrichment. Versioned in git, reviewed in PRs.
-- **8 databases**: PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce, Elasticsearch/OpenSearch.
-- **6 LLM providers**: Anthropic, OpenAI, AWS Bedrock, Ollama, OpenAI-compatible (vLLM, TGI, LiteLLM), AI Gateway.
-- **24 plugins**: Datasource adapters, sandbox backends (nsjail, E2B, Daytona, Vercel sandbox), interaction channels, action triggers, context providers. Extensible via Plugin SDK.
-- **9+ integration channels**: Slack, Microsoft Teams, Discord, Email, Google Chat, Telegram, GitHub, Linear, WhatsApp, plus webhooks.
-- **Embeddable**: Script tag widget, React component (`@useatlas/react`), TypeScript SDK (`@useatlas/sdk`), headless API.
-- **MCP server**: Works with Claude Desktop, Cursor, and any MCP-compatible client.
-- **Dynamic learning**: Learns query patterns over time. Stored as auditable YAML, not opaque embeddings.
+- **The Company Atlas**: facts extracted from what the company already says (chat, transcripts, mail), each approved by a named person before it counts, carrying its source and date; contradictions surfaced with both sources; a coverage page that marks what nobody has surveyed.
+- **The analyst (Surveyed tier)**: a YAML semantic layer you author — entities, joins, glossary terms, pinned metrics — and an agent that writes validated, read-only SQL against it and returns rows, charts and narrative.
+- **Agent-native**: an MCP server (hosted over OAuth 2.1, self-hosted over stdio) for Claude Desktop, Cursor, Continue and any MCP client; a TypeScript SDK; an embeddable React component and script-tag widget; chat-platform adapters.
+- **Datasources, LLM providers, plugins and integrations**: the full inventories live in the docs — https://docs.useatlas.dev/getting-started/connect-your-data, https://docs.useatlas.dev/guides/model-routing, https://docs.useatlas.dev/plugins/authoring-guide, https://docs.useatlas.dev/guides/integrations.
 
 ## Security
 

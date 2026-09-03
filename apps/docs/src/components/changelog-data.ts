@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.27",
+    title: "The Launch Cycle Opens",
+    date: "2026-09-03",
+    summary:
+      "The hosted demo can now be tried from an AI agent without giving anything first. One command adds an Atlas demo server to Claude Desktop or Cursor, and the first question is answered before any email is asked for — against a fictional company, NovaMart, whose facts were extracted from synthetic messages and approved by a person, so every answer carries a name, a source and a date. The demo shows the product honestly: one claim two people disagree about, shown as a disagreement, and one channel nobody has surveyed yet, shown as unsurveyed.",
+    highlights: [
+      "Anonymous demo over MCP. `bunx @useatlas/mcp init --hosted --demo --write` mints a short-lived identity and writes an `atlas-demo` server entry without touching an existing `atlas` one. It reads only, sees only the demo workspace, and is rate limited both per identity and per network address; addresses are stored hashed. Sharing an email is optional and is only offered after the first answer",
+      "The NovaMart demo corpus. Eleven Slack threads, a meeting transcript and a mail thread — all fictional, marked as such on every identifier — ingested through the same path a real workspace uses and approved through the real review gate, so the demo cannot show anything the product would not do for you",
+      "One contradiction, on purpose. Two people state different return windows and both are published, each marked as in tension with the other, because the point of a human gate is that disagreements are visible rather than silently resolved",
+      "Fewer false contradictions. Claims about the same company but different subjects — revenue and a return window, say — were being marked as in tension with each other. A claim is now only paired against a rival when a reviewer has said that kind of fact has a single answer",
+      "What counts as extractable is now measured. The review coverage view reports how many messages the extraction lane set aside as having nothing to extract, alongside what it proposed, so the size of the filter's effect is a number rather than a feeling",
+      "Five public-copy claims the product does not back were removed from the website and docs",
+    ],
+  },
+  {
     version: "v0.2.26",
     title: "Measuring the Extraction Cascade",
     date: "2026-09-02",

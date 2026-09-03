@@ -434,6 +434,9 @@ export const CLEANUP_TABLE_RULES = {
   // classified 'stays' rather than exported: the target rebuilds it from a
   // uniformly-NULL first cycle.
   brain_audience_reverify_attempt: { kind: "column", column: "workspace_id" },
+  // The anonymous demo principal's ledger (#5604) — `stays`, keyed by the
+  // demo workspace's id; no FK either way.
+  demo_anonymous_sessions: { kind: "column", column: "workspace_id" },
   // The Coverage Surface's dated roster and its cycle record (#5213, ADR-0041).
   // Column-scoped and phase-indifferent: no FK in either direction — the roster
   // stores a channel id and a length-prefixed `<entity>`/`<dimension>` pair as

@@ -155,13 +155,21 @@ export function getDemoConfig(): {
 // ---------------------------------------------------------------------------
 
 /**
- * Derive the HMAC key for demo tokens. Uses BETTER_AUTH_SECRET with a
- * ":demo" suffix to avoid collision with other derived keys.
+ * The purposes a demo-derived key serves. Each purpose derives its OWN key
+ * from `BETTER_AUTH_SECRET`, so a token signed for one purpose can never verify
+ * under another: an anonymous MCP token (#5604) is not an email demo token,
+ * and neither is the salt that hashes a visitor's IP at rest.
  */
-function getDemoKey(): Buffer | null {
+export type DemoKeyPurpose = "demo" | "demo-anon" | "demo-ip";
+
+/**
+ * Derive the HMAC key for one demo purpose. Uses BETTER_AUTH_SECRET with a
+ * ":<purpose>" suffix to avoid collision with other derived keys.
+ */
+export function deriveDemoKey(purpose: DemoKeyPurpose): Buffer | null {
   const secret = process.env.BETTER_AUTH_SECRET;
   if (!secret) return null;
-  return crypto.createHash("sha256").update(secret + ":demo").digest();
+  return crypto.createHash("sha256").update(`${secret}:${purpose}`).digest();
 }
 
 function base64urlEncode(data: Buffer | string): string {
@@ -179,37 +187,40 @@ interface DemoTokenPayload {
 }
 
 /**
- * Sign a demo token for the given email.
- * Returns the token string, or null if no signing key is available.
+ * Sign an arbitrary JSON payload under one demo purpose's key. The payload
+ * MUST carry an `exp` (epoch ms) — {@link verifyDemoPayload} refuses a token
+ * without one, so a purpose can never mint a token that outlives its policy.
+ * Returns null when no signing key is available (`BETTER_AUTH_SECRET` unset).
+ *
+ * Shared by the email demo token and the anonymous MCP token (#5604) so the
+ * HMAC + constant-time-compare discipline lives once.
  */
-export function signDemoToken(email: string): { token: string; expiresAt: number } | null {
-  const key = getDemoKey();
+export function signDemoPayload(
+  payload: Record<string, unknown> & { exp: number },
+  purpose: DemoKeyPurpose,
+): string | null {
+  const key = deriveDemoKey(purpose);
   if (!key) {
-    log.error("Cannot sign demo token: BETTER_AUTH_SECRET is not set");
+    log.error({ purpose }, "Cannot sign demo token: BETTER_AUTH_SECRET is not set");
     return null;
   }
-
-  const normalized = email.toLowerCase().trim();
-  const exp = Date.now() + DEMO_TOKEN_TTL_MS;
-  const payload: DemoTokenPayload = { email: normalized, exp };
   const payloadStr = base64urlEncode(JSON.stringify(payload));
   const signature = crypto.createHmac("sha256", key).update(payloadStr).digest();
-  const signatureStr = base64urlEncode(signature);
-
-  return {
-    token: `${payloadStr}.${signatureStr}`,
-    expiresAt: exp,
-  };
+  return `${payloadStr}.${base64urlEncode(signature)}`;
 }
 
 /**
- * Verify a demo token and extract the email.
- * Returns the email on success, null on failure (expired, tampered, malformed).
+ * Verify a token signed by {@link signDemoPayload} under the same purpose and
+ * return its payload, or null (expired, tampered, malformed, wrong purpose).
+ * Callers narrow the returned record to their own shape.
  */
-export function verifyDemoToken(token: string): string | null {
-  const key = getDemoKey();
+export function verifyDemoPayload(
+  token: string,
+  purpose: DemoKeyPurpose,
+): (Record<string, unknown> & { exp: number }) | null {
+  const key = deriveDemoKey(purpose);
   if (!key) {
-    log.warn("Cannot verify demo token: BETTER_AUTH_SECRET is not set");
+    log.warn({ purpose }, "Cannot verify demo token: BETTER_AUTH_SECRET is not set");
     return null;
   }
 
@@ -217,7 +228,7 @@ export function verifyDemoToken(token: string): string | null {
   if (parts.length !== 2) {
     // Active-attack signal: a non-empty Bearer header that doesn't even
     // match the demo-token shape. Probe traffic is worth seeing in logs.
-    log.warn({ partsCount: parts.length }, "Demo token rejected — malformed structure");
+    log.warn({ partsCount: parts.length, purpose }, "Demo token rejected — malformed structure");
     return null;
   }
 
@@ -238,23 +249,50 @@ export function verifyDemoToken(token: string): string | null {
     // Active-attack signal: token structure is valid but signature does
     // not match the server's HMAC key. This is the bright-line "tampered"
     // event security ops should be able to see.
-    log.warn("Demo token rejected — signature mismatch");
+    log.warn({ purpose }, "Demo token rejected — signature mismatch");
     return null;
   }
 
   // Parse payload
-  let payload: DemoTokenPayload;
+  let payload: unknown;
   try {
     const decoded = base64urlDecode(payloadStr).toString("utf8");
-    payload = JSON.parse(decoded) as DemoTokenPayload;
+    payload = JSON.parse(decoded);
   } catch {
     // intentionally ignored: malformed or unparseable payload JSON — reject token
     return null;
   }
 
-  if (typeof payload.email !== "string" || typeof payload.exp !== "number") return null;
-  if (payload.exp < Date.now()) return null;
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const exp = record.exp;
+  if (typeof exp !== "number") return null;
+  if (exp < Date.now()) return null;
 
+  return { ...record, exp };
+}
+
+/**
+ * Sign a demo token for the given email.
+ * Returns the token string, or null if no signing key is available.
+ */
+export function signDemoToken(email: string): { token: string; expiresAt: number } | null {
+  const normalized = email.toLowerCase().trim();
+  const exp = Date.now() + DEMO_TOKEN_TTL_MS;
+  const payload: DemoTokenPayload = { email: normalized, exp };
+  const token = signDemoPayload({ ...payload }, "demo");
+  if (!token) return null;
+  return { token, expiresAt: exp };
+}
+
+/**
+ * Verify a demo token and extract the email.
+ * Returns the email on success, null on failure (expired, tampered, malformed).
+ */
+export function verifyDemoToken(token: string): string | null {
+  const payload = verifyDemoPayload(token, "demo");
+  if (!payload) return null;
+  if (typeof payload.email !== "string") return null;
   return payload.email;
 }
 

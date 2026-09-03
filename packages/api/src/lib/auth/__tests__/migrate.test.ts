@@ -662,6 +662,12 @@ describe("migrateAuthTables", () => {
             // already-applied set so this "all applied" test sees zero new
             // migrations.
             { name: "0214_brain_facts_published_at.sql" },
+            // 0215 (#5604) — demo_anonymous_sessions, the anonymous demo
+            // principal's ledger. Atlas-internal table, no Better Auth
+            // involvement, so it runs in every auth mode — must be in the
+            // already-applied set so this "all applied" test sees zero new
+            // migrations.
+            { name: "0215_demo_anonymous_sessions.sql" },
           ],
         };
       }

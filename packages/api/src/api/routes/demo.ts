@@ -9,6 +9,8 @@
  *   POST /chat           — demo chat (mirrors main chat route with demo limits)
  *   GET  /conversations   — list demo user's conversations
  *   GET  /conversations/:id — get demo conversation with messages
+ *   POST /anonymous       — mint an anonymous demo principal for the MCP door (#5604)
+ *   POST /anonymous/email — optional email hand-off, after the first answer only
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
@@ -47,7 +49,18 @@ import {
   demoRunAgentModelParams,
   captureDemoLead,
   countDemoConversations,
+  deriveDemoKey,
 } from "@atlas/api/lib/demo";
+import {
+  captureAnonymousDemoEmail,
+  checkAnonymousDemoLimits,
+  getAnonymousDemoTokenTtlMs,
+  resolveDemoWorkspaceId,
+  signAnonymousDemoToken,
+  startAnonymousDemoSession,
+  verifyAnonymousDemoToken,
+} from "@atlas/api/lib/demo-anonymous";
+import { buildDemoMcpUrl } from "@atlas/api/lib/mcp/connect-url";
 import { withRequestId, type AuthEnv } from "./middleware";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
@@ -220,6 +233,30 @@ const DemoStartResponseSchema = z.object({
   conversationCount: z.number().int(),
 });
 
+/** #5604 — the anonymous mint takes an optional client label and nothing else. */
+export const DemoAnonymousStartSchema = z.object({
+  client: z.string().max(200).optional().openapi({
+    description: "Free-text label for the MCP client being configured (e.g. claude-desktop). Stored for counting, never shown.",
+  }),
+});
+
+const DemoAnonymousStartResponseSchema = z.object({
+  token: z.string().openapi({ description: "Bearer for the /mcp/demo endpoint. Expires at `expiresAt`." }),
+  expiresAt: z.number().openapi({ description: "Epoch milliseconds." }),
+  sessionId: z.string().openapi({ description: "The minted identity — the `demo_anonymous_sessions.id` row." }),
+  workspaceId: z.string().openapi({ description: "The ONE workspace this principal can reach." }),
+  mcpUrl: z.string().openapi({ description: "The Streamable HTTP MCP endpoint to point the client at." }),
+});
+
+export const DemoAnonymousEmailSchema = z.object({
+  email: z.string().email("Invalid email address"),
+});
+
+const DemoAnonymousEmailResponseSchema = z.object({
+  ok: z.literal(true),
+  returning: z.boolean(),
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -233,6 +270,16 @@ function extractDemoEmail(req: Request): string | null {
   if (!match) return null;
 
   return verifyDemoToken(match[1]);
+}
+
+/** Extract and verify an ANONYMOUS demo token (#5604). Distinct key from the email token. */
+function extractAnonymousDemoSession(req: Request): { sessionId: string; workspaceId: string } | null {
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader) return null;
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match) return null;
+  const claims = verifyAnonymousDemoToken(match[1]);
+  return claims ? { sessionId: claims.sessionId, workspaceId: claims.workspaceId } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +450,93 @@ const getDemoConversationRoute = createRoute({
     },
     500: {
       description: "Failed to load conversation",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+  },
+});
+
+const demoAnonymousStartRoute = createRoute({
+  method: "post",
+  path: "/anonymous",
+  tags: ["Demo"],
+  summary: "Mint an anonymous demo principal (MCP)",
+  description:
+    "Mints a short-lived anonymous demo identity for the hosted MCP demo endpoint (/mcp/demo) — no account, no email. " +
+    "The principal is scoped to the demo workspace only, carries read-only reach (searchAtlas + executeSQL), and is " +
+    "rate-limited per client IP and per minted identity. Email capture is optional and only possible after the first answer " +
+    "(see POST /anonymous/email). Fails closed with a request id when the demo workspace cannot be resolved.",
+  request: {
+    body: {
+      content: { "application/json": { schema: DemoAnonymousStartSchema } },
+      required: false,
+    },
+  },
+  responses: {
+    200: {
+      description: "Anonymous demo principal minted",
+      content: { "application/json": { schema: DemoAnonymousStartResponseSchema } },
+    },
+    400: {
+      description: "Invalid JSON body",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded (IP-based)",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    500: {
+      description: "Demo mode not properly configured, or the session could not be recorded",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    503: {
+      description: "The demo workspace could not be resolved — the anonymous door refuses (fail-closed)",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+  },
+});
+
+const demoAnonymousEmailRoute = createRoute({
+  method: "post",
+  path: "/anonymous/email",
+  tags: ["Demo"],
+  summary: "Optionally share an email from an anonymous demo session",
+  description:
+    "Attaches an email to an anonymous demo session AFTER it has received at least one answer. " +
+    "Before the first answer the request is refused with 409 answer_required — email capture is never a precondition " +
+    "on this door. The email is recorded through the same lead-capture path the email demo uses.",
+  request: {
+    body: {
+      content: { "application/json": { schema: DemoAnonymousEmailSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "Email recorded",
+      content: { "application/json": { schema: DemoAnonymousEmailResponseSchema } },
+    },
+    400: {
+      description: "Invalid JSON body",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    401: {
+      description: "Valid anonymous demo token required",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    409: {
+      description: "The session has not received an answer yet — email capture comes after the first answer",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    422: {
+      description: "Validation error (invalid email)",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: DemoErrorSchema } },
+    },
+    500: {
+      description: "Failed to record the email",
       content: { "application/json": { schema: DemoErrorSchema } },
     },
   },
@@ -791,6 +925,195 @@ demo.openapi(getDemoConversationRoute, async (c) => {
 
     return c.json(conversationResponse(conv.data), 200);
   }), { label: "get demo conversation" });
+});
+
+// POST /anonymous — mint an anonymous demo principal for the MCP door (#5604)
+demo.openapi(demoAnonymousStartRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const requestId = crypto.randomUUID();
+    const ip = getClientIP(c.req.raw);
+
+    // Per-IP budget — the same bucket the tool calls charge, so a client that
+    // mints in a loop and a client that queries in a loop hit one ceiling.
+    const limit = yield* Effect.promise(() => checkAnonymousDemoLimits({ ip, sessionId: null }));
+    if (!limit.allowed) {
+      const retryAfterSeconds = Math.ceil(limit.retryAfterMs / 1000);
+      log.warn({ requestId, bucket: limit.bucket, retryAfterSeconds }, "Anonymous demo mint rate-limited");
+      return c.json(
+        { error: "rate_limited", message: "Too many requests. Please wait.", retryAfterSeconds, requestId },
+        { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+      );
+    }
+
+    // The body is optional; an empty body is a valid mint.
+    let clientLabel: string | null = null;
+    const rawBody = yield* Effect.promise(() => c.req.text());
+    if (rawBody.trim().length > 0) {
+      let body: unknown;
+      try {
+        body = JSON.parse(rawBody);
+      } catch (err) {
+        log.debug({ requestId, err: err instanceof Error ? err.message : String(err) }, "Demo /anonymous: invalid JSON body");
+        return c.json({ error: "invalid_request", message: "Invalid JSON body.", requestId }, 400);
+      }
+      const parsed = DemoAnonymousStartSchema.safeParse(body);
+      if (!parsed.success) {
+        return c.json({ error: "invalid_request", message: "Invalid request body.", requestId }, 400);
+      }
+      clientLabel = parsed.data.client ?? null;
+    }
+
+    // Fail closed: no resolvable demo workspace, no principal.
+    const workspace = yield* Effect.promise(() => resolveDemoWorkspaceId());
+    if (!workspace.ok) {
+      log.error({ requestId, reason: workspace.reason }, "Anonymous demo mint refused — demo workspace unresolved");
+      return c.json(
+        {
+          error: "demo_workspace_unavailable",
+          message: "The demo workspace is not available right now. Quote the request id if this persists.",
+          requestId,
+        },
+        503,
+      );
+    }
+
+    // The signing key is checked BEFORE the session row is inserted: a row
+    // whose token could never be minted would still be counted by the
+    // launch-cycle `created_at` query, silently inflating it.
+    if (deriveDemoKey("demo-anon") === null) {
+      log.error({ requestId }, "Anonymous demo mint refused — BETTER_AUTH_SECRET is not set");
+      return c.json(
+        { error: "configuration_error", message: "Demo mode is not properly configured.", requestId },
+        500,
+      );
+    }
+
+    const expiresAt = Date.now() + getAnonymousDemoTokenTtlMs();
+    const sessionResult = yield* Effect.tryPromise({
+      try: () => startAnonymousDemoSession({
+        workspaceId: workspace.id,
+        ip,
+        clientLabel: clientLabel ?? c.req.header("user-agent") ?? null,
+        expiresAt,
+      }),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (sessionResult._tag === "Left") {
+      log.error({ requestId, err: sessionResult.left.message }, "Anonymous demo session could not be recorded");
+      return c.json(
+        { error: "internal_error", message: "Could not start a demo session. Quote the request id when reporting.", requestId },
+        500,
+      );
+    }
+    const session = sessionResult.right;
+
+    const signed = signAnonymousDemoToken(session.id, workspace.id, expiresAt - Date.now());
+    if (!signed) {
+      log.error({ requestId }, "Anonymous demo token signing failed — BETTER_AUTH_SECRET may not be set");
+      return c.json(
+        { error: "configuration_error", message: "Demo mode is not properly configured.", requestId },
+        500,
+      );
+    }
+
+    log.info({ requestId, sessionId: session.id, workspaceId: workspace.id }, "Anonymous demo principal minted");
+    return c.json(
+      {
+        token: signed.token,
+        expiresAt: signed.expiresAt,
+        sessionId: session.id,
+        workspaceId: workspace.id,
+        mcpUrl: buildDemoMcpUrl(new URL(c.req.url).origin),
+      },
+      200,
+    );
+  }), { label: "demo anonymous start" });
+});
+
+// POST /anonymous/email — optional email hand-off, after the first answer only (#5604)
+demo.openapi(demoAnonymousEmailRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const requestId = crypto.randomUUID();
+    const claims = extractAnonymousDemoSession(c.req.raw);
+    if (!claims) {
+      return c.json(
+        { error: "auth_error", message: "Valid anonymous demo token required.", requestId },
+        401,
+      );
+    }
+    const ip = getClientIP(c.req.raw);
+    const limit = yield* Effect.promise(() => checkAnonymousDemoLimits({ ip, sessionId: claims.sessionId }));
+    if (!limit.allowed) {
+      const retryAfterSeconds = Math.ceil(limit.retryAfterMs / 1000);
+      return c.json(
+        { error: "rate_limited", message: "Too many requests. Please wait.", retryAfterSeconds, requestId },
+        { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+      );
+    }
+
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json(),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") {
+      log.debug({ requestId, err: bodyResult.left.message }, "Demo /anonymous/email: invalid JSON body");
+      return c.json({ error: "invalid_request", message: "Invalid JSON body.", requestId }, 400);
+    }
+    const parsed = DemoAnonymousEmailSchema.safeParse(bodyResult.right);
+    if (!parsed.success) {
+      return c.json(
+        { error: "validation_error", message: "A valid email address is required.", requestId },
+        422,
+      );
+    }
+
+    const captured = yield* Effect.tryPromise({
+      try: () => captureAnonymousDemoEmail({
+        sessionId: claims.sessionId,
+        email: parsed.data.email,
+        ip,
+        userAgent: c.req.header("user-agent") ?? null,
+        requestId,
+      }),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (captured._tag === "Left") {
+      log.error({ requestId, err: captured.left.message }, "Anonymous demo email capture failed");
+      return c.json(
+        { error: "internal_error", message: "Could not record the email. Quote the request id when reporting.", requestId },
+        500,
+      );
+    }
+    const result = captured.right;
+    if (!result.ok) {
+      switch (result.reason) {
+        case "answer_required":
+          return c.json(
+            {
+              error: "answer_required",
+              message: "Ask the demo a question first — an email can be shared after the first answer, never before.",
+              requestId,
+            },
+            409,
+          );
+        case "session_not_found":
+          return c.json(
+            { error: "auth_error", message: "This demo session no longer exists. Mint a new one.", requestId },
+            401,
+          );
+        case "invalid_email":
+          return c.json(
+            { error: "validation_error", message: "A valid email address is required.", requestId },
+            422,
+          );
+        default: {
+          const _exhaustive: never = result.reason;
+          return _exhaustive;
+        }
+      }
+    }
+    return c.json({ ok: true as const, returning: result.returning }, 200);
+  }), { label: "demo anonymous email" });
 });
 
 export { demo };

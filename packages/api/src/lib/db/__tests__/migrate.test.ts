@@ -463,7 +463,12 @@ describe("runMigrations", () => {
     //   and not `medianHoursToDecision`. One nullable column, forward-only and
     //   never backfilled; no index, deliberately — see the migration header) =
     //   215.
-    expect(count).toBe(215);
+    //   Plus 0215 (demo_anonymous_sessions — #5604: the anonymous demo
+    //   principal's ledger. One row per minted MCP demo identity; `id` is the
+    //   principal and `created_at` is what the launch-cycle gate counts. A
+    //   hashed IP, never a raw one; `answer_count` gates the optional,
+    //   after-first-answer email hand-off) = 216.
+    expect(count).toBe(216);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -789,6 +794,7 @@ describe("runMigrations", () => {
         "0212_region_migrations_vocabulary_memory_refusals.sql",
         "0213_workspace_action_credentials.sql",
         "0214_brain_facts_published_at.sql",
+        "0215_demo_anonymous_sessions.sql",
       ],
     });
 

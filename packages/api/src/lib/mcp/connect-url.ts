@@ -83,3 +83,15 @@ export function buildMcpConnectUrl(workspaceId: string, baseUrl?: string): strin
   }
   return `${base}/mcp/${workspaceId}`;
 }
+
+/**
+ * The anonymous demo door (#5604): `/mcp/demo` on the public MCP base. Takes a
+ * `fallbackOrigin` (the request's own origin) for a self-hosted operator who
+ * set neither `ATLAS_PUBLIC_API_URL` nor `BETTER_AUTH_URL` — the demo mint
+ * endpoint is the one place a relative URL would be handed straight to an MCP
+ * client, so it never returns one.
+ */
+export function buildDemoMcpUrl(fallbackOrigin: string, baseUrl?: string): string {
+  const base = resolveMcpBaseUrl(baseUrl) || fallbackOrigin.replace(/\/+$/, "");
+  return `${base}/mcp/demo`;
+}

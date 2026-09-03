@@ -3092,7 +3092,14 @@ export function makeSchedulerLive(
             const { demoCleanupTick } = require("@atlas/api/lib/demo") as {
               demoCleanupTick: () => Promise<void>;
             };
+            // #5604 — the anonymous principal's per-IP / per-identity windows
+            // live in their own module; sweep them on the same cadence.
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
+            const { anonymousDemoCleanupTick } = require("@atlas/api/lib/demo-anonymous") as {
+              anonymousDemoCleanupTick: () => Promise<void>;
+            };
             await demoCleanupTick();
+            await anonymousDemoCleanupTick();
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
         }),

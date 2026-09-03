@@ -1474,6 +1474,63 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // Anonymous demo principal (#5604) — the MCP front door answers before it
+  // asks for an email. Every knob is platform-scoped and hot-reloadable: an
+  // operator tunes the abuse budget without a redeploy, and a workspace must
+  // never be able to move the bound that scopes the anonymous principal.
+  {
+    // Resolved by SLUG, not stored id: the demo workspace is created by the
+    // operator (`seed demo-atlas` refuses any other slug), and a slug survives
+    // re-provisioning where an id would go stale. `resolveDemoWorkspaceId()`
+    // fails closed when no organization carries this slug.
+    key: "ATLAS_DEMO_WORKSPACE_SLUG",
+    section: "Demo",
+    label: "Anonymous Demo Workspace Slug",
+    description:
+      "Slug of the ONE organization the anonymous MCP demo principal is scoped to. The anonymous door refuses every request when no organization carries this slug.",
+    type: "string",
+    default: "novamart-demo",
+    envVar: "ATLAS_DEMO_WORKSPACE_SLUG",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_DEMO_ANON_IP_RATE_LIMIT_RPM",
+    section: "Demo",
+    label: "Anonymous Demo IP Rate Limit (RPM)",
+    description:
+      "Max anonymous-demo requests per minute per client IP — session mints and tool calls share the bucket (0 = disabled). Falls back to one shared bucket when no trusted proxy reports an IP.",
+    type: "number",
+    default: "20",
+    envVar: "ATLAS_DEMO_ANON_IP_RATE_LIMIT_RPM",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_DEMO_ANON_RATE_LIMIT_RPM",
+    section: "Demo",
+    label: "Anonymous Demo Identity Rate Limit (RPM)",
+    description:
+      "Max tool calls per minute per minted anonymous demo identity (0 = disabled). Never higher than the email demo's budget is the intent — anonymous means less reach.",
+    type: "number",
+    default: "10",
+    envVar: "ATLAS_DEMO_ANON_RATE_LIMIT_RPM",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_DEMO_ANON_TOKEN_TTL_MINUTES",
+    section: "Demo",
+    label: "Anonymous Demo Token TTL (minutes)",
+    description:
+      "Lifetime of a minted anonymous demo token, in minutes (1–1440). Deliberately shorter than the email demo's 24 hours.",
+    type: "number",
+    default: "120",
+    envVar: "ATLAS_DEMO_ANON_TOKEN_TTL_MINUTES",
+    scope: "platform",
+    saasVisible: false,
+  },
+
   // Abuse Prevention — anomaly-detection thresholds (lib/security/abuse.ts).
   // Hot-reloadable: `getAbuseConfig()` reads per query-event. Platform-only and
   // hidden from tenants by design — a workspace must not tune the thresholds

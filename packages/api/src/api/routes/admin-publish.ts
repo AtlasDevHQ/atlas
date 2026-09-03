@@ -56,6 +56,7 @@ import {
 } from "@atlas/api/lib/content-mode";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { recordedAdminAuthor } from "@atlas/api/lib/brain/recorded-author";
 
 /**
  * Module-level content-mode registry (#1515 phase 2e).
@@ -246,6 +247,7 @@ adminPublish.openapi(publishRoute, async (c) =>
   runHandler(c, "publish mode", async () => {
     const { requestId, orgId } = c.get("orgContext");
     const authResult = c.get("authResult");
+    const publishedBy = recordedAdminAuthor(authResult);
 
     // Body validation is handled upstream by `validationHook` (returns 422
     // on invalid shapes) and `requireOrgContext()` (returns 404 when the
@@ -295,8 +297,13 @@ adminPublish.openapi(publishRoute, async (c) =>
         // applyTombstones + promoteDraftEntities. A failure surfaces as
         // `PublishPhaseError` tagged with `{ table, phase }`; `Effect.runPromise`
         // throws on failure and `withInternalTransaction` rolls back.
+        // The approver reaches the adapters here (#5635). `authResult.user?.id`
+        // is undefined on a no-auth deployment, where a human is still the one
+        // publishing — `recordedAuthor` maps that to the `local-operator`
+        // sentinel rather than to NULL, which would read as "not attributable"
+        // and is a different statement.
         const reports = await Effect.runPromise(
-          contentModeRegistry.runPublishPhases(client, orgId),
+          contentModeRegistry.runPublishPhases(client, orgId, publishedBy),
         );
 
         // Phase 4: archive requested connections (+ cascade to their entities +

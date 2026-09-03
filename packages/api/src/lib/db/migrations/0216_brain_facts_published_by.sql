@@ -1,0 +1,93 @@
+-- 0216 — `brain_facts.published_by`: the approval names its approver (#5635).
+--
+-- Migration 0214 made an approval datable. It is still not ATTRIBUTABLE: the
+-- row records THAT a reviewer approved a claim and WHEN, and nothing records
+-- WHO. The product claim built on this column set is the opposite —
+--
+--   "every one carries its source, its date, and the name of the person who
+--    approved it"  (docs/prd/launch-cycle.md)
+--
+-- — and it is rendered on the README, the landing page, the docs, both
+-- `llms.txt` surfaces and the Open Graph card. Source and date were true.
+-- The approver was not: `searchAtlas` returns the SPEAKER's identity from
+-- `provenance.attribution`, which is who said a thing, never who stood behind
+-- it. Measured against us prod before this migration: no result in the
+-- anonymous demo's payload carried an approver on any of six results, and
+-- `history.changedBy` was NULL on all of them.
+--
+-- ## The audit row was the only record, and #5424 already showed it is not enough
+--
+-- `admin-publish.ts` states it in its own metadata comment: until #5424 added
+-- `promotedRows`, the audit row "was the only durable record naming the person
+-- who made a claim authoritative, and it named a COUNT — so the only way back
+-- to the publisher of a given fact was joining `brain_facts.updated_at` to this
+-- row's timestamp. `updated_at` is last-write-wins: a later retraction,
+-- widening or marker overwrites it and the link is gone for good. Two published
+-- facts in us prod had already lost it."
+--
+-- `promotedRows` fixed the durability of the RECORD. It did not make the
+-- approver READABLE at the point the claim is served: an answer would have to
+-- scan `audit_log` metadata for its own id, per fact, per request. This column
+-- puts the answer on the row that carries the claim.
+--
+-- ## Three-valued, like `brain_vocabulary_edge.approved_by`
+--
+--   * a user id      — a human approved it, and this is who
+--   * `local-operator` — a human on a no-auth deployment, where there is no
+--                        user id to name. The same sentinel the vocabulary
+--                        edge uses, spelled the same way, so a reader who has
+--                        met one has met both.
+--   * NULL           — not attributable. Published before this migration, or
+--                      restored verbatim by a region import.
+--
+-- Unlike the vocabulary edge, NULL here never means "auto-approved, no human":
+-- a fact has no auto-approval path at all. Every non-NULL value names a person.
+--
+-- ## FORWARD-ONLY, and never backfilled — 0214's argument exactly
+--
+-- Every row existing when this runs reads NULL, permanently. The audit rows
+-- that could name some publishers are `promotedRows` entries written only since
+-- #5424, they do not cover the pre-0214 population, and a partial backfill
+-- would be worse than the gap: it would make "approver unknown" mean two
+-- different things on rows that look identical. NULL means "not attributable",
+-- which is true.
+--
+-- ## The widening path stamped NEITHER column, and this migration is where that is fixed
+--
+-- `WIDEN_AND_PROMOTE_FACTS_SQL` sets `status = 'published'` and has never
+-- stamped `published_at` — only `PROMOTE_FACTS_SQL` does. The two statements
+-- partition the same publish: a draft whose grant widens goes through the
+-- widening arm and the other through the plain one, so a widened fact has been
+-- publishable-without-a-date since 0214 landed. It has not bitten yet only
+-- because no fact has widened on a serving region since. Verified on us prod
+-- before this migration: 40 published facts, 27 stamped, and all 13 unstamped
+-- predate 0214 — so the latent arm has never fired, and it is being closed
+-- before it can. Both columns are now written by both arms.
+--
+-- ## The column is itself gated
+--
+-- `published_by` joins `UPDATE_GATED_COLUMNS` in
+-- `scripts/check-brain-fact-promotion.sh` on `published_at`'s exact terms, and
+-- for a sharper reason. A rogue `published_at` write manufactures evidence of a
+-- review that never happened; a rogue `published_by` write manufactures
+-- evidence of a review that never happened AND PUTS A NAMED PERSON'S NAME ON
+-- IT. UPDATE-refused outside the allowlist.
+--
+-- ## Deploy-overlap note (expand only, no drops)
+--
+-- One nullable column. Nothing is dropped or renamed, so an N-1 container that
+-- has never heard of it keeps serving correctly through the overlap window: it
+-- neither reads nor writes it, and NULL is the value it would have produced.
+
+ALTER TABLE brain_facts
+  ADD COLUMN IF NOT EXISTS published_by text;
+
+COMMENT ON COLUMN brain_facts.published_by IS 'Who approved this claim at the review gate (#5635). A user id, or `local-operator` for a human on a no-auth deployment. NULL = not attributable: published before migration 0216, or restored verbatim by a region import whose bundle does not carry the source decision. Never backfilled. Written only by PROMOTE_FACTS_SQL, WIDEN_AND_PROMOTE_FACTS_SQL and PROMOTE_CORRECTION_FACT_SQL; UPDATE-gated by scripts/check-brain-fact-promotion.sh.';
+
+-- ## NO INDEX, deliberately — 0214's reasoning, unchanged
+--
+-- Nothing filters or orders on this column. The reader that motivated it
+-- (`searchAtlas` projecting the approver) selects it on rows it has already
+-- located by other predicates, so an index would serve no query that exists.
+-- `identity-pg.test.ts` pins the index set on this table; adding one here would
+-- have to trade away ADR-0037 §1's zero-net-new-indexes result on purpose.

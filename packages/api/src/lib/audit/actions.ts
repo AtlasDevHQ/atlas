@@ -1118,6 +1118,23 @@ export const ADMIN_ACTIONS = {
   brainFact: {
     retract: "brain_fact.retract",
     /**
+     * A SCOPED approval — one or more named facts promoted draft → published
+     * without publishing the workspace's whole backlog (#5635, adapter arm
+     * #5568).
+     *
+     * A separate action from the workspace-wide `content.publish` row because
+     * it answers a different question. That row says "this person published
+     * everything that was ready at this moment"; this one says "this person
+     * approved THESE claims", which is the decision a reviewer actually made
+     * and the one `brain_facts.published_by` now records per row.
+     *
+     * `metadata` carries `requested`, `promotedIds` and `refused` — the ids in
+     * and the ids out, uncapped, for `promotedRows`' reason: a count six months
+     * later is unactionable, and the ids a scoped approve did NOT promote are
+     * the ones a reviewer has to look at again.
+     */
+    approve: "brain_fact.approve",
+    /**
      * A `correct_fact` verb applied over EITHER entry point — the admin API or
      * the agent tool (#4915, #4934). Retract via the correction machinery still
      * records `retract` above (one retract semantics, one audit vocabulary);

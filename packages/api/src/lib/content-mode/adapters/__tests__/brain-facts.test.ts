@@ -359,7 +359,11 @@ describe("promoteBrainFacts", () => {
     expect(calls[0].params).toEqual(["ws-1"]);
     expect(calls[1].params).toEqual(["ws-1", ["fact-a", "fact-b"]]);
     expect(updates(calls)).toHaveLength(1);
-    expect(updates(calls)[0].params).toEqual(["ws-1", ["fact-a", "fact-b"]]);
+    // The third parameter is the approver (#5635) — null here because this
+    // call names nobody, which is the region import's honest case and the
+    // adapter's default. `brain-facts-approver.test.ts` covers the arm where a
+    // person IS named, on both promote statements.
+    expect(updates(calls)[0].params).toEqual(["ws-1", ["fact-a", "fact-b"], null]);
   });
 
   it("promotes the good drafts and refuses only the bad one", async () => {

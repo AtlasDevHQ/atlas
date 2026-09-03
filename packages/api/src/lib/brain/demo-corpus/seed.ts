@@ -565,7 +565,10 @@ export async function seedDemoCorpusApprove(params: {
       let refused: { id: string; reasons: readonly string[] }[] = [];
       if (draftIds.length > 0) {
         const report = await withInternalTransaction("demo-corpus-approve", (client) =>
-          Effect.runPromise(approve(client, workspaceId, draftIds)),
+          // The approver is stamped onto every promoted row (#5635), not only
+          // onto the audit row — the same real human this file's header
+          // insists on, now readable from the fact itself.
+          Effect.runPromise(approve(client, workspaceId, draftIds, approver.id)),
         );
         refused = (report.refused ?? []).map((r) => ({ id: r.rowId, reasons: r.reasons }));
         const refusedIds = new Set(refused.map((r) => r.id));

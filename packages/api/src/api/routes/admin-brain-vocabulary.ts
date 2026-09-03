@@ -67,6 +67,7 @@ import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
 import { resolveBrainReaderContext } from "@atlas/api/lib/brain/reader-context";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
+import { recordedAuthor } from "@atlas/api/lib/brain/recorded-author";
 import type { SlotPosition } from "@atlas/api/lib/brain/identity";
 import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
 import {
@@ -1508,16 +1509,6 @@ adminBrainVocabulary.openapi(cardinalityRoute, async (c) => {
  * operator" — an audit falsification one origin over, on the column migration
  * 0192 calls the first thing an audit of a retroactive re-key reads.
  */
-function recordedAuthor(ctx: BrainPrincipalContext): string | null {
-  switch (ctx.origin) {
-    case "authenticated":
-      return (ctx.role === "owner" || ctx.role === "admin") && ctx.userId ? ctx.userId : null;
-    case "unauthenticated-local":
-      return "local-operator";
-    case "unresolved":
-      return null;
-  }
-}
 
 /** Compile-time pin: the router only ever speaks the three known positions. */
 type _PositionsAreSlotPositions = [

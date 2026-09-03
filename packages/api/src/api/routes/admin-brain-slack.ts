@@ -58,6 +58,7 @@ import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
 import { resolveBrainReaderContext } from "@atlas/api/lib/brain/reader-context";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
+import { recordedAuthor } from "@atlas/api/lib/brain/recorded-author";
 import {
   InvalidSlackChannelIdError,
   excludeSlackChannel,
@@ -193,16 +194,6 @@ const includeRoute = createRoute({
  * operator, which would file one workspace's confidentiality decision under
  * another's operator.
  */
-function recordedAuthor(ctx: BrainPrincipalContext): string | null {
-  switch (ctx.origin) {
-    case "authenticated":
-      return (ctx.role === "owner" || ctx.role === "admin") && ctx.userId ? ctx.userId : null;
-    case "unauthenticated-local":
-      return "local-operator";
-    case "unresolved":
-      return null;
-  }
-}
 
 function errorBody(error: string, message: string, requestId: string) {
   return { error, message, requestId };

@@ -468,7 +468,13 @@ describe("runMigrations", () => {
     //   principal and `created_at` is what the launch-cycle gate counts. A
     //   hashed IP, never a raw one; `answer_count` gates the optional,
     //   after-first-answer email hand-off) = 216.
-    expect(count).toBe(216);
+    //   Plus 0216 (brain_facts_published_by — #5635: WHO approved a claim, the
+    //   third of the three things every fact is promised to carry. `published_at`
+    //   dated the approval from #5591 and nothing named the approver; the audit
+    //   row's actor was the only record, and it named a count. Three-valued: a
+    //   user id, `local-operator` on a no-auth deployment, or NULL for
+    //   not-attributable. Never backfilled) = 217.
+    expect(count).toBe(217);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -795,6 +801,7 @@ describe("runMigrations", () => {
         "0213_workspace_action_credentials.sql",
         "0214_brain_facts_published_at.sql",
         "0215_demo_anonymous_sessions.sql",
+        "0216_brain_facts_published_by.sql",
       ],
     });
 

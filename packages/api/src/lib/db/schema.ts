@@ -3719,11 +3719,29 @@ export const brainFacts = pgTable(
     // exactly the rows #5338's evaluation corpus reads as evidence of when
     // reviewers decide. NULL means "not datable", which is true.
     //
-    // Written by `PROMOTE_FACTS_SQL` and `PROMOTE_CORRECTION_FACT_SQL` and
-    // nothing else, and UPDATE-gated by `check-brain-fact-promotion.sh` on the
-    // same terms as `status` — a rogue write here manufactures evidence of a
-    // review that never happened.
+    // Written by `PROMOTE_FACTS_SQL`, `WIDEN_AND_PROMOTE_FACTS_SQL` and
+    // `PROMOTE_CORRECTION_FACT_SQL` and nothing else, and UPDATE-gated by
+    // `check-brain-fact-promotion.sh` on the same terms as `status` — a rogue
+    // write here manufactures evidence of a review that never happened.
+    //
+    // ⚠️ The widening arm was added to that list by #5635, not by #5591: it set
+    // `status` without stamping this column, so a fact whose grant widened at
+    // publish was published without a date. Both arms of the same publish now
+    // write both columns; see migration 0216's note.
     publishedAt: timestamp("published_at", { withTimezone: true }),
+    // WHO approved it (#5635, migration 0216). A user id, or `local-operator`
+    // for a human on a no-auth deployment — the three-valued domain
+    // `brainVocabularyEdge.approvedBy` uses, minus its "auto-approved" reading:
+    // a fact has no auto-approval path, so every non-NULL value names a person.
+    // NULL means "not attributable" — published before 0216, or restored by a
+    // region import whose bundle does not carry the source decision.
+    //
+    // The column the product claim rests on: an answer states its source, its
+    // date and the name of the person who approved it, and until this existed
+    // the third was unbacked — `provenance.attribution` names the SPEAKER, and
+    // the only durable record of the approver was a count in an audit row.
+    // Written and gated exactly as `publishedAt` is.
+    publishedBy: text("published_by"),
     // Self-contained principal set, derived at ingest, evaluated read-time
     // local. Grammar (parser in #4768):
     //   org | role:{owner,admin,member} | user:<id> | audience:<source-derived>

@@ -748,12 +748,23 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     // lookup and the promote all speak about exactly the rows this transaction
     // will publish. A diagnostic scoped to a different set would report a number
     // about pairs the transaction never considered.
-    for (const i of [12, 14, 16, 17, 18]) {
+    for (const i of [12, 14, 16, 17]) {
       expect(calls[i].params, `statement ${i} was scoped to a different id list`).toEqual([
         "org-1",
         ["f-ok"],
       ]);
     }
+    // The promote itself takes the same workspace and the same id list, plus a
+    // THIRD parameter the diagnostics do not have: the approver (#5635). It is
+    // null here because this registry call names nobody — `runPublishPhases`
+    // forwards whatever its caller passed, and this test calls it without an
+    // actor. Asserted separately rather than folded into the loop above so the
+    // approver's presence is stated rather than absorbed into a shared shape.
+    expect(calls[18].params, "the promote was scoped to a different id list").toEqual([
+      "org-1",
+      ["f-ok"],
+      null,
+    ]);
     // The savepoints take none.
     for (const i of [13, 15]) expect(calls[i].params).toEqual([]);
   });

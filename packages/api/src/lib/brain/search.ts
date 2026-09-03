@@ -188,6 +188,7 @@ import type {
   BrainDocumentNeighbor,
   BrainEpisodeExtraction,
   BrainEpisodeResult,
+  BrainFactApprovalView,
   BrainFactResult,
   BrainResultTier,
   BrainSearchResponse,
@@ -195,6 +196,7 @@ import type {
   BrainSearchStoreReport,
   BrainSearchTensionView,
 } from "@useatlas/types";
+import { LOCAL_OPERATOR } from "@atlas/api/lib/brain/recorded-author";
 
 const log = createLogger("brain-search");
 
@@ -476,7 +478,9 @@ const FACT_COLUMNS = `f.id::text AS id,
          f.valid_from,
          f.valid_to,
          f.invalidated_at,
-         f.ingested_at`;
+         f.ingested_at,
+         f.published_at,
+         f.published_by`;
 
 /**
  * The tier-2 statement.
@@ -687,6 +691,9 @@ interface FactRow {
   readonly valid_to: unknown;
   readonly invalidated_at: unknown;
   readonly ingested_at: unknown;
+  readonly published_at: unknown;
+  /** The approver's Atlas user id, or the `local-operator` sentinel (#5635). */
+  readonly published_by: unknown;
   readonly corroboration_count: unknown;
   /** Newest corroborating observation — the decay anchor (#4914). */
   readonly last_observed_at: unknown;
@@ -719,6 +726,7 @@ function toFactResult(
    * changed".
    */
   lineage: { entry: FactLineage | undefined; truncated: boolean },
+  approverNames: ReadonlyMap<string, string>,
   requestId?: string,
 ): BrainFactResult {
   const workspaceId = ctx.workspaceId;
@@ -768,6 +776,7 @@ function toFactResult(
     // this row's own attribution decision (#4836) rather than making a second
     // one. See `toHistoryView`.
     history: toHistoryView(lineage.entry, provenance, lineage.truncated),
+    approval: toApprovalView(row, approverNames),
   };
 }
 
@@ -802,6 +811,88 @@ function toEpisodeResult(row: Record<string, unknown>, id: string): BrainEpisode
     ingestedAt: iso(row.ingested_at),
     snippet: str(row.snippet),
     ...extraction,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Approver lookup (#5635)
+// ---------------------------------------------------------------------------
+
+/**
+ * Names for the approvers on this page, from a LIVE join to `"user"`.
+ *
+ * Live rather than snapshotted, on the rule `actor_identity` already states for
+ * its `atlas` state: a stored name goes stale with no re-derivation path. The
+ * approver is always an Atlas account (or the local-operator sentinel, which
+ * needs no lookup), so unlike a vendor directory handle there IS a live join to
+ * make, and making it is strictly better than keeping a copy.
+ *
+ * One query per page keyed on the distinct ids, beside the tension and lineage
+ * reads rather than after them — a per-row lookup would add a round trip per
+ * fact to the surface that feeds agent answers.
+ *
+ * ⚠️ **Not ACL-gated, and that is deliberate.** The approver is not the
+ * subject of the claim: it is the reviewer who made the claim readable to this
+ * reader at all. Withholding their name from someone already entitled to the
+ * fact would produce "approved by someone, we won't say who", which is the
+ * exact non-answer the column exists to replace. Only the NAME is read; no
+ * email, no role, nothing about the account beyond how to refer to a colleague.
+ *
+ * A failure resolves to an empty map rather than throwing: an unnamed approver
+ * degrades to `{ state: "atlas", id, name: null }`, which still records that a
+ * person approved it. Failing the whole search because a name lookup failed
+ * would trade an answer for a label.
+ */
+async function loadApproverNames(
+  db: BrainSearchReader,
+  ids: readonly string[],
+  requestId?: string,
+): Promise<Map<string, string>> {
+  const distinct = [...new Set(ids)];
+  if (distinct.length === 0) return new Map();
+  try {
+    const res = await db.query(APPROVER_NAMES_SQL, [distinct]);
+    const out = new Map<string, string>();
+    for (const raw of res.rows as Record<string, unknown>[]) {
+      const id = typeof raw.id === "string" ? raw.id : null;
+      const name = typeof raw.name === "string" && raw.name !== "" ? raw.name : null;
+      if (id !== null && name !== null) out.set(id, name);
+    }
+    return out;
+  } catch (err) {
+    log.warn(
+      { requestId, count: distinct.length, err: err instanceof Error ? err.message : String(err) },
+      'brain search: the approver name lookup failed — those approvals report an id with no name. A missing `"user"` relation means this deployment runs without Better Auth\'s tables, which is a supported self-hosted shape, not a defect',
+    );
+    return new Map();
+  }
+}
+
+const APPROVER_NAMES_SQL = `SELECT id, name FROM "user" WHERE id = ANY($1::text[])`;
+
+/**
+ * The review decision as a reader sees it (#5635).
+ *
+ * `published_by` present is the discriminator, not `published_at`: a fact
+ * published before migration 0214 has neither, and one published between 0214
+ * and 0216 has a date and no approver. Keying on the approver means the
+ * `approved: true` arm always names someone, so a consumer rendering "approved
+ * by X" never has to handle a true-with-nobody shape.
+ */
+function toApprovalView(
+  row: FactRow,
+  approverNames: ReadonlyMap<string, string>,
+): BrainFactApprovalView {
+  const by = typeof row.published_by === "string" && row.published_by !== "" ? row.published_by : null;
+  if (by === null) return { approved: false };
+  const approvedAt = iso(row.published_at);
+  if (by === LOCAL_OPERATOR) {
+    return { approved: true, approvedAt, approver: { state: "local-operator" } };
+  }
+  return {
+    approved: true,
+    approvedAt,
+    approver: { state: "atlas", id: by, name: approverNames.get(by) ?? null },
   };
 }
 
@@ -1098,7 +1189,17 @@ export async function searchBrainCore(
     return false;
   });
   const factIds = facts.map((r) => r.id);
-  const [tensions, lineage, factIdentities] = await Promise.all([
+  // The approvers named on this page, resolved once (#5635). Collected from the
+  // rows rather than from a second query's ids: `published_by` is already on
+  // every row, so the only unknown is the display name. The sentinel needs no
+  // lookup and is filtered out here rather than inside the loader, so the
+  // loader's contract stays "Atlas ids in, names out".
+  const approverIds = facts.flatMap((r) =>
+    typeof r.published_by === "string" && r.published_by !== "" && r.published_by !== LOCAL_OPERATOR
+      ? [r.published_by]
+      : [],
+  );
+  const [tensions, lineage, factIdentities, approverNames] = await Promise.all([
     wantFacts
       ? loadTensions(db, factIds, ctx, requestId)
       : Promise.resolve({ views: new Map<string, BrainSearchTensionView[]>(), truncated: false }),
@@ -1120,6 +1221,11 @@ export async function searchBrainCore(
     // where a name reachable past #4836's gate would matter most, which is why
     // it lands inside the attribution's visible arm and nowhere else.
     loadActorIdentities(db, ctx.workspaceId, actorsIn(facts.map((r) => r.provenance)), requestId),
+    // The NAME behind each claim's APPROVER (#5635) — the counterpart to the
+    // line above, and a different question: that one names who SAID a thing,
+    // this one names who stood behind it. Both are per-page and neither
+    // depends on the other, so they run together.
+    loadApproverNames(db, approverIds, requestId),
   ]);
 
   // The partially-malformed-grant observation seam (`acl.ts`). These are rows
@@ -1151,6 +1257,7 @@ export async function searchBrainCore(
       tensions.views.get(row.id) ?? [],
       factIdentities,
       { entry: lineage.lineage.get(row.id), truncated: lineage.truncated },
+      approverNames,
       requestId,
     );
   });

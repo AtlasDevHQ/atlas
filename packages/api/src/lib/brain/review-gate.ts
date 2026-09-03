@@ -183,14 +183,21 @@ export async function previewApprove(
  * would publish a tenant's entire backlog because a reviewer ticked no boxes.
  * The distinction is enforced in the adapter and pinned by its tests.
  *
+ * `publishedBy` names the person the resulting facts record as their approver
+ * (#5635) — a user id, `local-operator` on a no-auth deployment, or null where
+ * the caller cannot name one. A scoped approve reaches this from an HTTP
+ * route, so it can always name someone; the seed passes the workspace owner it
+ * provisioned, which is a real person and the only one in the room.
+ *
  * Runs inside the CALLER's transaction, deliberately — see this module's header.
  */
 export function approve(
   tx: ModeTxClient,
   orgId: string,
   factIds?: readonly string[],
+  publishedBy?: string | null,
 ): Effect.Effect<PromotionReport, PublishPhaseError, never> {
-  return promoteBrainFacts(tx, orgId, factIds);
+  return promoteBrainFacts(tx, orgId, factIds, publishedBy);
 }
 
 /**

@@ -306,17 +306,25 @@ export const DRAFT_FACTS_SCOPED_SQL = draftFactsSql(2);
  * terms, so a future refactor that drops the lock cannot turn this into a
  * republish of archived facts.
  *
- * ⚠️ It also stamps `published_at` (#5591, migration 0214) — THE approval
- * timestamp, and the reason the `status = 'draft'` predicate above matters more
- * than it looks. A statement that could re-run over an already-published row
- * would move the stamp, rewriting when a reviewer decided; the predicate makes
- * that unreachable rather than merely unlikely. `updated_at` cannot serve this
- * purpose — publish-time grant widening moves it a few statements later in this
- * same transaction.
+ * ⚠️ It also stamps `published_at` (#5591, migration 0214) and `published_by`
+ * (#5635, migration 0216) — THE approval timestamp and THE approver, and the
+ * reason the `status = 'draft'` predicate above matters more than it looks. A
+ * statement that could re-run over an already-published row would move both,
+ * rewriting when a reviewer decided and replacing who decided it with whoever
+ * ran the later publish; the predicate makes that unreachable rather than
+ * merely unlikely. `updated_at` cannot serve either purpose — publish-time
+ * grant widening moves it a few statements later in this same transaction.
+ *
+ * `$3` is the approver: a user id, or `local-operator` on a no-auth
+ * deployment, or NULL where the caller cannot name one (the region import,
+ * which restores a prior decision rather than making a new one).
  */
 export const PROMOTE_FACTS_SQL = `
   UPDATE brain_facts
-     SET status = 'published', published_at = now(), updated_at = now()
+     SET status = 'published',
+         published_at = now(),
+         published_by = $3,
+         updated_at = now()
    WHERE workspace_id = $1
      AND status = 'draft'
      AND invalidated_at IS NULL
@@ -428,6 +436,21 @@ export const EVIDENCE_GRANTS_SQL = `
  * is what actually keeps a published id out of the payload; this is the second
  * lock on the same door, and on this statement the door is an immutable grant.
  *
+ * ## It stamps the approval columns too, and did not until #5635
+ *
+ * `$3` is the approver, as in {@link PROMOTE_FACTS_SQL}. Both columns are
+ * written here because THE TWO STATEMENTS PARTITION ONE PUBLISH: a draft whose
+ * grant widened goes through this arm and every other draft through the plain
+ * one, so a column stamped by only one arm is a column absent from exactly the
+ * facts whose ACL changed. `published_at` was in that position from #5591 until
+ * #5635 — set by the plain arm, never by this one — and it never surfaced only
+ * because no fact widened on a serving region in that window (us prod at the
+ * time: 40 published, 27 stamped, all 13 unstamped predating the column).
+ *
+ * A reader adding a third approval-time column: it belongs in BOTH statements
+ * or the same hole re-opens, and the hole is silent — a widened fact looks
+ * published everywhere else.
+ *
  * ## `pre_widening_visible_to` — the reason this statement is now load-bearing
  * ## twice (#4836)
  *
@@ -457,6 +480,8 @@ export const EVIDENCE_GRANTS_SQL = `
 export const WIDEN_AND_PROMOTE_FACTS_SQL = `
   UPDATE brain_facts f
      SET status = 'published',
+         published_at = now(),
+         published_by = $3,
          pre_widening_visible_to = COALESCE(f.pre_widening_visible_to, f.visible_to),
          visible_to = ARRAY(SELECT jsonb_array_elements_text(w.grant)),
          updated_at = now()
@@ -1853,11 +1878,29 @@ function toStoredGrant(visibleTo: unknown): StoredGrant {
  * contribute no row, exactly as the status and workspace predicates intend, and
  * they are logged. `promotedIds` is what tells a caller which of the ids it
  * asked for actually landed, and it is on the report for every path.
+ *
+ * ## `publishedBy` — who the resulting facts name as their approver (#5635)
+ *
+ * A user id, `local-operator` on a no-auth deployment, or null/omitted where
+ * the caller cannot name a person. It reaches both promote statements, which
+ * partition the publish between them, so the value cannot depend on whether a
+ * fact's grant happened to widen.
+ *
+ * **Optional at the type level and NOT defaulted, deliberately.** A default
+ * would have to invent an approver, and every candidate is a lie with a
+ * plausible shape — the string "system" names nobody, and the workspace owner
+ * names someone who may not have been in the room. Null means "not
+ * attributable", which is what the region import genuinely is: it restores a
+ * decision made in another region by a person this row cannot identify. A
+ * caller that CAN name the approver and passes nothing produces a published
+ * fact that the product claim then cannot describe, so the HTTP callers pass it
+ * and their tests assert the stamp rather than the call.
  */
 export function promoteBrainFacts(
   tx: ModeTxClient,
   orgId: string,
   factIds?: readonly string[],
+  publishedBy?: string | null,
 ): Effect.Effect<PromotionReport, PublishPhaseError, never> {
   return Effect.gen(function* () {
     // IDENTITY LOCK FIRST — before the drafts are read, because what this phase
@@ -2249,7 +2292,7 @@ export function promoteBrainFacts(
       let plainPromoted = 0;
       if (plainIds.length > 0) {
         const result = yield* Effect.tryPromise({
-          try: () => tx.query(PROMOTE_FACTS_SQL, [orgId, plainIds]),
+          try: () => tx.query(PROMOTE_FACTS_SQL, [orgId, plainIds, publishedBy ?? null]),
           catch: (cause) =>
             new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
         });
@@ -2258,7 +2301,12 @@ export function promoteBrainFacts(
       let widenedPromoted = 0;
       if (widenedEntries.length > 0) {
         const result = yield* Effect.tryPromise({
-          try: () => tx.query(WIDEN_AND_PROMOTE_FACTS_SQL, [orgId, JSON.stringify(widenedEntries)]),
+          try: () =>
+            tx.query(WIDEN_AND_PROMOTE_FACTS_SQL, [
+              orgId,
+              JSON.stringify(widenedEntries),
+              publishedBy ?? null,
+            ]),
           catch: (cause) =>
             new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
         });

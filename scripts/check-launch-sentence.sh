@@ -30,6 +30,7 @@ SURFACES=(
   "apps/docs/src/lib/llms-surface.ts"
   "apps/docs/content/docs/index.mdx"
   "apps/docs/content/shared/comparisons/index.mdx"
+  "scripts/generate-brand-assets.tsx"
 )
 
 fail=0

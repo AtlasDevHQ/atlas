@@ -58,7 +58,7 @@ const TOOLS: ModelContextTool[] = [
   {
     name: "atlas_open_live_demo",
     description:
-      "Open the Atlas live demo at app.useatlas.dev/demo against a sample database. No signup required.",
+      "Open the Atlas live demo at app.useatlas.dev/demo against a sample database. No account required — just an email.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
       const url = "https://app.useatlas.dev/demo";

@@ -290,7 +290,7 @@ tags: [sales]
           >
             guide
           </a>{" "}
-          walks through it, and the demo is live with no signup required.
+          walks through it, and the demo is live with no account required.
         </P>
 
         <PostActions />

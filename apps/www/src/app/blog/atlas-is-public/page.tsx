@@ -93,7 +93,7 @@ export default function AtlasIsPublic() {
           ]}
         />
 
-        <H2>Sixty seconds, no signup</H2>
+        <H2>Sixty seconds, no account</H2>
         <P>
           The demo runs on a seeded database with no account and nothing to
           install. Ask it something in plain English and watch the query it

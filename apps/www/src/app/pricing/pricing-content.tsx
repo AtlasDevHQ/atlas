@@ -422,15 +422,15 @@ function StatCard() {
   return (
     <div className="animate-fade-in-up delay-400 mb-10 grid items-center gap-6 rounded-xl border border-accent/25 bg-accent-quiet p-6 md:grid-cols-[auto_1fr] md:gap-7 md:p-7">
       <div className="font-mono text-5xl font-semibold tracking-tight text-accent md:text-[60px]">
-        94%
+        0
       </div>
       <div className="flex flex-col gap-1.5">
         <p className="text-base leading-snug font-medium text-fg md:text-[17px]">
-          of AI-generated SQL fails at least one Atlas validator.
+          writes, on every tier.
         </p>
         <p className="font-mono text-[11.5px] leading-relaxed tracking-wider text-fg-muted">
-          Sample: thousands of queries across our beta cohort. Every tier ships the same
-          7 gates — the difference is who runs the servers.
+          Every plan ships the same seven validators — SELECT-only, single-statement,
+          whitelisted to your semantic layer. The difference is who runs the servers.
         </p>
       </div>
     </div>
@@ -584,7 +584,7 @@ function useResidencyRequest(): { id: string; label: string } | null {
 }
 
 export function PricingContent() {
-  const [billing, setBilling] = useState<BillingPeriod>("annual");
+  const [billing, setBilling] = useState<BillingPeriod>("monthly");
   const residencyRequest = useResidencyRequest();
 
   return (

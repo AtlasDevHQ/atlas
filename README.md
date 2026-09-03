@@ -64,7 +64,7 @@ bun run dev
 # Open http://localhost:3000
 ```
 
-The scaffold seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) by default — twelve generic e-commerce KPIs ship as starter prompts inside the chat UI; the canonical 5 below drive the eval harness ([#2025](https://github.com/AtlasDevHQ/atlas/issues/2025)) and the docs/landing copy. The scaffold defaults to SQLite + Anthropic; pass `--defaults` for non-interactive setup or follow the prompts to pick PostgreSQL / OpenAI / etc.
+The scaffold seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) by default — twelve generic e-commerce KPIs ship as starter prompts inside the chat UI; the canonical 5 below drive the eval harness ([#2025](https://github.com/AtlasDevHQ/atlas/issues/2025)) and the docs/landing copy. The scaffold defaults to PostgreSQL + Anthropic; `--defaults` skips the prompts and assumes a local Postgres at `postgresql://atlas:atlas@localhost:5432/atlas`, or follow the prompts to pick MySQL / OpenAI / etc.
 
 Ask one of the canonical questions in the chat UI:
 

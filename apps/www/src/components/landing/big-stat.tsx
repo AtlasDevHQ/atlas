@@ -5,14 +5,16 @@ export function BigStat() {
       style={{ background: "var(--bg-raised)" }}
     >
       <div className="text-[88px] md:text-[144px] font-semibold leading-[0.9] tracking-[-0.05em] text-accent">
-        94%
+        0
       </div>
       <div className="max-w-[720px]">
         <p className="m-0 mb-3 text-xl md:text-[28px] font-medium leading-[1.3] tracking-[-0.02em] text-fg">
-          of AI-generated SQL fails at least one Atlas validator.
+          writes. Every query Atlas runs is SELECT-only, single-statement, and
+          whitelisted to your semantic layer — enforced by seven validators, not
+          suggested by a prompt.
         </p>
         <p className="m-0 font-mono text-[12px] tracking-[0.04em] text-fg-muted">
-          // sample of thousands of queries · gpt-4o, claude-sonnet, llama-3.1 · against 18 production schemas
+          // empty check · mutation guard · AST parse · table whitelist · row-level security · auto LIMIT · statement timeout
         </p>
       </div>
     </section>

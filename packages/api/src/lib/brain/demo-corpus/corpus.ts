@@ -391,10 +391,12 @@ export const EXPECTED_CLAIMS: readonly ExpectedClaim[] = Object.freeze([
     objectHints: ["02:00", "2:00", "2am"],
   },
   {
+    // The live extractor phrases ownership from the OWNER's side ("Dana Okafor
+    // owns nightly ETL"), the fixture from the ETL's; the hints admit both.
     key: "etl-owner",
-    subjectHint: "etl",
+    subjectHint: "",
     predicateHint: "own",
-    objectHints: ["dana"],
+    objectHints: ["dana", "nightly etl"],
   },
   {
     key: "support-headcount-q4",

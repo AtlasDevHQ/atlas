@@ -34,9 +34,54 @@ interface Asset {
   width: number;
   height: number;
   element: React.ReactElement;
+  /**
+   * Where the file lands, relative to `apps/www/public`. Most assets are
+   * brand collateral and default to `brand/`; the Open Graph card is
+   * referenced as `/og.png` by every page's metadata, so it writes to the
+   * public root.
+   */
+  dir?: string;
 }
 
+/**
+ * The launch cycle's sentence, from docs/prd/launch-cycle.md. The Open Graph
+ * card is one of the surfaces that renders it, so it is written here in the
+ * PRD's words and checked by scripts/check-launch-sentence.sh.
+ */
+const SENTENCE =
+  "Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC.";
+
 const assets: Asset[] = [
+  // Open Graph / Twitter card — 1200x630. Referenced as `/og.png` by every
+  // page's metadata, so it writes to the public root rather than brand/.
+  {
+    name: "og.png",
+    width: 1200,
+    height: 630,
+    dir: ".",
+    element: (
+      <div style={{ ...flex, flexDirection: "column", justifyContent: "space-between", width: "100%", height: "100%", background: `linear-gradient(145deg, ${BG_DARK} 0%, ${BG_MID} 55%, ${BG_LIGHT} 100%)`, fontFamily: "system-ui, sans-serif", padding: "64px 72px" }}>
+        <div style={{ ...flex, alignItems: "center", gap: "18px" }}>
+          <img src={prismSvg} width={52} height={52} />
+          <span style={{ fontSize: "52px", fontWeight: 700, letterSpacing: "-1px", color: TEXT_WHITE }}>atlas</span>
+        </div>
+        <div style={{ ...flex, flexDirection: "column", gap: "26px" }}>
+          <span style={{ fontSize: "44px", fontWeight: 600, lineHeight: 1.22, letterSpacing: "-1px", color: TEXT_WHITE }}>
+            {SENTENCE}
+          </span>
+          <div style={{ ...flex, alignItems: "center", gap: "14px", border: `1px solid ${BG_LIGHT}`, borderRadius: "10px", padding: "14px 20px", background: BG_DARK }}>
+            <span style={{ fontSize: "22px", color: BRAND_GREEN, fontFamily: "monospace" }}>$</span>
+            <span style={{ fontSize: "22px", color: TEXT_WHITE, fontFamily: "monospace" }}>bunx @useatlas/mcp init --hosted --demo --write</span>
+          </div>
+        </div>
+        <div style={{ ...flex, justifyContent: "space-between", fontSize: "18px", color: TEXT_MUTED }}>
+          <span>No account, no email</span>
+          <span>useatlas.dev</span>
+        </div>
+      </div>
+    ),
+  },
+
   // GitHub social preview — 1280x640
   {
     name: "github-social.png",
@@ -236,11 +281,12 @@ const assets: Asset[] = [
 ];
 
 async function main() {
-  const outDir = path.join(import.meta.dir, "..", "apps", "www", "public", "brand");
-  fs.mkdirSync(outDir, { recursive: true });
+  const publicDir = path.join(import.meta.dir, "..", "apps", "www", "public");
 
   for (const asset of assets) {
-    process.stdout.write(`  ${asset.name} (${asset.width}x${asset.height})...`);
+    const outDir = path.join(publicDir, asset.dir ?? "brand");
+    fs.mkdirSync(outDir, { recursive: true });
+    process.stdout.write(`  ${asset.dir ?? "brand"}/${asset.name} (${asset.width}x${asset.height})...`);
     const response = new ImageResponse(asset.element, {
       width: asset.width,
       height: asset.height,
@@ -250,7 +296,7 @@ async function main() {
     console.log(" done");
   }
 
-  console.log(`\nGenerated ${assets.length} assets in ${outDir}`);
+  console.log(`\nGenerated ${assets.length} assets under ${publicDir}`);
 }
 
 main().catch((err) => {

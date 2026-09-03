@@ -1,10 +1,55 @@
 ---
 title: MCP Server
-description: Connect Claude Desktop, Claude Code, Cursor, Continue, ChatGPT, or VS Code to Atlas — hosted (OAuth 2.1 + DCR + PKCE) or self-hosted (stdio).
+description: "Connect Claude Desktop, Cursor, Claude Code, Continue, ChatGPT or VS Code to Atlas. Start with the anonymous hosted demo in one command, then a trial, then your own workspace — hosted (OAuth 2.1 + DCR + PKCE) or self-hosted (stdio)."
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+
+<WhenSaaS>
+
+## Try it in sixty seconds — no account, no email
+
+One command points your MCP client at the hosted NovaMart demo. It mints an anonymous, read-only session scoped to the demo workspace and writes an `atlas-demo` server entry into the client config it detects — Claude Desktop, Cursor or Continue — or prints a block to paste into Claude Code, VS Code or any other client when you pass `--client generic`:
+
+```bash
+bunx @useatlas/mcp init --hosted --demo --write
+```
+
+Restart the client and ask:
+
+> What is NovaMart's return window?
+
+The answer carries a name. Finance says 30 days, in a dated message from the person who said it and the person who approved it; Support's macro says 14. Atlas shows both and picks neither. That is the product in one exchange: source, date, approver, and a contradiction left open rather than resolved by a model. The coverage page — the one that marks `#warehouse-ops` as a channel nobody has surveyed — lives in a workspace's admin console, not behind the anonymous door; it is the last beat of the recording, not of this command.
+
+<Callout type="info" title="On WSL2? Use `bun x` (space-separated)">
+  Bun's `bunx` shim has resolution issues on some WSL2 setups — `bunx @useatlas/mcp init` may error with `Script not found "@useatlas/mcp"`. Run `bun x @useatlas/mcp init --hosted --demo --write` instead. Same for any other `bunx <pkg>` command on WSL.
+</Callout>
+
+The anonymous session is deliberately narrower than a workspace member's: three tools (`searchAtlas`, `executeSQL`, and an optional `shareEmail` that only works *after* the first answer), a two-hour token, and rate limits by IP and by session. Re-run the command when the token expires. What it can and cannot reach, and the settings behind it, are in [Demo mode → Anonymous MCP demo](/guides/demo-mode#anonymous-mcp-demo).
+
+**Then, in order:**
+
+1. **A workspace of your own, from inside the agent.** On Atlas SaaS the unauthenticated onboarding endpoint exposes one tool, `start_trial`, that provisions a trial workspace and returns its connect URL — no browser required. See [Start a trial from inside your agent](#start-a-trial-from-inside-your-agent).
+2. **Your own data.** `bunx @useatlas/mcp init --hosted --write` connects the client to your workspace over OAuth 2.1 with DCR + PKCE; self-hosters run `--local` against their own Atlas on stdio. Both are under [Install](#install).
+
+</WhenSaaS>
+
+<WhenSelfHosted>
+
+## Start here — one command against your own Atlas
+
+Point your MCP client (Claude Desktop, Cursor, Claude Code, Continue, VS Code) at a self-hosted Atlas over stdio:
+
+```bash
+bunx @useatlas/mcp init --local --write
+```
+
+The installer auto-detects the client, inherits `ATLAS_DATASOURCE_URL` from your shell or a running Atlas at `localhost:3001`, and merges a server block into the client config with a `.bak` first. With no datasource configured it points at the bundled SQLite fixture so the first question works zero-config. Restart the client and ask a question about your data; the answer carries the entities it used and the exact SQL it ran. Details, per-client paths and the SSE transport are under [Install](#install).
+
+</WhenSelfHosted>
+
+---
 
 Atlas exposes a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that lets any MCP-compatible agent — Claude Desktop, Claude Code, Cursor, Continue, ChatGPT, VS Code — query your data through Atlas's semantic layer and validated SQL pipeline. The agent reads your entity YAMLs, picks the right tables, writes a query, and Atlas runs it through the same 7-layer SQL validation pipeline (which includes RLS injection) and audit logging as the chat UI.
 
@@ -41,9 +86,7 @@ bunx @useatlas/mcp init --hosted --write
 
 The installer discovers Atlas's authorization server, registers itself via DCR, opens your browser for PKCE-protected consent (same shape as `gh auth login`), and merges a workspace-scoped server block into your detected MCP client config at mode `0600`. A `.bak` of any prior config is written first.
 
-<Callout type="info" title="On WSL2? Use `bun x` (space-separated)">
-  Bun's `bunx` shim has resolution issues on some WSL2 setups — `bunx @useatlas/mcp init` may error with `Script not found "@useatlas/mcp"`. Run `bun x @useatlas/mcp init --hosted --write` instead (the space-separated form is a bun subcommand and resolves correctly). Same for any other `bunx <pkg>` command on WSL.
-</Callout>
+On WSL2, use the space-separated `bun x @useatlas/mcp init --hosted --write` (see the callout at the top of this page).
 
 ```bash
 # Print to stdout instead of writing

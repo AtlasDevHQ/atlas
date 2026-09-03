@@ -4,6 +4,7 @@
   "icon": "Rocket",
   "defaultOpen": true,
   "pages": [
+    "../guides/mcp",
     "hosted",
     "connect-your-data",
     "concepts",

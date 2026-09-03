@@ -57,6 +57,7 @@ export async function renderLlmsFullText(
   audience: Audience,
   label: string,
 ): Promise<string> {
+  const preamble = renderLlmsPreamble(audience);
   const results = await Promise.all(
     pages.map(async (page) => {
       try {
@@ -68,7 +69,16 @@ export async function renderLlmsFullText(
       }
     }),
   );
-  return results.join("\n\n---\n\n");
+  return preamble + "\n---\n\n" + results.join("\n\n---\n\n");
+}
+
+/**
+ * The `llms.txt` body for a section: the audience's preamble, then fumadocs'
+ * generated index with its links absolutized. Both route handlers call this
+ * so the preamble-then-index shape is decided once.
+ */
+export function renderLlmsIndex(index: string, audience: Audience): string {
+  return renderLlmsPreamble(audience) + "\n" + absolutizeLlmsUrls(index);
 }
 
 /**
@@ -107,4 +117,53 @@ export function twinStaticParams(
   return params.map((p) => ({
     slug: [...(p.slug ?? []), MDX_TWIN_INDEX_SUFFIX],
   }));
+}
+
+/**
+ * The launch cycle's sentence (docs/prd/launch-cycle.md), verbatim. It is the
+ * first line an agent reads on every machine surface, ahead of fumadocs'
+ * generated index, so "how do I connect to Atlas" is answered by the demo
+ * command and not by whichever guide happens to sort first (#5608).
+ */
+export const ATLAS_SENTENCE =
+  "Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC.";
+
+/** The anonymous demo command every launch surface prints (#5604). */
+export const MCP_DEMO_COMMAND = "bunx @useatlas/mcp init --hosted --demo --write";
+
+/** The self-hosted counterpart: a local Atlas on stdio, no hosted endpoint. */
+export const MCP_LOCAL_COMMAND = "bunx @useatlas/mcp init --local --write";
+
+/**
+ * The block that opens `llms.txt` and `llms-full.txt` for a section. The SaaS
+ * surface leads with the anonymous hosted demo; the self-hosted surface leads
+ * with the local stdio install, because the demo endpoint is hosted
+ * infrastructure and the self-hosted surfaces structurally carry no SaaS path.
+ */
+export function renderLlmsPreamble(audience: Audience): string {
+  const lines = [`# Atlas`, ``, `> ${ATLAS_SENTENCE}`, ``];
+  if (audience === "saas") {
+    lines.push(
+      `To connect an AI agent to Atlas, run this in a terminal. It configures Claude Desktop, Cursor or Continue (or prints a config block for any other MCP client with \`--client generic\`) against the hosted NovaMart demo, with no account and no email:`,
+      ``,
+      "```bash",
+      MCP_DEMO_COMMAND,
+      "```",
+      ``,
+      `Then ask the agent: "What is NovaMart's return window?" The answer names its source, its date and the person who approved it, and surfaces the contradiction between Finance and Support without picking a side. Full guide: ${LLMS_BASE_URL}/guides/mcp. Your own workspace: \`bunx @useatlas/mcp init --hosted --write\`, or \`start_trial\` on the MCP onboarding endpoint.`,
+      ``,
+    );
+  } else {
+    lines.push(
+      `To connect an AI agent to a self-hosted Atlas, run this in a terminal. It configures Claude Desktop, Cursor or Continue (or prints a config block for any other MCP client with \`--client generic\`) against your local Atlas over stdio:`,
+      ``,
+      "```bash",
+      MCP_LOCAL_COMMAND,
+      "```",
+      ``,
+      `Full guide: ${LLMS_BASE_URL}/self-hosted/guides/mcp.`,
+      ``,
+    );
+  }
+  return lines.join("\n");
 }

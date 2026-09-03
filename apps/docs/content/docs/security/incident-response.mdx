@@ -234,10 +234,11 @@ acknowledgement cadence that applies to automated signals.
 ### Regional blast radius
 
 Under [ADR-0024](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0024-regional-identity-isolation.md),
-**residency isolates the entire workspace, identity included**. Each of the
-three regions — EU, US, APAC — is a fully independent stack: its own internal
-database, its own authentication instance, its own process. There is no shared
-identity control plane and no cross-region replication.
+**residency isolates the entire workspace, identity included**. Each region —
+US serving, EU and APAC built and parked until requested — is a fully
+independent stack: its own internal database, its own authentication instance,
+its own process. There is no shared identity control plane and no cross-region
+replication.
 
 Two properties follow, and they are the ones that determine blast radius:
 

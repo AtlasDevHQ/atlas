@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 
 import { Footer } from "../../../components/footer";
 import { Nav } from "../../../components/nav";
@@ -9,7 +10,6 @@ import {
   H2,
   Lead,
   P,
-  PostActions,
   PostHeader,
   PullQuote,
   Signoff,
@@ -55,12 +55,13 @@ export const metadata: Metadata = {
 function Recording() {
   return (
     <figure className="my-8">
-      <img
+      <Image
         src="/launch/demo.gif"
         alt="Sixty seconds in Claude Desktop: one command, one question about NovaMart's return window, an answer with a name and a date on it, the contradiction beside it, and the coverage page marking a channel nobody has surveyed."
         className="w-full rounded-xl border border-code-border shadow-pane"
         width={1280}
         height={720}
+        unoptimized
       />
     </figure>
   );
@@ -142,29 +143,28 @@ export default function ANameOnEveryFact() {
           orders table. It carries its own timestamps, it re-reads live on every
           question, and the proof is the SQL and the rows. Atlas runs that
           query read-only, one statement, whitelisted to the tables a human
-          named, behind seven validators. That tier is the spine. Everything
+          named, behind seven layers of validation. That tier is the spine. Everything
           written down by people sits above it, labelled, and yields to it.
         </P>
 
         <H2>Nothing counts until a person says so</H2>
         <P>
-          Every other system in the survey writes memory silently: a hook runs
-          on every prompt, a fact is scored, a conflict is resolved toward the
-          newest message, and the brain is declared organised and
-          conflict-free. It is a reasonable design and it is the one we
-          refused. When the newest message wins, the intern outranks the head
-          of finance by posting later. When a model resolves the conflict, the
-          answer to &ldquo;who decided this was true?&rdquo; is a confidence
-          score.
+          Most memory systems write silently: a hook runs on every prompt, a
+          fact is scored, and a conflict is resolved toward the newest message.
+          It is a reasonable design and it is the one we refused. When the
+          newest message wins, the intern outranks the head of finance by
+          posting later. When a model resolves the conflict, the answer to
+          &ldquo;who decided this was true?&rdquo; is a confidence score.
         </P>
         <P>
           In Atlas a contradiction is shown as a contradiction. The return
           window is 30 days, says Priya Natarajan in #finance, on the 14th of
           July. It is 14 days, says the support macro, on the 2nd of August.
           Both claims, both sources, both names, and Atlas has picked neither.
-          A person closes it, or it stays open. The same page that answers
-          questions shows which channels nobody has surveyed, and it is most
-          useful exactly where it is empty.
+          A person closes it, or it stays open. And one page shows the shape
+          of what is known: which parts of the company are well surveyed, which
+          are thin, and which nobody has surveyed at all. It is most useful
+          exactly where it is empty.
         </P>
 
         <H2>What this costs</H2>
@@ -178,8 +178,8 @@ export default function ANameOnEveryFact() {
         </P>
         <P>
           The second is adoption. Consulting Atlas is always an explicit act, a
-          tool call an agent makes and a person can see. We do not inject
-          ourselves into other tools&apos; prompts, because a fact an agent acts
+          tool call an agent makes and a person can see. We do not silently
+          inject ourselves into other tools&apos; prompts, because a fact an agent acts
           on should arrive through a door someone opened. That is slower to
           spread than a hook that fires on every prompt. We think a company
           fact with a name on it is worth the friction, and we would rather be
@@ -210,7 +210,6 @@ export default function ANameOnEveryFact() {
 
         <Recording />
 
-        <PostActions />
         <Signoff />
 
         <BackToBlog />

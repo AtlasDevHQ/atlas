@@ -1,3 +1,5 @@
+> **Superseded by docs/prd/launch-cycle.md (2026-09-03).** This draft describes a text-to-SQL product under an MIT license and must not be reused; the launch post is `apps/www/src/app/blog/a-name-on-every-fact` and the Show HN body is written from the PRD.
+
 # Show HN: Atlas -- Open-source text-to-SQL agent you can embed in any app
 
 Atlas is an open-source (MIT) text-to-SQL agent that deploys as an API server and embeds into any application. Drop in a `<script>` tag or React component and your users can query their data in plain English.

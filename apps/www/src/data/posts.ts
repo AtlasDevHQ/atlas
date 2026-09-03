@@ -35,6 +35,16 @@ export interface Post {
 
 export const POSTS: Post[] = [
   {
+    slug: "a-name-on-every-fact",
+    title: "A name on every fact",
+    description:
+      "An agent said the return window was 30 days. It was 14. Nobody knew who had told it that. Atlas is the company facts your AI agents can trust, and the fix is a person's name on every one.",
+    isoDate: "2026-09-10",
+    dateLabel: "September 10, 2026",
+    readingTime: "5 min read",
+    tag: "Launch",
+  },
+  {
     slug: "atlas-is-public",
     title: "Atlas is public",
     description:

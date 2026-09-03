@@ -1,48 +1,45 @@
 ---
 title: Introduction to Atlas
-description: Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs, grounded in a YAML semantic layer that humans author and AI agents consume.
+description: "Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC."
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 import { Cards, Card } from "fumadocs-ui/components/card";
 import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
 
-Ask questions of your data in plain English. Atlas is the trust layer between your business questions and your data — SQL warehouses or REST/OpenAPI services — agent-native, YAML-defined, deploy-anywhere.
+> **Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC.**
 
-> Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs, grounded in a YAML semantic layer that humans author and AI agents consume.
+Ask a question from Claude Desktop, Cursor, Claude Code or the web chat, and the answer says where each part came from, when it was observed, and who stood behind it. Where the company contradicts itself, Atlas shows both claims and picks neither. Where nobody has surveyed, it says so instead of guessing. Underneath sits the analyst: a YAML semantic layer over your SQL warehouses and REST APIs, and a validated, read-only SQL pipeline, so the numbers are the tier that cannot be wrong.
 
 ## Pick your path
 
-Atlas works across four onboarding shapes. Pick the one that matches what you want to do — each card is a single CTA, and you can ignore the rest of the page until you've completed it.
+Three doors. Each card is one CTA; ignore the rest of the page until you have walked through one.
 
 <Cards>
   <Card
-    title="Just try Atlas (no install)"
-    href="https://app.useatlas.dev/demo"
-    description="Open the hosted demo at app.useatlas.dev/demo and ask any of the canonical NovaMart questions — GMV, top categories, return reasons. An email, no account, no install."
-  />
-  <Card
-    title="Use Atlas in my AI agent"
+    title="Try it from your AI agent — no account, no email"
     href="/guides/mcp"
-    description="One command: bunx @useatlas/mcp init --hosted --write. Connects Claude Desktop, Cursor, ChatGPT, or Continue to a hosted Atlas workspace."
+    description="One command: bunx @useatlas/mcp init --hosted --demo --write. Points Claude Desktop, Cursor, Claude Code or any MCP client at the hosted NovaMart demo. Ask what NovaMart's return window is and watch the answer arrive with a name on it."
   />
   <Card
     title="Sign up for the hosted SaaS"
     href="/getting-started/hosted"
-    description="app.useatlas.dev — connect your DB, ask questions in the chat UI. Two-week free trial; no credit card."
+    description="app.useatlas.dev — connect your data, invite your team, and connect your agents to your own workspace. Two-week free trial; no credit card."
   />
   <Card
     title="Self-host on my infrastructure"
     href="/self-hosted/getting-started/quick-start"
-    description="Docker, Vercel, Railway — your data never leaves your network. Free and AGPL-licensed."
+    description="Docker, Vercel, Railway — the complete Atlas, in your VPC, for free. AGPL-licensed; nothing that makes it work is behind a license."
   />
 </Cards>
+
+Prefer a browser? The [hosted web demo](https://app.useatlas.dev/demo) answers the same NovaMart questions after an email, with no account and no install.
 
 ## The semantic layer is the product
 
 Everything else — the agent loop, the MCP server, the chat widget, the validation pipelines for SQL and REST/OpenAPI — exists to make the YAML you write the source of truth for how questions become answers. Every field in the format exists because an LLM needs it: `sample_values` to ground the agent, `glossary.status: ambiguous` to force clarifying questions, `metrics.objective` to pick `MAX` vs `MIN`, `query_patterns` to teach canonical join shapes.
 
-The fastest way to feel why this works: try the [hosted demo](https://app.useatlas.dev/demo) and ask one of these canonical NovaMart questions, then read the SQL the agent wrote:
+The fastest way to feel why this works: connect your agent to the [demo over MCP](/guides/mcp) or open the [hosted web demo](https://app.useatlas.dev/demo), ask one of these canonical NovaMart questions, then read the SQL the agent wrote:
 
 - "What's our GMV this quarter?"
 - "What's our top-performing category by GMV this month?"
@@ -101,7 +98,7 @@ The YAML format is a first-class concept. Read these before authoring anything i
 - [Plugin Authoring Guide](/plugins/authoring-guide) — Build datasource, context, interaction, action, and sandbox plugins
 - [Sandbox Architecture](/architecture/sandbox) — Platform-agnostic code execution sandboxing design
 - [SQL Validation Pipeline](/security/sql-validation) — 7-layer defense-in-depth for read-only SQL enforcement; REST/OpenAPI operations get their own parallel safety stack via `validateRestOperation` (see [OpenAPI / Generic REST datasources](/plugins/datasources/openapi-generic))
-- [Atlas vs Alternatives](/comparisons) — Feature matrix comparing Atlas, WrenAI, Vanna, Metabase, Cube, and ThoughtSpot
+- [Atlas vs Alternatives](/comparisons) — How Atlas compares on the trust axis to the warehouse analysts (Genie, Cortex Analyst) and the company-brain entrants (Hyper, Glean, Dust, Onyx), plus the older text-to-SQL pages
 
 </Accordion>
 

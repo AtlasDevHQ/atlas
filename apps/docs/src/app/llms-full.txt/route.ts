@@ -1,5 +1,5 @@
 import { source } from "@/lib/source";
-import { renderLlmsFullText } from "@/lib/llms-surface";
+import { renderLlmsFullText, renderLlmsPreamble } from "@/lib/llms-surface";
 
 // Root / SaaS full-text surface. `source` is the SaaS section (saas + shared,
 // never self-hosted), so this carries ONLY saas + shared pages — a SaaS agent
@@ -14,7 +14,7 @@ export async function GET() {
     "llms-full.txt",
   );
 
-  return new Response(body, {
+  return new Response(renderLlmsPreamble("saas") + "\n---\n\n" + body, {
     headers: { "Content-Type": "text/plain; charset=utf-8" },
   });
 }

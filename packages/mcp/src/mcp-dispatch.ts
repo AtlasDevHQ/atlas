@@ -29,7 +29,7 @@
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
-import { withRequestContext } from "@atlas/api/lib/logger";
+import { getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 import type { McpDispatchGateRequirements } from "@atlas/api/lib/mcp/dispatch-gate-contract";
 import {
@@ -202,6 +202,11 @@ export function createMcpDispatch(opts: McpDispatchOptions): McpDispatcher {
       },
       () => {
         const requestId = dispatchId(toolName);
+        // The door that mounted this dispatch may have pinned the request's
+        // SQL execution target (the anonymous demo pins the demo install).
+        // This frame replaces the outer one, so the pin is carried across;
+        // a door that pins nothing leaves the tool on its own default.
+        const outerConnectionId = getRequestContext()?.connectionId;
         return withRequestContext(
           {
             requestId,
@@ -209,6 +214,7 @@ export function createMcpDispatch(opts: McpDispatchOptions): McpDispatcher {
             actor: mcpActor(toolName),
             agentOrigin: "mcp",
             ...(scopes ? { scopes } : {}),
+            ...(outerConnectionId ? { connectionId: outerConnectionId } : {}),
           },
           async () => {
             try {

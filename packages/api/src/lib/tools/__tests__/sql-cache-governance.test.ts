@@ -142,9 +142,26 @@ void mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: () => {},
 }));
 
-// Controllable resolved RLS config. `deployMode` stays self-hosted so
-// resolution reads `rls` straight off the config (no settings overlay).
-let mockConfig: Record<string, unknown> = {};
+/**
+ * Controllable resolved RLS config. `deployMode` stays self-hosted so
+ * resolution reads `rls` straight off the config (no settings overlay).
+ *
+ * ⚠️ **`enterprise.enabled` is pinned false on EVERY assignment, and omitting
+ * it makes this whole file fail on a developer machine.** `isEnterpriseEnabled()`
+ * (`lib/effect/enterprise-config.ts`) reads `config.enterprise?.enabled` and,
+ * when that key is ABSENT, falls through to `process.env.ATLAS_ENTERPRISE_ENABLED`
+ * — which the repo's own `.env.example` and `.env` set to `"true"`. EE is not
+ * bound in a unit test, so `yieldFailClosed(ApprovalGate, …)` then fails closed
+ * and every `exec()` returns `success: false` with "Approval system unavailable"
+ * before it ever reaches the cache logic this file is about.
+ *
+ * It passed in CI and failed locally for exactly that reason: CI does not set
+ * the variable. A test whose result depends on the developer's `.env` is not
+ * measuring what it claims to, so the config carries the value rather than
+ * inheriting it — the same reason `deployMode` is pinned here rather than read.
+ */
+const CONFIG_BASE = { enterprise: { enabled: false } } as const;
+let mockConfig: Record<string, unknown> = { ...CONFIG_BASE };
 void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfig,
 }));
@@ -196,7 +213,7 @@ describe("executeSQL cache governance (ADR-0033)", () => {
     beforeQueryRewrite = null;
     beforeQueryReject = null;
     afterQueryCalls = 0;
-    mockConfig = {};
+    mockConfig = { ...CONFIG_BASE };
     mockSettingValues = { ATLAS_ROW_LIMIT: "1000", ATLAS_QUERY_TIMEOUT: "30000" };
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/atlas";
@@ -214,7 +231,7 @@ describe("executeSQL cache governance (ADR-0033)", () => {
 
   // ── (1) Resolved RLS config in the key ──────────────────────────────────
   it("unchanged resolved RLS config still hits a warm entry", async () => {
-    mockConfig = { deployMode: "self-hosted", rls: RLS_A };
+    mockConfig = { ...CONFIG_BASE, deployMode: "self-hosted", rls: RLS_A };
 
     const first = await exec();
     expect(first.success).toBe(true);
@@ -229,14 +246,14 @@ describe("executeSQL cache governance (ADR-0033)", () => {
   });
 
   it("tightening the resolved RLS config MISSES the pre-change entry (closes audit H3)", async () => {
-    mockConfig = { deployMode: "self-hosted", rls: RLS_A };
+    mockConfig = { ...CONFIG_BASE, deployMode: "self-hosted", rls: RLS_A };
     const first = await exec();
     expect(first.cached).toBe(false);
     expect(queryFn).toHaveBeenCalledTimes(1);
 
     // Admin tightens RLS. The pre-change entry is now unreachable by
     // construction — the fingerprint moved, so the key moved.
-    mockConfig = { deployMode: "self-hosted", rls: RLS_A_TIGHTER };
+    mockConfig = { ...CONFIG_BASE, deployMode: "self-hosted", rls: RLS_A_TIGHTER };
     const afterChange = await exec();
     expect(afterChange.success).toBe(true);
     expect(afterChange.cached).toBe(false);
@@ -245,11 +262,11 @@ describe("executeSQL cache governance (ADR-0033)", () => {
   });
 
   it("disabling RLS also misses the pre-change (enabled) entry", async () => {
-    mockConfig = { deployMode: "self-hosted", rls: RLS_A };
+    mockConfig = { ...CONFIG_BASE, deployMode: "self-hosted", rls: RLS_A };
     await exec();
     expect(queryFn).toHaveBeenCalledTimes(1);
 
-    mockConfig = { deployMode: "self-hosted", rls: { enabled: false, policies: [], combineWith: "and" } };
+    mockConfig = { ...CONFIG_BASE, deployMode: "self-hosted", rls: { enabled: false, policies: [], combineWith: "and" } };
     const afterDisable = await exec();
     expect(afterDisable.cached).toBe(false);
     expect(queryFn).toHaveBeenCalledTimes(2);
@@ -260,7 +277,7 @@ describe("executeSQL cache governance (ADR-0033)", () => {
   // the env/config arm. This one drives the SaaS hot-reload path: RLS resolved
   // from the settings overlay, then a settings change moves the fingerprint.
   it("a SaaS RLS settings-overlay change (hot-reload) misses the pre-change entry", async () => {
-    mockConfig = { deployMode: "saas" };
+    mockConfig = { ...CONFIG_BASE, deployMode: "saas" };
     mockSettingValues.ATLAS_RLS_ENABLED = "true";
     mockSettingValues.ATLAS_RLS_COLUMN = "tenant_id";
     mockSettingValues.ATLAS_RLS_CLAIM = "org_id";
@@ -290,7 +307,7 @@ describe("executeSQL cache governance (ADR-0033)", () => {
     // request never writes an entry, so no hit can ever resolve under the
     // `{ __rlsMisconfigured }` fingerprint. Pin it end-to-end rather than by
     // hardcoding the sentinel shape (which would drift silently if renamed).
-    mockConfig = { deployMode: "saas" };
+    mockConfig = { ...CONFIG_BASE, deployMode: "saas" };
     mockSettingValues.ATLAS_RLS_ENABLED = "true";
     mockSettingValues.ATLAS_RLS_CLAIM = "org_id"; // column intentionally absent
 

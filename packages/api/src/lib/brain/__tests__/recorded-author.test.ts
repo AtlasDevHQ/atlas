@@ -42,9 +42,13 @@ describe("recordedAuthor — from a brain principal context", () => {
     expect(recordedAuthor(ctx({ origin: "authenticated", role: "member", userId: "u-3" }))).toBeNull();
   });
 
-  it("records NULL for an authenticated principal with no user id", () => {
-    expect(recordedAuthor(ctx({ origin: "authenticated", role: "owner", userId: null }))).toBeNull();
-  });
+  // No case for "authenticated with no user id": `BrainPrincipalContext`'s
+  // authenticated arm declares `userId: string`, so that state is
+  // unrepresentable and a test would have to cast past the type to assert it.
+  // The `&& ctx.userId` guard in the resolver is defensive against a shape the
+  // type forbids; it is preserved from the three copies this replaced rather
+  // than tightened, because loosening or removing a security-relevant guard is
+  // not a refactor.
 
   it("records the sentinel on a no-auth deployment", () => {
     expect(recordedAuthor(ctx({ origin: "unauthenticated-local" }))).toBe(LOCAL_OPERATOR);

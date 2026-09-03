@@ -2424,6 +2424,21 @@ async function applySupersede(
     // no separate reviewer to name: this promotion happens on that person's
     // authority, inside their transaction, which is the whole reason a
     // correction-authored replacement is authoritative immediately.
+    //
+    // ⚠️ So a correction's replacement records its AUTHOR as its approver, and
+    // those are the same person. That is not the review gate's usual shape,
+    // where the author of the evidence and the approver of the claim are
+    // different humans — and a reader who assumes two people will read this
+    // one wrong.
+    //
+    // It is nonetheless the honest value. The alternatives are worse in the
+    // direction that matters: NULL would report "not attributable" about an
+    // act a named person performed deliberately, and naming the ORIGINAL
+    // claim's author would credit the approval to someone who did not make it.
+    // A self-approved correction is a real thing that happened, and the record
+    // says who did it. What the surfaces must not do is render it as
+    // independent review; `approval` and `provenance.attribution` are separate
+    // fields precisely so a consumer can see they coincide.
     const promoted = await tx.query(PROMOTE_CORRECTION_FACT_SQL, [
       workspaceId,
       row.id,

@@ -823,7 +823,11 @@ async function runOneQuestion(
     if (streamErr !== null) throw streamErr;
   } catch (err) {
     const latencyMs = Date.now() - start;
-    const message = err instanceof Error ? err.message : String(err);
+    // A non-Error throw is usually a provider's raw error payload (the
+    // gateway hands `onError` a plain object for some models), and
+    // `String(err)` renders it as `[object Object]` — an artifact that
+    // names nothing. Serialise it instead so the bundle carries the payload.
+    const message = err instanceof Error ? err.message : describeNonError(err);
     const errorName = err instanceof Error ? err.name : "Unknown";
     const stack = err instanceof Error ? err.stack : undefined;
     return {
@@ -2397,6 +2401,24 @@ interface FailOutcomeInput {
   readonly response: unknown;
   readonly expected: unknown;
   readonly summary: string;
+}
+
+/**
+ * Render a thrown non-Error for the artifact bundle. `String(obj)` is
+ * `[object Object]`; JSON keeps whatever the provider put in the payload
+ * (status, message, body). Falls back to `String` for values JSON cannot
+ * take (bigint, cycles).
+ */
+function describeNonError(err: unknown): string {
+  if (typeof err === "string") return err;
+  try {
+    return JSON.stringify(err) ?? String(err);
+  } catch (jsonErr) {
+    console.debug(
+      `canonical-eval: non-Error throw not serialisable (${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)})`,
+    );
+    return String(err);
+  }
 }
 
 function failOutcome(input: FailOutcomeInput): McpLlmOutcome {

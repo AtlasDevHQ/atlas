@@ -23,6 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { GatewayModelPicker } from "@/ui/components/admin/gateway-model-picker";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -35,6 +36,7 @@ import {
   DemoLeadsResponseSchema,
   DemoMetricsResponseSchema,
   DemoTranscriptResponseSchema,
+  GatewayCatalogResponseSchema,
   type DemoConfig,
   type DemoLead,
   type DemoTokenRollup,
@@ -154,6 +156,19 @@ function ConfigPanel() {
     }),
   });
 
+  // The same live gateway catalog the workspace model picker reads
+  // (server-cached, one cold hit per pod). The demo model is a gateway id
+  // on SaaS, so the operator picks it by name instead of typing an id from
+  // memory; a blank value keeps the resolved default.
+  const {
+    data: catalog,
+    loading: catalogLoading,
+    error: catalogError,
+    refetch: refetchCatalog,
+  } = useAdminFetch("/api/v1/admin/model-config/catalog", {
+    schema: GatewayCatalogResponseSchema,
+  });
+
   const fields = form.fields;
   const maxStepsNum = fields ? Number(fields.maxSteps.value) : NaN;
   const rpmNum = fields ? Number(fields.rpm.value) : NaN;
@@ -183,17 +198,43 @@ function ConfigPanel() {
             <div className="space-y-4">
               <div className="grid gap-1.5">
                 <Label htmlFor="demo-model">Demo model</Label>
-                <Input
-                  id="demo-model"
-                  value={fields.model.value}
-                  onChange={(e) => fields.model.set(e.target.value)}
-                  placeholder={effective ?? "Platform default"}
-                  className="max-w-md font-mono text-sm"
-                />
+                <div className="flex max-w-md items-start gap-2">
+                  <div className="min-w-0 flex-1">
+                    {catalogError ? (
+                      // Catalog unreachable (or this operator lacks
+                      // `admin:settings` on the active workspace): fall back
+                      // to the raw id so the setting stays editable.
+                      <Input
+                        id="demo-model"
+                        value={fields.model.value}
+                        onChange={(e) => fields.model.set(e.target.value)}
+                        placeholder={effective ?? "Platform default"}
+                        className="font-mono text-sm"
+                      />
+                    ) : (
+                      <GatewayModelPicker
+                        models={catalog?.models ?? []}
+                        value={fields.model.value}
+                        onChange={fields.model.set}
+                        loading={catalogLoading}
+                        fallback={catalog?.fallback}
+                        onRetry={refetchCatalog}
+                      />
+                    )}
+                  </div>
+                  {fields.model.value !== "" && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => fields.model.set("")}
+                    >
+                      Use default
+                    </Button>
+                  )}
+                </div>
                 <p className="text-xs text-muted-foreground">
-                  Gateway model id (e.g.{" "}
-                  <code>anthropic/claude-haiku-4.5</code>). Leave blank to use
-                  the default
+                  Pick a gateway model, or use the default
                   {effective ? (
                     <>
                       {" "}

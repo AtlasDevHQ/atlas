@@ -624,6 +624,27 @@ export const BrainFactRetractResponseSchema = z.object({
 }) satisfies z.ZodType<BrainFactRetractResponse, unknown>;
 
 /**
+ * The scoped approve's report (#5635).
+ *
+ * `promoted` is the count the adapter itself returns; `promotedIds` is which
+ * of the requested ids actually landed, and `refused` is which did not and
+ * why. All three, because a reviewer who ticked five boxes and got three
+ * published needs to know WHICH three without re-reading the queue — and
+ * because an id can fail to promote for reasons that are not errors (already
+ * published, retracted, or refused by the classifier), so a count alone
+ * reports a partial success as an unexplained shortfall.
+ *
+ * `z.object` rather than `z.strictObject`, matching its neighbours: every id
+ * in this response was named by the caller, so nothing here can disclose a
+ * fact the reviewer had not already selected.
+ */
+export const BrainFactApproveResponseSchema = z.object({
+  promoted: z.number().int().nonnegative(),
+  promotedIds: z.array(z.string()),
+  refused: z.array(z.object({ id: z.string(), reasons: z.array(z.string()) })),
+});
+
+/**
  * The tension sweep's report (#5029).
  *
  * `z.strictObject`, unlike its neighbours above: this response is

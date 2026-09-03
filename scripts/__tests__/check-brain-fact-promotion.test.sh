@@ -469,6 +469,37 @@ run_fixture "SELECT filtering on published_at passes — the corpus read is the 
   "packages/api/src/lib/brain/read2.ts" \
 'const rows = await db.query(`SELECT id, published_at FROM brain_facts WHERE workspace_id = $1 AND published_at IS NOT NULL`);'
 
+# ── published_by (#5635): the approver, UPDATE-only ──
+#
+# Gated on `published_at`'"'"'s exact terms and for a sharper reason. A rogue
+# `published_at` write manufactures evidence of a review that never happened; a
+# rogue `published_by` write manufactures that evidence AND NAMES A PERSON as
+# having stood behind a claim they never saw — and #5635 serves this column in
+# every `searchAtlas` result, so the forgery is read by whoever asked.
+run_fixture "UPDATE … SET published_by fails (a person named for a review they never did)" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET published_by = $2 WHERE workspace_id = $1 AND subject = $3`);'
+
+run_fixture "backfilling published_by from an audit row fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET published_by = $2 WHERE status = '"'"'published'"'"' AND published_by IS NULL`);'
+
+run_fixture "ON CONFLICT … DO UPDATE SET published_by fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`INSERT INTO brain_facts (id, workspace_id, subject) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET published_by = $4`);'
+
+# The must-PASS arm, for `published_at`'"'"'s reason exactly: no default to
+# protect, and NULL already means "not attributable", so naming it on an INSERT
+# of a draft row is inert. The region import needs this arm.
+run_fixture "INSERT naming published_by passes — no default to protect, and NULL already means not-attributable" pass \
+  "packages/api/src/lib/brain/import-shape3.ts" \
+'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, published_by, provenance, source_episode_id, visible_to)
+  VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::uuid, ARRAY(SELECT jsonb_array_elements_text($8::jsonb)))`);'
+
+run_fixture "SELECT projecting published_by passes — serving the approver is the point of the column" pass \
+  "packages/api/src/lib/brain/read3.ts" \
+'const rows = await db.query(`SELECT id, published_by FROM brain_facts WHERE workspace_id = $1 AND status = '"'"'published'"'"'`);'
+
 # The two allowlisted promote statements, which are the only writers.
 run_fixture "the allowlisted adapter promote stamp passes" pass \
   "packages/api/src/lib/content-mode/adapters/brain-facts.ts" \
@@ -724,6 +755,7 @@ declare -A PRECEDENCE_COLUMN=(
   [valid_to]="valid_to"
   [status]="status"
   [published_at]="published_at"
+  [published_by]="published_by"
 )
 declare -A PRECEDENCE_HEADLINE=(
   [visible_to]="\`visible_to\` is MUTATED"
@@ -731,19 +763,32 @@ declare -A PRECEDENCE_HEADLINE=(
   [valid_to]="\`valid_to\` is stamped"
   [status]="\`status\` is written"
   [published_at]="\`published_at\` is stamped outside"
+  [published_by]="\`published_by\` is stamped outside"
 )
 
 # The pin. Failure direction, most severe first: a grant write DISCLOSES; a
 # re-key reaches the irreversible `valid_to` stamp by proxy, so it subsumes the
 # stamp wherever a statement carries both; a stamp retires a belief invisibly; a
-# status write over-trusts a claim, the recoverable one; and `published_at`
-# (#5591) comes LAST, deliberately. It is the only gated column whose rogue
-# write changes nothing about what the system SERVES — the claim's trust and
+# status write over-trusts a claim, the recoverable one; `published_by` (#5635)
+# ranks next; and `published_at` (#5591) comes LAST, deliberately.
+#
+# `published_at` is last because it is the only gated column whose rogue write
+# changes nothing about what the system SERVES — the claim's trust and
 # visibility are decided by `status` and `visible_to`, and a moved approval
 # timestamp leaves both intact. What it corrupts is the RECORD of when a human
 # decided, which matters to an evaluation corpus (#5338) and to nobody reading
 # a fact. Real, and ranked below every column that changes what a user sees.
-EXPECTED_ORDER=(visible_to identity valid_to status published_at)
+#
+# ⚠️ `published_by` sits ABOVE it and NOT for the same reason, which is the one
+# thing to understand before moving either. That "nobody reading a fact sees
+# it" argument is exactly what stops being true for the approver: #5635 projects
+# it into every `searchAtlas` result, because the product claim is that an
+# answer names the person who approved it. So a rogue write here is served —
+# it puts a real colleague's name behind a claim they never saw, in front of
+# every reader of the answer, and retracting the fact does not un-name them.
+# It stays below `status`, which decides whether an unreviewed claim is served
+# as authoritative at all.
+EXPECTED_ORDER=(visible_to identity valid_to status published_by published_at)
 
 SEVERITY_ORDER_LINE="$(grep -oE '^SEVERITY_ORDER=\(([^)]*)\)' "$SCRIPT" | head -1)"
 if [ -z "$SEVERITY_ORDER_LINE" ]; then

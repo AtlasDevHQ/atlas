@@ -1809,7 +1809,61 @@ export interface BrainFactResult {
    * claim that never changed.
    */
   readonly history: BrainFactHistoryView;
+  /**
+   * WHO approved this claim, and when (#5635).
+   *
+   * The third of the three things the product claim promises every fact
+   * carries — its source, its date, and the name of the person who approved
+   * it. The first two live on `provenance` and `validFrom`/`ingestedAt`; until
+   * this existed the third was unbacked, and `provenance.attribution` was
+   * read as if it answered it. It does not: attribution names WHO SAID a
+   * thing, and the approver is who STOOD BEHIND it. On the demo corpus they
+   * are different people by construction.
+   */
+  readonly approval: BrainFactApprovalView;
 }
+
+/**
+ * The review gate's decision on a fact, as a reader sees it (#5635).
+ *
+ * Three shapes, because "not attributable" and "approved by someone whose
+ * account is gone" are different facts and a bare nullable string collapses
+ * them:
+ *
+ * - `{ approved: false }` — no approval recorded. A draft in developer mode,
+ *   a fact published before migration 0216, or one restored verbatim by a
+ *   region import whose bundle does not carry the source decision.
+ * - `{ approved: true, … , approver: { state: "atlas", … } }` — approved, and
+ *   the person is named from a LIVE join to `"user"`. Never snapshotted: a
+ *   snapshotted name goes stale with no re-derivation path, which is the rule
+ *   `actor_identity` already states for the `atlas` state.
+ * - `{ approved: true, … , approver: { state: "local-operator" } }` — approved
+ *   by a human on a deployment with no auth configured. There is no id to
+ *   name them by, and "a person on this deployment approved it" is the true
+ *   and useful statement.
+ *
+ * A fourth case rides the second: an id that resolves to no row, because the
+ * account was deleted. That is `{ state: "atlas", id, name: null }` rather
+ * than a missing approver — the approval happened and the id is the record of
+ * it, and reporting it as unapproved would erase a decision a person made.
+ */
+export type BrainFactApprover =
+  | {
+      readonly state: "atlas";
+      readonly id: string;
+      /** Live from `"user"`. Null when the account no longer exists. */
+      readonly name: string | null;
+    }
+  | { readonly state: "local-operator" };
+
+export type BrainFactApprovalView =
+  | { readonly approved: false }
+  | {
+      readonly approved: true;
+      /** When the gate approved it. Null for a pre-0214 row. */
+      readonly approvedAt: string | null;
+      readonly approver: BrainFactApprover;
+    };
 
 /** tier-3 — raw source content. Source-of-truth for what was said, never for what is true. */
 interface BrainEpisodeResultBase {

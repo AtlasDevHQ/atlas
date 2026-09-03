@@ -94,9 +94,21 @@ export type ExoticModeAdapter = {
     readonly key: string;
     readonly sql: (orgParam: string) => string;
   }>;
+  /**
+   * Promote this table's drafts inside the caller's transaction.
+   *
+   * `publishedBy` is the person the publish is attributable to — a user id, or
+   * `local-operator` on a no-auth deployment, or null where the caller cannot
+   * name one. Every exotic adapter receives it; `brain_facts` is the only one
+   * that records it (#5635), because the fact class is the only one making a
+   * per-row claim about who approved it. An adapter that ignores the parameter is correct,
+   * not incomplete — the alternative was a brain-only channel into the
+   * registry, and a second way to pass an actor is a second thing to keep true.
+   */
   readonly promote: (
     tx: ModeTxClient,
     orgId: string,
+    publishedBy?: string | null,
   ) => Effect.Effect<PromotionReport, PublishPhaseError, never>;
   readonly readFilter?: {
     readonly published: (alias: string) => string;

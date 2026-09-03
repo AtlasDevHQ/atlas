@@ -19,21 +19,31 @@
  * correction episode; the older route survives as the review surface's
  * spelling of the verb.
  *
- * ## There is no approve verb here, and that is the design
+ * ## There IS an approve verb here now, and the single-writer rule is intact
  *
- * Approval is `/api/v1/admin/publish`. `brain_facts.status` has exactly one
- * writer — the atomic publish endpoint's exotic content-mode adapter — and
- * `scripts/check-brain-fact-promotion.sh` refuses every other status-writing
- * shape in the repository. A per-fact "approve" button that stamped `published`
- * would be a second gate writer, bypassing no-provenance-no-promotion and
+ * ⚠️ This section said the opposite until #5635, and the reversal is the
+ * maintainer's. #4772 chose an inverted review model — reject-then-publish,
+ * with approval reachable only through the workspace-wide
+ * `/api/v1/admin/publish` — on the argument that a per-fact approve button
+ * would be a SECOND gate writer, bypassing no-provenance-no-promotion and
  * no-grant-no-promotion for the row it touched.
  *
- * So the reviewer's loop is: retract what you do not trust, then publish. What
- * survives the queue is what gets promoted, inside the publish transaction,
- * with the same refusals applied. The web surface says this in as many words
- * and opens the shared publish modal — which already renders `refusedDrafts[]`
- * with their prose `detail`, so a publish that half-worked is never reported as
- * an unqualified success.
+ * That argument was about a button that writes its own SQL. `POST /approve`
+ * writes none: it calls `review-gate.approve`, which is `promoteBrainFacts` —
+ * the same adapter, the same transaction, the same classifier and refusals, the
+ * same publish-time grant widening and supersession. The scope (#5568) narrows
+ * WHICH rows are considered, at the draft read, and changes nothing about how
+ * they are judged. `brain_facts.status` still has exactly one writer, and
+ * `scripts/check-brain-fact-promotion.sh` still refuses every other
+ * status-writing shape in the repository — including in this file.
+ *
+ * What the old model could not do is name the approver. Its unit of decision is
+ * the workspace, so "who approved this fact" could only ever resolve to "who
+ * ran the publish that swept it up" — and #5635 makes every fact carry the
+ * person who approved it, which a workspace-grained verb cannot express. The
+ * reviewer's loop is now either one: retract what you do not trust and publish
+ * the rest, or approve the claims you have read. Both land in the same
+ * transaction with the same refusals.
  *
  * ## `/retirable` is a SECOND listing, and the split is the design (#5403)
  *
@@ -120,7 +130,7 @@ import { correctFact, type CorrectionOutcome } from "@atlas/api/lib/brain/correc
 // runs the same internal it always did — the facade owns no SQL — but a reader
 // arriving at `lib/brain/review-gate.ts` now finds every consumer of the
 // concept, rather than four modules that happen to be called from one router.
-import { previewApprove, queued, reject } from "@atlas/api/lib/brain/review-gate";
+import { approve, previewApprove, queued, reject } from "@atlas/api/lib/brain/review-gate";
 import {
   loadFactOversight,
 } from "@atlas/api/lib/brain/oversight";
@@ -142,7 +152,7 @@ import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 // The BARREL, like `admin-publish.ts` — not the two leaf modules. The route
 // tests `mock.module` `@atlas/api/lib/audit`, so a leaf import walks past the
 // double and writes a real row.
-import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { logAdminAction, logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type {
   AuthMode,
@@ -160,6 +170,7 @@ import {
   BrainFactCorrectionResponseSchema,
   BrainFactOversightSchema,
   BrainFactRetirableListResponseSchema,
+  BrainFactApproveResponseSchema,
   BrainFactRetractResponseSchema,
   BrainFactTensionForecastRequestSchema,
   BrainFactTensionForecastResponseSchema,
@@ -170,6 +181,9 @@ import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas"
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
 import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
 import { refusalStatus, correctionNotFoundBody } from "./shared-correction";
+import { recordedAdminAuthor } from "@atlas/api/lib/brain/recorded-author";
+import { withInternalTransaction } from "@atlas/api/lib/db/with-internal-transaction";
+import type { PromotionReport } from "@atlas/api/lib/content-mode/port";
 
 const log = createLogger("admin-brain-facts");
 
@@ -423,6 +437,94 @@ const retractRoute = createRoute({
         "This copy previously claimed tier-1 had no correction path at all, which `lib/brain/correction.ts` has not done since #5331 and which would have told the operator clearing the ADR-0042 stragglers that their one available verb was unavailable",
       content: { "application/json": { schema: ErrorSchema } },
     },
+  },
+});
+
+/**
+ * The gate's POSITIVE verb, scoped to named facts (#5635).
+ *
+ * ## This reverses a documented rule, deliberately and on the record
+ *
+ * #4772 chose an INVERTED review model — reject-then-publish, with no per-fact
+ * approve button — and three modules still cite it: this router's header,
+ * `lib/brain/promotion.ts`, and ADR-0036's §T5 amendment note. The argument was
+ * that an affirmative per-fact verb invites a reviewer to approve rows one at a
+ * time without ever seeing the queue, and that "what survives the queue is what
+ * gets promoted" is the safer default.
+ *
+ * The maintainer reversed it. The reason the original rule does not survive
+ * contact with #5635 is that the model made the approver UNRECORDABLE: a bulk
+ * publish has one actor for an arbitrary set of claims, so "who approved this
+ * fact" could only ever mean "who ran the publish that swept it up". The
+ * product claim is that every fact names the person who approved it, and a verb
+ * whose unit is the workspace cannot make that true per fact.
+ *
+ * ## What did NOT change, and is what #4772 was actually protecting
+ *
+ * - **`brain_facts.status` still has exactly one writer.** This route calls
+ *   `review-gate.approve`, which is `promoteBrainFacts` — the same adapter,
+ *   the same transaction, the same classifier, the same refusals, the same
+ *   grant widening and supersession. No SQL lives here.
+ * - **The scope narrows WHICH rows, never HOW they are judged** — the adapter
+ *   applies it at the draft read and nowhere else (#5568).
+ * - **Nothing is approved by omission.** An empty `factIds` is a 400, not an
+ *   unscoped publish; the adapter treats `[]` as "nothing" and `undefined` as
+ *   "everything", and a route that let a mis-serialized body reach the second
+ *   meaning would publish a tenant's whole backlog because a reviewer ticked
+ *   no boxes.
+ */
+/**
+ * Ids per scoped approve. A reviewer selects from one page of the review queue,
+ * so this bounds a request to a plausible human selection rather than to a
+ * database limit — the adapter has no cap of its own (deliberately: the caller
+ * named the rows), so the bound belongs at the HTTP edge where an unbounded
+ * body would otherwise reach `= ANY($2::uuid[])`.
+ */
+const APPROVE_MAX_IDS = 200;
+
+/**
+ * Deadline on the approve verb's audit write, matching `admin-knowledge.ts`'s.
+ * `logAdminActionAwait` reaches `internalQuery`, which bypasses the breaker,
+ * and the internal pool sets no statement timeout — so the await needs its own
+ * bound or a committed approval can hang with no response.
+ */
+const AUDIT_WRITE_TIMEOUT_MS = 5_000;
+
+const approveRoute = createRoute({
+  method: "post",
+  path: "/approve",
+  tags: ["Admin — Brain Facts"],
+  summary: "Approve named fact candidates",
+  description:
+    "Promotes the named draft facts to `published` — the review gate's positive verb, scoped to an explicit id list (#5635). " +
+    "Runs the SAME promotion adapter `/api/v1/admin/publish` runs, in one transaction, with the same classifier, refusals, publish-time grant widening and supersession: the scope narrows which rows are considered and changes nothing about how they are judged. " +
+    "Each promoted row records WHO approved it in `brain_facts.published_by` and WHEN in `published_at`, and `searchAtlas` serves both — which is the point of the verb, and what a workspace-wide publish could not express, since its unit of decision is the workspace rather than the claim. " +
+    "⚠️ Ids that are not promotable drafts — already published, retracted, another workspace's, or absent — are NOT an error: they contribute no row and are reported in neither `promotedIds` nor `refused`. Compare what you sent with `promotedIds` to see what landed. " +
+    "An empty `factIds` is refused with 400 rather than treated as a workspace-wide publish.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            factIds: z
+              .array(z.string())
+              .min(1)
+              .max(APPROVE_MAX_IDS)
+              .openapi({
+                description: `Fact ids to approve, 1–${APPROVE_MAX_IDS}. Every id must be a UUID.`,
+              }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "The transaction committed. `promoted` is how many rows the adapter published, `promotedIds` which of the requested ids landed, and `refused` those the classifier declined with its reasons",
+      content: { "application/json": { schema: BrainFactApproveResponseSchema } },
+    },
+    ...commonResponses,
   },
 });
 
@@ -910,6 +1012,155 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
       );
     }),
     { label: "retract brain fact candidate" },
+  );
+});
+
+adminBrainFacts.openapi(approveRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const { factIds } = c.req.valid("json");
+      const invalid = factIds.filter((id) => !UUID_RE.test(id));
+      if (invalid.length > 0) {
+        return c.json(
+          {
+            error: "bad_request",
+            // The ids back, not just a count: the caller sent them and a
+            // reviewer cannot fix "3 ids were malformed".
+            message: `Not valid fact ids: ${invalid.slice(0, 5).join(", ")}${invalid.length > 5 ? ` (and ${invalid.length - 5} more)` : ""}.`,
+            requestId,
+          },
+          400,
+        );
+      }
+
+      // Establishes the reviewer the same way every other write on this router
+      // does. The context is not passed to the adapter — promotion is
+      // workspace-scoped and its own ACL rules apply — but resolving it here
+      // keeps an unresolved principal from reaching a write at all.
+      yield* reviewerContext(mode, user, orgId, requestId);
+
+      // WHO the resulting rows will name as their approver (#5635). Resolved
+      // before the transaction so a failure to name a person is a refusal
+      // rather than a publish with a NULL approver: this verb exists to record
+      // the name, so running it without one would defeat it.
+      const publishedBy = recordedAdminAuthor(c.get("authResult"));
+      if (publishedBy === null) {
+        return c.json(
+          {
+            error: "forbidden",
+            message:
+              "This request could not be attributed to a person, and an approval that names nobody is what this endpoint exists to prevent.",
+            requestId,
+          },
+          403,
+        );
+      }
+
+      const report: PromotionReport = yield* Effect.tryPromise({
+        try: () =>
+          withInternalTransaction("brain-fact-approve", (client) =>
+            Effect.runPromise(approve(client, orgId, factIds, publishedBy)),
+          ),
+        catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+      });
+
+      const refused = (report.refused ?? []).map((r) => ({
+        id: r.rowId,
+        reasons: [...r.reasons],
+      }));
+      const refusedIds = new Set(refused.map((r) => r.id));
+      const promotedIds = [...(report.promotedIds ?? [])].filter((id) => !refusedIds.has(id));
+
+      // AWAITED, like the correction verbs and unlike the tension sweep: this
+      // row is the trail's copy of a decision that put a named person behind a
+      // set of claims, and a fire-and-forget write can be lost on a process
+      // exit that the client already saw succeed.
+      //
+      // BOUNDED, on `admin-knowledge.ts`'s argument: `logAdminActionAwait`
+      // reaches `internalQuery`, which bypasses the breaker, and the internal
+      // pool sets no statement timeout — so an unbounded await here is a
+      // committed approval whose response never arrives.
+      const audited = yield* Effect.tryPromise({
+        try: () =>
+          Promise.race([
+            logAdminActionAwait({
+              actionType: ADMIN_ACTIONS.brainFact.approve,
+              targetType: "brainFact",
+              // The WORKSPACE, for the reason the retract row gives one step
+              // over: this verb's target is a SET of facts, and
+              // `metadata.requested` carries the ids. A single `targetId`
+              // cannot name a set, and picking the first would make the row lie
+              // about the other four.
+              targetId: orgId,
+              metadata: {
+                workspaceId: orgId,
+                requested: factIds,
+                promotedIds,
+                refused,
+              },
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`audit write timed out after ${AUDIT_WRITE_TIMEOUT_MS}ms`)),
+                AUDIT_WRITE_TIMEOUT_MS,
+              ),
+            ),
+          ]),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.as(true as const),
+        Effect.catchAll((err) => {
+          log.error(
+            { workspaceId: orgId, promoted: report.promoted, promotedIds, requestId, err: err.message },
+            "Brain fact approval COMMITTED but its audit row failed to write",
+          );
+          return Effect.succeed(false as const);
+        }),
+      );
+
+      if (!audited) {
+        // 500 with a SPECIFIC body, on `admin-brain-triage.ts`'s reasoning: the
+        // transaction committed, so a generic "approve failed" would tell an
+        // admin the opposite of what happened and invite a retry. A retry is
+        // harmless here — the promoted rows are no longer drafts, so a second
+        // call promotes nothing — but it would report zero and read as "the
+        // first call did nothing".
+        //
+        // Sharper than the triage case, and this is why the row matters: the
+        // approval put a NAMED PERSON behind these claims. `published_by`
+        // records that on each row, so the decision itself is not lost — but
+        // the admin-action trail is where the act is reviewable, and it did
+        // not land.
+        return c.json(
+          {
+            error: "audit_write_failed",
+            message:
+              `The approval COMMITTED — ${promotedIds.length} fact(s) are now published and carry you as their ` +
+              "approver — but the admin-action audit row could not be written. The per-fact approver is on each " +
+              "row, so the decision is recorded; the reviewable trail of this act is not. Do not retry: those " +
+              "facts are no longer drafts, so a second call would report 0. Record this manually and check the " +
+              "audit subsystem's health.",
+            requestId,
+          },
+          500,
+        );
+      }
+
+      return c.json(
+        checked(BrainFactApproveResponseSchema, {
+          promoted: report.promoted,
+          promotedIds,
+          refused,
+        }),
+        200,
+      );
+    }),
+    { label: "approve brain fact candidates" },
   );
 });
 

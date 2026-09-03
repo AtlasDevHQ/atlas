@@ -668,6 +668,10 @@ describe("migrateAuthTables", () => {
             // already-applied set so this "all applied" test sees zero new
             // migrations.
             { name: "0215_demo_anonymous_sessions.sql" },
+            // 0216 (#5635) — brain_facts.published_by, the approver behind a
+            // published claim. Atlas-internal column on an Atlas-internal
+            // table, so it runs in every auth mode for 0215's reason exactly.
+            { name: "0216_brain_facts_published_by.sql" },
           ],
         };
       }

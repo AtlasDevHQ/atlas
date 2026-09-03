@@ -84,9 +84,16 @@ export interface ContentModeRegistryService {
    * with the offending table and phase. The registry never opens or
    * commits its own transaction — caller owns `BEGIN`/`COMMIT`.
    */
+  /**
+   * Run every table's promote phase in registry order, inside the caller's
+   * transaction. `publishedBy` names the person the publish is attributable to
+   * and is forwarded to every exotic adapter (#5635); omit it only where no
+   * person can be named, such as a region import restoring a prior decision.
+   */
   readonly runPublishPhases: (
     tx: ModeTxClient,
     orgId: string,
+    publishedBy?: string | null,
   ) => Effect.Effect<ReadonlyArray<PromotionReport>, PublishPhaseError, never>;
 }
 
@@ -340,7 +347,7 @@ export function makeService(
         return counts satisfies ModeDraftCounts;
       }),
 
-    runPublishPhases: (tx, orgId) =>
+    runPublishPhases: (tx, orgId, publishedBy) =>
       Effect.gen(function* () {
         const reports: PromotionReport[] = [];
         for (const entry of tables) {
@@ -351,7 +358,7 @@ export function makeService(
               break;
             }
             case "exotic": {
-              const report = yield* entry.promote(tx, orgId);
+              const report = yield* entry.promote(tx, orgId, publishedBy);
               reports.push(report);
               break;
             }

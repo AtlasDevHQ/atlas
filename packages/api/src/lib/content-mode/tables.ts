@@ -116,7 +116,12 @@ export const CONTENT_MODE_TABLES = [
     key: "brain_facts",
     promotedKey: "brainFacts",
     countSegments: [{ key: "brainFacts", sql: brainFactsCountSql }],
-    promote: promoteBrainFacts,
+    // The registry's exotic contract passes an approver, never a scope: a
+    // workspace-wide publish is by definition unscoped, and `factIds` is the
+    // scoped arm's parameter, reached through `review-gate.approve` (#5568).
+    // Adapting here rather than reordering `promoteBrainFacts`' parameters
+    // keeps the scope in the position every scoped caller already passes it.
+    promote: (tx, orgId, publishedBy) => promoteBrainFacts(tx, orgId, undefined, publishedBy),
     // Plain status semantics, no overlay CTE. Present because an exotic entry
     // without a `readFilter` makes `ContentModeRegistry.readFilter` fail with
     // `ExoticReadFilterUnavailableError` — the alternative to which would be a

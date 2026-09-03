@@ -216,6 +216,7 @@ import { isJsonObject, readStoredSource } from "@atlas/api/lib/brain/observation
 import { EPISODE_SOURCES, HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
 import { BRAIN_CORRECTION_VERBS } from "@useatlas/schemas";
 import type { BrainCorrectionVerb, BrainFactCorrectionResponse } from "@useatlas/types";
+import { LOCAL_OPERATOR } from "@atlas/api/lib/brain/recorded-author";
 
 const log = createLogger("brain-correction");
 
@@ -719,7 +720,10 @@ export const MERGE_PROVENANCE_MARKER_SQL = `UPDATE brain_facts
  * human decisions land.
  */
 export const PROMOTE_CORRECTION_FACT_SQL = `UPDATE brain_facts
-        SET status = 'published', published_at = now(), updated_at = now()
+        SET status = 'published',
+            published_at = now(),
+            published_by = $3,
+            updated_at = now()
       WHERE workspace_id = $1
         AND id = $2::uuid
         AND status = 'draft'
@@ -1096,7 +1100,7 @@ export async function correctFact(
     }
   }
 
-  const actor = ctx.userId ?? "local-operator";
+  const actor = ctx.userId ?? LOCAL_OPERATOR;
   // Grammar-valid principal for the replacement fact's provenance `actor`.
   // The `unauthenticated-local` arm records the class rather than an id —
   // that deployment declared it has no ids to record.
@@ -2416,7 +2420,30 @@ async function applySupersede(
         `The replacement could not be published: ${refusal.detail}`,
       );
     }
-    const promoted = await tx.query(PROMOTE_CORRECTION_FACT_SQL, [workspaceId, row.id]);
+    // The approver is the human who authored the correction (#5635). There is
+    // no separate reviewer to name: this promotion happens on that person's
+    // authority, inside their transaction, which is the whole reason a
+    // correction-authored replacement is authoritative immediately.
+    //
+    // ⚠️ So a correction's replacement records its AUTHOR as its approver, and
+    // those are the same person. That is not the review gate's usual shape,
+    // where the author of the evidence and the approver of the claim are
+    // different humans — and a reader who assumes two people will read this
+    // one wrong.
+    //
+    // It is nonetheless the honest value. The alternatives are worse in the
+    // direction that matters: NULL would report "not attributable" about an
+    // act a named person performed deliberately, and naming the ORIGINAL
+    // claim's author would credit the approval to someone who did not make it.
+    // A self-approved correction is a real thing that happened, and the record
+    // says who did it. What the surfaces must not do is render it as
+    // independent review; `approval` and `provenance.attribution` are separate
+    // fields precisely so a consumer can see they coincide.
+    const promoted = await tx.query(PROMOTE_CORRECTION_FACT_SQL, [
+      workspaceId,
+      row.id,
+      inputs.actor,
+    ]);
     if (firstId(promoted.rows) === null) {
       throw new Error(
         `brain correction: replacement fact ${row.id} was classified promotable but the promote matched no row`,

@@ -27914,6 +27914,186 @@
         "operationId": "postAdminBrainFactsByIdRetract"
       }
     },
+    "/api/v1/admin/brain-facts/approve": {
+      "post": {
+        "tags": [
+          "Admin — Brain Facts"
+        ],
+        "summary": "Approve named fact candidates",
+        "description": "Promotes the named draft facts to `published` — the review gate's positive verb, scoped to an explicit id list (#5635). Runs the SAME promotion adapter `/api/v1/admin/publish` runs, in one transaction, with the same classifier, refusals, publish-time grant widening and supersession: the scope narrows which rows are considered and changes nothing about how they are judged. Each promoted row records WHO approved it in `brain_facts.published_by` and WHEN in `published_at`, and `searchAtlas` serves both — which is the point of the verb, and what a workspace-wide publish could not express, since its unit of decision is the workspace rather than the claim. ⚠️ Ids that are not promotable drafts — already published, retracted, another workspace's, or absent — are NOT an error: they contribute no row and are reported in neither `promotedIds` nor `refused`. Compare what you sent with `promotedIds` to see what landed. An empty `factIds` is refused with 400 rather than treated as a workspace-wide publish.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "factIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 200,
+                    "description": "Fact ids to approve, 1–200. Every id must be a UUID."
+                  }
+                },
+                "required": [
+                  "factIds"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The transaction committed. `promoted` is how many rows the adapter published, `promotedIds` which of the requested ids landed, and `refused` those the classifier declined with its reasons",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "promoted": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "promotedIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "refused": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "reasons": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "reasons"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "promoted",
+                    "promotedIds",
+                    "refused"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — bad filter value or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainFactsApprove"
+      }
+    },
     "/api/v1/admin/brain-facts/{id}/correct": {
       "post": {
         "tags": [

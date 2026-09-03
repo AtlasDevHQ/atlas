@@ -1100,7 +1100,30 @@ const STRIP_ALLOWLIST = new Set(["packages/api/src/lib/brain/candidates.ts"]);
  * `Object.values`, a destructure) reaches the correction verbs too and is never
  * exempt.
  */
-const NON_CORRECTION_AUDIT_MEMBERS = new Set(["tensionSweep", "eraseActorIdentity"]);
+/**
+ * Members of the `brainFact` audit domain that are NOT correction verbs, and
+ * whose rows therefore belong to their own emitter rather than to
+ * `lib/brain/correction.ts`.
+ *
+ * `tensionSweep` (#5029) and `eraseActorIdentity` (#5440) are store primitives
+ * with one entry point and no request context to attribute from, so the
+ * two-entry-points argument that put `correct`/`retract` inside `correctFact`
+ * does not apply to them.
+ *
+ * `approve` (#5635) joins them on a sharper version of the same argument. It is
+ * the review gate's POSITIVE verb, not a correction, and its row MUST be
+ * written by the route: the adapter it calls (`promoteBrainFacts`) also runs
+ * inside the workspace-wide publish, where the decision is already recorded as
+ * `content.publish` — emitting from the adapter would double-log that path,
+ * which is the exact #4934 failure this guard exists to prevent, arrived at
+ * from the other direction. The route is also the only layer holding the
+ * `AuthResult` the row's actor comes from.
+ */
+const NON_CORRECTION_AUDIT_MEMBERS = new Set([
+  "tensionSweep",
+  "eraseActorIdentity",
+  "approve",
+]);
 function brainFactAuditOffends(source: string): boolean {
   const hits = [...source.matchAll(/\bADMIN_ACTIONS\.brainFact\b(?:\.(\w+))?/g)];
   return hits.some((h) => !NON_CORRECTION_AUDIT_MEMBERS.has(h[1] ?? ""));

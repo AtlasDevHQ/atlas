@@ -330,6 +330,12 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
     // `brain_episodes` to reach `source`/`source_actor`. That join is INSIDE
     // the scalar subquery and touches no temporal predicate, so it is
     // deliberately identical under both arms.
+    //
+    // Re-captured again at #5635: the projection gained `f.published_at` and
+    // `f.published_by`, the review gate's decision, so `searchAtlas` can name
+    // the person who approved a claim. Both are plain SELECTed columns — no
+    // predicate, no join, no ORDER BY — so they are identical under both
+    // temporal arms for `pre_widening_visible_to`'s reason exactly.
     const { sql, params } = buildFactQuery("published", {
       query: "billing",
       limit: 10,
@@ -348,6 +354,8 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
          f.valid_to,
          f.invalidated_at,
          f.ingested_at,
+         f.published_at,
+         f.published_by,
          (SELECT COUNT(DISTINCT COALESCE(CASE WHEN ep.source <> ALL (ARRAY['warehouse']::text[])
                     THEN CASE WHEN ep.source_actor IS NOT NULL AND btrim(ep.source_actor) <> ''
                     THEN ep.source || ':' || btrim(ep.source_actor)

@@ -198,7 +198,7 @@ The falsification is `alias-proposal-corpus.ts` over `alias-proposal-pg.test.ts`
 1. **The declined surface rewriting (§5) is *why* this stays one bit.** "Just show the canonical name" is a **privacy** regression, not only a reversibility one.
 2. **Keys are never projected to the wire.** No read surface may select a key or `_cmp` column. A prohibition, not an omission.
 
-**Authority: `decideAmendment`'s shape, not the publish gate.** An alias is not a `brain_facts` row and has no `status`, so ADR-0036's *"there is no approve verb here, and that is the design"* does not transfer. Warehouse-derived entity edges backed by a primary key may **auto-approve**; extractor-derived and seam-proposed edges always **queue**. **#4507's permanent rejection memory** stops a producer re-writing what a human removed.
+**Authority: `decideAmendment`'s shape, not the publish gate.** An alias is not a `brain_facts` row and has no `status`, so ADR-0036's *"there is no approve verb here, and that is the design"* does not transfer. (That sentence was itself superseded for the fact class by #5635, which added a scoped approve verb and an approver column; the non-transfer argument here is unaffected either way, since an alias still has no `status` to gate.) Warehouse-derived entity edges backed by a primary key may **auto-approve**; extractor-derived and seam-proposed edges always **queue**. **#4507's permanent rejection memory** stops a producer re-writing what a human removed.
 
 **The vocabulary is two relations, not one.** T3 §8's forest invariant was self-contradictory (depth-1 *and* composing), and its only fix — path compression — **destroys the reversibility T3 called the sole thing that makes a bad alias undoable**. So:
 

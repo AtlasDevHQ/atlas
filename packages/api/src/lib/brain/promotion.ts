@@ -391,7 +391,14 @@ export interface EvidenceWidenedGrant {
  * doing it here satisfies that literally rather than by analogy, and it rides
  * the existing bulk promote — so it introduces no per-fact affirmative verb,
  * which #4772's inverted review model (reject-then-publish, no `approve`
- * button) forbids. Widening at corroboration time would instead let any
+ * button) forbade. ⚠️ That model was reversed by #5635, which added
+ * `POST /api/v1/admin/brain-facts/approve` — but the reversal does not reach
+ * this paragraph's argument, and the distinction matters. #5635 added an
+ * affirmative verb whose SCOPE is a set of facts; it did not add a per-fact
+ * SIDE EFFECT to promotion. Widening still rides the bulk promote and still
+ * introduces no per-row verb of its own, which is what this sentence is about.
+ *
+ * Widening at corroboration time would instead let any
  * unattended ingest pass mutate an ACL field, which is the same side-effect
  * class that #4771 refused for predicate cardinality.
  *

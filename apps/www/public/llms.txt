@@ -8,7 +8,7 @@ To connect an AI agent to Atlas, run this in a terminal. It configures Claude De
 bunx @useatlas/mcp init --hosted --demo --write
 ```
 
-Then ask: "What is NovaMart's return window?" The answer names its source, its date and the person who approved it, and surfaces the contradiction between Finance and Support without picking a side. Full guide: https://docs.useatlas.dev/guides/mcp. Machine-readable docs: https://docs.useatlas.dev/llms.txt.
+Then ask: "What is NovaMart's return window?" The answer names who said it, where and when, marks that a person approved it before it counted, and surfaces the contradiction between Finance and Support without picking a side. Full guide: https://docs.useatlas.dev/guides/mcp. Machine-readable docs: https://docs.useatlas.dev/llms.txt.
 
 Three kinds of thing live in the Atlas, and every answer says which it is drawing on: **Surveyed** (read live from the company's own data through a semantic layer, SELECT-only, validated seven ways — it cannot go stale), **Attested** (extracted from something someone wrote, then approved by a named person who is on the record), and **On the record** (the raw source, unedited). Surveyed outranks Attested wherever they overlap. Contradictions are shown with both sources; Atlas picks neither. The complete Atlas runs self-hosted under AGPL-3.0; hosted Atlas is in the US, with EU and APAC regions built and brought online on request.
 

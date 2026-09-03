@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Sora, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import WebMCP from "@/components/webmcp";
+import { SENTENCE } from "@/components/landing/data";
 
 const sora = Sora({
   subsets: ["latin"],
@@ -21,12 +22,10 @@ export const metadata: Metadata = {
     default: "Atlas — the company facts your AI agents can trust",
     template: "%s — Atlas",
   },
-  description:
-    "Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC.",
+  description: SENTENCE,
   openGraph: {
     title: "Atlas — the company facts your AI agents can trust",
-    description:
-      "Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC.",
+    description: SENTENCE,
     url: "https://www.useatlas.dev",
     siteName: "Atlas",
     type: "website",
@@ -43,8 +42,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "Atlas — the company facts your AI agents can trust",
-    description:
-      "Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC.",
+    description: SENTENCE,
     images: ["/og.png"],
   },
 };

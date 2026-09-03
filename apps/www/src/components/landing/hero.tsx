@@ -3,21 +3,15 @@ import { DEMO_EXCHANGE, DEMO_QUESTION, MCP_DEMO_COMMAND, SENTENCE, TRUST_TIERS }
 
 /**
  * The hero visual: the demo exchange, rendered as the hosted NovaMart corpus
- * answers it. It stands in the slot the recording (#5605) takes; when the
- * dated GIF lands it replaces this card in one commit and the card's copy
- * moves nowhere, because the recording shows the same exchange.
+ * answers it. The hero shows the exchange the recording shows, so the page
+ * and the take never disagree about what the demo says; the recording, when
+ * present, occupies this slot.
  */
 function DemoExchange() {
   const { attested, contradiction } = DEMO_EXCHANGE;
   return (
-    <div
-      className="relative overflow-hidden rounded-xl border border-white/10 shadow-pane"
-      style={{ background: "oklch(0.14 0 0)" }}
-    >
-      <div
-        className="flex items-center gap-2 border-b border-white/5 px-3.5 py-2.5"
-        style={{ background: "oklch(0.16 0 0)" }}
-      >
+    <div className="relative overflow-hidden rounded-xl border border-code-border bg-code-bg shadow-pane">
+      <div className="flex items-center gap-2 border-b border-code-border bg-code-chrome px-3.5 py-2.5">
         <span className="h-2 w-2 rounded-full" style={{ background: "var(--atlas-spark)" }} />
         <span className="font-mono text-[11px] text-zinc-400">claude desktop · atlas-demo</span>
         <span className="ml-auto rounded border border-white/10 px-2 py-[2px] font-mono text-[10px] text-zinc-400">
@@ -33,10 +27,7 @@ function DemoExchange() {
 
         <div>
           <p className="mb-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">// the answer, with a name on it</p>
-          <div
-            className="rounded-md border border-white/10 px-3 py-3"
-            style={{ background: "oklch(0.10 0 0)" }}
-          >
+          <div className="rounded-md border border-code-border bg-code-well px-3 py-3">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <span className="rounded border border-brand/40 px-2 py-[2px] font-mono text-[10px] uppercase tracking-[0.06em] text-brand">
                 Attested
@@ -54,10 +45,7 @@ function DemoExchange() {
 
         <div>
           <p className="mb-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">// also attested — Atlas shows both and picks neither</p>
-          <div
-            className="rounded-md border border-amber-300/25 px-3 py-3"
-            style={{ background: "oklch(0.10 0 0)" }}
-          >
+          <div className="rounded-md border border-amber-300/25 bg-code-well px-3 py-3">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <span className="rounded border border-brand/40 px-2 py-[2px] font-mono text-[10px] uppercase tracking-[0.06em] text-brand">
                 Attested
@@ -117,6 +105,7 @@ function TierStrip() {
 // character for character.
 const [SENTENCE_HEAD, SENTENCE_TAIL] = (() => {
   const i = SENTENCE.indexOf(":");
+  if (i < 0) return [SENTENCE, ""];
   return [SENTENCE.slice(0, i + 1), SENTENCE.slice(i + 1)];
 })();
 

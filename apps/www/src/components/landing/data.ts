@@ -45,7 +45,7 @@ export const DEMO_EXCHANGE = {
  * (docs/prd/company-atlas.md § What a person can trust). Every answer says
  * which one it is drawing on.
  */
-export type TrustTier = {
+type TrustTier = {
   readonly name: string;
   readonly what: string;
   readonly why: string;

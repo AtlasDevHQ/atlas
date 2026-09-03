@@ -319,6 +319,9 @@ jobs:
       - name: Adversarial fixtures for the plugin-count gate (#4066)
         run: bash scripts/__tests__/check-plugin-count.test.sh
 
+      - name: Check the launch sentence renders verbatim on every surface (#5606)
+        run: bash scripts/check-launch-sentence.sh
+
       - name: Check boot-loaded plugins ↔ api Dockerfile wiring lockstep (#4880)
         run: bun scripts/check-plugin-lockstep.ts
 

@@ -2,6 +2,8 @@
 
 import { useEffect } from "react";
 
+import { DEMO_QUESTION, MCP_DEMO_COMMAND, SENTENCE } from "./landing/data";
+
 // Provides tools to in-browser agents via Chrome's experimental webmcp
 // proposal (navigator.modelContext). No-op elsewhere. The response
 // envelope mirrors MCP server tools/call (`{ content: [{type, text}] }`)
@@ -41,11 +43,6 @@ function openAndReport(url: string, openedText: string): {
   return { content: [{ type: "text", text }] };
 }
 
-const SENTENCE =
-  "Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC.";
-
-const MCP_DEMO_COMMAND = "bunx @useatlas/mcp init --hosted --demo --write";
-
 const TOOLS: ModelContextTool[] = [
   {
     name: "atlas_connect_agent_to_demo",
@@ -57,7 +54,7 @@ const TOOLS: ModelContextTool[] = [
         content: [
           {
             type: "text",
-            text: `Run this in a terminal, then restart the MCP client:\n\n${MCP_DEMO_COMMAND}\n\nThen ask: "What is NovaMart's return window?" The answer names its source, its date and the person who approved it, and shows the contradiction between Finance and Support without picking a side. Guide: https://docs.useatlas.dev/guides/mcp`,
+            text: `Run this in a terminal, then restart the MCP client:\n\n${MCP_DEMO_COMMAND}\n\nThen ask: "${DEMO_QUESTION}" The answer names who said it, where and when, marks that a person approved it before it counted, and shows the contradiction between Finance and Support without picking a side. Guide: https://docs.useatlas.dev/guides/mcp`,
           },
         ],
       };

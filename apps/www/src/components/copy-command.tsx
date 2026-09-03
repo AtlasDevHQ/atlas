@@ -35,11 +35,10 @@ export function CopyCommand({ command, className = "" }: { command: string; clas
 
   return (
     <div
-      className={`flex items-center gap-3 overflow-hidden rounded-lg border border-white/10 pl-4 pr-2 shadow-pane ${className}`}
-      style={{ background: "oklch(0.12 0 0)" }}
+      className={`flex items-center gap-3 overflow-hidden rounded-lg border border-code-border bg-code-bg pl-4 pr-2 shadow-pane ${className}`}
     >
-      <span aria-hidden className="font-mono text-[13px] text-zinc-500">$</span>
-      <code className="flex-1 select-all overflow-x-auto whitespace-nowrap py-3 font-mono text-[13px] text-zinc-100">
+      <span aria-hidden className="font-mono text-[13px] text-code-muted">$</span>
+      <code className="flex-1 select-all overflow-x-auto whitespace-nowrap py-3 font-mono text-[13px] text-code-fg">
         {command}
       </code>
       <button

@@ -100,6 +100,24 @@ function resolveDeps(deps: DemoMcpDeps): Required<DemoMcpDeps> {
   };
 }
 
+/** The one `rate_limited` envelope every anonymous refusal speaks. */
+function rateLimitedResult(limit: Extract<AnonymousDemoLimitResult, { allowed: false }>): CallToolResult {
+  const retryAfter = Math.max(1, Math.ceil(limit.retryAfterMs / 1000));
+  return toEnvelopeResult(
+    envelope(
+      "rate_limited",
+      `The demo is rate-limited. Please wait ${retryAfter} seconds and try again.`,
+      {
+        retry_after: retryAfter,
+        hint:
+          limit.bucket === "ip"
+            ? "Anonymous demo traffic is limited per client IP. Wait the indicated time before retrying."
+            : "Each anonymous demo session has its own per-minute budget. Wait the indicated time before retrying.",
+      },
+    ),
+  );
+}
+
 // ── Per-HTTP-request context for the tool-level gate ───────────────────
 //
 // The shared dispatch opens its own `withRequestContext` frame per tool call,
@@ -158,45 +176,42 @@ export function createDemoMcpServer(
     scopes: ANONYMOUS_DEMO_SCOPES,
   });
 
-  async function anonymousGate(toolName: string, requestId: string): Promise<CallToolResult | null> {
-    const ip = demoRequestStore.getStore()?.ip ?? null;
-    const limit = await d.checkLimits({ ip, sessionId });
+  /**
+   * The anonymous budgets, checked BEFORE the shared dispatch opens — so a
+   * limited client is refused before the per-client limiter, the billing
+   * lookup and the action-policy read spend anything on it. Both budgets
+   * are settings-registry entries (`demo-anonymous.ts`).
+   */
+  async function anonymousGate(toolName: string): Promise<CallToolResult | null> {
+    const frame = demoRequestStore.getStore();
+    const limit = await d.checkLimits({ ip: frame?.ip ?? null, sessionId });
     if (limit.allowed) return null;
-    const retryAfter = Math.max(1, Math.ceil(limit.retryAfterMs / 1000));
     log.warn(
-      { requestId, toolName, sessionId, bucket: limit.bucket, retryAfter },
+      { requestId: frame?.requestId, toolName, sessionId, bucket: limit.bucket },
       "Anonymous demo tool call rate-limited",
     );
-    return toEnvelopeResult(
-      envelope(
-        "rate_limited",
-        `The demo is rate-limited. Please wait ${retryAfter} seconds and try again.`,
-        {
-          retry_after: retryAfter,
-          hint:
-            limit.bucket === "ip"
-              ? "Anonymous demo traffic is limited per client IP. Wait the indicated time before retrying."
-              : "Each anonymous demo session has its own per-minute budget. Wait the indicated time before retrying.",
-        },
-      ),
-    );
+    return rateLimitedResult(limit);
   }
 
-  const dispatch: McpToolDispatch = (toolName, reqs, body, spanAttributes) =>
-    base.dispatch(
+  const dispatch: McpToolDispatch = async (toolName, reqs, body, spanAttributes) => {
+    const blocked = await anonymousGate(toolName);
+    if (blocked) return blocked;
+    return base.dispatch(
       toolName,
       reqs,
       async (requestId) => {
-        const blocked = await anonymousGate(toolName, requestId);
-        if (blocked) return blocked;
         const result = await body(requestId);
         // A delivered answer is what moves the email-capture gate and the
-        // launch-cycle count. Error envelopes are not answers.
+        // launch-cycle count. Error envelopes are not answers. (A non-error
+        // `approval_required` body would count — unreachable on this door,
+        // which carries `mcp:read` against a workspace with no approval
+        // rules, and an answer the visitor never saw is the only cost.)
         if (!result.isError) await d.recordAnswer(sessionId, requestId);
         return result;
       },
       spanAttributes,
     );
+  };
 
   // The whole surface: two reads, plus the optional hand-off. Registration
   // order is what `tools/list` shows a client first.
@@ -243,14 +258,7 @@ function registerShareEmailTool(
       const ip = frame?.ip ?? null;
       try {
         const limit = await opts.deps.checkLimits({ ip, sessionId: opts.sessionId });
-        if (!limit.allowed) {
-          const retryAfter = Math.max(1, Math.ceil(limit.retryAfterMs / 1000));
-          return toEnvelopeResult(
-            envelope("rate_limited", `The demo is rate-limited. Please wait ${retryAfter} seconds.`, {
-              retry_after: retryAfter,
-            }),
-          );
-        }
+        if (!limit.allowed) return rateLimitedResult(limit);
         const result = await opts.deps.captureEmail({
           sessionId: opts.sessionId,
           email,
@@ -527,6 +535,26 @@ export function createDemoMcpRouter(deps: DemoMcpDeps = {}): Hono {
                 );
               }
               return sessions.dispatchExisting(c.req.raw, entry);
+            }
+            // A NEW MCP session is charged to both budgets like a tool call:
+            // otherwise one token could open sessions until the per-region
+            // cap 503s the door for everyone, with nothing counting it.
+            const limit = await d.checkLimits({ ip, sessionId: session.id });
+            if (!limit.allowed) {
+              const retryAfterSeconds = Math.max(1, Math.ceil(limit.retryAfterMs / 1000));
+              log.warn(
+                { requestId, sessionId: session.id, bucket: limit.bucket, retryAfterSeconds },
+                "Anonymous demo session creation rate-limited",
+              );
+              return c.json(
+                {
+                  error: "rate_limited",
+                  message: "Too many demo requests. Please wait before opening another session.",
+                  retryAfterSeconds,
+                  requestId,
+                },
+                { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+              );
             }
             return sessions.dispatchNew(c.req.raw, {
               createServer: async () => createDemoMcpServer({ session, workspaceId }, d),

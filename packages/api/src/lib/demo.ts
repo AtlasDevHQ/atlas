@@ -217,7 +217,7 @@ export function signDemoPayload(
 export function verifyDemoPayload(
   token: string,
   purpose: DemoKeyPurpose,
-): Record<string, unknown> | null {
+): (Record<string, unknown> & { exp: number }) | null {
   const key = deriveDemoKey(purpose);
   if (!key) {
     log.warn({ purpose }, "Cannot verify demo token: BETTER_AUTH_SECRET is not set");
@@ -265,10 +265,11 @@ export function verifyDemoPayload(
 
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return null;
   const record = payload as Record<string, unknown>;
-  if (typeof record.exp !== "number") return null;
-  if (record.exp < Date.now()) return null;
+  const exp = record.exp;
+  if (typeof exp !== "number") return null;
+  if (exp < Date.now()) return null;
 
-  return record;
+  return { ...record, exp };
 }
 
 /**

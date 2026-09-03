@@ -32,8 +32,20 @@ const mockExecuteSQLExecute = mock<(...args: unknown[]) => Promise<unknown>>(asy
   rows: [{ count: 42 }],
   truncated: false,
 }));
+const notInDemoTest = (name: string) => () => {
+  throw new Error(`${name} called from demo test — only executeSQL.execute is exercised here`);
+};
 void mock.module("@atlas/api/lib/tools/sql", () => ({
   executeSQL: { description: "Execute SQL", execute: mockExecuteSQLExecute },
+  // Every other named export, as throw-on-call stubs (testing.md: mock all
+  // exports — a partial mock leaks across files under the in-process runner).
+  MAX_SQL_LEN: 100_000,
+  extractClassification: notInDemoTest("extractClassification"),
+  parserDatabase: notInDemoTest("parserDatabase"),
+  validateSQL: notInDemoTest("validateSQL"),
+  buildSqlExecuteSpanAttrs: notInDemoTest("buildSqlExecuteSpanAttrs"),
+  runSqlPipelineEffect: notInDemoTest("runSqlPipelineEffect"),
+  runUserQueryPipeline: notInDemoTest("runUserQueryPipeline"),
 }));
 
 const { BRAIN_TOOL_REASONS: REAL_BRAIN_TOOL_REASONS } = await import(
@@ -266,6 +278,19 @@ describe("/mcp/demo — refusals fail closed with a request id", () => {
     const body = (await res.json()) as { error: string; requestId: string };
     expect(body.error).toBe("auth_unavailable");
     expect(body.requestId).toBeTruthy();
+  });
+
+  it("429s a NEW session when either anonymous budget is exhausted (a token cannot flood the session cap)", async () => {
+    const h = makeHarness();
+    h.setVerdict({ allowed: false, bucket: "ip", retryAfterMs: 30_000 });
+    const res = await rawInit(appFor(h.deps), { Authorization: `Bearer ${tokenFor(SID_A)}` });
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBe("30");
+    const body = (await res.json()) as { error: string; requestId: string; retryAfterSeconds: number };
+    expect(body.error).toBe("rate_limited");
+    expect(body.retryAfterSeconds).toBe(30);
+    expect(body.requestId).toBeTruthy();
+    expect(h.limitCalls.at(-1)).toEqual({ ip: null, sessionId: SID_A });
   });
 
   it("answers on the legacy /sse alias too", async () => {

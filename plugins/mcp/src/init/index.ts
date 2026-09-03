@@ -257,45 +257,16 @@ async function runHosted(opts: HostedInitOptions): Promise<RunInitResult> {
     );
   }
 
-  if (!opts.write || configPath === null) {
-    printPasteSnippet(clientId, serverCfg, configPath);
-    if (result.refreshToken) {
-      console.log(
-        "# A refresh token was issued. Atlas's MCP clients re-authenticate transparently — keep this config file at mode 0600.",
-      );
-    }
-    return { exitCode: 0 };
-  }
-
-  const existing = readConfigOrNull(configPath);
-  let merged: string;
-  try {
-    merged = mergeMcpServerConfig(existing, SERVER_NAME, serverCfg);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[atlas-mcp init] could not merge into existing config (${configPath}): ${msg}`);
-    console.error("Aborting — your config was not modified. Re-run without --write to print a snippet instead.");
-    return { exitCode: 1 };
-  }
-
-  let writeResult;
-  try {
-    writeResult = await writeConfigWithBackup(configPath, merged);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[atlas-mcp init] failed to write ${configPath}: ${msg}`);
-    if (existing !== null) {
-      console.error("Your existing config was not modified — the new content was staged in a sibling tmp file and the rename never happened.");
-    }
-    return { exitCode: 1 };
-  }
-
-  console.log(`Wrote ${configPath}`);
-  if (writeResult.backupPath) {
-    console.log(`Backed up the previous config to ${writeResult.backupPath}`);
-  }
-  console.log("Restart your MCP client to pick up the new server.");
-  return { exitCode: 0 };
+  return writeOrPrint({
+    clientId,
+    serverName: SERVER_NAME,
+    serverCfg,
+    configPath,
+    write: opts.write ?? false,
+    afterSnippet: result.refreshToken
+      ? "# A refresh token was issued. Atlas's MCP clients re-authenticate transparently — keep this config file at mode 0600."
+      : undefined,
+  });
 }
 
 async function runLocal(opts: LocalInitOptions): Promise<RunInitResult> {
@@ -319,40 +290,13 @@ async function runLocal(opts: LocalInitOptions): Promise<RunInitResult> {
     console.log("Override by exporting ATLAS_DATASOURCE_URL before launching your MCP client.");
   }
 
-  if (!opts.write || configPath === null) {
-    printPasteSnippet(clientId, serverCfg, configPath);
-    return { exitCode: 0 };
-  }
-
-  const existing = readConfigOrNull(configPath);
-  let merged: string;
-  try {
-    merged = mergeMcpServerConfig(existing, SERVER_NAME, serverCfg);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[atlas-mcp init] could not merge into existing config (${configPath}): ${msg}`);
-    console.error("Aborting — your config was not modified. Re-run without --write to print a snippet instead.");
-    return { exitCode: 1 };
-  }
-
-  let writeResult;
-  try {
-    writeResult = await writeConfigWithBackup(configPath, merged);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[atlas-mcp init] failed to write ${configPath}: ${msg}`);
-    if (existing !== null) {
-      console.error("Your existing config was not modified — the new content was staged in a sibling tmp file and the rename never happened.");
-    }
-    return { exitCode: 1 };
-  }
-
-  console.log(`Wrote ${configPath}`);
-  if (writeResult.backupPath) {
-    console.log(`Backed up the previous config to ${writeResult.backupPath}`);
-  }
-  console.log("Restart your MCP client to pick up the new server.");
-  return { exitCode: 0 };
+  return writeOrPrint({
+    clientId,
+    serverName: SERVER_NAME,
+    serverCfg,
+    configPath,
+    write: opts.write ?? false,
+  });
 }
 
 function chooseDatasourceUrl(args: {
@@ -378,10 +322,13 @@ async function writeOrPrint(args: {
   serverCfg: ServerConfig;
   configPath: string | null;
   write: boolean;
+  /** An extra line printed after the paste snippet (print mode only). */
+  afterSnippet?: string;
 }): Promise<RunInitResult> {
   const { clientId, serverName, serverCfg, configPath, write } = args;
   if (!write || configPath === null) {
     printPasteSnippet(clientId, serverCfg, configPath, serverName);
+    if (args.afterSnippet) console.log(args.afterSnippet);
     return { exitCode: 0 };
   }
 

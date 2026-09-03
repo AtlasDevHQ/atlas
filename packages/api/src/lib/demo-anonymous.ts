@@ -18,10 +18,13 @@
  *     is what `searchAtlas` and `executeSQL` key on — and nothing else. The
  *     token also pins the workspace it was minted for, and the MCP edge refuses
  *     a token whose pin disagrees with the current resolution (fail closed).
- *   - **Less reach than the email demo, never more.** `member` role, no
- *     `mcp:write`, and the MCP surface registers exactly two read tools plus
- *     the optional email hand-off. The ACL sees a principal with no member
- *     row, so only `org`-granted facts are visible.
+ *   - **Less reach than the email demo, never more** — on tool surface, role
+ *     and lifetime. `member` role, no `mcp:write`, and the MCP surface
+ *     registers exactly two read tools plus the optional email hand-off. The
+ *     ACL sees a principal with no member row, so only `org`-granted facts are
+ *     visible. (The one asymmetry: the web demo's principal is bound to no
+ *     workspace and cannot search the Atlas at all; this one can, for the demo
+ *     workspace — the capability this door exists to ship.)
  *   - **Rate limited twice.** Per client IP (session mints and tool calls
  *     share the bucket) and per minted identity (tool calls). Both budgets are
  *     settings-registry entries, hot-reloadable.
@@ -188,7 +191,7 @@ export function verifyAnonymousDemoToken(token: string): AnonymousDemoTokenClaim
   if (payload.kind !== "anon") return null;
   if (typeof payload.sid !== "string" || payload.sid.length === 0) return null;
   if (typeof payload.ws !== "string" || payload.ws.length === 0) return null;
-  return { sessionId: payload.sid, workspaceId: payload.ws, expiresAt: payload.exp as number };
+  return { sessionId: payload.sid, workspaceId: payload.ws, expiresAt: payload.exp };
 }
 
 // ---------------------------------------------------------------------------

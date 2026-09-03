@@ -48,13 +48,18 @@ export function parseInitArgs(argv: string[]): InitFlags {
     help: false,
   };
 
+  // `mode` defaults to "local", so an explicit --local has to be remembered
+  // separately to refuse the --local/--demo combination in either order.
+  let sawLocal = false;
+  const localDemoConflict = () =>
+    new CliUsageError(`[atlas-mcp init] --demo is hosted-only; it cannot be combined with --local`);
+
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
       case "--local":
-        if (flags.mode === "demo") {
-          throw new CliUsageError(`[atlas-mcp init] --demo is hosted-only; it cannot be combined with --local`);
-        }
+        if (flags.mode === "demo") throw localDemoConflict();
+        sawLocal = true;
         flags.mode = "local";
         break;
       case "--hosted":
@@ -62,9 +67,7 @@ export function parseInitArgs(argv: string[]): InitFlags {
         if (flags.mode !== "demo") flags.mode = "hosted";
         break;
       case "--demo":
-        if (flags.mode === "local" && argv.slice(0, i).includes("--local")) {
-          throw new CliUsageError(`[atlas-mcp init] --demo is hosted-only; it cannot be combined with --local`);
-        }
+        if (sawLocal) throw localDemoConflict();
         flags.mode = "demo";
         break;
       case "--write":
@@ -153,27 +156,12 @@ export async function runInitCommand(argv: string[]): Promise<number> {
     return 0;
   }
 
-  const opts: RunInitOptions =
-    flags.mode === "demo"
-      ? {
-          mode: "demo",
-          client: flags.client,
-          write: flags.write,
-          apiUrl: flags.apiUrl,
-        }
-      : flags.mode === "hosted"
-        ? {
-            mode: "hosted",
-            client: flags.client,
-            write: flags.write,
-            apiUrl: flags.apiUrl,
-          }
-        : {
-            mode: "local",
-            client: flags.client,
-            write: flags.write,
-            apiUrl: flags.apiUrl,
-          };
+  const opts: RunInitOptions = {
+    mode: flags.mode,
+    client: flags.client,
+    write: flags.write,
+    apiUrl: flags.apiUrl,
+  };
   const { exitCode } = await runInit(opts);
   return exitCode;
 }

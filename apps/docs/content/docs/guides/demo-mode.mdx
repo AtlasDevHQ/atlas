@@ -141,7 +141,7 @@ That one command mints a session against the hosted demo (`https://mcp.useatlas.
 - Outlive its token. The default lifetime is two hours (`ATLAS_DEMO_ANON_TOKEN_TTL_MINUTES`), against the web demo's 24.
 - Exceed either of two budgets: requests per minute per client IP (session mints and tool calls share it) and tool calls per minute per minted identity. Both are settings-registry entries.
 
-Anonymous means **less reach than the email demo, never more**. The email demo runs the agent loop with its full default tool set; the anonymous door registers exactly the three tools above.
+Anonymous means **less reach than the email demo, never more** — in tool surface, role and token lifetime. The email demo runs the agent loop with its full default tool set (`executeSQL`, `explore`, the semantic-layer tools); the anonymous door registers exactly the three tools above. The one axis on which the anonymous door reaches something the web demo does not is `searchAtlas`: the web demo's principal is bound to no workspace, so the Company Atlas is unavailable to it, while the anonymous principal is bound to the demo workspace and sees its workspace-wide facts. That is the point of this door, and it is still a strictly narrower door than a real workspace member's.
 
 ### Settings
 

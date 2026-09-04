@@ -1,9 +1,16 @@
 /**
  * Backoff math — pure, deterministic. The values asserted here are the
  * contract that the SQL CASE in `backoff.ts:CLAIM_DELAY_SQL` mirrors;
- * if either changes, the other must change too. (Same tier schedule as
- * lead-outbox — a sustained-outage backstop wants the same widening
- * gaps so a down provider isn't hammered.)
+ * if either changes, the other must change too.
+ *
+ * ⚠️ NOT the same ladder as `lead-outbox/backoff.ts`, though both share
+ * this file's shape and its widening-gap rationale. Email is
+ * 30s → 2m → 8m → 30m → 2h; leads are 30s → 3m → 20m → 2h → 12h,
+ * because #2874 extended the lead ceiling so a lead survives a
+ * multi-hour upstream outage. A recipient waiting on a verification
+ * mail will not, so email's ceiling stays at 2h deliberately. The two
+ * suites are siblings in structure and independent in values — do not
+ * "reconcile" one to the other.
  */
 
 import { describe, expect, test } from "bun:test";

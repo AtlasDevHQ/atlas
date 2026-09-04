@@ -194,81 +194,21 @@ describe("DuckDB profiler — error propagation behavior", () => {
   }, 30_000);
 });
 
-describe("column-level catch re-throw contract", () => {
-  it("isFatalConnectionError triggers re-throw, non-fatal continues", () => {
-    // Simulates the exact pattern used in all 6 profilers' column-level catches:
-    //
-    //   } catch (colErr) {
-    //     if (isFatalConnectionError(colErr)) throw colErr;
-    //     console.warn(`Warning: ...`);
-    //   }
-
-    const fatalError = new Error("read ECONNRESET");
-    const nonFatalError = new Error("permission denied for relation users");
-
-    function columnCatch(err: Error): "warning" | "rethrow" {
-      if (isFatalConnectionError(err)) throw err;
-      return "warning";
-    }
-
-    expect(() => columnCatch(fatalError)).toThrow("ECONNRESET");
-    expect(columnCatch(nonFatalError)).toBe("warning");
-  });
-
-  it("fatal errors via .code also trigger re-throw", () => {
-    const err = new Error("connection lost");
-    (err as NodeJS.ErrnoException).code = "ECONNREFUSED";
-
-    function columnCatch(e: Error): "warning" | "rethrow" {
-      if (isFatalConnectionError(e)) throw e;
-      return "warning";
-    }
-
-    expect(() => columnCatch(err)).toThrow("connection lost");
-  });
-
-  it("wrapped fatal errors propagate via cause chain", () => {
-    const original = new Error("read EPIPE");
-    const wrapped = new Error("query failed", { cause: original });
-
-    function columnCatch(e: Error): "warning" | "rethrow" {
-      if (isFatalConnectionError(e)) throw e;
-      return "warning";
-    }
-
-    expect(() => columnCatch(wrapped)).toThrow("query failed");
-  });
-
-  it("all six fatal error codes trigger the re-throw path", () => {
-    const codes = ["ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENOTFOUND", "EPIPE", "ETIMEDOUT"];
-
-    for (const code of codes) {
-      const err = new Error(`connect ${code}: connection lost`);
-      expect(() => {
-        if (isFatalConnectionError(err)) throw err;
-      }).toThrow(code);
-    }
-  });
-
-  it("table-level catch wraps fatal errors with profiling context", () => {
-    const originalError = new Error("read ECONNRESET");
-    const tableName = "users";
-
-    try {
-      // Simulate column-level re-throw
-      throw originalError;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (isFatalConnectionError(err)) {
-        const wrapped = new Error(`Fatal database error while profiling ${tableName}: ${msg}`, { cause: err });
-        expect(wrapped.message).toContain("Fatal database error");
-        expect(wrapped.message).toContain("users");
-        expect(wrapped.message).toContain("ECONNRESET");
-        expect(wrapped.cause).toBe(originalError);
-        return; // test passed
-      }
-    }
-    // Should not reach here
-    expect(true).toBe(false);
-  });
-});
+// =========================================================================
+// REMOVED: describe("column-level catch re-throw contract") — 5 tests.
+//
+// Each one declared a 3-line local `columnCatch()` and asserted against THAT,
+// so it passed whether or not the real profiler still contained the line it
+// claimed to describe. The half that was real — what `isFatalConnectionError`
+// returns for each code, the cause chain, the `.code` property — is already
+// pinned by the `isFatalConnectionError` describe above, against the same
+// imported function.
+//
+// The structural half is now pinned where it can actually fail, against the
+// profiler source itself:
+//   packages/api/src/lib/__tests__/profiler.test.ts
+//     > "fatal-connection re-throw guard (source scan)"
+// which asserts every warn-and-continue catch in `profiler.ts` re-throws on a
+// fatal connection error, and that the table-level wrap keeps the original as
+// `cause`. Verified to FAIL when a single guard is deleted.
+// =========================================================================

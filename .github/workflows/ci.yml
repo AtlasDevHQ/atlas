@@ -190,6 +190,18 @@ jobs:
       - name: Adversarial fixtures for the agent-doc-paths gate (#5299)
         run: bash scripts/__tests__/check-agent-doc-paths.test.sh
 
+      # A test file's HEADER is load-bearing prose here — it argues why a suite
+      # is split from its sibling, and source comments say "X is pinned by
+      # foo.test.ts". Nothing checked that the named file still existed. Folding
+      # 121 satellite suites on 2026-09-04 rotted ~20 such pointers in one
+      # change, 4 of them in production source, and every one had to be found by
+      # hand. A merge moves the target; it does not remove the reader's need.
+      - name: Check no comment names a test file that no longer exists
+        run: bash scripts/check-test-file-references.sh
+
+      - name: Adversarial fixtures for the test-file-references gate
+        run: bash scripts/__tests__/check-test-file-references.test.sh
+
       # `/release`'s version inference used `git tag -l 'v*.*.*'`, which is
       # matched against the whole tag name — so the ~20 package/sandbox tag
       # trains in this repo all matched it, and `vercel-sandbox-v0.0.5`

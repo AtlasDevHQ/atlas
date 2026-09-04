@@ -117,7 +117,7 @@ describe("deliver", () => {
   // Tests pass an unprefixed token because in the test env (no
   // ATLAS_ENCRYPTION_KEYS configured) `decryptSecret` is a pass-through.
   // The encryption round-trip is covered separately in
-  // `create-subscription-encryption.test.ts`.
+  // `sub-processor-publisher-encryption.test.ts`.
   const SUB: SubscriptionRow = {
     id: "sub-1",
     url: "https://hooks.example.com/sub-processors",

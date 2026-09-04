@@ -27,6 +27,7 @@ import {
   type ProfilingResult,
 } from "../profiler";
 import * as path from "path";
+import { readFileSync } from "fs";
 
 // ---------------------------------------------------------------------------
 // mapSQLType
@@ -952,5 +953,103 @@ describe("profiler edge cases", () => {
       expect(mapSQLType("timestamptz")).toBe("date");
       expect(mapSQLType("timestamp with time zone")).toBe("date");
     });
+  });
+});
+
+// =========================================================================
+// The fatal-connection re-throw guard, pinned at its REAL call sites.
+//
+// `isFatalConnectionError` is a predicate, and the describes above pin what
+// it returns. That is not the property that matters in production. The
+// property that matters is structural: profiling is deliberately
+// fault-TOLERANT — most catches warn and continue so one unreadable column
+// can't abort a whole profile — and a dropped connection must NOT be
+// swallowed by that tolerance, or a run "succeeds" having silently profiled
+// a fraction of the schema.
+//
+// So every warn-and-continue catch must re-throw first. A unit test cannot
+// see that: a simulated `if (fatal) throw` in a test file passes whether or
+// not the real catch still contains the line. `fatal-error-propagation.test.ts`
+// in packages/cli held five such simulations and was deleted in favour of
+// this scan; the predicate's own behaviour is still pinned above.
+// =========================================================================
+
+describe("fatal-connection re-throw guard (source scan)", () => {
+  const profilerSource = readFileSync(path.join(import.meta.dir, "../profiler.ts"), "utf8");
+
+  /** Every `catch (x) { ... }` in profiler.ts, with its body and 1-based line. */
+  function catchBlocks(src: string): { line: number; binding: string; body: string }[] {
+    const out: { line: number; binding: string; body: string }[] = [];
+    const opener = /\}\s*catch\s*\(\s*(\w+)\s*(?::[^)]*)?\)\s*\{/g;
+    for (const m of src.matchAll(opener)) {
+      const start = m.index! + m[0].length;
+      let depth = 1;
+      let i = start;
+      while (i < src.length && depth > 0) {
+        if (src[i] === "{") depth++;
+        else if (src[i] === "}") depth--;
+        i++;
+      }
+      out.push({
+        line: src.slice(0, m.index!).split("\n").length,
+        binding: m[1],
+        body: src.slice(start, i),
+      });
+    }
+    return out;
+  }
+
+  const blocks = catchBlocks(profilerSource);
+
+  it("finds the catch blocks at all (guards the scanner itself)", () => {
+    // If a refactor changes the catch shape this regex stops matching, and a
+    // scan that matches nothing would vacuously pass every assertion below.
+    expect(blocks.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it("every warn-and-continue catch re-throws on a fatal connection error", () => {
+    const warnsWithoutGuard = blocks
+      .filter((b) => /\b(?:console|log|logger)\.warn\b/.test(b.body))
+      .filter((b) => !b.body.includes(`isFatalConnectionError(${b.binding})`))
+      .map((b) => `profiler.ts:${b.line} — catch (${b.binding})`);
+
+    expect(warnsWithoutGuard).toEqual([]);
+  });
+
+  it("the guard throws rather than logging and swallowing", () => {
+    // The throw is what makes the profile fail loudly; a guard that warned
+    // instead would satisfy the test above while preserving the very bug it
+    // exists to prevent. Two shapes are legitimate and both appear here:
+    //   column-level: `if (isFatalConnectionError(e)) throw e;`
+    //   table-level:  `if (isFatalConnectionError(e)) { throw new Error(..., { cause: e }) }`
+    // The table-level wrap adds the table name to the message, so match on
+    // "a throw follows the guard", not on the bare binding.
+    const guarded = blocks.filter((b) => b.body.includes(`isFatalConnectionError(${b.binding})`));
+    expect(guarded.length).toBeGreaterThan(0);
+
+    const notThrowing = guarded
+      .filter((b) => {
+        const at = b.body.indexOf(`isFatalConnectionError(${b.binding})`);
+        // Everything from the guard to the end of its consequent — generous,
+        // because the wrapped form spans several lines.
+        return !/\bthrow\b/.test(b.body.slice(at, at + 400));
+      })
+      .map((b) => `profiler.ts:${b.line} — catch (${b.binding})`);
+
+    expect(notThrowing).toEqual([]);
+  });
+
+  it("a fatal error thrown from the table level still carries the original as `cause`", () => {
+    // The wrapped form must not lose the underlying error, or the operator
+    // sees "Fatal database error" with no code to act on.
+    const wrapped = blocks.filter(
+      (b) =>
+        b.body.includes(`isFatalConnectionError(${b.binding})`) &&
+        /throw new Error\(/.test(b.body),
+    );
+    expect(wrapped.length).toBeGreaterThan(0);
+    for (const b of wrapped) {
+      expect(b.body).toContain(`cause: ${b.binding}`);
+    }
   });
 });

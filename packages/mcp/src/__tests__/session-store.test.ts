@@ -3,7 +3,8 @@
  *
  * The end-to-end session lifecycle (cap, idle sweep, stream-age reclaim) is
  * already exercised through both transports in `hosted.test.ts` and
- * `sse.test.ts` — those stay green and are the behavior-unchanged proof. This
+ * `streamable-http.test.ts` (which carries the SSE cases) — those stay green
+ * and are the behavior-unchanged proof. This
  * file pins the SHARED unit directly where the per-transport suites are thin:
  *
  *   - `dispatchExisting` composes with the caller's `wrap` (hosted threads

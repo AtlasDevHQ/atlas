@@ -41,7 +41,8 @@ export interface CollectionLike<
  * presence, single source, so there is nothing to drift.
  *
  * This helper deliberately imports NO generated `.source/server`, so it is
- * unit-testable with synthetic collection fixtures (see `compose.test.ts`).
+ * unit-testable with synthetic collection fixtures — no such suite exists yet,
+ * which is the gap this note records rather than a pointer to follow.
  * Importing `.source/server` pulls in `*.mdx?collection=…` modules that only
  * the Next bundler can resolve — a plain `bun test` cannot load them.
  *

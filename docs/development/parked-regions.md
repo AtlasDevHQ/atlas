@@ -179,12 +179,49 @@ Two behaviours, both surprising, and each one costs a prod redeploy to discover:
    that hosted MCP sessions depend on. Removing a region requires naming it
    explicitly as `=0` in the same call as the ones you are keeping.
 
-**So do not use `railway scale` to park.** Railway's documented scale-to-zero is
-the **serverless / app-sleep** toggle — *"you can scale to zero by toggling
-serverless in your service settings. After 10 minutes, a serverless container
-that has not done any work will be fully put to sleep and wake up upon receiving
-a request"* ([scaling](https://docs.railway.com/guides/scaling-your-application#vertical-scaling)).
-That is the mechanism to use, and it has not been tried here yet.
+**So do not use `railway scale` to park.**
+
+### Serverless does not park it either
+
+The obvious next candidate — Railway's **serverless / app-sleep** toggle, which
+their scaling guide calls scale-to-zero — was enabled on both services on
+2026-09-04 and is **the wrong tool for this process**. Railway sleeps on
+*outbound* inactivity, and two lines in their own docs rule it out here:
+
+> "an open database connection pool counts as outbound traffic and prevents
+> sleep; if you want sleep behavior, connect per-request instead of holding a
+> pool" ([serverless](https://docs.railway.com/guides/cut-idle-costs-serverless))
+
+> "Private network traffic does not appear [in the metrics graph], but it still
+> counts as outbound and still prevents sleep. If a service refuses to sleep and
+> the metrics graph looks quiet, look at private network calls first"
+
+The API holds a persistent internal-DB pool (`PgClient.layerFromPool()`,
+`lib/db/internal.ts`) over Railway's **private network** to
+`<region>-int-postgres`. That pins the container awake, and it is invisible in
+the metrics graph — so the failure looks exactly like success. The ~35
+`registerPeriodicFiber` registrations in `lib/effect/layers.ts` are a second,
+independent reason: each tick is DB work and several make outbound vendor calls.
+
+⚠️ **Never enable serverless on `api` (us).** Beyond not working, hosted MCP
+session state is an in-process `Map` (`packages/mcp/src/hosted.ts`), so a sleep
+would drop every live session, and a cold wake adds latency to the anonymous
+demo door.
+
+### What actually parks a service: `railway down`
+
+```bash
+railway down --service api-apac --yes    # removes the deployment; container stops
+```
+
+Verified on prod 2026-09-04 for both regions: the latest deployment flips to
+`REMOVED`, `https://api-<region>.useatlas.dev/api/health` returns **404** rather
+than `200`, and CPU drops to 0. The service, its variables, its domains and its
+region map all survive — only the running container goes.
+
+This is the exact inverse of the un-park step already documented above
+(`railway redeploy --service api-<region>`), which is the clue that `down` was
+always the intended mechanism; the parking side just never named it.
 
 Whatever mechanism is used, **verify against `multiRegionConfig` and the deployed
 commit, never against `/api/health`** — a service keeps answering from its old

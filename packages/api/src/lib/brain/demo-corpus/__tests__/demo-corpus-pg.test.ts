@@ -46,6 +46,7 @@ import { chatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
 import { sweepTensionEdges } from "@atlas/api/lib/brain/tension-sweep";
 import {
   CHANNELS,
+  CORPUS_REVIEWER,
   DEMO_COLLECTION_SLUG,
   DOCUMENTS,
   EPISODES,
@@ -466,6 +467,24 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     );
     expect(approvers.rows.map((r) => r.published_by)).toEqual([REVIEWER]);
     expect(approvers.rows.map((r) => r.published_by)).not.toContain(APPROVER);
+
+    // "No seeded fact has the same person as both its claim author and its
+    // approver" — checked end to end, over the facts that actually got
+    // published, because whether an episode yields a claim is the extractor's
+    // answer and not one the corpus file can assert. The reviewer's vendor
+    // handles are what `brain_episodes.source_actor` stores.
+    const reviewerPerson = PEOPLE[CORPUS_REVIEWER];
+    const authored = await pool.query<{ source_actor: string }>(
+      `SELECT DISTINCT e.source_actor
+         FROM brain_facts f
+         JOIN brain_episodes e ON e.id = f.source_episode_id
+        WHERE f.workspace_id = $1 AND f.status = 'published'`,
+      [DEMO_ORG],
+    );
+    const reviewerHandles = [reviewerPerson.slackId, reviewerPerson.zoomId, reviewerPerson.email];
+    for (const row of authored.rows) {
+      expect(reviewerHandles).not.toContain(row.source_actor);
+    }
     // The rivals carry the literal key here, so the keyed declaration lands on
     // the same entry the ingest phase wrote — one entry, not two.
     expect(report.cardinality).toMatchObject({ kind: "declaration", ok: true, slot: "return window", cardinality: "single" });

@@ -167,6 +167,14 @@ export const CORPUS_REFERENCE_DATE = "2026-09-04T00:00:00.000Z" as const;
  * create the Atlas user it maps to — see `seed.ts`, which takes that id as
  * `--reviewed-by` and refuses to invent one, on the same rule that keeps this
  * seed out of Better Auth's tables.
+ *
+ * ⚠️ Whoever this names must not AUTHOR a claim-bearing episode. Dana speaks
+ * twice in the corpus and both are acknowledgements that assert nothing; the
+ * two dated episodes are authored by Sam for exactly this reason, though the
+ * retention one would read as naturally from the data lead. The end-to-end
+ * check is in `demo-corpus-pg.test.ts`, over published facts rather than over
+ * this list, because whether an episode yields a claim is the extractor's
+ * answer and not one this file can assert.
  */
 export const CORPUS_REVIEWER: DemoPersonKey = "dana";
 
@@ -334,7 +342,7 @@ export const EPISODES: readonly DemoEpisode[] = Object.freeze([
   ),
   chat(
     "engineering",
-    "dana",
+    "sam",
     "1750852800.000500",
     "2026-06-25T12:00:00.000Z",
     "Retention change is live: NovaMart's raw event logs are kept for 90 days, down from 400. Aggregates are unaffected and keep their full history.",

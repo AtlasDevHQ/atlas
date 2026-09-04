@@ -44,7 +44,8 @@
  * F-47 (#1820) adds a rotation path that re-encrypts under a new key —
  * a separate backfill because it also has to decrypt first. Single-key
  * verification here is all that's needed for F-42; see the "rotation
- * pre-test" comment in `secrets-encryption.test.ts`.
+ * pre-test" comment in `plugins/__tests__/secrets.test.ts` (formerly
+ * `secrets-encryption.test.ts`).
  */
 
 import { Pool } from "pg";

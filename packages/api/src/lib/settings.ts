@@ -2024,7 +2024,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     //
     // ⚠️ This key is read by the extraction fiber ALONE. The interactive path
     // resolves through `resolveSelection`, which does not read it, and
-    // `providers-extraction-tier.test.ts` pins that — #5353's whole point is that
+    // `providers.test.ts` pins that — #5353's whole point is that
     // the ingest path stops inheriting the chat model, and a knob that quietly
     // worked in both directions would be the same coupling wearing a new name.
     key: "ATLAS_BRAIN_EXTRACTION_MODEL",

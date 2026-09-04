@@ -661,7 +661,7 @@ function loadBaseline(filePath: string): EvalResult[] {
  * ⚠️ EXTRACTED SO IT CAN BE TESTED. Inline it was three plausible one-character
  * mutations away from reproducing #5126 here — drop the ternary, swap the arms,
  * or forget `csvOutput` — and `handleEval` has no test at all, so all three
- * survived. See `__tests__/eval-seed-sink.test.ts`.
+ * survived. See the `evalSeedSink` block in `__tests__/eval.test.ts`.
  *
  * ⚠️ NOW THE COMMAND'S ONE RULE, NOT JUST THIS CALL SITE'S (#5146). The three
  * fd-1 writers this comment used to NAME as still-broken — the `Resuming: …`

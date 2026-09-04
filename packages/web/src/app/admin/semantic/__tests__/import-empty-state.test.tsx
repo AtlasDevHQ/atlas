@@ -101,7 +101,10 @@ function jsonResponse(body: unknown, status = 200) {
  */
 const fetchedUrls: string[] = [];
 
-function mockSemanticApi(entities: Array<{ name: string; description?: string; columnCount?: number }>) {
+function mockSemanticApi(
+  entities: Array<{ name: string; description?: string; columnCount?: number }>,
+  connections: Array<{ id: string; dbType: string }> = [],
+) {
   fetchedUrls.length = 0;
   globalThis.fetch = mock((input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -117,6 +120,9 @@ function mockSemanticApi(entities: Array<{ name: string; description?: string; c
     }
     if (url.includes("/api/v1/admin/semantic/catalog")) {
       return Promise.resolve(jsonResponse({ catalog: null }));
+    }
+    if (url.includes("/api/v1/admin/connections")) {
+      return Promise.resolve(jsonResponse({ connections }));
     }
     return Promise.resolve(jsonResponse({}));
   }) as unknown as typeof fetch;
@@ -264,5 +270,92 @@ describe("/admin/semantic — Import-from-disk gating", () => {
       a.textContent?.includes("Go to connections"),
     );
     expect(goLink).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Merged from generate-empty-state.test.tsx — same source module (`../page`)
+// and a byte-identical mock.module set.
+// ---------------------------------------------------------------------------
+
+/**
+ * Door 2 (#3237): the /admin/semantic empty state offers an in-product
+ * "Generate semantic layer" entry — replacing the old "Run `atlas init`"
+ * terminal instruction — that launches the shared wizard flow. With exactly
+ * one connection the CTA deep-links to that connection's table picker so the
+ * generated entities land in its Connection group.
+ *
+ * Pins:
+ *   1. empty + one connection → Generate CTA links to /wizard?connectionId=…&step=2
+ *   2. empty + zero connections → Generate CTA links to the bare /wizard picker
+ *   3. populated workspace → Generate CTA absent
+ */
+
+function findGenerateCta(): HTMLAnchorElement | null {
+  return document.querySelector<HTMLAnchorElement>('[data-testid="semantic-generate-cta"]');
+}
+
+describe("/admin/semantic — Generate empty state (#3237)", () => {
+  beforeEach(() => {
+    globalThis.fetch = originalFetch;
+    // Reset the shared `useDevModeNoDrafts` stand-in: the dev-mode branch wins
+    // over every empty state, so a sibling suite leaving it true would hide the
+    // Generate CTA entirely.
+    devNoDraftsValue = false;
+  });
+
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = originalFetch;
+  });
+
+  test("empty + one connection: CTA deep-links to that connection's table picker", async () => {
+    mockSemanticApi([], [{ id: "warehouse", dbType: "postgres" }]);
+
+    await act(async () => {
+      render(createElement(SemanticPage), { wrapper });
+    });
+
+    const cta = await waitFor(() => {
+      const el = findGenerateCta();
+      if (!el) throw new Error("Generate CTA not rendered");
+      return el;
+    });
+
+    expect(cta.getAttribute("href")).toBe("/wizard?connectionId=warehouse&step=2");
+    expect(cta.textContent).toContain("Generate semantic layer");
+  });
+
+  test("empty + zero connections: CTA routes to the bare wizard picker", async () => {
+    mockSemanticApi([]);
+
+    await act(async () => {
+      render(createElement(SemanticPage), { wrapper });
+    });
+
+    const cta = await waitFor(() => {
+      const el = findGenerateCta();
+      if (!el) throw new Error("Generate CTA not rendered");
+      return el;
+    });
+
+    expect(cta.getAttribute("href")).toBe("/wizard");
+  });
+
+  test("populated workspace: no Generate CTA, no 'atlas init' instruction", async () => {
+    mockSemanticApi(
+      [{ name: "companies", columnCount: 3 }],
+      [{ id: "warehouse", dbType: "postgres" }],
+    );
+
+    await act(async () => {
+      render(createElement(SemanticPage), { wrapper });
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="semantic-file-tree"]')).not.toBeNull();
+    });
+
+    expect(findGenerateCta()).toBeNull();
   });
 });

@@ -325,26 +325,6 @@ describe("adapter-only mode", () => {
     // No client is constructed when there is no static datasource.
     expect(mockBigQuery).not.toHaveBeenCalled();
   });
-
-  test("initialize logs adapter-only (no projectId, no credentials, no crash)", async () => {
-    const plugin = bigqueryPlugin({});
-    const logged: string[] = [];
-    const ctx = {
-      db: null,
-      connections: { get: () => { throw new Error("not implemented"); }, list: () => [], tables: () => [] },
-      tools: { register: () => {} },
-      logger: {
-        info: (...args: unknown[]) => { logged.push(String(args[0])); },
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-      },
-      config: {},
-    };
-    await plugin.initialize!(ctx);
-    const msg = logged.find((m) => m.includes("adapter-only"));
-    expect(msg).toBeDefined();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -649,6 +629,8 @@ describe("initialize", () => {
   test("logs adapter-only when projectId is omitted", async () => {
     // Without a projectId there is no static datasource — the plugin registers
     // adapter-only and initialize logs that, not a project-specific message.
+    // (Sole copy: the `adapter-only mode` suite carried a byte-identical
+    // "initialize logs adapter-only" test; this is the survivor.)
     const plugin = bigqueryPlugin({});
     const logged: string[] = [];
     const ctx = {

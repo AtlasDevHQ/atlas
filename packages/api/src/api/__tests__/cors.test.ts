@@ -1,5 +1,10 @@
 /**
- * Unit tests for the CORS middleware on the Hono API app.
+ * Unit tests for the CORS and security-headers middleware on the Hono API app.
+ *
+ * The security-headers block was formerly `security-headers.test.ts` (#1984).
+ * It mocked a strict subset of the modules this file already mocks, with
+ * identical shapes (`getSettingAuto` returning undefined on both sides), so the
+ * two suites share one `mock.module` set without either seeing a change.
  *
  * Tests default (wildcard) behavior. ATLAS_CORS_ORIGIN is read at module
  * load time, so env var changes between tests don't take effect without
@@ -249,5 +254,135 @@ describe("CORS middleware", () => {
     expect(!!corsOrigin).toBe(true); // explicit origin → credentials: true
     // @ts-expect-error TS2873: intentional — documents that undefined → no credentials
     expect(!!undefined).toBe(false); // no origin → credentials: false
+  });
+});
+
+/**
+ * Unit tests for the security-headers middleware on the Hono API app.
+ *
+ * Per issue #1984 — auth-bearing surfaces (api.useatlas.dev) need HSTS,
+ * CSP, X-Frame-Options, X-Content-Type-Options. Widget routes (/widget*)
+ * are intentionally framable, so they MUST NOT receive X-Frame-Options
+ * DENY and they retain their per-route `frame-ancestors *` CSP.
+ */
+describe("security-headers middleware", () => {
+  it("/api/health response carries HSTS, CSP, X-Frame-Options DENY, nosniff", async () => {
+    const res = await app.fetch(
+      new Request("http://localhost/api/health", { method: "GET" }),
+    );
+
+    const hsts = res.headers.get("Strict-Transport-Security") ?? "";
+    expect(hsts).toContain("max-age=");
+    expect(hsts).toContain("includeSubDomains");
+
+    const csp = res.headers.get("Content-Security-Policy") ?? "";
+    expect(csp.length).toBeGreaterThan(0);
+    expect(csp).toContain("frame-ancestors 'none'");
+    // style-src 'unsafe-inline' is required by routes/onboarding-emails.ts
+    // (inline `style="..."` on the unsubscribe page). Regression guard.
+    expect(csp).toContain("style-src 'unsafe-inline'");
+
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("Referrer-Policy")).toBeTruthy();
+  });
+
+  it("OPTIONS preflight short-circuits with 204 AND carries every security header", async () => {
+    // CORS middleware short-circuits OPTIONS via c.body(null, 204). Security
+    // headers must run BEFORE CORS so preflight responses are also hardened.
+    // Asserting status=204 proves CORS short-circuit fired (not a route handler).
+    const res = await app.fetch(
+      new Request("http://localhost/api/v1/chat", {
+        method: "OPTIONS",
+        headers: {
+          Origin: "http://example.com",
+          "Access-Control-Request-Method": "POST",
+        },
+      }),
+    );
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeTruthy();
+    expect(res.headers.get("Strict-Transport-Security")).toBeTruthy();
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(res.headers.get("Content-Security-Policy")).toBeTruthy();
+  });
+
+  it("/api/v1/openapi.json carries the strict API CSP", async () => {
+    // Spec endpoint returns JSON. Confirms the comment claim that all JSON
+    // surfaces carry the strict CSP.
+    const res = await app.fetch(
+      new Request("http://localhost/api/v1/openapi.json", { method: "GET" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Security-Policy")).toContain(
+      "default-src 'none'",
+    );
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+  });
+
+  it("/widget/atlas-widget.js retains permissive framing — no X-Frame-Options, no strict CSP, but nosniff/HSTS still apply", async () => {
+    const res = await app.fetch(
+      new Request("http://localhost/widget/atlas-widget.js", { method: "GET" }),
+    );
+
+    expect(res.headers.get("X-Frame-Options")).toBeNull();
+    // Negative assertion: the strict global CSP must NOT leak onto widget
+    // assets or the iframe parent will block them.
+    expect(res.headers.get("Content-Security-Policy")).toBeNull();
+    // Header-poisoning defenses still apply on the asset.
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("Strict-Transport-Security")).toBeTruthy();
+  });
+
+  it("/widget HTML route is reached and keeps frame-ancestors * CSP", async () => {
+    const res = await app.fetch(
+      new Request("http://localhost/widget", { method: "GET" }),
+    );
+
+    // Status proves the route handler ran (not a 404 fallthrough). Two valid
+    // outcomes: 200 when packages/react/dist/widget.js is built, 503 when the
+    // bundle is missing (CI shards run before `bun run --filter @useatlas/react
+    // build`). Both paths set the route-level `frame-ancestors *` CSP, which
+    // is the load-bearing invariant for this test — the global strict CSP
+    // must NOT replace it on either branch.
+    expect([200, 503]).toContain(res.status);
+    expect(res.headers.get("Content-Type")).toContain("html");
+    const csp = res.headers.get("Content-Security-Policy") ?? "";
+    expect(csp).toContain("frame-ancestors *");
+    expect(res.headers.get("X-Frame-Options")).toBeNull();
+  });
+
+  it("/widgetfoo (non-widget path that shares the prefix) DOES get X-Frame-Options + strict CSP", async () => {
+    // Regression guard against `startsWith("/widget")` over-matching. The
+    // precise matcher (path === "/widget" || "/widget/..." || "/widget....")
+    // must reject sibling prefixes — otherwise a future careless route name
+    // silently becomes framable.
+    const res = await app.fetch(
+      new Request("http://localhost/widgetfoo", { method: "GET" }),
+    );
+
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(res.headers.get("Content-Security-Policy")).toContain(
+      "frame-ancestors 'none'",
+    );
+  });
+
+  it("HTTPException 404 response carries security headers", async () => {
+    // Hono returns a 404 HTTPException for unmatched routes. The onError
+    // handler builds a fresh Response from err.getResponse() which bypasses
+    // c.res — confirms the explicit header-copy in onError is wired.
+    const res = await app.fetch(
+      new Request("http://localhost/api/this-route-does-not-exist", {
+        method: "GET",
+      }),
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get("Strict-Transport-Security")).toBeTruthy();
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
   });
 });

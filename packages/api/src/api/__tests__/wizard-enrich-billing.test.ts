@@ -9,7 +9,7 @@
  * over-budget workspace admin could burn platform tokens through the per-table
  * enrich loop, unmetered.
  *
- * Mirrors `admin-semantic-improve-billing.test.ts`: a mutable gate verdict drives
+ * Mirrors `admin-semantic-improve-audit.test.ts`: a mutable gate verdict drives
  * each block arm (403 / 429 / 429+Retry-After / 503) and asserts the mock LLM
  * NEVER fired and nothing was metered; the allowed arm asserts the LLM ran once
  * and a `token` usage event was recorded against the workspace budget.

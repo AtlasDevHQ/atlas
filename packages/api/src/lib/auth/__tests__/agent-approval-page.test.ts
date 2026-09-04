@@ -1,6 +1,7 @@
 /**
  * `resolveAgentApprovalPage` — the `deviceAuthorizationPage` URL for the Agent
- * Auth device-approval flow (#4411). Mirrors `device-verification-uri.test.ts`:
+ * Auth device-approval flow (#4411). Mirrors the `resolveDeviceVerificationUri`
+ * cases in `device-authorization-plugin.test.ts`:
  * an absolute web-origin URL when the origin resolves, the bare relative path
  * only for a genuinely single-origin embedded deploy.
  */

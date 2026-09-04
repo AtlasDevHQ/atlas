@@ -54,7 +54,7 @@ const mockGetAction = mock((): Promise<ActionLogEntry | null> =>
 // ADR-0046 cleanup pass — the route keeps only HTTP mapping, so these mocks
 // script OUTCOMES. The verb-level composition (approverId propagation,
 // executor fallback, org scoping) is pinned in
-// lib/tools/actions/__tests__/resolve-as-user.test.ts.
+// lib/tools/actions/__tests__/handler.test.ts (the "Formerly resolve-as-user.test.ts" section).
 type ApproveOutcome =
   | { kind: "not_found" }
   | { kind: "forbidden"; reason: "role" | "self_approval" }

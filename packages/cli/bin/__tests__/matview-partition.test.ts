@@ -1,4 +1,17 @@
+/**
+ * Object-type and multi-source behaviour of the `bin/atlas.ts` semantic-layer
+ * generators: materialized views, partitioned tables, plain database views,
+ * and the per-datasource output directory + `group:` field.
+ *
+ * Formerly three files against the same module, each carrying its own copy of
+ * `makeColumn` / `makeProfile`: this one plus `view-yaml-generation.test.ts`
+ * (the "database views" block below) and `multi-source.test.ts` (the
+ * `outputDirForDatasource` / group-field / schema-resolution blocks at the
+ * end). The profiler heuristics themselves live in `profiler-heuristics.test.ts`;
+ * what stays here is only the view/matview EXCLUSION arm of each.
+ */
 import { describe, expect, test } from "bun:test";
+import * as path from "path";
 import * as yaml from "js-yaml";
 import type { TableProfile, ColumnProfile, EntitySnapshot } from "../atlas";
 import {
@@ -8,6 +21,7 @@ import {
   isMatView,
   isViewLike,
   isView,
+  outputDirForDatasource,
   parseEntityYAML,
   profileToSnapshot,
   computeDiff,
@@ -66,6 +80,24 @@ function makeMatViewProfile(overrides: Partial<TableProfile> = {}): TableProfile
     foreign_keys: [],
     inferred_foreign_keys: [],
     matview_populated: true,
+    ...overrides,
+  });
+}
+
+function makeViewProfile(overrides: Partial<TableProfile> = {}): TableProfile {
+  return makeProfile({
+    table_name: "order_summary",
+    object_type: "view" as const,
+    row_count: 1500,
+    columns: [
+      makeColumn({ name: "region", type: "text", sample_values: ["US", "EU", "APAC"] }),
+      makeColumn({ name: "total_orders", type: "integer" }),
+      makeColumn({ name: "total_revenue", type: "numeric", sample_values: ["12345.67", "98765.43"] }),
+      makeColumn({ name: "avg_order_value", type: "real" }),
+    ],
+    primary_key_columns: [],
+    foreign_keys: [],
+    inferred_foreign_keys: [],
     ...overrides,
   });
 }
@@ -611,5 +643,182 @@ describe("formatDiff (metadata pluralization)", () => {
     };
     const output = formatDiff(diff);
     expect(output).toContain("2 metadata changes");
+  });
+});
+
+// ===========================================================================
+// Plain database views (formerly view-yaml-generation.test.ts)
+// ===========================================================================
+
+describe("generateEntityYAML (views)", () => {
+  test("produces type 'view' for view profiles", () => {
+    const profile = makeViewProfile();
+    const result = generateEntityYAML(profile, [profile], "postgres");
+    const doc = yaml.load(result) as Record<string, unknown>;
+
+    expect(doc.type).toBe("view");
+  });
+
+  test("does not include measures section for views", () => {
+    const profile = makeViewProfile();
+    const result = generateEntityYAML(profile, [profile], "postgres");
+    const doc = yaml.load(result) as Record<string, unknown>;
+
+    expect(doc.measures).toBeUndefined();
+  });
+
+  test("does not include query_patterns section for views", () => {
+    const profile = makeViewProfile();
+    const result = generateEntityYAML(profile, [profile], "postgres");
+    const doc = yaml.load(result) as Record<string, unknown>;
+
+    expect(doc.query_patterns).toBeUndefined();
+  });
+
+  test("description starts with 'Database view:'", () => {
+    const profile = makeViewProfile();
+    const result = generateEntityYAML(profile, [profile], "postgres");
+    const doc = yaml.load(result) as Record<string, unknown>;
+
+    expect(typeof doc.description).toBe("string");
+    expect((doc.description as string).startsWith("Database view:")).toBe(true);
+  });
+
+  test("grain mentions 'view'", () => {
+    const profile = makeViewProfile();
+    const result = generateEntityYAML(profile, [profile], "postgres");
+    const doc = yaml.load(result) as Record<string, unknown>;
+
+    expect(typeof doc.grain).toBe("string");
+    expect((doc.grain as string).toLowerCase()).toContain("view");
+  });
+
+  test("use_cases includes database view note", () => {
+    const profile = makeViewProfile();
+    const result = generateEntityYAML(profile, [profile], "postgres");
+    const doc = yaml.load(result) as Record<string, unknown>;
+
+    const useCases = doc.use_cases as string[];
+    expect(Array.isArray(useCases)).toBe(true);
+    expect(useCases.some((uc) => uc.toLowerCase().includes("database view"))).toBe(true);
+  });
+
+  test("dimensions are still generated for view columns", () => {
+    const profile = makeViewProfile();
+    const result = generateEntityYAML(profile, [profile], "postgres");
+    const doc = yaml.load(result) as Record<string, unknown>;
+
+    const dimensions = doc.dimensions as Record<string, unknown>[];
+    expect(Array.isArray(dimensions)).toBe(true);
+    // Should have at least the 4 base columns (may also have virtual dims)
+    const baseNames = dimensions.filter((d) => !d.virtual).map((d) => d.name);
+    expect(baseNames).toContain("region");
+    expect(baseNames).toContain("total_orders");
+    expect(baseNames).toContain("total_revenue");
+    expect(baseNames).toContain("avg_order_value");
+  });
+
+  test("no joins are generated for view with no FKs", () => {
+    const profile = makeViewProfile();
+    const result = generateEntityYAML(profile, [profile], "postgres");
+    const doc = yaml.load(result) as Record<string, unknown>;
+
+    expect(doc.joins).toBeUndefined();
+  });
+});
+
+describe("generateMetricYAML (views)", () => {
+  test("returns null for view profiles even with numeric columns", () => {
+    const profile = makeViewProfile();
+    const result = generateMetricYAML(profile);
+
+    expect(result).toBeNull();
+  });
+
+  test("returns null for view profiles with no numeric columns", () => {
+    const profile = makeViewProfile({
+      columns: [
+        makeColumn({ name: "name", type: "text" }),
+        makeColumn({ name: "status", type: "text" }),
+      ],
+    });
+    const result = generateMetricYAML(profile);
+
+    expect(result).toBeNull();
+  });
+});
+
+// ===========================================================================
+// Multi-datasource output + group field (formerly multi-source.test.ts)
+// ===========================================================================
+
+describe("outputDirForDatasource", () => {
+  test('"default" maps to semantic/', () => {
+    const dir = outputDirForDatasource("default");
+    expect(dir).toBe(path.resolve("semantic"));
+  });
+
+  test('non-default maps to semantic/{id}/', () => {
+    const dir = outputDirForDatasource("warehouse");
+    expect(dir).toBe(path.resolve("semantic", "warehouse"));
+  });
+
+  test('another non-default name', () => {
+    const dir = outputDirForDatasource("analytics");
+    expect(dir).toBe(path.resolve("semantic", "analytics"));
+  });
+});
+
+// --- Entity YAML group: field (#3285, ADR-0012) ---
+
+describe("entity YAML group field", () => {
+  const profile = makeProfile({
+    table_name: "orders",
+    columns: [
+      makeColumn({ name: "id", is_primary_key: true, type: "integer" }),
+      makeColumn({ name: "amount", type: "numeric" }),
+    ],
+    primary_key_columns: ["id"],
+  });
+
+  test("default source omits the group field", () => {
+    // source=undefined → no group field (neither canonical nor deprecated alias)
+    const yamlText = generateEntityYAML(profile, [profile], "postgres", "public", undefined);
+    expect(yamlText).not.toContain("group:");
+    expect(yamlText).not.toContain("connection:");
+  });
+
+  test("named source emits the canonical group: field", () => {
+    const yamlText = generateEntityYAML(profile, [profile], "postgres", "public", "warehouse");
+    expect(yamlText).toContain("group: warehouse");
+    expect(yamlText).not.toContain("connection:");
+  });
+
+  test("different named source", () => {
+    const yamlText = generateEntityYAML(profile, [profile], "postgres", "public", "analytics");
+    expect(yamlText).toContain("group: analytics");
+  });
+});
+
+// --- Schema resolution ---
+
+describe("schema resolution", () => {
+  const profile = makeProfile({
+    table_name: "orders",
+    columns: [
+      makeColumn({ name: "id", is_primary_key: true, type: "integer" }),
+    ],
+    primary_key_columns: ["id"],
+  });
+
+  test("non-public schema qualifies table name", () => {
+    const yamlText = generateEntityYAML(profile, [profile], "postgres", "analytics");
+    expect(yamlText).toContain("table: analytics.orders");
+  });
+
+  test("public schema does not qualify table name", () => {
+    const yamlText = generateEntityYAML(profile, [profile], "postgres", "public");
+    expect(yamlText).toContain("table: orders");
+    expect(yamlText).not.toContain("table: public.orders");
   });
 });

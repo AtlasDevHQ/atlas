@@ -305,6 +305,12 @@ describe("the corpus-honesty checks", () => {
   test("positive control: an ordinary claim is not read as blank", () => {
     // Without this, "a blank slot fails" is satisfied by a check that fails
     // every claim — which would make the whole corpus unrecordable.
+    //
+    // It is ALSO the positive control for the "more than ONE claim a side"
+    // rule below: exactly one claim a side, both slots filled, is what an
+    // honest pair looks like, and a cardinality check that rejected every
+    // arity would pass that test and fail this one. A second copy of this
+    // body sat under that rule until the two were folded together.
     const corpus = corpusOf(pairEntry());
     const fresh: RecordedSides = { a: [triple()], b: [triple({ predicate: "costs" })] };
     const result = gradeParaphraseRun(corpus, { "price-copula": fresh }, artifactOf(corpus, { "price-copula": fresh }));
@@ -325,13 +331,6 @@ describe("the corpus-honesty checks", () => {
     const result = gradeParaphraseRun(corpus, { "price-copula": fresh }, artifactOf(corpus, { "price-copula": fresh }));
     expect(result.outcomes[0].status).toBe("honesty");
     expect(result.outcomes[0].detail).toContain("more than one");
-  });
-
-  test("positive control: exactly one claim a side is what an honest pair looks like", () => {
-    const corpus = corpusOf(pairEntry());
-    const fresh: RecordedSides = { a: [triple()], b: [triple({ predicate: "costs" })] };
-    const result = gradeParaphraseRun(corpus, { "price-copula": fresh }, artifactOf(corpus, { "price-copula": fresh }));
-    expect(result.outcomes[0].status).toBe("match");
   });
 
   test("an honest `no-claim` pair is still compared against the artifact", () => {

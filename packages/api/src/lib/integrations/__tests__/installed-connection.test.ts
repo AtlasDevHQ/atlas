@@ -20,7 +20,8 @@
  *
  * The underlying walkers (selective encryption, corrupt-schema
  * fail-closed, placeholder semantics) are covered by
- * `lib/plugins/__tests__/secrets.test.ts` + `secrets-encryption.test.ts`;
+ * `lib/plugins/__tests__/secrets.test.ts` (which absorbed the former
+ * `secrets-encryption.test.ts`);
  * crypto is faked here so failures are triggerable deterministically.
  */
 

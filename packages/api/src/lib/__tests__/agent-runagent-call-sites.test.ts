@@ -222,7 +222,7 @@ function userMessages(text: string): UIMessage[] {
  * erasing the #4943 requirement is the entire point, because there is otherwise
  * no way to reach the fall-back coalesce from typed code. Everywhere else, a
  * helper that forwards to `runAgent` takes the FULL parameter type (see
- * `agent-resume.test.ts`), or it silently exempts every caller behind it.
+ * `agent-durable-session.test.ts`), or it silently exempts every caller behind it.
  *
  * The base call deliberately passes `defaultRegistry`, NOT the value the
  * default resolves to. If it passed `nonDashboardRegistry`, the assertions
@@ -635,7 +635,7 @@ const EXPECTED_REGISTRY: ReadonlyArray<readonly [file: string, expected: RegExp,
   [
     "packages/api/src/api/routes/admin-semantic-improve.ts",
     /tools:\s*expertRegistry\b/,
-    "the expert-agent chat runs a purpose-built registry (proposeAmendment, no analyst write verbs). Contents pinned by lib/tools/__tests__/expert-registry.test.ts; the route's own test MOCKS buildExpertRegistry, so the identifier->registry edge is scanner-only",
+    "the expert-agent chat runs a purpose-built registry (proposeAmendment, no analyst write verbs). Contents pinned by lib/tools/__tests__/registry.test.ts (the \"Formerly expert-registry.test.ts\" section); the route's own test MOCKS buildExpertRegistry, so the identifier->registry edge is scanner-only",
   ],
   [
     "packages/api/src/lib/agent-query.ts",

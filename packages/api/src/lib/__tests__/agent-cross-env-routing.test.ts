@@ -17,6 +17,31 @@
  * Pattern follows `agent-integration.test.ts`. The group-member lookup
  * is mocked at the module boundary so the test is isolated from the
  * internal Postgres pool.
+ *
+ * ---------------------------------------------------------------------------
+ * Also hosts the routing-mode picker tests (formerly agent-routing-mode.test.ts;
+ * identical harness):
+ *
+ * Integration tests for the three-state Auto/Pin/All routing-mode
+ * picker (PRD #2515, slice 3 issue #2518).
+ *
+ * Exercises the full LLM → agent loop → executeSQL routing pipeline
+ * with `routingMode` stamped on RequestContext (mirroring what the
+ * chat route does from the persisted conversation row). The model
+ * emits a `scope` argument and the tests assert that the picker
+ * overrides it correctly:
+ *
+ *   - `routingMode='pin'` + agent emitting `scope: "all"` → single
+ *     execution against the conversation's pinned member regardless
+ *     of the agent's hint.
+ *   - `routingMode='all'` + agent emitting `scope: "this"` → fanout
+ *     across every member regardless of the agent's hint.
+ *   - `routingMode='auto'` + agent emitting `scope: "this"` → single
+ *     execution (same as legacy single-env behavior).
+ *
+ * Pattern follows `agent-cross-env-routing.test.ts`. The group-member
+ * lookup is mocked at the module boundary so the test is isolated
+ * from the internal Postgres pool.
  */
 
 import { describe, expect, it, beforeEach, afterEach, mock } from "bun:test";
@@ -531,4 +556,247 @@ describe("agent cross-env routing — executeSQL `scope`", () => {
   // unit tests (`env-routing/__tests__/index.test.ts` — "scope:
   // '<unknown id>' → fall back to primary with warning"). The
   // integration end-to-end here would duplicate that coverage.
+});
+
+// ---------------------------------------------------------------------------
+// Routing-mode picker (PRD #2515, slice 3 issue #2518)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build an MLM that emits `executeSQL` with the supplied `scope` (or
+ * none, for the omitted case) and a trailing `finish` step.
+ */
+function modelWithScope(scope: string | undefined): InstanceType<typeof MockLanguageModelV3> {
+  let streamIdx = 0;
+  const args: Record<string, unknown> = {
+    sql: "SELECT region, revenue FROM orders",
+    explanation: "Routing-mode test",
+  };
+  if (scope !== undefined) args.scope = scope;
+  return new MockLanguageModelV3({
+    doStream: async () => {
+      const allSteps: LanguageModelV3StreamPart[][] = [
+        makeToolStepChunks("executeSQL", args),
+        [
+          { type: "text-delta", id: "text-0", delta: "Done." },
+          { type: "finish", usage: MOCK_USAGE, finishReason: { unified: "stop", raw: "end_turn" } },
+        ],
+      ];
+      if (streamIdx >= allSteps.length) {
+        return { stream: convertArrayToReadableStream(allSteps[allSteps.length - 1]) };
+      }
+      return { stream: convertArrayToReadableStream(allSteps[streamIdx++]) };
+    },
+  });
+}
+
+function seedAllMembers(): void {
+  setMemberHandler("us-int", async () => ({
+    columns: ["region", "revenue"],
+    rows: [{ region: "us", revenue: 100 }],
+  }));
+  setMemberHandler("eu", async () => ({
+    columns: ["region", "revenue"],
+    rows: [{ region: "eu", revenue: 80 }],
+  }));
+  setMemberHandler("apac", async () => ({
+    columns: ["region", "revenue"],
+    rows: [{ region: "apac", revenue: 60 }],
+  }));
+}
+
+describe("agent routing-mode picker — executeSQL `routingMode`", () => {
+  const savedSandboxUrl = process.env.ATLAS_SANDBOX_URL;
+
+  beforeEach(() => {
+    callId = 0;
+    memberQueryHandlers.clear();
+    memberCallCounts.clear();
+    mockGroupMembers = ["us-int", "eu", "apac"];
+    mockPrimaryMember = "us-int";
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    delete process.env.ATLAS_TABLE_WHITELIST;
+    delete process.env.ATLAS_SANDBOX_URL;
+  });
+
+  afterEach(() => {
+    if (savedSandboxUrl !== undefined) {
+      process.env.ATLAS_SANDBOX_URL = savedSandboxUrl;
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // Pin overrides agent (acceptance criterion #1 on issue #2518)
+  // -----------------------------------------------------------------------
+
+  it("pin overrides agent: routingMode='pin' + connection_id='eu' + agent scope='all' → single execution against eu", async () => {
+    seedAllMembers();
+    mockModel = modelWithScope("all");
+
+    const result = await withRequestContext(
+      {
+        requestId: "test-pin-override",
+        connectionId: "eu",
+        routingMode: "pin",
+      },
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("EU revenue this month") }),
+    );
+    const steps = await result.steps;
+    const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
+
+    expect(sqlResults).toHaveLength(1);
+    const first = sqlResults[0]!;
+    expect(first.success).toBe(true);
+    // Only "eu" ran — agent's "all" hint is overridden by the user's
+    // pin selection.
+    expect(memberCallCounts.get("us-int") ?? 0).toBe(0);
+    expect(memberCallCounts.get("eu")).toBe(1);
+    expect(memberCallCounts.get("apac") ?? 0).toBe(0);
+    // Single-env shape: no __env__ prepend (per-row sentinel only on
+    // fanout). The single-env path post-#2519 still wraps the result
+    // with a 1-element `envContributions` array for wire symmetry.
+    expect(first.columns).toEqual(["region", "revenue"]);
+    expect(first.envContributions).toHaveLength(1);
+    expect(first.envContributions?.[0]?.connectionId).toBe("eu");
+  });
+
+  // -----------------------------------------------------------------------
+  // All overrides agent (acceptance criterion #2 on issue #2518)
+  // -----------------------------------------------------------------------
+
+  it("all overrides agent: routingMode='all' + agent scope='this' → fanout across every member", async () => {
+    seedAllMembers();
+    mockModel = modelWithScope("this");
+
+    const result = await withRequestContext(
+      {
+        requestId: "test-all-override",
+        connectionId: "us-int",
+        routingMode: "all",
+      },
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("Compare across regions") }),
+    );
+    const steps = await result.steps;
+    const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
+
+    expect(sqlResults).toHaveLength(1);
+    const first = sqlResults[0]!;
+    expect(first.success).toBe(true);
+    // Every member ran exactly once despite the agent emitting
+    // scope="this" — the picker overrides the agent.
+    expect(memberCallCounts.get("us-int")).toBe(1);
+    expect(memberCallCounts.get("eu")).toBe(1);
+    expect(memberCallCounts.get("apac")).toBe(1);
+    expect(first.columns).toEqual(["__env__", "region", "revenue"]);
+    expect(first.envContributions).toHaveLength(3);
+  });
+
+  // -----------------------------------------------------------------------
+  // 'all' also overrides an omitted scope (the agent didn't pick fanout
+  // but the user did)
+  // -----------------------------------------------------------------------
+
+  it("all overrides absent scope: routingMode='all' + no agent scope → fanout", async () => {
+    seedAllMembers();
+    mockModel = modelWithScope(undefined);
+
+    const result = await withRequestContext(
+      {
+        requestId: "test-all-no-scope",
+        connectionId: "us-int",
+        routingMode: "all",
+      },
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("Compare across regions") }),
+    );
+    const steps = await result.steps;
+    const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
+
+    expect(sqlResults).toHaveLength(1);
+    expect(memberCallCounts.get("us-int")).toBe(1);
+    expect(memberCallCounts.get("eu")).toBe(1);
+    expect(memberCallCounts.get("apac")).toBe(1);
+    expect(sqlResults[0]!.columns).toEqual(["__env__", "region", "revenue"]);
+  });
+
+  // -----------------------------------------------------------------------
+  // Auto mode passes the agent's scope through unchanged
+  // -----------------------------------------------------------------------
+
+  it("auto passes agent through: routingMode='auto' + agent scope='all' → fanout", async () => {
+    seedAllMembers();
+    mockModel = modelWithScope("all");
+
+    const result = await withRequestContext(
+      {
+        requestId: "test-auto-all",
+        connectionId: "us-int",
+        routingMode: "auto",
+      },
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("Compare across regions") }),
+    );
+    const steps = await result.steps;
+    const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
+
+    expect(sqlResults).toHaveLength(1);
+    expect(memberCallCounts.get("us-int")).toBe(1);
+    expect(memberCallCounts.get("eu")).toBe(1);
+    expect(memberCallCounts.get("apac")).toBe(1);
+    expect(sqlResults[0]!.columns).toEqual(["__env__", "region", "revenue"]);
+  });
+
+  it("auto passes agent through: routingMode='auto' + agent scope='this' → single execution against current", async () => {
+    seedAllMembers();
+    mockModel = modelWithScope("this");
+
+    const result = await withRequestContext(
+      {
+        requestId: "test-auto-this",
+        connectionId: "eu",
+        routingMode: "auto",
+      },
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("EU revenue") }),
+    );
+    const steps = await result.steps;
+    const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
+
+    expect(sqlResults).toHaveLength(1);
+    // Only "eu" — auto + this routes to the conversation's current
+    // member, NOT a fanout.
+    expect(memberCallCounts.get("us-int") ?? 0).toBe(0);
+    expect(memberCallCounts.get("eu")).toBe(1);
+    expect(memberCallCounts.get("apac") ?? 0).toBe(0);
+    expect(sqlResults[0]!.columns).toEqual(["region", "revenue"]);
+  });
+
+  // -----------------------------------------------------------------------
+  // Tool default — when no `routingMode` is stamped on the request
+  // context (no chat route in the path), the tool defaults to 'auto'
+  // and the agent's scope decides. The chat route is responsible for
+  // applying the NULL→'pin' back-compat default before reaching here.
+  // -----------------------------------------------------------------------
+
+  it("tool default: routingMode unset + agent scope='all' → fanout (legacy 'agent decides' semantics)", async () => {
+    seedAllMembers();
+    mockModel = modelWithScope("all");
+
+    const result = await withRequestContext(
+      {
+        requestId: "test-tool-default",
+        connectionId: "us-int",
+        // No routingMode — the chat route is what stamps the per-
+        // conversation NULL→'pin' default. Tools / MCP / scheduler /
+        // direct unit tests fall through to the agent-decides default.
+      },
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("Compare across regions") }),
+    );
+    const steps = await result.steps;
+    const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
+
+    expect(sqlResults).toHaveLength(1);
+    // Auto semantics — agent's scope='all' produces a fanout.
+    expect(memberCallCounts.get("us-int")).toBe(1);
+    expect(memberCallCounts.get("eu")).toBe(1);
+    expect(memberCallCounts.get("apac")).toBe(1);
+    expect(sqlResults[0]!.columns).toEqual(["__env__", "region", "revenue"]);
+  });
 });

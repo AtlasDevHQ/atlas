@@ -182,6 +182,11 @@ describe("delivery dispatcher", () => {
     expect(headers["Authorization"]).toBeUndefined();
   });
 
+  // One blocked-address case at this layer: the dispatcher's job is to route
+  // every recipient URL through `isSafeExternalUrl` and turn a refusal into a
+  // permanent failure with no fetch. Which address encodings that primitive
+  // refuses (loopback, RFC1918, CGNAT, IPv6, the WHATWG normalizations) is
+  // enumerated in `lib/sandbox/__tests__/validate.test.ts`.
   it("blocks webhook URLs targeting private/internal addresses", async () => {
     const task = makeTask({
       deliveryChannel: "webhook",
@@ -190,26 +195,6 @@ describe("delivery dispatcher", () => {
     const summary = await deliverResult(task, makeResult());
     // Blocked URL — permanent failure, surfaced as such (#3379).
     expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1, permanentFailures: 1, firstPermanentError: "Blocked URL" });
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it("blocks webhook URLs targeting localhost", async () => {
-    const task = makeTask({
-      deliveryChannel: "webhook",
-      recipients: [{ type: "webhook", url: "http://localhost:3001/api/health" }],
-    });
-    const summary = await deliverResult(task, makeResult());
-    expect(summary.failed).toBe(1);
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it("blocks webhook URLs targeting private 10.x.x.x range", async () => {
-    const task = makeTask({
-      deliveryChannel: "webhook",
-      recipients: [{ type: "webhook", url: "http://10.0.0.1/internal" }],
-    });
-    const summary = await deliverResult(task, makeResult());
-    expect(summary.failed).toBe(1);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 

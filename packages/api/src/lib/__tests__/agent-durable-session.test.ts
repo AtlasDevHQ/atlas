@@ -2,7 +2,7 @@
  * Agent-loop seam test for durable-session terminal checkpoints (#3745,
  * ADR-0020, phase 1a).
  *
- * Mirrors `agent-token-usage.test.ts`: drives `runAgent` to completion with a
+ * Drives `runAgent` to completion with a
  * mock model, spies the fire-and-forget `internalExecute`, and pins the
  * `INSERT INTO agent_runs` write. Asserts the four contract behaviors at the
  * `runAgent` seam:
@@ -10,6 +10,40 @@
  *   - a throwing turn → one row, status `failed`
  *   - no internal DB → no agent_runs write (behavior identical to today)
  *   - durability flag off → no agent_runs write (default off)
+ *
+ * ---------------------------------------------------------------------------
+ * Also hosts the crash-resume seam (#3747, formerly agent-resume.test.ts):
+ *
+ * Agent-loop seam test for crash-resume (#3747, ADR-0020 phase 2).
+ *
+ * Mirrors `agent-durable-session.test.ts`: drives `runAgent` with a mock model
+ * and spies the fire-and-forget `internalExecute`, but exercises the RESUME
+ * path — `runAgent({ resume: { runId, transcript, priorStepIndex } })`. Asserts
+ * the resume contract at the `runAgent` seam:
+ *   - a resumed turn continues from step N+1 (durable step_index keeps climbing)
+ *   - completed tool calls in the stored transcript do NOT re-execute (the SQL
+ *     connection is never hit when the resumed model emits only the final text)
+ *   - resumed checkpoints reuse the interrupted run's id (one row per turn)
+ *   - total step accounting across interruption+resume equals the uninterrupted
+ *     run (same final step_index, same token_usage row count)
+ *
+ * ---------------------------------------------------------------------------
+ * And the token_usage write path (#3099, formerly agent-token-usage.test.ts):
+ *
+ * Write-path test for the token_usage prompt-cache split (#3099).
+ *
+ * The cache markers are what make the gateway → Anthropic path cache at all,
+ * but the *accounting* side has its own silent-failure mode: if the INSERT
+ * reads the wrong `usage.inputTokenDetails` field, or the positional params
+ * drift out of column order, the new `cache_read_tokens` / `cache_write_tokens`
+ * columns would persist 0 forever and nobody would notice until the usage
+ * surface (#3098) shipped wrong numbers.
+ *
+ * This drives `runAgent` to a single text-only finish carrying non-zero
+ * cache-read/cache-write usage (in the raw V3 stream shape the AI SDK
+ * normalizes into `totalUsage.inputTokenDetails.{cacheReadTokens,
+ * cacheWriteTokens}`), spies the fire-and-forget `internalExecute`, and pins
+ * BOTH the field path and the `INSERT INTO token_usage` column ordering.
  */
 
 import { describe, expect, it, beforeEach, afterAll, mock } from "bun:test";
@@ -18,7 +52,7 @@ import {
   convertArrayToReadableStream,
 } from "ai/test";
 import type { LanguageModelV3StreamPart, LanguageModelV3Usage } from "@ai-sdk/provider";
-import type { UIMessage } from "ai";
+import type { ModelMessage, UIMessage } from "ai";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 import * as realInternal from "@atlas/api/lib/db/internal";
 
@@ -50,8 +84,15 @@ void mock.module("@atlas/api/lib/semantic", () => ({
   getCrossSourceJoins: () => [],
 }));
 
+// SQL connection spy — the load-bearing assertion (#3747) is that a resumed turn
+// whose completed steps are in the transcript NEVER re-runs those tools. If the
+// model emits only the final text step on resume, this query fn must not be called.
+let sqlQueryCount = 0;
 const mockDBConnectionObj = {
-  query: async () => ({ columns: ["id"], rows: [{ id: 1 }] }),
+  query: async () => {
+    sqlQueryCount++;
+    return { columns: ["id"], rows: [{ id: 1 }] };
+  },
   close: async () => {},
 };
 void mock.module("@atlas/api/lib/db/connection", () =>
@@ -82,6 +123,12 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 const { runAgent } = await import("@atlas/api/lib/agent");
 // #4943 — runAgent's `tools` is now required; this is its own fail-closed
 // default, so these turns are unchanged. See agent.ts's `@param tools`.
+//
+// The resume tests name it at each `driveWith(...)` call rather than defaulting
+// inside the helper: `driveWith` forwards a pre-built bag to `runAgent(opts)`, a
+// shape neither guard can read (the scanner treats it as `absent`, and it skips
+// `__tests__` anyway), so keeping the registry in each test body is the only
+// thing that makes the posture visible here.
 const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 
 const STOP_USAGE: LanguageModelV3Usage = {
@@ -94,10 +141,10 @@ function userMessages(content: string): UIMessage[] {
 }
 
 /** Single text-only step → the agent loop ends immediately and onFinish fires. */
-function textOnlyModel(): InstanceType<typeof MockLanguageModelV3> {
+function textOnlyModel(usage: LanguageModelV3Usage = STOP_USAGE): InstanceType<typeof MockLanguageModelV3> {
   const chunks: LanguageModelV3StreamPart[] = [
     { type: "text-delta", id: "text-0", delta: "Done." },
-    { type: "finish", usage: STOP_USAGE, finishReason: { unified: "stop", raw: "end_turn" } },
+    { type: "finish", usage, finishReason: { unified: "stop", raw: "end_turn" } },
   ];
   return new MockLanguageModelV3({
     doStream: async () => ({ stream: convertArrayToReadableStream(chunks) }),
@@ -265,6 +312,7 @@ const origFlag = process.env.ATLAS_DURABILITY_ENABLED;
 describe("agent_runs checkpoint write path (#3745 terminal, #3746 per-step)", () => {
   beforeEach(() => {
     internalCalls.length = 0;
+    sqlQueryCount = 0;
     hasInternalDB = true;
     process.env.ATLAS_DURABILITY_ENABLED = "true";
   });
@@ -445,5 +493,271 @@ describe("agent_runs checkpoint write path (#3745 terminal, #3746 per-step)", ()
     process.env.ATLAS_DURABILITY_ENABLED = "false";
     await drive(multiStepModel());
     expect(agentRunWrites()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Crash-resume seam (#3747)
+// ---------------------------------------------------------------------------
+
+/** A model that emits ONLY the final text step — the resumed continuation. */
+function finalTextOnlyModel(): InstanceType<typeof MockLanguageModelV3> {
+  return new MockLanguageModelV3({
+    doStream: async () => ({ stream: convertArrayToReadableStream(FINAL_TEXT_STEP) }),
+  });
+}
+
+async function driveWith(
+  model: InstanceType<typeof MockLanguageModelV3>,
+  opts: Parameters<typeof runAgent>[0],
+): Promise<void> {
+  mockModel = model;
+  const result = await runAgent(opts);
+  try {
+    await result.steps;
+    await result.consumeStream?.();
+  } catch {
+    // Swallow — terminal checkpoints are written from the seam regardless.
+  }
+}
+
+function tokenWrites() {
+  return internalCalls.filter((c) => c.sql.includes("INSERT INTO token_usage"));
+}
+
+describe("agent crash-resume seam (#3747)", () => {
+  beforeEach(() => {
+    internalCalls.length = 0;
+    sqlQueryCount = 0;
+    hasInternalDB = true;
+    process.env.ATLAS_DURABILITY_ENABLED = "true";
+  });
+
+  afterAll(() => {
+    if (origFlag === undefined) delete process.env.ATLAS_DURABILITY_ENABLED;
+    else process.env.ATLAS_DURABILITY_ENABLED = origFlag;
+  });
+
+  it("continues from step N+1 and does NOT re-invoke tools of steps ≤ N", async () => {
+    // Stored transcript as of step 2 of a 3-step turn: the user message plus two
+    // completed executeSQL steps (assistant tool-call + tool result each). The
+    // resumed model emits ONLY the final text step.
+    const RESUMED_RUN_ID = "99999999-9999-9999-9999-999999999999";
+    const storedTranscript: ModelMessage[] = [
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "call-s0", toolName: "executeSQL", input: { sql: "SELECT 1" } }],
+      },
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: "call-s0", toolName: "executeSQL", output: { type: "json", value: { rows: [] } } }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "call-s1", toolName: "executeSQL", input: { sql: "SELECT 2" } }],
+      },
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: "call-s1", toolName: "executeSQL", output: { type: "json", value: { rows: [] } } }],
+      },
+    ];
+
+    await driveWith(finalTextOnlyModel(), {
+      tools: nonDashboardRegistry,
+      messages: userMessages("hi"),
+      conversationId: "conv-1",
+      resume: { runId: RESUMED_RUN_ID, transcript: storedTranscript, priorStepIndex: 2 },
+    });
+
+    // The two completed executeSQL tool calls were in the transcript — the
+    // resumed model emitted only text — so NO SQL ran on resume.
+    expect(sqlQueryCount).toBe(0);
+
+    // The terminal checkpoint reuses the interrupted run id (one row per turn),
+    // is `done`, and lands at the TOTAL step count (2 prior + 1 resumed = 3) —
+    // continued from N+1, not restarted at 1.
+    const terminals = terminalWrites();
+    expect(terminals).toHaveLength(1);
+    expect(runIdOf(terminals[0]!)).toBe(RESUMED_RUN_ID);
+    expect(statusOf(terminals[0]!)).toBe("done");
+    expect(stepIndexOf(terminals[0]!)).toBe(3);
+
+    // Every durable write of the resumed turn shares the resumed run id.
+    expect(new Set(agentRunWrites().map(runIdOf))).toEqual(new Set([RESUMED_RUN_ID]));
+  });
+
+  it("resumed step accounting equals the uninterrupted run (same final index + transcript, one token row)", async () => {
+    // Baseline: an uninterrupted 3-step turn. Capture its final step index AND
+    // its terminal transcript — the resume must converge on both.
+    await driveWith(multiStepModel(), { tools: nonDashboardRegistry, messages: userMessages("hi"), conversationId: "conv-1" });
+    const baselineTerminal = terminalWrites();
+    expect(baselineTerminal).toHaveLength(1);
+    const baselineFinalIndex = stepIndexOf(baselineTerminal[0]!);
+    const baselineTranscript = transcriptOf(baselineTerminal[0]!);
+    expect(baselineFinalIndex).toBe(3);
+    expect(tokenWrites()).toHaveLength(1);
+
+    // Reset and run the SAME turn as interrupt-after-step-2 + resume. The stored
+    // transcript is the baseline's state through its first two (tool-call) steps.
+    internalCalls.length = 0;
+    sqlQueryCount = 0;
+
+    const RESUMED_RUN_ID = "88888888-8888-8888-8888-888888888888";
+    const storedTranscript: ModelMessage[] = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "c0", toolName: "executeSQL", input: { sql: "SELECT 1" } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "c0", toolName: "executeSQL", output: { type: "json", value: { rows: [] } } }] },
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "c1", toolName: "executeSQL", input: { sql: "SELECT 2" } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "executeSQL", output: { type: "json", value: { rows: [] } } }] },
+    ];
+    await driveWith(finalTextOnlyModel(), {
+      tools: nonDashboardRegistry,
+      messages: userMessages("hi"),
+      conversationId: "conv-1",
+      resume: { runId: RESUMED_RUN_ID, transcript: storedTranscript, priorStepIndex: 2 },
+    });
+
+    // The resumed turn reaches the SAME final step index as the uninterrupted run.
+    const resumedTerminal = terminalWrites();
+    expect(resumedTerminal).toHaveLength(1);
+    expect(stepIndexOf(resumedTerminal[0]!)).toBe(baselineFinalIndex);
+
+    // …and the SAME final transcript length — the resume converges on the exact
+    // turn state, neither short (lost steps) nor duplicated (replayed steps).
+    expect(transcriptOf(resumedTerminal[0]!).length).toBe(baselineTranscript.length);
+
+    // Token accounting: the resumed continuation writes exactly one token_usage
+    // row (no double counting from the resume re-entry).
+    expect(tokenWrites()).toHaveLength(1);
+  });
+
+  it("a fresh turn (no resume) is unchanged — new (minted) run id, lands at the full step count", async () => {
+    await driveWith(multiStepModel(), { tools: nonDashboardRegistry, messages: userMessages("hi"), conversationId: "conv-fresh" });
+    const terminals = terminalWrites();
+    expect(terminals).toHaveLength(1);
+    // A fresh turn mints a UUID run id (not one we supplied via `resume`).
+    expect(runIdOf(terminals[0]!)).toMatch(/^[0-9a-f-]{36}$/);
+    // And counts its steps from 0 → the full 3-step turn.
+    expect(stepIndexOf(terminals[0]!)).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// token_usage cache-split write path (#3099)
+// ---------------------------------------------------------------------------
+
+/**
+ * Raw V3 finish-chunk usage carrying a cache split. The AI SDK normalizes
+ * `inputTokens.{cacheRead,cacheWrite}` into the aggregated
+ * `totalUsage.inputTokenDetails.{cacheReadTokens,cacheWriteTokens}` that the
+ * production INSERT reads — so non-zero values here prove the field path.
+ */
+const CACHE_USAGE: LanguageModelV3Usage = {
+  inputTokens: { total: 100, noCache: 90, cacheRead: 7, cacheWrite: 3 },
+  outputTokens: { total: 20, text: 20, reasoning: undefined },
+};
+
+/**
+ * Single text-only step whose finish part carries a Vercel-AI-Gateway cost
+ * annotation (`providerMetadata.gateway.cost`) — the shape the at-cost capture
+ * (#4036) reads off `step.providerMetadata` to record `gateway_cost_usd`.
+ */
+function gatewayCostModel(
+  usage: LanguageModelV3Usage,
+  cost: string,
+): InstanceType<typeof MockLanguageModelV3> {
+  const chunks: LanguageModelV3StreamPart[] = [
+    { type: "text-delta", id: "text-0", delta: "Done." },
+    {
+      type: "finish",
+      usage,
+      finishReason: { unified: "stop", raw: "end_turn" },
+      providerMetadata: { gateway: { cost } },
+    },
+  ];
+  return new MockLanguageModelV3({
+    doStream: async () => ({ stream: convertArrayToReadableStream(chunks) }),
+  });
+}
+
+/** The `token` usage_events INSERT (event_type param === "token"). */
+function tokenUsageEvent() {
+  return internalCalls.find(
+    (c) => c.sql.includes("INSERT INTO usage_events") && (c.params as unknown[])?.[2] === "token",
+  );
+}
+
+function tokenUsageInsert() {
+  return internalCalls.find((c) => c.sql.includes("INSERT INTO token_usage"));
+}
+
+describe("token_usage cache split write path (#3099)", () => {
+  beforeEach(() => {
+    internalCalls.length = 0;
+    hasInternalDB = true;
+  });
+
+  it("persists cacheReadTokens/cacheWriteTokens at the right INSERT positions", async () => {
+    await drive(textOnlyModel(CACHE_USAGE));
+
+    const insert = tokenUsageInsert();
+    expect(insert).toBeDefined();
+
+    // Columns: user_id, conversation_id, prompt_tokens, completion_tokens,
+    //          cache_read_tokens, cache_write_tokens, model, provider, org_id,
+    //          latency_ms, gateway_cost_usd
+    expect(insert!.sql).toContain("cache_read_tokens, cache_write_tokens");
+    expect(insert!.sql).toContain("latency_ms");
+    expect(insert!.sql).toContain("gateway_cost_usd");
+    const params = insert!.params as unknown[];
+    expect(params).toHaveLength(11);
+    expect(params[4]).toBe(7); // cache_read_tokens  ← inputTokenDetails.cacheReadTokens
+    expect(params[5]).toBe(3); // cache_write_tokens ← inputTokenDetails.cacheWriteTokens
+    // latency_ms (#3931) — agent-turn wall-clock, non-negative integer ms.
+    // Integer is load-bearing: a units/formula regression (fractional, or a
+    // swapped non-time param) would trip this without the flakiness of an
+    // upper bound on a near-instant mock turn.
+    expect(Number.isInteger(params[9])).toBe(true);
+    expect(params[9] as number).toBeGreaterThanOrEqual(0);
+    // gateway_cost_usd (#4036) — NULL for this non-gateway mock turn: the steps
+    // carry no providerMetadata.gateway.cost, so the at-cost capture records NULL
+    // ("no gateway cost recorded"), distinct from a recorded 0.
+    expect(params[10]).toBeNull();
+  });
+
+  it("records the per-turn gateway cost on both writes for a gateway-routed turn (#4036)", async () => {
+    // Drives the REAL field path: the agent's summarizeStepGatewayCostUsd reads
+    // step.providerMetadata.gateway.cost off the AI-SDK StepResult. A regression
+    // that reads the wrong path (e.g. step.response.providerMetadata) would write
+    // NULL forever and the non-gateway test below would still pass — this pins it.
+    await drive(gatewayCostModel(CACHE_USAGE, "0.0123"));
+
+    // token_usage row: gateway_cost_usd is the last positional param ($11).
+    const insertParams = tokenUsageInsert()!.params as unknown[];
+    expect(insertParams[10]).toBe(0.0123);
+
+    // …and the `token` usage event carries the same at-cost dollars ($5 of 6 —
+    // weighted_quantity was dropped from the insert in the #4869 follow-up).
+    const event = tokenUsageEvent();
+    expect(event).toBeDefined();
+    expect((event!.params as unknown[])[4]).toBe(0.0123);
+  });
+
+  it("writes 0 for the cache split when the provider reports no cache usage", async () => {
+    await drive(textOnlyModel({
+      inputTokens: { total: 100, noCache: 100, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 20, text: 20, reasoning: undefined },
+    }));
+
+    const params = tokenUsageInsert()!.params as unknown[];
+    expect(params[4]).toBe(0);
+    expect(params[5]).toBe(0);
+  });
+
+  it("does not write token usage when no internal DB is configured", async () => {
+    hasInternalDB = false;
+    await drive(textOnlyModel(CACHE_USAGE));
+    expect(tokenUsageInsert()).toBeUndefined();
   });
 });

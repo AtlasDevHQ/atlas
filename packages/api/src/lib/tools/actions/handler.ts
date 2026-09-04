@@ -1307,7 +1307,7 @@ export function _resetActionStore(): void {
  *
  * ⚠️ It no longer stages a RESTART — that is the point of the change. A
  * restart is now `_resetActionExecutors()` followed by re-registering, and the
- * row still executes; `execution-context.test.ts` pins exactly that.
+ * row still executes; `handler.test.ts` (the "Formerly execution-context.test.ts" section) pins exactly that.
  */
 export function _undefineActionExecutor(actionType: string): void {
   executorRegistry.delete(actionType);

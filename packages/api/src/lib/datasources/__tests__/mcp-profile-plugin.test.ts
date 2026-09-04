@@ -217,6 +217,13 @@ function capturingPlugin(dbType: string, opts: { withProfile: boolean } = { with
   };
 }
 
+// The dbType-agnostic arms of `resolveLiveConnection` — not_found for an
+// unknown install, unsupported for a dbType with no registered plugin, the
+// native pg resolution, and the close-on-unsupported teardown — live in
+// `mcp-lifecycle.test.ts`, which asserts them at least as strongly. What is
+// pinned HERE is what only the plugin path can show: the built connection's
+// own profile capability, the creds bound into `createFromConfig`, and the
+// non-url-shaped (BigQuery) resolution.
 describe("resolveLiveConnection — plugin types (#3667)", () => {
   it("resolves a plugin clickhouse install to a live connection carrying the group + the built-connection's profile", async () => {
     const profile = liveProfileSpy();
@@ -263,18 +270,6 @@ describe("resolveLiveConnection — plugin types (#3667)", () => {
     expect(profile.calls[0].schema).toBe("analytics");
   });
 
-  it("native pg resolves WITHOUT a plugin (in-core profilers bound to the resolved url)", async () => {
-    poolConfigResult = { dbType: "postgres", url: "postgres://u:p@h/db", schema: "public" };
-    pluginConn = undefined;
-    internalRows = [
-      { catalog_id: "cat_pg", catalog_slug: "postgres", config: { url: "enc:v1:…" }, config_schema: [], group_id: null },
-    ];
-    const res = await resolveLiveConnection("org_1", "pg");
-    expect(res.kind).toBe("ok");
-    if (res.kind !== "ok") return;
-    expect(res.connection.dbType).toBe("postgres");
-    expect(typeof res.connection.profile).toBe("function");
-  });
 
   it("a provisionable plugin whose BUILT connection has NO profile → unsupported (never a silent empty layer)", async () => {
     // createFromConfig builds a query-only connection (no relocated introspection).
@@ -316,33 +311,6 @@ describe("resolveLiveConnection — plugin types (#3667)", () => {
     expect(cap.createCalls[0]).toEqual({ url: "elasticsearch://es.tenant:9200", apiKey: "tenant-es-key" });
   });
 
-  // No-leak discipline: the unsupported early-return must close the built
-  // (lazy) connection, or a query-only plugin leaks one per profile attempt.
-  it("closes the built connection when it exposes no profile (no leak on the unsupported branch)", async () => {
-    const cap = capturingPlugin("clickhouse", { withProfile: false });
-    pluginConn = cap.plugin;
-    internalRows = [
-      { catalog_id: "cat_ch", catalog_slug: "clickhouse", config: { url: "enc:v1:…" }, config_schema: [], group_id: null },
-    ];
-    const res = await resolveLiveConnection("org_1", "ch");
-    expect(res.kind).toBe("unsupported");
-    expect(cap.close).toHaveBeenCalledTimes(1);
-  });
-
-  it("no registered plugin → unsupported", async () => {
-    pluginConn = undefined;
-    internalRows = [
-      { catalog_id: "cat_ch", catalog_slug: "clickhouse", config: {}, config_schema: [], group_id: null },
-    ];
-    const res = await resolveLiveConnection("org_1", "ch");
-    expect(res.kind).toBe("unsupported");
-  });
-
-  it("not_found for an unknown install", async () => {
-    internalRows = [];
-    const res = await resolveLiveConnection("org_1", "nope");
-    expect(res.kind).toBe("not_found");
-  });
 });
 
 describe("profileLiveDatasource — entities + whitelist + draft persistence (#3667)", () => {

@@ -330,7 +330,7 @@ describe("POST /api/v1/query", () => {
 
   // ADR-0018 / #3651 — route-level mapping of the claim-gate's typed errors.
   // The block-vs-allow matrix is tested at the gate (billing/claim-gate.test.ts)
-  // and seam (agent-query-claim-gate.test.ts) levels; these pin the HTTP
+  // and seam (agent-query-billing.test.ts) levels; these pin the HTTP
   // envelope the route emits, which nothing else exercised.
   it("maps a claim-gate block to a 403 claim_required envelope carrying the claim URL", async () => {
     claimGateVerdict = {

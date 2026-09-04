@@ -60,7 +60,7 @@ import type {
  * captured by #2298 / `proactive_meter_events`) before any broader
  * rollout — do not relax `eager` below 0.55 or tighten `cautious`
  * above 0.95 without explicit acceptance-rate evidence. The
- * `sensitivity-presets.test.ts` acceptance suite pins the values
+ * `#2299` acceptance suite in `__tests__/policy.test.ts` pins the values
  * documented here, so a tuning PR must update both.
  */
 export const SENSITIVITY_THRESHOLDS: Record<SensitivityPreset, number> = {

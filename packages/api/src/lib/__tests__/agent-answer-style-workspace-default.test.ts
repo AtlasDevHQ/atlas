@@ -21,6 +21,20 @@
  *      still wins (including the Slack path's explicit "conversational", so
  *      chat-platform surfaces are structurally unaffected); clearing the
  *      default falls back to the analyst surface default without a restart.
+ *
+ * ---------------------------------------------------------------------------
+ * Also hosts the #4299 mock-LLM prompt-shape tests (formerly
+ * agent-answer-style-prompt-shape.test.ts — same harness, same mocks):
+ *
+ * #4299 — mock-LLM prompt-shape test for the answer-style default (PRD #4292).
+ *
+ * The registry tests in agent-answer-style.test.ts pin `buildSystemParam`
+ * directly; this file pins the seam ABOVE it: a `runAgent` turn with no
+ * `answerStyle` builds a system prompt carrying the analyst addendum (the
+ * web default — the chat route passes nothing), and an explicit
+ * `"conversational"` turn carries the chat-platform addendum instead (the
+ * no-Slack-regression half). Asserted against the prompt the mock LLM
+ * actually receives, on the acceptance criterion's simple-question case.
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
@@ -340,5 +354,94 @@ describe("runAgent — workspace default answer style precedence (#4303)", () =>
     await setSetting(KEY, "sarcastic", "test");
     const prompt = await runTurn();
     expect(prompt).toContain("## Answer style — analyst");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3) runAgent answer-style default threading (#4299) — the seam ABOVE the
+//    registry: no answerStyle ⇒ analyst addendum; explicit conversational ⇒ the
+//    #2705 addendum. Runs under this file's settings/pool fixtures with no
+//    workspace default set, so the surface default is what renders.
+// ---------------------------------------------------------------------------
+
+function userMessages(text: string): UIMessage[] {
+  return [
+    {
+      id: "msg-1",
+      role: "user" as const,
+      parts: [{ type: "text" as const, text }],
+    },
+  ];
+}
+
+async function runTurnWith(
+  answerStyle?: import("@atlas/api/lib/answer-styles").AnswerStyle,
+  messages: UIMessage[] = userMessages("Which region grew the most last quarter?"),
+): Promise<string> {
+  lastSystemPrompt = undefined;
+  const result = await runAgent({
+    tools: nonDashboardRegistry,
+    // The acceptance criterion's simple-question case (#4299).
+    messages,
+    aiModel: {
+      model: makeSpyingModel(),
+      providerType: "openai",
+      modelId: "mock-answer-style-model",
+    },
+    ...(answerStyle ? { answerStyle } : {}),
+  });
+  await result.text; // drain the stream so doStream ran
+  expect(lastSystemPrompt).toBeDefined();
+  return lastSystemPrompt ?? "";
+}
+
+describe("runAgent — answer-style default threading (#4299)", () => {
+  it("a turn with no answerStyle renders the analyst addendum (web default)", async () => {
+    const prompt = await runTurnWith();
+    expect(prompt).toContain("## Answer style — analyst");
+    expect(prompt).toContain("Lead with the result");
+    expect(prompt).toContain("Never use emoji");
+    expect(prompt).not.toContain("## Presentation mode — conversational");
+  });
+
+  it("an explicit conversational turn renders the #2705 addendum instead (chat-platform default)", async () => {
+    const prompt = await runTurnWith("conversational");
+    expect(prompt).toContain("## Presentation mode — conversational");
+    expect(prompt).toContain("Do NOT include SQL");
+    expect(prompt).not.toContain("## Answer style — analyst");
+  });
+
+  // #4302 — the acceptance criterion's mock-LLM half: a conversation pinned
+  // to `executive` builds the executive addendum on SUBSEQUENT turns. The
+  // route seam (chat.test.ts) pins that a follow-up turn inherits the stored
+  // style into runAgent's `answerStyle`; this pins that runAgent, handed that
+  // inherited style on a multi-turn transcript, renders the executive
+  // addendum (and no other style's) in the prompt the mock LLM receives.
+  it("a conversation pinned to executive builds the executive addendum on subsequent turns (#4302)", async () => {
+    const followUpTurn: UIMessage[] = [
+      ...userMessages("Which region grew the most last quarter?"),
+      {
+        id: "msg-2",
+        role: "assistant" as const,
+        parts: [{ type: "text" as const, text: "EU grew the most, up 14%." }],
+      },
+      {
+        id: "msg-3",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "And which shrank?" }],
+      },
+    ];
+    const prompt = await runTurnWith("executive", followUpTurn);
+    expect(prompt).toContain("## Answer style — executive");
+    expect(prompt).toContain("The first line is the headline");
+    expect(prompt).not.toContain("## Answer style — analyst");
+    expect(prompt).not.toContain("## Presentation mode — conversational");
+  });
+
+  it("the <suggestions> contract reaches the model in both styles", async () => {
+    const analystPrompt = await runTurnWith();
+    const conversationalPrompt = await runTurnWith("conversational");
+    expect(analystPrompt).toContain("<suggestions>");
+    expect(conversationalPrompt).toContain("<suggestions>");
   });
 });

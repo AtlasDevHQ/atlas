@@ -5,6 +5,11 @@
  * the install handler wrote, which means it also runs against a row somebody
  * edited by hand. Its errors land in `knowledge_sync_state.error`, so each one
  * has to say what to do about it.
+ *
+ * `slackEpisodeSourceId`'s `<channelId>:<ts>` format is pinned where the two
+ * writers have to agree on it — `slack-client.test.ts` ("the source-id
+ * contract") and `slack-webhook.test.ts` ("source-id parity between the webhook
+ * and the poll") — rather than a second time here against a literal.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -15,7 +20,6 @@ import {
   SLACK_HISTORY_SLUG,
   SLACK_HISTORY_SOURCE,
   parseSlackHistoryConfig,
-  slackEpisodeSourceId,
 } from "@atlas/api/lib/brain/ingest/slack/config";
 
 describe("identity constants", () => {
@@ -87,11 +91,5 @@ describe("parseSlackHistoryConfig", () => {
     const parsed = parseSlackHistoryConfig({ channels: many });
     expect(parsed.ok).toBe(false);
     expect(parsed.ok === false && parsed.error).toContain(String(SLACK_HISTORY_MAX_CHANNELS));
-  });
-});
-
-describe("slackEpisodeSourceId", () => {
-  it("is the documented `<channelId>:<ts>` format", () => {
-    expect(slackEpisodeSourceId("C1", "1.000001")).toBe("C1:1.000001");
   });
 });

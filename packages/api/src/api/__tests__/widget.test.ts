@@ -10,6 +10,10 @@
  * The widget module loads bundle assets (widget.js/widget.css) from
  * packages/react/dist/ at import time. We mock node:fs so tests don't
  * require a prior `bun run build` in packages/react/.
+ *
+ * The postMessage-contract block at the bottom was formerly
+ * `widget-contract.test.ts`. It carried a byte-identical `node:fs` mock, so it
+ * folds in here rather than paying for a second app import.
  */
 
 import { describe, it, expect, mock, beforeEach } from "bun:test";
@@ -63,9 +67,14 @@ void mock.module("@atlas/api/lib/logger", () => ({
 const { widget, sanitizeLogoUrl, sanitizeAccent, sanitizeStarterPrompts } = await import(
   "../routes/widget"
 );
+// The loader IIFE is the other half of the postMessage contract asserted at the
+// bottom of this file (formerly `widget-contract.test.ts`). It has no fs
+// dependency of its own, so mounting it here costs nothing.
+const { widgetLoader } = await import("../routes/widget-loader");
 
 const app = new Hono();
 app.route("/widget", widget);
+app.route("/widget.js", widgetLoader);
 
 function widgetRequest(params?: Record<string, string>): Request {
   const url = new URL("http://localhost/widget");
@@ -1023,3 +1032,79 @@ describe("widget HTML — starterPrompts wiring", () => {
   });
 });
 
+
+/**
+ * Contract tests for the postMessage bridge between the widget loader
+ * (host page IIFE) and the widget iframe handler.
+ *
+ * These tests verify that message types and property names the loader
+ * sends match what the widget handler expects. Without these, either
+ * side can drift independently and both pass their own tests while
+ * messages are silently dropped at runtime (see #324).
+ */
+async function getLoaderScript(): Promise<string> {
+  const res = await app.fetch(new Request("http://localhost/widget.js"));
+  return res.text();
+}
+
+async function getWidgetHtml(): Promise<string> {
+  const res = await app.fetch(new Request("http://localhost/widget"));
+  return res.text();
+}
+
+describe("widget postMessage contract", () => {
+  it("ask: loader sends atlas:ask with query, widget handles atlas:ask reading d.query", async () => {
+    const [script, html] = await Promise.all([
+      getLoaderScript(),
+      getWidgetHtml(),
+    ]);
+
+    // Sender: loader ask() sends {type:"atlas:ask",query:question}
+    expect(script).toContain('{type:"atlas:ask",query:question}');
+
+    // Receiver: widget handles case"atlas:ask" and reads d.query
+    expect(html).toContain('case"atlas:ask"');
+    expect(html).toContain("submitQuery(d.query)");
+  });
+
+  it("auth: loader sends auth with token, widget handles auth reading d.token", async () => {
+    const [script, html] = await Promise.all([
+      getLoaderScript(),
+      getWidgetHtml(),
+    ]);
+
+    // Sender: loader sends {type:"auth",token:apiKey} on atlas:ready
+    expect(script).toContain('{type:"auth",token:apiKey}');
+
+    // Receiver: widget handles case"auth" and reads d.token
+    expect(html).toContain('case"auth"');
+    expect(html).toContain("d.token");
+  });
+
+  it("theme: loader sends theme with value, widget handles theme reading d.value", async () => {
+    const [script, html] = await Promise.all([
+      getLoaderScript(),
+      getWidgetHtml(),
+    ]);
+
+    // Sender: loader setTheme() sends {type:"theme",value:value}
+    expect(script).toContain('{type:"theme",value:value}');
+
+    // Receiver: widget handles case"theme" and reads d.value
+    expect(html).toContain('case"theme"');
+    expect(html).toContain("d.value");
+  });
+
+  it("toggle: loader sends toggle, widget handles toggle", async () => {
+    const [script, html] = await Promise.all([
+      getLoaderScript(),
+      getWidgetHtml(),
+    ]);
+
+    // Sender: bubble click sends {type:"toggle"} to iframe
+    expect(script).toContain('{type:"toggle"}');
+
+    // Receiver: widget handles case"toggle"
+    expect(html).toContain('case"toggle"');
+  });
+});

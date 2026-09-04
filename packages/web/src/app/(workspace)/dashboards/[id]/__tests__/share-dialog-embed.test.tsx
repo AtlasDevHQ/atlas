@@ -5,17 +5,29 @@
  *   - the dialog copy is shareMode-aware — an org share no longer claims
  *     "Anyone with the link" (audit L1).
  *
- * Harness mirrors share-dialog-expiry-sync.test.tsx: real dialog, mocked
- * transport (useAdminMutation + global fetch for status), AtlasProvider wrapper.
+ * Harness: real dialog, mocked transport (useAdminMutation + global fetch for
+ * status), AtlasProvider wrapper — shared with the expiry-sync suite at the foot
+ * of this file (formerly share-dialog-expiry-sync.test.tsx).
  */
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import React, { type ReactNode } from "react";
 import { render, screen, cleanup, fireEvent, act, waitFor } from "@testing-library/react";
 import type { AtlasConfig, AtlasAuthClient } from "@/ui/context";
 
+interface CapturedCall {
+  path: string;
+  method?: string;
+  body?: Record<string, unknown>;
+}
+
+let mutateCalls: CapturedCall[] = [];
+
 void mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: () => ({
-    mutate: async () => ({ ok: true, data: { token: "tok_live", expiresAt: null, shareMode: "public" } }),
+    mutate: async (opts: { path: string; method?: string; body?: Record<string, unknown> }) => {
+      mutateCalls.push({ path: opts.path, method: opts.method, body: opts.body });
+      return { ok: true, data: { token: "tok_new", expiresAt: null, shareMode: "org" } };
+    },
     saving: false,
     error: null,
     clearError: () => {},
@@ -40,6 +52,7 @@ const originalFetch = globalThis.fetch;
 let clipboardText: string | null = null;
 
 beforeEach(() => {
+  mutateCalls = [];
   clipboardText = null;
   // navigator.clipboard is a readonly accessor in jsdom — define it directly.
   Object.defineProperty(navigator, "clipboard", {
@@ -62,7 +75,7 @@ async function openDialogWithStatus(status: {
   token: string | null;
   expiresAt: string | null;
   shareMode: "public" | "org";
-}): Promise<void> {
+}, ready: "embed-tab" | "update-settings" = "embed-tab"): Promise<void> {
   globalThis.fetch = (async () =>
     new Response(JSON.stringify(status), {
       status: 200,
@@ -73,7 +86,15 @@ async function openDialogWithStatus(status: {
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: /Share/ }));
   });
-  await waitFor(() => expect(screen.getByRole("tab", { name: "Embed" })).toBeDefined());
+  // The two suites wait on different controls: the Embed tab, or the shared-view
+  // "Update settings" button that only renders once fetchShareStatus resolves.
+  await waitFor(() =>
+    expect(
+      ready === "embed-tab"
+        ? screen.getByRole("tab", { name: "Embed" })
+        : screen.getByRole("button", { name: /Update settings/ }),
+    ).toBeDefined(),
+  );
 }
 
 describe("DashboardShareDialog — Embed tab (#4564)", () => {
@@ -173,5 +194,50 @@ describe("DashboardShareDialog — shareMode-aware copy (#4564, audit L1)", () =
     await openDialogWithStatus({ shared: true, token: "tok_live", expiresAt: null, shareMode: "public" });
 
     expect(screen.getByText(/Anyone with the link can view this dashboard/i)).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Merged from share-dialog-expiry-sync.test.tsx (#4536) — same source module
+// (`../share-dialog`). The harness above was already a copy of that file's
+// (its own header said so); the useAdminMutation stub here is now the
+// capturing version the expiry suite needs.
+// ---------------------------------------------------------------------------
+
+/**
+ * Regression guard for #4536 at the WIRING seam — the pure `deriveExpiryKey`
+ * mapping is pinned in `share-expiry.test.ts`, but the actual bug lived in the
+ * one line that calls it: `setExpiresIn(deriveExpiryKey(status.expiresAt))`
+ * inside `fetchShareStatus`. Without that sync the "Link expires" control keeps
+ * its `"7d"` mount default, so a trial admin who opens the dialog only to flip
+ * visibility re-POSTs `expiresIn: "7d"` and silently collapses a "Never" link to
+ * one that dies in 7 days.
+ *
+ * This test drives the real dialog (real deriveExpiryKey, mocked transport) and
+ * asserts the write half of the contract: opening on a NO-EXPIRY share and
+ * clicking "Update settings" WITHOUT touching the expiry control must send
+ * `expiresIn: "never"`, never `"7d"`. If the sync line is deleted or reordered,
+ * this goes red while the pure-function suite stays green.
+ */
+
+describe("DashboardShareDialog — expiry sync on open (#4536)", () => {
+  test("a no-expiry share: visibility-only 'Update settings' sends expiresIn 'never', not the '7d' default", async () => {
+    await openDialogWithStatus(
+      { shared: true, token: "tok_live", expiresAt: null, shareMode: "public" },
+      "update-settings",
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Update settings/ }));
+    });
+
+    await waitFor(() => expect(mutateCalls.length).toBeGreaterThan(0));
+    const shareCall = mutateCalls.find((c) => c.path.endsWith("/share"));
+    expect(shareCall).toBeDefined();
+    // The core regression: the control synced to the share's real (no-)expiry, so
+    // the re-POST preserves it instead of stamping the stale "7d" mount default.
+    expect(shareCall?.body?.expiresIn).toBe("never");
+    // Token-preserving edit — not a rotation.
+    expect(shareCall?.body?.rotate).toBe(false);
   });
 });

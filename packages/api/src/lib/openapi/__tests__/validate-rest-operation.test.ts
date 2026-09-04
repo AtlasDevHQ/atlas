@@ -17,9 +17,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 
 import { buildOperationGraph } from "@atlas/api/lib/openapi/spec";
-import type { OperationGraph } from "@atlas/api/lib/openapi/types";
+import type { Operation, OperationGraph } from "@atlas/api/lib/openapi/types";
 import {
   validateRestOperation,
+  isSideEffectingOperation,
   getOpenApiTimeoutCap,
   _resetRestRateLimits,
   type RestOperationPolicy,
@@ -390,5 +391,288 @@ describe("validateRestOperation — layer ordering", () => {
     expect(throttled.allowed).toBe(false);
     if (throttled.allowed) return;
     expect(throttled.error.reason).toBe("rate-limit-exceeded");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Classification overrides — the two escape hatches around "GET = read".
+//  Formerly validate-rest-operation.side-effecting.test.ts (#3008) and
+//  validate-rest-operation.read-safe-post.test.ts (#3035). Both used the same
+//  self-contained synthetic-operation fixtures, shared here.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** A synthetic operation; every call site below states its method explicitly. */
+function makeOperation(overrides: Partial<Operation> = {}): Operation {
+  return {
+    operationId: "op",
+    method: "GET",
+    path: "/op",
+    tags: [],
+    parameters: [],
+    security: [],
+    responses: new Map(),
+    ...overrides,
+  };
+}
+
+function makeGraph(operations: Operation[]): OperationGraph {
+  return {
+    operations: new Map(operations.map((op) => [op.operationId, op])),
+    schemas: new Map(),
+    security: new Map(),
+    servers: [],
+    info: { title: "Test", version: "1.0.0", openapiVersion: "3.1.0" },
+  };
+}
+
+function makePolicy(overrides: Partial<RestOperationPolicy> = {}): RestOperationPolicy {
+  return {
+    workspaceId: "ws",
+    datasourceId: "ds",
+    writeAllowlist: new Set<string>(),
+    now: () => 0,
+    ...overrides,
+  };
+}
+
+/**
+ * #3008 — side-effecting-GET classification escape hatch.
+ *
+ * GET=read is only a DEFAULT, never ground truth. A mutating RPC-over-GET
+ * (`GET /jobs/{id}/cancel`) can be flagged side-effecting — via the
+ * `x-atlas-side-effecting: true` spec extension ({@link Operation.sideEffecting})
+ * or the install config's `side_effecting_operations` list (threaded onto the
+ * policy as `sideEffectingOperations`) — and is then forced through the SAME
+ * write allowlist + confirm path as a POST.
+ */
+describe("isSideEffectingOperation (#3008)", () => {
+  it("treats a plain GET/HEAD as a read", () => {
+    expect(isSideEffectingOperation(makeOperation({ method: "GET" }))).toBe(false);
+    expect(isSideEffectingOperation(makeOperation({ method: "HEAD" }))).toBe(false);
+  });
+
+  it("treats every non-GET/HEAD method as a write regardless of flags", () => {
+    expect(isSideEffectingOperation(makeOperation({ method: "POST" }))).toBe(true);
+    // De-escalation is impossible: sideEffecting:false on a write stays a write.
+    expect(
+      isSideEffectingOperation(makeOperation({ method: "DELETE", sideEffecting: false })),
+    ).toBe(true);
+  });
+
+  it("escalates a GET flagged via the x-atlas-side-effecting spec extension", () => {
+    expect(isSideEffectingOperation(makeOperation({ method: "GET", sideEffecting: true }))).toBe(
+      true,
+    );
+  });
+
+  it("escalates a GET listed in the install config's side_effecting_operations", () => {
+    const op = makeOperation({ operationId: "cancelJob", method: "GET" });
+    expect(isSideEffectingOperation(op, new Set(["cancelJob"]))).toBe(true);
+    expect(isSideEffectingOperation(op, new Set(["other"]))).toBe(false);
+  });
+});
+
+describe("validateRestOperation — side-effecting overrides (#3008)", () => {
+  beforeEach(() => {
+    _resetRestRateLimits();
+  });
+
+  it("rejects a side-effecting GET (spec extension) absent from the allowlist", () => {
+    const graph = makeGraph([
+      makeOperation({ operationId: "cancelJob", method: "GET", sideEffecting: true }),
+    ]);
+    const verdict = validateRestOperation(graph, "cancelJob", {}, makePolicy());
+    expect(verdict.allowed).toBe(false);
+    if (!verdict.allowed) {
+      expect(verdict.error.reason).toBe("writes-disabled");
+      // The message names the side-effecting flag, not the misleading "GET (write)".
+      expect(verdict.error.message).toContain("side-effecting");
+    }
+  });
+
+  it("requires confirmation for an allowlisted side-effecting GET (spec extension)", () => {
+    const graph = makeGraph([
+      makeOperation({ operationId: "cancelJob", method: "GET", sideEffecting: true }),
+    ]);
+    const verdict = validateRestOperation(
+      graph,
+      "cancelJob",
+      {},
+      makePolicy({ writeAllowlist: new Set(["cancelJob"]) }),
+    );
+    expect(verdict.allowed).toBe(true);
+    if (verdict.allowed) {
+      expect(verdict.requiresConfirmation).toBe(true);
+    }
+  });
+
+  it("rejects a side-effecting GET (config list) absent from the allowlist", () => {
+    const graph = makeGraph([makeOperation({ operationId: "cancelJob", method: "GET" })]);
+    const verdict = validateRestOperation(
+      graph,
+      "cancelJob",
+      {},
+      makePolicy({ sideEffectingOperations: new Set(["cancelJob"]) }),
+    );
+    expect(verdict.allowed).toBe(false);
+    if (!verdict.allowed) {
+      expect(verdict.error.reason).toBe("writes-disabled");
+    }
+  });
+
+  it("requires confirmation for an allowlisted side-effecting GET (config list)", () => {
+    const graph = makeGraph([makeOperation({ operationId: "cancelJob", method: "GET" })]);
+    const verdict = validateRestOperation(
+      graph,
+      "cancelJob",
+      {},
+      makePolicy({
+        writeAllowlist: new Set(["cancelJob"]),
+        sideEffectingOperations: new Set(["cancelJob"]),
+      }),
+    );
+    expect(verdict.allowed).toBe(true);
+    if (verdict.allowed) {
+      expect(verdict.requiresConfirmation).toBe(true);
+    }
+  });
+
+  it("leaves an unmarked GET a read needing neither allowlist nor confirmation (regression)", () => {
+    const graph = makeGraph([makeOperation({ operationId: "getPerson", method: "GET" })]);
+    const verdict = validateRestOperation(
+      graph,
+      "getPerson",
+      {},
+      makePolicy({ sideEffectingOperations: new Set(["somethingElse"]) }),
+    );
+    expect(verdict.allowed).toBe(true);
+    if (verdict.allowed) {
+      expect(verdict.requiresConfirmation).toBe(false);
+    }
+  });
+});
+
+/**
+ * #3035 — candidate-declared read-safe POST operations.
+ *
+ * A default data-candidate install resolves with an EMPTY write allowlist, and
+ * the validator classifies every non-GET/HEAD as a write — so a vendor whose
+ * READ surface uses POST (Notion's workspace search is `POST /v1/search`) is
+ * unreachable on a default install (it returns `writes-disabled` before
+ * dispatch). A {@link import("../data-candidates").DataCandidate} declares its genuinely read-only POSTs
+ * (`readSafePostOperations`); the resolver threads them onto the policy as
+ * `readSafePostOperations`, and {@link isSideEffectingOperation} demotes such a
+ * POST to a READ — it passes the write allowlist (layer 2) without an entry.
+ *
+ * Curated, code-resident, and STRICTLY a safety-DROP that escalation overrides:
+ *   - only a POST is ever demoted (a misdeclared DELETE/PUT stays a write),
+ *   - a genuine (non-declared) POST is STILL gated as a write,
+ *   - an explicit side-effecting signal (the `x-atlas-side-effecting` spec
+ *     extension or the install's `side_effecting_operations` list) WINS over a
+ *     read-safe declaration — "this mutates" can never be overridden by "this
+ *     reads", preserving the monotonic-escalation invariant.
+ */
+describe("isSideEffectingOperation — read-safe POST demotion (#3035)", () => {
+  it("demotes a declared read-safe POST to a read", () => {
+    const op = makeOperation({ operationId: "post-search", method: "POST" });
+    expect(isSideEffectingOperation(op, undefined, new Set(["post-search"]))).toBe(false);
+  });
+
+  it("leaves a non-declared POST a write", () => {
+    const op = makeOperation({ operationId: "createWidget", method: "POST" });
+    expect(isSideEffectingOperation(op, undefined, new Set(["post-search"]))).toBe(true);
+  });
+
+  it("only demotes POST — a non-POST id in the set stays a write", () => {
+    // Defense-in-depth: the demotion is keyed on the POST method too, so a
+    // misdeclared DELETE/PUT operationId is inert (never silently demoted).
+    const del = makeOperation({ operationId: "deleteWidget", method: "DELETE" });
+    expect(isSideEffectingOperation(del, undefined, new Set(["deleteWidget"]))).toBe(true);
+  });
+
+  it("lets an explicit side-effecting flag (spec extension) override the read-safe declaration", () => {
+    const op = makeOperation({ operationId: "post-search", method: "POST", sideEffecting: true });
+    // "this mutates" (vendor spec) wins over "this reads" (curated demotion).
+    expect(isSideEffectingOperation(op, undefined, new Set(["post-search"]))).toBe(true);
+  });
+
+  it("lets the install's side_effecting_operations list override the read-safe declaration", () => {
+    const op = makeOperation({ operationId: "post-search", method: "POST" });
+    expect(
+      isSideEffectingOperation(op, new Set(["post-search"]), new Set(["post-search"])),
+    ).toBe(true);
+  });
+
+  it("is a no-op when no read-safe set is supplied (regression: POST stays a write)", () => {
+    const op = makeOperation({ operationId: "post-search", method: "POST" });
+    expect(isSideEffectingOperation(op)).toBe(true);
+    expect(isSideEffectingOperation(op, undefined, new Set())).toBe(true);
+  });
+});
+
+describe("validateRestOperation — read-safe POST gate (#3035)", () => {
+  beforeEach(() => {
+    _resetRestRateLimits();
+  });
+
+  it("passes a declared read-safe POST WITHOUT a write-allowlist entry", () => {
+    const graph = makeGraph([makeOperation({ operationId: "post-search", method: "POST" })]);
+    const verdict = validateRestOperation(
+      graph,
+      "post-search",
+      {},
+      makePolicy({ readSafePostOperations: new Set(["post-search"]) }),
+    );
+    expect(verdict.allowed).toBe(true);
+    if (verdict.allowed) {
+      // It is a READ — no confirm-before-write step.
+      expect(verdict.requiresConfirmation).toBe(false);
+    }
+  });
+
+  it("still gates a genuine (non-declared) POST as a write needing the allowlist", () => {
+    const graph = makeGraph([makeOperation({ operationId: "createWidget", method: "POST" })]);
+    const verdict = validateRestOperation(
+      graph,
+      "createWidget",
+      {},
+      // A different POST is declared read-safe — createWidget is not, so it's gated.
+      makePolicy({ readSafePostOperations: new Set(["post-search"]) }),
+    );
+    expect(verdict.allowed).toBe(false);
+    if (!verdict.allowed) {
+      expect(verdict.error.reason).toBe("writes-disabled");
+    }
+  });
+
+  it("re-gates a declared read-safe POST that is ALSO flagged side-effecting (escalation wins)", () => {
+    const graph = makeGraph([
+      makeOperation({ operationId: "post-search", method: "POST", sideEffecting: true }),
+    ]);
+    const verdict = validateRestOperation(
+      graph,
+      "post-search",
+      {},
+      makePolicy({ readSafePostOperations: new Set(["post-search"]) }),
+    );
+    expect(verdict.allowed).toBe(false);
+    if (!verdict.allowed) {
+      expect(verdict.error.reason).toBe("writes-disabled");
+    }
+  });
+
+  it("dispatches the declared read-safe POST (read), debiting the rate quota like any read", () => {
+    // dispatch defaults to true for a read; the verdict carries the resolved op.
+    const graph = makeGraph([makeOperation({ operationId: "post-search", method: "POST" })]);
+    const verdict = validateRestOperation(
+      graph,
+      "post-search",
+      {},
+      makePolicy({ readSafePostOperations: new Set(["post-search"]) }),
+    );
+    expect(verdict.allowed).toBe(true);
+    if (verdict.allowed) {
+      expect(verdict.operation.operationId).toBe("post-search");
+    }
   });
 });

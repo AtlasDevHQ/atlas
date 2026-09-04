@@ -90,7 +90,7 @@ const PROVIDER_DEFAULTS: Record<ConfigProvider, string | undefined> = {
  * decision rather than an oversight: chat is where quality is visible in real
  * time, its volume is an order of magnitude lower, and `agent.ts` already
  * recovers most of the cost through `cacheControl: ephemeral`. `resolveSelection`
- * is untouched, and `providers-extraction-tier.test.ts` pins that.
+ * is untouched, and `providers.test.ts` pins that.
  *
  * ## Two `undefined` entries, and they are not the same omission
  *

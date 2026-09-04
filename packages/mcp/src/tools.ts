@@ -91,7 +91,8 @@ export interface RegisterToolsOptions {
 /**
  * `mcp:write` enforcement gate (#3504 / ADR-0016 gate 2). Used by
  * `runMcpDispatchGate` for every mutating tool; exported here because that's
- * the historical home and `write-scope-gate.test.ts` pins it.
+ * the historical home; `__tests__/tools.test.ts` pins it (the assertions moved
+ * there from `write-scope-gate.test.ts`).
  *
  * The pure decision lives in the shared {@link writeScopeDenied} primitive
  * (#3599) so the dispatch-gate composer and the plugin fallback share ONE

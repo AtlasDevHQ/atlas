@@ -150,6 +150,9 @@ describe("ChatEnvPicker visibility predicate (#2408)", () => {
   });
 
   test("renders nothing when there are no groups at all", () => {
+    // Also locks the `emptyReason` default-prop contract (#2422) — callers
+    // that haven't been updated to thread `emptyReason` keep the original
+    // silent behavior, which is what omitting the prop exercises here.
     const { container } = render(
       <ChatEnvPicker
         groups={[]}
@@ -327,21 +330,6 @@ describe("ChatEnvPicker emptyReason (#2422)", () => {
       <ChatEnvPicker
         groups={[]}
         emptyReason={null}
-        activeGroupId={null}
-        activeConnectionId={null}
-        onSelect={noop}
-      />,
-    );
-    expect(container.firstChild).toBeNull();
-  });
-
-  test("stays hidden when groups is empty and emptyReason is omitted (defaults to null)", () => {
-    // Locks the default-prop contract — callers that haven't been
-    // updated to thread `emptyReason` should keep the original silent
-    // behavior.
-    const { container } = render(
-      <ChatEnvPicker
-        groups={[]}
         activeGroupId={null}
         activeConnectionId={null}
         onSelect={noop}

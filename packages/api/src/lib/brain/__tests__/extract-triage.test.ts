@@ -17,7 +17,7 @@
  *
  * The `-pg` sibling suites cover the drain SQL against real Postgres; the SQL
  * shape assertions here are the local-suite echo of the same contracts, on
- * `extract-drain.test.ts`'s precedent.
+ * the precedent of `extract.test.ts`'s `DRAIN_EPISODES_SQL` pins.
  */
 
 import { beforeEach, describe, expect, mock, test } from "bun:test";

@@ -1,6 +1,10 @@
 import { describe, test, expect } from "bun:test";
 import { parseDuckDBUrl } from "../src/connection";
 
+// Sole home of the `parseDuckDBUrl` unit tests. A verbatim copy of five of them
+// also lived in `duckdb.test.ts` (importing the same function through the
+// package's `index` re-export); that copy was removed, this file is the survivor.
+
 describe("parseDuckDBUrl", () => {
   test("parses duckdb:// as in-memory", () => {
     expect(parseDuckDBUrl("duckdb://")).toEqual({ path: ":memory:", readOnly: false });

@@ -29,8 +29,18 @@ import {
   encryptSecret,
   decryptSecret,
   getEncryptionKey,
+  getEncryptionKeyset,
   isPlaintextUrl,
   _resetEncryptionKeyCache,
+  getPopularSuggestions,
+  incrementSuggestionClick,
+  upsertSuggestion,
+  withWorkspaceAdminLock,
+  withWorkspaceAdminLocks,
+  withDemoSeedLock,
+  withStripeSubscriptionLock,
+  type InternalPool,
+  type InternalPoolClient,
   type URLSecret,
 } from "../internal";
 import { connections } from "../connection";
@@ -2074,20 +2084,9 @@ describe("connection URL encryption", () => {
   });
 
   describe("getEncryptionKey()", () => {
-    it("returns null when neither key is set", () => {
-      delete process.env.ATLAS_ENCRYPTION_KEY;
-      delete process.env.BETTER_AUTH_SECRET;
-      expect(getEncryptionKey()).toBeNull();
-    });
-
-    it("derives key from ATLAS_ENCRYPTION_KEY", () => {
-      process.env.ATLAS_ENCRYPTION_KEY = "my-encryption-key-32-chars-long!";
-      delete process.env.BETTER_AUTH_SECRET;
-      const key = getEncryptionKey();
-      expect(key).not.toBeNull();
-      expect(key!.length).toBe(32);
-    });
-
+    // The no-key-set and derive-from-ATLAS_ENCRYPTION_KEY cases live in the
+    // "F-47 encryption keyset resolver" describe at the end of this file, which
+    // makes the same two assertions after clearing ATLAS_ENCRYPTION_KEYS too.
     it("falls back to BETTER_AUTH_SECRET", () => {
       delete process.env.ATLAS_ENCRYPTION_KEY;
       process.env.BETTER_AUTH_SECRET = "my-auth-secret-that-is-long-enough";
@@ -2630,6 +2629,923 @@ describe("connection URL encryption", () => {
       const q = calls.queries.at(-1)!;
       expect(q.sql).toContain("plan_override_until = NULL");
       expect(q.params).toEqual(["starter", "org-1"]);
+    });
+  });
+});
+
+/**
+ * ── query_suggestions SQL contracts ──
+ *
+ * Formerly three sibling files — `get-popular-suggestions.test.ts`,
+ * `increment-suggestion-click.test.ts` and `upsert-suggestion.test.ts` — each
+ * carrying its own copy of the same capture-every-query stub pool against the
+ * same `../internal` module. Merged here; each file's rationale is kept with
+ * its own describe below. The one fixture change: `DATABASE_URL` is set by a
+ * scoped hook rather than a top-level `??=`, matching how every other describe
+ * in this file manages it (the preload strips the var, and `hasInternalDB()`
+ * reads it at call time).
+ */
+describe("query_suggestions SQL contracts", () => {
+  const origDatabaseUrl = process.env.DATABASE_URL;
+
+  interface CapturedSuggestionQuery {
+    sql: string;
+    params: unknown[];
+  }
+
+  let captured: CapturedSuggestionQuery[] = [];
+
+  /**
+   * Intercept every raw-pool query. `internalExecute` falls through to
+   * `getInternalDB().query(...)` when no SqlClient is bound — we bind a
+   * plain stub pool via `_resetPool` and collect each call.
+   */
+  function makeStubPool(rows: Record<string, unknown>[] = []) {
+    return {
+      query: async (sql: string, params?: unknown[]) => {
+        captured.push({ sql, params: params ?? [] });
+        return { rows };
+      },
+      async end() {},
+      async connect() {
+        return { query: async () => ({ rows }), release() {} };
+      },
+      on() {},
+    };
+  }
+
+  const installStubPool = (rows?: Record<string, unknown>[]) => {
+    captured = [];
+    _resetCircuitBreaker();
+    _resetPool(makeStubPool(rows) as unknown as Parameters<typeof _resetPool>[0], null);
+  };
+
+  beforeEach(() => {
+    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/atlas_test";
+    installStubPool();
+  });
+
+  afterAll(() => {
+    // Release the stub pool so later test files get a fresh state.
+    _resetPool(null, null);
+    _resetCircuitBreaker();
+    if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
+    else delete process.env.DATABASE_URL;
+  });
+
+  /**
+   * `getPopularSuggestions` — asserts the SQL contract that only
+   * approval_status='approved' rows surface in the popular tier.
+   *
+   * Regression guard: before slice #1477, this function had no approval
+   * filter, so hidden or pending suggestions could leak into the empty
+   * state. The filter is the single source of truth that gates visibility
+   * from backend to UI.
+   */
+  describe("getPopularSuggestions — approval filter", () => {
+    it("filters to approval_status = 'approved'", async () => {
+      await getPopularSuggestions("org-1", 10);
+
+      expect(captured).toHaveLength(1);
+      const sql = captured[0]!.sql;
+      // The popular tier is admin-moderated; only approved rows may surface
+      // to the chat empty state. A regression dropping this filter would
+      // leak pending/hidden suggestions into user-facing UI.
+      expect(sql).toContain("approval_status = 'approved'");
+    });
+
+    it("scopes by org_id when orgId is provided", async () => {
+      await getPopularSuggestions("org-1", 10);
+      const sql = captured[0]!.sql;
+      expect(sql).toContain("org_id = $1");
+      expect(captured[0]!.params).toEqual(["org-1", 10]);
+    });
+
+    it("scopes to org_id IS NULL when orgId is null (single-tenant / unscoped)", async () => {
+      await getPopularSuggestions(null, 10);
+      const sql = captured[0]!.sql;
+      expect(sql).toContain("org_id IS NULL");
+      expect(captured[0]!.params).toEqual([10]);
+    });
+
+    it("orders by score DESC with LIMIT applied as a param", async () => {
+      await getPopularSuggestions("org-1", 25);
+      const sql = captured[0]!.sql;
+      expect(sql).toContain("ORDER BY score DESC");
+      expect(sql).toContain("LIMIT $");
+      expect(captured[0]!.params).toEqual(["org-1", 25]);
+    });
+  });
+
+  // Second gate beyond `approval_status = 'approved'`: the 1.2.0 mode axis.
+  // `getPopularSuggestions` now owns the `AND ${statusClause}` composition
+  // itself — the pre-#1531 helper returned a leading-AND string, so any
+  // regression that drops the clause or flips to the wrong mode would slip
+  // past the tests above. Assert the clause is composed in for both modes.
+  describe("getPopularSuggestions — mode status filter", () => {
+    it("published mode (default) restricts to query_suggestions.status = 'published'", async () => {
+      await getPopularSuggestions("org-1", 10);
+      const sql = captured[0]!.sql;
+      expect(sql).toContain("query_suggestions.status = 'published'");
+      // Sanity: approval + mode gates are AND-composed, not OR
+      expect(sql).toContain("approval_status = 'approved' AND");
+    });
+
+    it("developer mode overlays drafts onto published rows", async () => {
+      await getPopularSuggestions("org-1", 10, "developer");
+      const sql = captured[0]!.sql;
+      expect(sql).toContain("query_suggestions.status IN ('published', 'draft')");
+      expect(sql).not.toContain("draft_delete");
+      expect(sql).not.toContain("archived");
+    });
+
+    it("published mode never surfaces draft or archived rows", async () => {
+      await getPopularSuggestions("org-1", 10, "published");
+      const sql = captured[0]!.sql;
+      expect(sql).toContain("query_suggestions.status = 'published'");
+      expect(sql).not.toContain("draft");
+      expect(sql).not.toContain("archived");
+    });
+  });
+
+  /**
+   * `incrementSuggestionClick` — the CTE path that keeps
+   * `distinct_user_clicks` in lockstep with the `suggestion_user_clicks`
+   * dedup table.
+   *
+   * These assert SQL shape and parameter positions. Off-by-one on
+   * `$${idIdx}` / `$${userIdx}`, dropping `ON CONFLICT DO NOTHING`, or
+   * dropping the `(SELECT COUNT(*) FROM inserted)::int` addend would all
+   * silently corrupt the counter in production; these tests make that
+   * loud.
+   *
+   * Helper: incrementSuggestionClick uses fire-and-forget semantics — the
+   * UPDATE resolves on the microtask queue. A single microtask flush lets us
+   * inspect what landed.
+   */
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  describe("incrementSuggestionClick — legacy path (userId null)", () => {
+    it("bumps clicked_count only, with orgId scoping", async () => {
+      incrementSuggestionClick("sug-1", "org-a");
+      await flush();
+
+      expect(captured).toHaveLength(1);
+      const { sql, params } = captured[0]!;
+      expect(sql).toContain("UPDATE query_suggestions");
+      expect(sql).toContain("clicked_count = clicked_count + 1");
+      expect(sql).not.toContain("distinct_user_clicks");
+      expect(sql).not.toContain("suggestion_user_clicks");
+      expect(sql).toContain("org_id = $1");
+      expect(sql).toContain("id = $2");
+      expect(params).toEqual(["org-a", "sug-1"]);
+    });
+
+    it("handles null orgId via IS NULL clause", async () => {
+      incrementSuggestionClick("sug-1", null);
+      await flush();
+
+      expect(captured).toHaveLength(1);
+      const { sql, params } = captured[0]!;
+      expect(sql).toContain("org_id IS NULL");
+      expect(sql).toContain("id = $1");
+      expect(params).toEqual(["sug-1"]);
+    });
+  });
+
+  describe("incrementSuggestionClick — distinct-user path", () => {
+    it("upserts the dedup row and bumps both counters atomically (orgId + userId)", async () => {
+      incrementSuggestionClick("sug-1", "org-a", "user-42");
+      await flush();
+
+      expect(captured).toHaveLength(1);
+      const { sql, params } = captured[0]!;
+
+      // Dedup insert with idempotency
+      expect(sql).toContain("INSERT INTO suggestion_user_clicks");
+      expect(sql).toContain("ON CONFLICT (suggestion_id, user_id) DO NOTHING");
+      expect(sql).toContain("RETURNING 1");
+
+      // Counter bump derived from the insert's row count
+      expect(sql).toContain("clicked_count = clicked_count + 1");
+      expect(sql).toContain(
+        "distinct_user_clicks = distinct_user_clicks + (SELECT COUNT(*) FROM inserted)::int",
+      );
+
+      // Param layout: [orgId, suggestionId, userId]
+      expect(sql).toContain("org_id = $1");
+      expect(params).toEqual(["org-a", "sug-1", "user-42"]);
+    });
+
+    it("handles null orgId path with correct param indexing", async () => {
+      incrementSuggestionClick("sug-9", null, "user-7");
+      await flush();
+
+      expect(captured).toHaveLength(1);
+      const { sql, params } = captured[0]!;
+
+      expect(sql).toContain("org_id IS NULL");
+
+      // With no org param, suggestionId is $1 and userId is $2 — both
+      // the INSERT values and the UPDATE's WHERE clause share $1 for the id.
+      expect(sql).toContain("VALUES ($1, $2)");
+      expect(sql).toContain("id = $1");
+      expect(params).toEqual(["sug-9", "user-7"]);
+    });
+  });
+
+  /**
+   * `upsertSuggestion` — asserts the SQL contract that CLI-populated rows land
+   * explicitly as `approval_status = 'pending'` and `status = 'draft'` by
+   * default, and transition to `approval_status = 'approved'` /
+   * `status = 'published'` when the caller opts in via `autoApprove`.
+   *
+   * Regression guard for #1482: the migration defaults to pending/draft,
+   * but relying on the default silently couples CLI behavior to schema
+   * defaults. Writing the columns explicitly means a future `ALTER TABLE`
+   * that changes the default cannot silently flip CLI-populated rows into
+   * user-facing visibility.
+   *
+   * ON CONFLICT preserves prior approval / status so a repeated
+   * `atlas-operator learn` run never overrides an admin's hide or approve decision
+   * on an existing row — that would re-surface content the admin already
+   * reviewed. The `--auto-approve` operator flag affects new rows only.
+   */
+  describe("upsertSuggestion — approval defaults", () => {
+    const baseInput = {
+      orgId: "org-1",
+      description: "Count orders by status",
+      patternSql: "SELECT status, COUNT(*) FROM orders GROUP BY status",
+      normalizedHash: "abc123",
+      tablesInvolved: ["orders"],
+      primaryTable: "orders",
+      frequency: 4,
+      score: 3.5,
+      lastSeenAt: new Date("2026-04-10T00:00:00Z"),
+    };
+
+    // `upsertSuggestion` reads its RETURNING row, so this describe's pool
+    // answers with one instead of the empty set the readers above want.
+    beforeEach(() => {
+      installStubPool([{ id: "sug-1", created: true }]);
+    });
+
+    it("writes approval_status and status columns explicitly (pending/draft by default)", async () => {
+      await upsertSuggestion(baseInput);
+
+      expect(captured).toHaveLength(1);
+      const { sql, params } = captured[0]!;
+      // Both columns must appear in the column list — not rely on DB defaults.
+      expect(sql).toMatch(/INSERT INTO query_suggestions[\s\S]*approval_status[\s\S]*status/);
+      // Default values for a CLI-populated row are pending + draft so the
+      // admin moderation queue is authoritative over visibility.
+      expect(params).toContain("pending");
+      expect(params).toContain("draft");
+      expect(params).not.toContain("approved");
+      expect(params).not.toContain("published");
+    });
+
+    it("writes approved/published when autoApprove is true", async () => {
+      await upsertSuggestion({ ...baseInput, autoApprove: true });
+
+      expect(captured).toHaveLength(1);
+      const { params } = captured[0]!;
+      expect(params).toContain("approved");
+      expect(params).toContain("published");
+      expect(params).not.toContain("pending");
+      expect(params).not.toContain("draft");
+    });
+
+    it("preserves existing approval/status on ON CONFLICT (no override of admin state)", async () => {
+      await upsertSuggestion(baseInput);
+      const { sql } = captured[0]!;
+      // ON CONFLICT DO UPDATE must touch only the metrics columns —
+      // overriding approval_status would re-surface rows an admin hid,
+      // and overriding status would clobber the mode-system lifecycle.
+      expect(sql).toMatch(/ON CONFLICT[\s\S]*DO UPDATE/);
+      const updateClause = sql.split("DO UPDATE")[1] ?? "";
+      expect(updateClause).not.toMatch(/approval_status\s*=/);
+      expect(updateClause).not.toMatch(/\bstatus\s*=/);
+    });
+  });
+});
+
+/**
+ * ── Advisory-lock wrappers ──
+ *
+ * Formerly three sibling files — `workspace-admin-locks.test.ts` (#3166),
+ * `demo-seed-lock.test.ts` (#3683) and `stripe-subscription-lock.test.ts`
+ * (#3445) — whose own headers each said they mirrored the others. All three
+ * drove a `with*Lock` wrapper exported from `../internal` against three
+ * near-identical copies of the same recording fake pool, so the fixture is
+ * deduped here (the union of the three: `failLock`, `failRollback`, and a
+ * connect counter) and each suite keeps its own rationale below.
+ *
+ * Real cross-connection serialization is Postgres semantics
+ * (`pg_advisory_xact_lock` blocks until the holder commits) and is proved
+ * elsewhere: `admin-last-admin-pg.test.ts` for the admin locks,
+ * `onboarding.test.ts` for the demo seed, `stripe-webhook-lifecycle.test.ts`
+ * for the subscription sync.
+ */
+describe("advisory-lock wrappers", () => {
+  interface RecordedQuery {
+    sql: string;
+    params?: unknown[];
+  }
+
+  /** A fake pool that records every query its single client receives. */
+  function makeRecordingPool(opts: { failLock?: boolean; failRollback?: boolean } = {}): {
+    pool: InternalPool;
+    queries: RecordedQuery[];
+    releases: Array<Error | undefined>;
+    connects: { count: number };
+  } {
+    const queries: RecordedQuery[] = [];
+    const releases: Array<Error | undefined> = [];
+    const connects = { count: 0 };
+    const client: InternalPoolClient = {
+      query: async (sql: string, params?: unknown[]) => {
+        queries.push({ sql, ...(params !== undefined ? { params } : {})});
+        if (opts.failLock && sql.includes("pg_advisory_xact_lock")) {
+          throw new Error("simulated lock acquisition failure");
+        }
+        if (opts.failRollback && sql === "ROLLBACK") {
+          throw new Error("simulated ROLLBACK failure — dirty socket");
+        }
+        return { rows: [] as Record<string, unknown>[] };
+      },
+      release: (err?: Error) => {
+        releases.push(err);
+      },
+    };
+    const pool: InternalPool = {
+      query: async () => ({ rows: [] as Record<string, unknown>[] }),
+      connect: async () => {
+        connects.count += 1;
+        return client;
+      },
+      end: async () => {},
+      on: () => {},
+    };
+    return { pool, queries, releases, connects };
+  }
+
+  function lockQueries(queries: RecordedQuery[]): RecordedQuery[] {
+    return queries.filter((q) => q.sql.includes("pg_advisory_xact_lock"));
+  }
+
+  /** The org-id arg of every `pg_advisory_xact_lock(namespace, hashtext($2))`. */
+  function lockedOrgIds(queries: RecordedQuery[]): string[] {
+    return lockQueries(queries).map((q) => (q.params?.[1] as string) ?? "");
+  }
+
+  /**
+   * Lock-acquisition mechanics of `withWorkspaceAdminLocks` (#3166) against an
+   * injected fake pool — no real Postgres.
+   *
+   * The real-Postgres suite (`admin-last-admin-pg.test.ts`) proves the invariant
+   * holds under genuine concurrency. This suite pins the two mechanics that make
+   * that concurrency safe but which a passing race test can't pin deterministically:
+   *   1. Locks are acquired in DEDUPED + SORTED order — the deadlock-avoidance
+   *      invariant. A dropped `.sort()` (or `Set` dedupe) would still pass every
+   *      real-PG race that happens to enumerate ids in a consistent order, so it
+   *      is asserted directly here by capturing the `pg_advisory_xact_lock` params.
+   *   2. The transaction brackets the locks (BEGIN → locks → callback → COMMIT),
+   *      and a throwing callback ROLLBACKs + destroys the client + re-throws
+   *      (never a silent success).
+   */
+  describe("withWorkspaceAdminLocks — lock-acquisition mechanics (#3166)", () => {
+    afterEach(() => {
+      _resetPool(null, null);
+    });
+
+    it("acquires locks in deduped + sorted order (deadlock-avoidance invariant)", async () => {
+      const { pool, queries } = makeRecordingPool();
+      _resetPool(pool as unknown as InternalPool, null);
+
+      // Deliberately unsorted, with a duplicate, so a missing `.sort()` or dedupe
+      // would change the captured acquisition order.
+      await withWorkspaceAdminLocks(["org-c", "org-a", "org-b", "org-a"], async () => "done");
+
+      expect(lockedOrgIds(queries)).toEqual(["org-a", "org-b", "org-c"]);
+      // Bracketed by a single transaction.
+      expect(queries[0]?.sql).toBe("BEGIN");
+      expect(queries.at(-1)?.sql).toBe("COMMIT");
+      expect(queries.some((q) => q.sql === "ROLLBACK")).toBe(false);
+    });
+
+    it("runs the callback on the locked connection, after all locks are held", async () => {
+      const { pool, queries } = makeRecordingPool();
+      _resetPool(pool as unknown as InternalPool, null);
+
+      const result = await withWorkspaceAdminLocks(["org-b", "org-a"], async (tx) => {
+        await tx.query("SELECT 1 AS sentinel");
+        return 42;
+      });
+
+      expect(result).toBe(42);
+      const sentinelIdx = queries.findIndex((q) => q.sql === "SELECT 1 AS sentinel");
+      const lastLockIdx = queries.map((q) => q.sql).lastIndexOf(
+        queries.filter((q) => q.sql.includes("pg_advisory_xact_lock")).at(-1)?.sql ?? "",
+      );
+      expect(sentinelIdx).toBeGreaterThan(lastLockIdx); // callback runs after locks
+      expect(queries.at(-1)?.sql).toBe("COMMIT");
+    });
+
+    it("the single-workspace wrapper takes exactly one lock", async () => {
+      const { pool, queries } = makeRecordingPool();
+      _resetPool(pool as unknown as InternalPool, null);
+
+      await withWorkspaceAdminLock("org-solo", async () => "ok");
+
+      expect(lockedOrgIds(queries)).toEqual(["org-solo"]);
+    });
+
+    it("opens the transaction but takes no lock for an empty id set", async () => {
+      const { pool, queries } = makeRecordingPool();
+      _resetPool(pool as unknown as InternalPool, null);
+
+      const result = await withWorkspaceAdminLocks([], async () => "empty-ok");
+
+      expect(result).toBe("empty-ok");
+      expect(lockedOrgIds(queries)).toEqual([]);
+      expect(queries[0]?.sql).toBe("BEGIN");
+      expect(queries.at(-1)?.sql).toBe("COMMIT");
+    });
+
+    it("ROLLBACKs, releases the client, and re-throws when the callback throws (no silent success)", async () => {
+      const { pool, queries, releases } = makeRecordingPool();
+      _resetPool(pool as unknown as InternalPool, null);
+
+      const boom = new Error("guard decided to abort");
+      await expect(
+        withWorkspaceAdminLocks(["org-a"], async () => {
+          throw boom;
+        }),
+      ).rejects.toBe(boom);
+
+      expect(queries.some((q) => q.sql === "ROLLBACK")).toBe(true);
+      expect(queries.some((q) => q.sql === "COMMIT")).toBe(false);
+      // Rollback succeeded here, so the client is released cleanly (no destroy arg).
+      expect(releases).toHaveLength(1);
+      expect(releases[0]).toBeUndefined();
+    });
+  });
+
+  /**
+   * Lock-acquisition + transaction mechanics of `withDemoSeedLock` (#3683).
+   *
+   * Pinned mechanics — the two properties the /use-demo seed depends on:
+   *   1. Mutual exclusion — phases 2+3 run inside ONE transaction holding a
+   *      per-workspace advisory lock in the #3683 namespace keyed on the org id
+   *      (BEGIN → pg_advisory_xact_lock → callback on the locked connection →
+   *      COMMIT). Two concurrent same-org seeds serialize on this lock instead of
+   *      interleaving `ON CONFLICT DO UPDATE` upserts (which deadlock).
+   *   2. Atomicity — a throwing callback ROLLBACKs + releases the client +
+   *      re-throws, so a blip between the entity import and the published flip
+   *      can never leave half-committed seed state.
+   */
+  describe("withDemoSeedLock — lock + transaction mechanics (#3683)", () => {
+    afterEach(() => {
+      _resetPool(null, null);
+    });
+
+    it("brackets the callback with BEGIN → advisory lock keyed on the org id → COMMIT", async () => {
+      const { pool, queries } = makeRecordingPool();
+      _resetPool(pool as unknown as InternalPool, null);
+
+      const ran: string[] = [];
+      const result = await withDemoSeedLock("org-1", async () => {
+        ran.push("callback");
+        return 42;
+      });
+
+      expect(result).toBe(42);
+      expect(ran).toEqual(["callback"]);
+      expect(queries[0]?.sql).toBe("BEGIN");
+      const locks = lockQueries(queries);
+      expect(locks).toHaveLength(1);
+      // Distinct two-arg namespace (the issue number) + the org id.
+      expect(locks[0]?.params).toEqual([3683, "org-1"]);
+      expect(queries.at(-1)?.sql).toBe("COMMIT");
+      expect(queries.some((q) => q.sql === "ROLLBACK")).toBe(false);
+    });
+
+    it("runs the callback's writes on the locked connection, after the lock is held", async () => {
+      const { pool, queries } = makeRecordingPool();
+      _resetPool(pool as unknown as InternalPool, null);
+
+      const result = await withDemoSeedLock("org-1", async (tx) => {
+        await tx.query("INSERT INTO semantic_entities");
+        await tx.query("INSERT INTO workspace_plugins");
+        return "seeded";
+      });
+
+      expect(result).toBe("seeded");
+      const lastLockIdx = queries.findLastIndex((q) => q.sql.includes("pg_advisory_xact_lock"));
+      const entityIdx = queries.findIndex((q) => q.sql === "INSERT INTO semantic_entities");
+      const flipIdx = queries.findIndex((q) => q.sql === "INSERT INTO workspace_plugins");
+      // Both phases run after the lock and before COMMIT, in order.
+      expect(entityIdx).toBeGreaterThan(lastLockIdx);
+      expect(flipIdx).toBeGreaterThan(entityIdx);
+      expect(queries.at(-1)?.sql).toBe("COMMIT");
+    });
+
+    it("ROLLBACKs, releases the client, and re-throws when the callback throws (no partial commit)", async () => {
+      const { pool, queries, releases } = makeRecordingPool();
+      _resetPool(pool as unknown as InternalPool, null);
+
+      const boom = new Error("phase-3 published flip failed");
+      await expect(
+        withDemoSeedLock("org-1", async (tx) => {
+          await tx.query("INSERT INTO semantic_entities");
+          throw boom;
+        }),
+      ).rejects.toBe(boom);
+
+      // The entity write happened on the connection, but the transaction rolled
+      // back — nothing is committed, so no orphaned draft entities survive.
+      expect(queries.some((q) => q.sql === "ROLLBACK")).toBe(true);
+      expect(queries.some((q) => q.sql === "COMMIT")).toBe(false);
+      // Rollback succeeded, so the client is released cleanly (no destroy arg).
+      expect(releases).toHaveLength(1);
+      expect(releases[0]).toBeUndefined();
+    });
+
+    it("destroys the client (passes the rollback error to release) when ROLLBACK itself fails — and still re-throws the original error", async () => {
+      // The poison-the-client safety path: if ROLLBACK rejects, the connection's
+      // socket is dirty and must NOT return to the pool. `withDemoSeedLock` passes
+      // the rollback error to `client.release(err)` (node-pg destroys rather than
+      // recycles), while still re-throwing the ORIGINAL callback error — the
+      // rollback failure is logged, never masks what actually went wrong.
+      const { pool, queries, releases } = makeRecordingPool({ failRollback: true });
+      _resetPool(pool as unknown as InternalPool, null);
+
+      const boom = new Error("phase-3 published flip failed");
+      await expect(
+        withDemoSeedLock("org-1", async (tx) => {
+          await tx.query("INSERT INTO semantic_entities");
+          throw boom;
+        }),
+      ).rejects.toBe(boom); // original error propagates, not the ROLLBACK failure
+
+      expect(queries.some((q) => q.sql === "ROLLBACK")).toBe(true);
+      expect(queries.some((q) => q.sql === "COMMIT")).toBe(false);
+      // Client destroyed: release got the rollback error, not undefined.
+      expect(releases).toHaveLength(1);
+      expect(releases[0]).toBeInstanceOf(Error);
+      expect(releases[0]?.message).toContain("simulated ROLLBACK failure");
+    });
+
+    it("propagates a lock-acquisition failure — never runs the seed unserialized", async () => {
+      const { pool, releases } = makeRecordingPool({ failLock: true });
+      _resetPool(pool as unknown as InternalPool, null);
+
+      let callbackRan = false;
+      await expect(
+        withDemoSeedLock("org-1", async () => {
+          callbackRan = true;
+        }),
+      ).rejects.toThrow("simulated lock acquisition failure");
+
+      expect(callbackRan).toBe(false);
+      expect(releases).toHaveLength(1);
+    });
+  });
+
+  /**
+   * Lock-acquisition mechanics of `withStripeSubscriptionLock` (#3445).
+   *
+   * Pinned mechanics:
+   *   1. The transaction brackets the lock (BEGIN → pg_advisory_xact_lock in
+   *      the #3445 namespace keyed on the subscription id → callback →
+   *      COMMIT).
+   *   2. A throwing callback ROLLBACKs + releases the client + re-throws —
+   *      never a silent success, so `onEvent` still 400s and Stripe
+   *      redelivers (record-last stays live).
+   *   3. A DB error in the wrapper itself (failed connect/lock) propagates —
+   *      no fail-open into an unserialized sync.
+   *   4. No subscription id / no internal DB → straight passthrough, no pool
+   *      checkout.
+   */
+  describe("withStripeSubscriptionLock — lock mechanics (#3445)", () => {
+    let savedDatabaseUrl: string | undefined;
+
+    beforeEach(() => {
+      // hasInternalDB() reads DATABASE_URL; the fake pool stands in for the
+      // connection it implies.
+      savedDatabaseUrl = process.env.DATABASE_URL;
+      process.env.DATABASE_URL = "postgres://fake:fake@localhost:5432/fake";
+    });
+
+    afterEach(() => {
+      _resetPool(null, null);
+      if (savedDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = savedDatabaseUrl;
+    });
+
+    it("brackets the callback with BEGIN → advisory lock keyed on the subscription id → COMMIT", async () => {
+      const { pool, queries } = makeRecordingPool();
+      // Lock traffic draws from the dedicated lock pool (#3465) — inject
+      // the fake there; the main-pool slot stays empty (passthrough tests
+      // assert no checkout happens on either).
+      _resetPool(null, null, pool as unknown as InternalPool);
+
+      const ran: string[] = [];
+      const result = await withStripeSubscriptionLock("sub_stripe_1", async () => {
+        ran.push("callback");
+        return 42;
+      });
+
+      expect(result).toBe(42);
+      expect(ran).toEqual(["callback"]);
+      expect(queries[0]?.sql).toBe("BEGIN");
+      const locks = lockQueries(queries);
+      expect(locks).toHaveLength(1);
+      // Distinct two-arg namespace (the issue number) + the subscription id.
+      expect(locks[0]?.params).toEqual([3445, "sub_stripe_1"]);
+      expect(queries.at(-1)?.sql).toBe("COMMIT");
+      expect(queries.some((q) => q.sql === "ROLLBACK")).toBe(false);
+    });
+
+    it("ROLLBACKs, releases the client, and re-throws when the callback throws (record-last stays live)", async () => {
+      const { pool, queries, releases } = makeRecordingPool();
+      _resetPool(null, null, pool as unknown as InternalPool);
+
+      const boom = new Error("sync failed — plan tier write rejected");
+      await expect(
+        withStripeSubscriptionLock("sub_stripe_1", async () => {
+          throw boom;
+        }),
+      ).rejects.toBe(boom);
+
+      expect(queries.some((q) => q.sql === "ROLLBACK")).toBe(true);
+      expect(queries.some((q) => q.sql === "COMMIT")).toBe(false);
+      // Rollback succeeded, so the client is released cleanly (no destroy arg).
+      expect(releases).toHaveLength(1);
+      expect(releases[0]).toBeUndefined();
+    });
+
+    it("propagates a lock-acquisition failure — never fails open into an unserialized sync", async () => {
+      const { pool, releases } = makeRecordingPool({ failLock: true });
+      _resetPool(null, null, pool as unknown as InternalPool);
+
+      let callbackRan = false;
+      await expect(
+        withStripeSubscriptionLock("sub_stripe_1", async () => {
+          callbackRan = true;
+        }),
+      ).rejects.toThrow("simulated lock acquisition failure");
+
+      expect(callbackRan).toBe(false);
+      expect(releases).toHaveLength(1);
+    });
+
+    it("passes through without a pool checkout when the event has no subscription id", async () => {
+      const { pool, connects } = makeRecordingPool();
+      _resetPool(null, null, pool as unknown as InternalPool);
+
+      const result = await withStripeSubscriptionLock(null, async () => "no-lock");
+
+      expect(result).toBe("no-lock");
+      expect(connects.count).toBe(0);
+    });
+
+    it("passes through without a pool checkout when there is no internal DB", async () => {
+      const { pool, connects } = makeRecordingPool();
+      _resetPool(null, null, pool as unknown as InternalPool);
+      delete process.env.DATABASE_URL;
+
+      const result = await withStripeSubscriptionLock("sub_stripe_1", async () => "no-db");
+
+      expect(result).toBe("no-db");
+      expect(connects.count).toBe(0);
+    });
+
+    it("checks out the lock client from the dedicated lock pool, never the main pool (#3465 review)", async () => {
+      // The deadlock fix: a lock holder sits idle-in-transaction for the
+      // whole locked section while its inner queries use the pooled
+      // internalQuery — if both drew from the same bounded pool, a burst
+      // of deliveries could pin every client in lock transactions and
+      // starve the holders' own queries. Pin that lock traffic never
+      // touches the main pool.
+      const main = makeRecordingPool();
+      const lock = makeRecordingPool();
+      _resetPool(
+        main.pool as unknown as InternalPool,
+        null,
+        lock.pool as unknown as InternalPool,
+      );
+
+      const result = await withStripeSubscriptionLock("sub_stripe_1", async () => "split");
+
+      expect(result).toBe("split");
+      expect(main.connects.count).toBe(0);
+      expect(lock.connects.count).toBe(1);
+      expect(lockQueries(lock.queries)).toHaveLength(1);
+      expect(lock.queries.at(-1)?.sql).toBe("COMMIT");
+    });
+  });
+});
+
+/**
+ * ── Moved from encryption-keys.test.ts ──
+ *
+ * The F-47 encryption keyset resolver, also exported from `../internal`.
+ *
+ * The keyset resolver is the entry point for key-version-aware
+ * encryption. It:
+ *   1. Parses ATLAS_ENCRYPTION_KEYS (new, multi-key) or
+ *      ATLAS_ENCRYPTION_KEY (legacy single-key) or BETTER_AUTH_SECRET
+ *      fallback into an ordered keyset.
+ *   2. Identifies the active write key (position 0).
+ *   3. Allows decrypt callers to look up a legacy key by version for
+ *      ciphertext carrying a `enc:v{N}:` prefix during the rotation
+ *      window.
+ *
+ * These tests pin the resolver's behavior so that rotation procedures
+ * and the re-encryption script (scripts/rotate-encryption-key.ts) have
+ * stable semantics to build on.
+ */
+describe("F-47 encryption keyset resolver", () => {
+  const savedKey = process.env.ATLAS_ENCRYPTION_KEY;
+  const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
+  const savedAuth = process.env.BETTER_AUTH_SECRET;
+  const savedDeployMode = process.env.ATLAS_DEPLOY_MODE;
+
+  beforeEach(() => {
+    delete process.env.ATLAS_ENCRYPTION_KEY;
+    delete process.env.ATLAS_ENCRYPTION_KEYS;
+    delete process.env.BETTER_AUTH_SECRET;
+    delete process.env.ATLAS_DEPLOY_MODE;
+    _resetEncryptionKeyCache();
+  });
+
+  afterEach(() => {
+    if (savedKey !== undefined) process.env.ATLAS_ENCRYPTION_KEY = savedKey;
+    else delete process.env.ATLAS_ENCRYPTION_KEY;
+    if (savedKeys !== undefined) process.env.ATLAS_ENCRYPTION_KEYS = savedKeys;
+    else delete process.env.ATLAS_ENCRYPTION_KEYS;
+    if (savedAuth !== undefined) process.env.BETTER_AUTH_SECRET = savedAuth;
+    else delete process.env.BETTER_AUTH_SECRET;
+    if (savedDeployMode !== undefined) process.env.ATLAS_DEPLOY_MODE = savedDeployMode;
+    else delete process.env.ATLAS_DEPLOY_MODE;
+    _resetEncryptionKeyCache();
+  });
+
+  describe("no env vars set", () => {
+    it("getEncryptionKeyset() returns null", () => {
+      expect(getEncryptionKeyset()).toBeNull();
+    });
+
+    it("getEncryptionKey() returns null", () => {
+      expect(getEncryptionKey()).toBeNull();
+    });
+  });
+
+  describe("ATLAS_ENCRYPTION_KEY (legacy single-key)", () => {
+    it("treats the value as an implicit v1 keyset", () => {
+      process.env.ATLAS_ENCRYPTION_KEY = "single-raw-key";
+      const ks = getEncryptionKeyset();
+      expect(ks).not.toBeNull();
+      expect(ks!.active.version).toBe(1);
+      expect(ks!.active.key.length).toBe(32);
+      expect(ks!.byVersion.size).toBe(1);
+      expect(ks!.byVersion.get(1)?.equals(ks!.active.key)).toBe(true);
+      expect(ks!.source).toBe("ATLAS_ENCRYPTION_KEY");
+    });
+
+    it("getEncryptionKey() back-compat returns the active buffer", () => {
+      process.env.ATLAS_ENCRYPTION_KEY = "single-raw-key";
+      const key = getEncryptionKey();
+      expect(key).not.toBeNull();
+      expect(key!.length).toBe(32);
+    });
+  });
+
+  describe("BETTER_AUTH_SECRET fallback", () => {
+    it("treats the auth secret as an implicit v1 keyset", () => {
+      process.env.BETTER_AUTH_SECRET = "auth-only-secret";
+      const ks = getEncryptionKeyset();
+      expect(ks).not.toBeNull();
+      expect(ks!.active.version).toBe(1);
+      expect(ks!.source).toBe("BETTER_AUTH_SECRET");
+    });
+
+    it("is superseded by ATLAS_ENCRYPTION_KEY when both are set", () => {
+      process.env.ATLAS_ENCRYPTION_KEY = "primary";
+      process.env.BETTER_AUTH_SECRET = "fallback";
+      const ks = getEncryptionKeyset();
+      expect(ks!.source).toBe("ATLAS_ENCRYPTION_KEY");
+    });
+
+    it("is superseded by ATLAS_ENCRYPTION_KEYS when both are set", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:primary";
+      process.env.BETTER_AUTH_SECRET = "fallback";
+      const ks = getEncryptionKeyset();
+      expect(ks!.source).toBe("ATLAS_ENCRYPTION_KEYS");
+    });
+  });
+
+  describe("ATLAS_ENCRYPTION_KEYS (multi-key with explicit versions)", () => {
+    it("parses a single v1 entry", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:rawkey";
+      const ks = getEncryptionKeyset();
+      expect(ks!.active.version).toBe(1);
+      expect(ks!.byVersion.size).toBe(1);
+      expect(ks!.source).toBe("ATLAS_ENCRYPTION_KEYS");
+    });
+
+    it("parses an ordered list of versioned keys (first = active)", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:newraw,v1:oldraw";
+      const ks = getEncryptionKeyset();
+      expect(ks!.active.version).toBe(2);
+      expect(ks!.byVersion.get(1)).not.toBeUndefined();
+      expect(ks!.byVersion.get(2)).not.toBeUndefined();
+      // Active key (v2) must differ from legacy key (v1) — different raw values.
+      expect(ks!.byVersion.get(2)!.equals(ks!.byVersion.get(1)!)).toBe(false);
+    });
+
+    it("treats bare entries (no version prefix) as positional: first = count, last = 1", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "firstraw,secondraw,thirdraw";
+      const ks = getEncryptionKeyset();
+      expect(ks!.active.version).toBe(3);
+      expect(ks!.byVersion.get(3)).not.toBeUndefined();
+      expect(ks!.byVersion.get(2)).not.toBeUndefined();
+      expect(ks!.byVersion.get(1)).not.toBeUndefined();
+    });
+
+    it("tolerates whitespace around entries", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = " v2:newraw , v1:oldraw ";
+      const ks = getEncryptionKeyset();
+      expect(ks!.active.version).toBe(2);
+    });
+
+    it("ignores empty entries (e.g. trailing comma)", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:newraw,v1:oldraw,";
+      const ks = getEncryptionKeyset();
+      expect(ks!.byVersion.size).toBe(2);
+    });
+
+    it("rejects duplicate version numbers with a loud error", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:a,v2:b";
+      expect(() => getEncryptionKeyset()).toThrow(/duplicate|already/i);
+    });
+
+    it("rejects a mix of prefixed and unprefixed entries (ambiguous versioning)", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:newraw,oldraw";
+      expect(() => getEncryptionKeyset()).toThrow(/mix|prefix|ambigu/i);
+    });
+
+    it("rejects entries with a zero or negative version", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v0:zero";
+      expect(() => getEncryptionKeyset()).toThrow(/version/i);
+    });
+
+    it("rejects entries with a non-numeric version label", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "vlatest:raw";
+      expect(() => getEncryptionKeyset()).toThrow(/version/i);
+    });
+
+    it("rejects empty raw material after the version prefix", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:,v1:oldraw";
+      expect(() => getEncryptionKeyset()).toThrow(/empty|missing|raw/i);
+    });
+
+    it("derives each key via SHA-256 so raw length is unconstrained", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:abc,v1:a-much-longer-raw-value-for-the-old-key";
+      const ks = getEncryptionKeyset();
+      expect(ks!.byVersion.get(1)!.length).toBe(32);
+      expect(ks!.byVersion.get(2)!.length).toBe(32);
+    });
+  });
+
+  describe("caching", () => {
+    it("returns the same keyset on repeated reads with identical env", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v2:new,v1:old";
+      const a = getEncryptionKeyset();
+      const b = getEncryptionKeyset();
+      expect(a).toBe(b);
+    });
+
+    it("repopulates the cache when _resetEncryptionKeyCache() is called", () => {
+      process.env.ATLAS_ENCRYPTION_KEY = "first";
+      const first = getEncryptionKeyset();
+
+      process.env.ATLAS_ENCRYPTION_KEY = "second";
+      _resetEncryptionKeyCache();
+      const second = getEncryptionKeyset();
+
+      expect(second).not.toBe(first);
+      expect(second!.active.key.equals(first!.active.key)).toBe(false);
+    });
+
+    it("invalidates when the env var changes under the same source", () => {
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:first";
+      const first = getEncryptionKeyset();
+      process.env.ATLAS_ENCRYPTION_KEYS = "v1:second";
+      const second = getEncryptionKeyset();
+      expect(second).not.toBe(first);
     });
   });
 });

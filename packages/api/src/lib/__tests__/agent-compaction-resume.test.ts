@@ -18,7 +18,7 @@
  * are the executable proof of the architecture decision, not a second code path.
  *
  * Mocks mirror agent-compaction-integration.test.ts (provider / semantic /
- * connection / just-bash / cache) plus agent-resume.test.ts's internal-DB spy,
+ * connection / just-bash / cache) plus agent-durable-session.test.ts's internal-DB spy,
  * since resume drives the durable checkpoint writes too.
  */
 
@@ -189,7 +189,7 @@ void mock.module("@atlas/api/lib/cache/index", () => ({
 
 // Internal-DB spy — resume drives durable checkpoint writes. `hasInternalDB`
 // toggles the no-DB case (AC4); `internalExecute` is a sink we never assert on
-// here (agent-resume.test.ts owns the durable-write assertions).
+// here (agent-durable-session.test.ts owns the durable-write assertions).
 let hasInternalDB = true;
 void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,

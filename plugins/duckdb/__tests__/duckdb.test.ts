@@ -50,7 +50,6 @@ import { definePlugin, isDatasourcePlugin } from "@useatlas/plugin-sdk";
 import {
   duckdbPlugin,
   buildDuckDBPlugin,
-  parseDuckDBUrl,
   DUCKDB_FORBIDDEN_PATTERNS,
 } from "../src/index";
 import { createDuckDBConnection } from "../src/connection";
@@ -87,40 +86,6 @@ beforeEach(() => {
       closeSync: mockCloseSync,
     }),
   );
-});
-
-// ---------------------------------------------------------------------------
-// URL parsing
-// ---------------------------------------------------------------------------
-
-describe("parseDuckDBUrl", () => {
-  test("parses duckdb:// as in-memory", () => {
-    expect(parseDuckDBUrl("duckdb://")).toEqual({ path: ":memory:", readOnly: false });
-  });
-
-  test("parses duckdb://:memory: as in-memory", () => {
-    expect(parseDuckDBUrl("duckdb://:memory:")).toEqual({ path: ":memory:", readOnly: false });
-  });
-
-  test("parses duckdb:///absolute/path.duckdb", () => {
-    expect(parseDuckDBUrl("duckdb:///tmp/data.duckdb")).toEqual({
-      path: "/tmp/data.duckdb",
-      readOnly: true,
-    });
-  });
-
-  test("parses duckdb://relative/path.duckdb", () => {
-    expect(parseDuckDBUrl("duckdb://data/analytics.duckdb")).toEqual({
-      path: "data/analytics.duckdb",
-      readOnly: true,
-    });
-  });
-
-  test("rejects non-duckdb URL", () => {
-    expect(() => parseDuckDBUrl("postgresql://localhost:5432/db")).toThrow(
-      /expected duckdb:\/\/ scheme/,
-    );
-  });
 });
 
 // ---------------------------------------------------------------------------

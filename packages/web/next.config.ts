@@ -258,7 +258,7 @@ const nextConfig: NextConfig = {
         // Order is load-bearing only against the early return below: an
         // unconditional entry placed after the `if (!securityTxtUrl)` return
         // silently vanishes on every self-hosted deploy. That is the shape
-        // `legacy-admin-redirects.test.ts` pins with the var deleted.
+        // `src/lib/__tests__/security-txt-redirect.test.ts` pins with the var deleted.
         source: "/admin/brain-facts",
         destination: "/admin/brain/facts",
         permanent: true,

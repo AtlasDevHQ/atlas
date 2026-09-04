@@ -323,44 +323,12 @@ describe("explore backend selection", () => {
     // resolution happens.
   });
 
-  describe("invalidateExploreBackend", () => {
-    it("clears cached backend so next call recreates it", async () => {
-      const mod = await freshExploreModule();
-      // Just verify the function exists and is callable
-      expect(typeof mod.invalidateExploreBackend).toBe("function");
-      mod.invalidateExploreBackend(); // Should not throw
-    });
-  });
-
-  describe("sandbox.priority failure message", () => {
-    it("includes backend reasons and self-hosted just-bash guidance", async () => {
-      const mod = await freshExploreModule();
-      const message = mod._formatSandboxPriorityFailureForTest(
-        ["vercel-sandbox", "sidecar"],
-        [
-          { name: "vercel-sandbox", reason: "401 invalid token" },
-          { name: "sidecar", reason: "connection refused" },
-        ],
-        "self-hosted",
-      );
-
-      expect(message).toContain("vercel-sandbox: 401 invalid token");
-      expect(message).toContain("sidecar: connection refused");
-      expect(message).toContain("VERCEL_TEAM_ID");
-      expect(message).toContain("ATLAS_SANDBOX_URL");
-      expect(message).toContain("Add 'just-bash'");
-    });
-
-    it("suppresses just-bash guidance in SaaS mode", async () => {
-      const mod = await freshExploreModule();
-      const message = mod._formatSandboxPriorityFailureForTest(
-        ["vercel-sandbox", "sidecar"],
-        [{ name: "vercel-sandbox", reason: "401 invalid token" }],
-        "saas",
-      );
-
-      expect(message).toContain("vercel-sandbox: 401 invalid token");
-      expect(message).not.toContain("Add 'just-bash'");
-    });
-  });
+  // Removed here as exact duplicates of the canonical suite:
+  //   - "invalidateExploreBackend / clears cached backend" → the real behaviour is
+  //     asserted in explore-plugin.test.ts ("invalidateExploreBackend() clears
+  //     _activeSandboxPluginId"); this one only checked the export was callable.
+  //   - the two "sandbox.priority failure message" cases → explore.ts exports
+  //     `_formatSandboxPriorityFailureForTest = formatSandboxPriorityFailure`, so
+  //     they ran the same function as backends/__tests__/selection.test.ts
+  //     ("formatSandboxPriorityFailure" describe), byte-identical inputs.
 });

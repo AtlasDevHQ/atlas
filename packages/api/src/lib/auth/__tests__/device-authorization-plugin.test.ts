@@ -1,3 +1,13 @@
+/**
+ * Covers the two halves of the CLI device-authorization surface:
+ * the better-auth `deviceAuthorization` plugin contract (#4043 / ADR-0026) and
+ * the `resolveDeviceVerificationUri` helper the plugin's `verificationUri` is
+ * built from (#4167). The helper's own unit cases were formerly in
+ * `device-verification-uri.test.ts`; they moved here because the wiring
+ * describe below already composed the same helper and neither file mocks
+ * anything, so there was no isolation to preserve.
+ */
+
 import { describe, it, expect } from "bun:test";
 import { deviceAuthorization } from "better-auth/plugins";
 import { DEVICE_TOKEN_ENDPOINT_PATH } from "../server";
@@ -103,5 +113,55 @@ describe("device verificationUri wiring (#4167)", () => {
     withEnv({ ATLAS_CORS_ORIGIN: undefined, BETTER_AUTH_TRUSTED_ORIGINS: undefined, ATLAS_API_REGION: undefined }, () => {
       expect(resolveDeviceVerificationUri(getWebOrigin())).toBe("/device");
     });
+  });
+});
+
+/**
+ * #4167 — the RFC 8628 `verification_uri` the CLI prints must resolve to the
+ * WEB app's /device page (where the approval UI lives), never the API origin.
+ * Better Auth resolves a *relative* verificationUri against its own base URL
+ * (the API host), so a bare "/device" 404s. These pin the absolute-URL rule so
+ * a regression back to a relative path is RED, not a live dead-end.
+ *
+ * The wiring describe above composes `getWebOrigin()` into this helper; these
+ * drive the helper directly, origin argument by origin argument.
+ */
+describe("resolveDeviceVerificationUri (#4167)", () => {
+  it("builds an absolute web-origin /device URL when a web origin is known", () => {
+    expect(resolveDeviceVerificationUri("https://app.staging.useatlas.dev")).toBe(
+      "https://app.staging.useatlas.dev/device",
+    );
+  });
+
+  it("points at the WEB origin, not the API origin", () => {
+    // The whole bug: the printed URL landed on api.* (404). Given the web
+    // origin, the result must be on app.* — never on an api.* host.
+    const uri = resolveDeviceVerificationUri("https://app.useatlas.dev");
+    expect(uri.startsWith("https://app.useatlas.dev/")).toBe(true);
+    expect(uri).not.toContain("api.");
+  });
+
+  it("is an absolute URL (has a scheme + host), so Better Auth won't re-resolve it against the API base", () => {
+    const uri = resolveDeviceVerificationUri("https://app.useatlas.dev");
+    // Absolute parse must succeed on its own (no base argument) — that's
+    // exactly what buildVerificationUris checks before falling back to the
+    // API base URL.
+    expect(() => new URL(uri)).not.toThrow();
+    expect(new URL(uri).pathname).toBe("/device");
+  });
+
+  it("falls back to the relative /device when no web origin is configured (single-origin embedded deploy)", () => {
+    expect(resolveDeviceVerificationUri(null)).toBe("/device");
+  });
+
+  it("owns its no-trailing-slash precondition — never emits //device", () => {
+    // getWebOrigin() strips trailing slashes today, but the module enforces it
+    // itself so a future caller can't reintroduce a double slash.
+    expect(resolveDeviceVerificationUri("https://app.useatlas.dev/")).toBe(
+      "https://app.useatlas.dev/device",
+    );
+    expect(resolveDeviceVerificationUri("https://app.useatlas.dev///")).toBe(
+      "https://app.useatlas.dev/device",
+    );
   });
 });

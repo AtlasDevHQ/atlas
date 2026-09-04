@@ -260,7 +260,11 @@ describe("registerBuiltinInstallHandlers — Telegram env gate", () => {
     ).toThrow(/No static-bot install handler registered/);
   });
 
-  it("does not throw when the catalog has no telegram row at all (operator hasn't opted in)", () => {
+  // The single pin for the "catalog carries no row for an env-gated platform"
+  // branch. The env reset in `beforeEach` clears every platform's vars, so this
+  // case ran identically under the Discord / Teams / WhatsApp / Google Chat
+  // describes too; those four copies were dropped as exact duplicates.
+  it("does not throw when the catalog has no row for an env-gated platform (operator hasn't opted in)", () => {
     mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
     expect(() => registerBuiltinInstallHandlers()).not.toThrow();
   });
@@ -316,11 +320,6 @@ describe("registerBuiltinInstallHandlers — Discord env gate (#2749)", () => {
       getInstallHandler({ slug: "discord", install_model: "static-bot" }),
     ).toThrow(/No static-bot install handler registered/);
   });
-
-  it("does not throw when the catalog has no discord row at all (operator hasn't opted in)", () => {
-    mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
-    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
-  });
 });
 
 describe("registerBuiltinInstallHandlers — Teams env gate (#2752)", () => {
@@ -373,11 +372,6 @@ describe("registerBuiltinInstallHandlers — Teams env gate (#2752)", () => {
       getInstallHandler({ slug: "teams", install_model: "static-bot" }),
     ).toThrow(/No static-bot install handler registered/);
   });
-
-  it("does not throw when the catalog has no teams row at all (operator hasn't opted in)", () => {
-    mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
-    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
-  });
 });
 
 describe("registerBuiltinInstallHandlers — WhatsApp env gate (#2753)", () => {
@@ -429,11 +423,6 @@ describe("registerBuiltinInstallHandlers — WhatsApp env gate (#2753)", () => {
     expect(() =>
       getInstallHandler({ slug: "whatsapp", install_model: "static-bot" }),
     ).toThrow(/No static-bot install handler registered/);
-  });
-
-  it("does not throw when the catalog has no whatsapp row at all (operator hasn't opted in)", () => {
-    mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
-    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
   });
 });
 
@@ -506,11 +495,6 @@ describe("registerBuiltinInstallHandlers — Google Chat env gate (#2754)", () =
     expect(() =>
       getInstallHandler({ slug: "gchat", install_model: "static-bot" }),
     ).toThrow(/No static-bot install handler registered/);
-  });
-
-  it("does not throw when the catalog has no gchat row at all (operator hasn't opted in)", () => {
-    mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
-    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
   });
 });
 

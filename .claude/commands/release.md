@@ -174,6 +174,20 @@ Then **assert the deployed commit per service** via the Railway MCP `list_deploy
 
 Don't block on the rollout (~5 min). If watching to completion, re-poll `list_deployments` until each service flips `WAITING`/`BUILDING` → `SUCCESS` at the tagged commit. Tell the user where the GitHub Release lives.
 
+**Step 9b: Assert no parked region was restarted by this release**
+
+```bash
+bash scripts/check-parked-regions.sh
+```
+
+A `prod` push deploys **every** service watching that branch — including any region the config has parked. Measured on 2026-09-04: the v0.2.30 push deployed `api-eu` and `api-apac` alongside `api` and `web`, and both had been running for the three days since #5582 parked them, because the park shipped its config half and never stopped the services. Every surface reported them as parked the whole time; the only thing that could have seen it is a comparison between what the config claims and what Railway is running, which is what this gate does.
+
+Exit codes: `0` every parked region is stopped and cannot restart itself · `1` one is running or has autodeploy enabled — **fix before you call the release done**, see [parked-regions.md](../../docs/development/parked-regions.md) · `3` DECLINED, no Railway credentials, so nothing was verified.
+
+⚠️ **`3` is not a pass.** If you get it, the gate looked at nothing — run it from a shell where `railway whoami` works.
+
+Skip this step only when the config marks no region parked; the gate says so itself and exits `0`.
+
 **Step 10: Output summary**
 
 ```

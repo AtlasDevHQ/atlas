@@ -239,6 +239,15 @@ jobs:
       - name: Adversarial fixtures for the railway-watch gate (#4738)
         run: bash scripts/__tests__/check-railway-watch.test.sh
 
+      # The gate itself reads live Railway and so cannot run here — CI has no
+      # Railway credentials, and it exits 3 (DECLINED) rather than 0 when it
+      # cannot look. This suite drives it through its config/probe seams, so
+      # every branch including both failing directions is covered with no
+      # network. The gate runs from the release runbook, where the credentials
+      # exist and where the drift it catches is created.
+      - name: Adversarial fixtures for the parked-regions gate
+        run: bash scripts/__tests__/check-parked-regions.test.sh
+
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
 

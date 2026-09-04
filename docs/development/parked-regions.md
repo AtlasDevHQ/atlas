@@ -223,6 +223,43 @@ This is the exact inverse of the un-park step already documented above
 (`railway redeploy --service api-<region>`), which is the clue that `down` was
 always the intended mechanism; the parking side just never named it.
 
+### ⚠️ `railway down` alone does not hold — the next release undoes it
+
+Both parked services have `source.branch = prod` and **autodeploy enabled by
+default**, so the next `/release` rebuilds and restarts them. This is not
+theoretical: the v0.2.30 prod push on 2026-09-04 deployed `api-eu` and
+`api-apac` alongside `api` and `web` (`meta.branch: prod`, `reason: deploy`).
+Releases here run roughly daily, so a `down`-only park would silently undo
+itself within a day and look correct the whole time.
+
+Disable autodeploy per service, production environment only:
+
+```bash
+railway api 'mutation($i:ServiceInstanceAutoDeployUpdateInput!){serviceInstanceAutoDeployUpdate(input:$i){enabled}}' \
+  --var i='{"enabled":false,"projectId":"<project>","environmentId":"<env>","serviceId":"<service>"}'
+```
+
+Check it with the matching query, which is the read half and takes the same ids:
+
+```bash
+railway api 'query($p:String!,$e:String!,$s:String!){serviceInstanceAutoDeployStatus(projectId:$p,environmentId:$e,serviceId:$s){enabled canEnable}}' \
+  --var p=<project> --var e=<env> --var s=<service>
+```
+
+**Leave `api` (us) and `web` on autodeploy** — they are the serving stack and
+`/release` depends on it.
+
+### Parking is three writes, and each was found only by the previous one failing
+
+| # | Write | Without it |
+|---|---|---|
+| 1 | Config → `selectable: false` (+ `requestable: true`) | The picker still offers a region that is about to die |
+| 2 | `railway down --service api-<region> --yes` | The container keeps running and billing; every surface still says "parked" |
+| 3 | `serviceInstanceAutoDeployUpdate(enabled: false)` | The next release restarts it and the park silently reverts |
+
+Un-parking reverses all three: autodeploy back to `true`, `railway redeploy`,
+then the config and copy steps in the checklist above.
+
 Whatever mechanism is used, **verify against `multiRegionConfig` and the deployed
 commit, never against `/api/health`** — a service keeps answering from its old
 container while a redeploy runs, and answers from the wrong region without

@@ -670,16 +670,14 @@ describe("isSSOEnforcedForDomain", () => {
 
 // -- Domain Verification Tests --
 
-describe("generateVerificationToken", () => {
+// The token generator itself lives in `lib/domain-verification.ts` and is
+// covered there (`domain-verification.test.ts`); this keeps only the
+// re-export identity check, since `sso.ts` re-exports it for route callers.
+// The duplicated uniqueness case was dropped in favour of that file's copy.
+describe("generateVerificationToken (re-export)", () => {
   it("returns token in atlas-verify=<uuid> format", () => {
     const token = generateVerificationToken();
     expect(token).toMatch(/^atlas-verify=[0-9a-f-]{36}$/);
-  });
-
-  it("generates unique tokens on each call", () => {
-    const a = generateVerificationToken();
-    const b = generateVerificationToken();
-    expect(a).not.toBe(b);
   });
 });
 

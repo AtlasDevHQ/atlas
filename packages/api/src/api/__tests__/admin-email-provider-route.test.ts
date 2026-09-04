@@ -402,6 +402,10 @@ void mock.module("@atlas/api/lib/scheduler/preview", () => ({
 // --- Import the app AFTER mocks ---
 
 const { admin } = await import("../routes/admin");
+// The real masking helper — a regression in the function (short-key
+// fallthrough, leaked secrets) fails this file instead of silently passing
+// against a stale duplicate.
+const { maskSecret } = await import("../routes/admin-email-provider");
 const { Hono } = await import("hono");
 
 const app = new Hono();
@@ -1215,5 +1219,28 @@ describe("admin email-provider route", () => {
       });
       expect(entry.metadata!.error).toContain("saved config fetch failed");
     });
+  });
+});
+
+// ─── maskSecret — the route's secret-masking helper (unit) ───────────
+
+describe("maskSecret", () => {
+  it("fully masks short secrets (≤8 chars)", () => {
+    expect(maskSecret("abc")).toBe("••••••••");
+    expect(maskSecret("12345678")).toBe("••••••••");
+  });
+
+  it("shows first 4 and last 4 chars for longer secrets", () => {
+    expect(maskSecret("re_abc123xyz")).toBe("re_a••••3xyz");
+    expect(maskSecret("re_very_long_api_key_here")).toBe("re_v••••here");
+  });
+
+  it("never exposes the full secret", () => {
+    const secret = "re_super_secret_api_key_12345";
+    const masked = maskSecret(secret);
+    expect(masked).not.toBe(secret);
+    expect(masked).toContain("••••");
+    // Only first 4 + last 4 = 8 chars of the original are visible
+    expect(masked.replace(/•/g, "").length).toBe(8);
   });
 });

@@ -991,7 +991,7 @@ describe("POST /api/v1/chat", () => {
   // style once its state holds one — picked or restored). The prompt-assembly
   // half — runAgent
   // with `executive` building the executive addendum — is pinned by the
-  // mock-LLM test in lib/__tests__/agent-answer-style-prompt-shape.test.ts.
+  // mock-LLM test in lib/__tests__/agent-answer-style-workspace-default.test.ts.
   it("inherits the stored answer style on a follow-up turn that omits it (#4302)", async () => {
     const convId = "c3d4e5f6-a7b8-4920-9c1d-3e4f50617283";
     mockGetConversationChat.mockResolvedValueOnce({

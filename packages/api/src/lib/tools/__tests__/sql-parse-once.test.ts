@@ -213,3 +213,195 @@ describe("parse-once seam (#4349)", () => {
     expect(new Set(result.columnsAccessed)).toEqual(new Set(["id", "name"]));
   });
 });
+
+// ---------------------------------------------------------------------------
+// extractClassification — table/column derivation across query shapes.
+//
+// Formerly sql-classification.test.ts, which asserted against a hand-copied
+// MIRROR of the extraction logic rather than the export. Moved here so the
+// same cases run against the REAL `extractClassification` this file already
+// imports. Three cases were dropped as exact duplicates of the two standalone
+// extractClassification tests above (same SQL, same expectations).
+// ---------------------------------------------------------------------------
+describe("extractClassification", () => {
+  const PG = "PostgresQL";
+  const noCTEs = new Set<string>();
+
+  describe("table extraction", () => {
+
+    it("extracts multiple tables from JOIN", () => {
+      const result = extractClassification(
+        "SELECT c.name, p.email FROM companies c JOIN people p ON c.id = p.company_id",
+        PG,
+        noCTEs,
+      );
+      expect(result.tablesAccessed).toContain("companies");
+      expect(result.tablesAccessed).toContain("people");
+      expect(result.tablesAccessed).toHaveLength(2);
+    });
+
+    it("extracts tables from subqueries", () => {
+      const result = extractClassification(
+        "SELECT * FROM companies WHERE id IN (SELECT company_id FROM people)",
+        PG,
+        noCTEs,
+      );
+      expect(result.tablesAccessed).toContain("companies");
+      expect(result.tablesAccessed).toContain("people");
+    });
+
+    it("excludes CTE names from tables", () => {
+      const cteNames = new Set(["top_companies"]);
+      const result = extractClassification(
+        "WITH top_companies AS (SELECT id FROM companies LIMIT 10) SELECT * FROM top_companies",
+        PG,
+        cteNames,
+      );
+      expect(result.tablesAccessed).toContain("companies");
+      expect(result.tablesAccessed).not.toContain("top_companies");
+    });
+
+    it("handles nested CTEs", () => {
+      const cteNames = new Set(["a", "b"]);
+      const result = extractClassification(
+        "WITH a AS (SELECT id FROM companies), b AS (SELECT id FROM a) SELECT * FROM b",
+        PG,
+        cteNames,
+      );
+      expect(result.tablesAccessed).toEqual(["companies"]);
+    });
+
+    it("deduplicates tables referenced multiple times", () => {
+      const result = extractClassification(
+        "SELECT * FROM companies c1 JOIN companies c2 ON c1.id = c2.parent_id",
+        PG,
+        noCTEs,
+      );
+      expect(result.tablesAccessed).toEqual(["companies"]);
+    });
+
+    it("lowercases table names", () => {
+      const result = extractClassification(
+        "SELECT * FROM Companies",
+        PG,
+        noCTEs,
+      );
+      expect(result.tablesAccessed).toEqual(["companies"]);
+    });
+  });
+
+  describe("column extraction", () => {
+
+    it("stores SELECT * as ['*']", () => {
+      const result = extractClassification(
+        "SELECT * FROM companies",
+        PG,
+        noCTEs,
+      );
+      expect(result.columnsAccessed).toContain("*");
+    });
+
+    it("extracts columns from WHERE clause", () => {
+      const result = extractClassification(
+        "SELECT id FROM companies WHERE name = 'Acme'",
+        PG,
+        noCTEs,
+      );
+      expect(result.columnsAccessed).toContain("id");
+      expect(result.columnsAccessed).toContain("name");
+    });
+
+    it("extracts columns from GROUP BY", () => {
+      const result = extractClassification(
+        "SELECT status, COUNT(*) FROM companies GROUP BY status",
+        PG,
+        noCTEs,
+      );
+      expect(result.columnsAccessed).toContain("status");
+    });
+
+    it("extracts columns from ORDER BY", () => {
+      const result = extractClassification(
+        "SELECT id FROM companies ORDER BY name",
+        PG,
+        noCTEs,
+      );
+      expect(result.columnsAccessed).toContain("name");
+    });
+
+    it("extracts columns from JOIN conditions", () => {
+      const result = extractClassification(
+        "SELECT c.name FROM companies c JOIN people p ON c.id = p.company_id",
+        PG,
+        noCTEs,
+      );
+      expect(result.columnsAccessed).toContain("id");
+      expect(result.columnsAccessed).toContain("company_id");
+      expect(result.columnsAccessed).toContain("name");
+    });
+
+    it("deduplicates columns", () => {
+      const result = extractClassification(
+        "SELECT name FROM companies WHERE name LIKE '%Acme%' ORDER BY name",
+        PG,
+        noCTEs,
+      );
+      const nameCount = result.columnsAccessed.filter((c) => c === "name").length;
+      expect(nameCount).toBe(1);
+    });
+
+    it("lowercases column names", () => {
+      const result = extractClassification(
+        "SELECT Name, ID FROM companies",
+        PG,
+        noCTEs,
+      );
+      expect(result.columnsAccessed).toContain("name");
+      expect(result.columnsAccessed).toContain("id");
+    });
+  });
+
+  describe("combined scenarios", () => {
+    it("handles complex query with JOINs, WHERE, GROUP BY, ORDER BY", () => {
+      const result = extractClassification(
+        `SELECT c.name, COUNT(p.id) as headcount
+         FROM companies c
+         JOIN people p ON c.id = p.company_id
+         WHERE c.status = 'active'
+         GROUP BY c.name
+         ORDER BY headcount DESC`,
+        PG,
+        noCTEs,
+      );
+      expect(result.tablesAccessed).toContain("companies");
+      expect(result.tablesAccessed).toContain("people");
+      expect(result.columnsAccessed).toContain("name");
+      expect(result.columnsAccessed).toContain("id");
+      expect(result.columnsAccessed).toContain("company_id");
+      expect(result.columnsAccessed).toContain("status");
+    });
+
+    it("handles UNION queries", () => {
+      const result = extractClassification(
+        "SELECT name FROM companies UNION ALL SELECT name FROM people",
+        PG,
+        noCTEs,
+      );
+      expect(result.tablesAccessed).toContain("companies");
+      expect(result.tablesAccessed).toContain("people");
+    });
+  });
+
+  describe("MySQL dialect", () => {
+    it("extracts tables in MySQL mode", () => {
+      const result = extractClassification(
+        "SELECT id, name FROM companies",
+        "MySQL",
+        noCTEs,
+      );
+      expect(result.tablesAccessed).toEqual(["companies"]);
+      expect(result.columnsAccessed).toContain("id");
+      expect(result.columnsAccessed).toContain("name");
+    });
+  });
+});

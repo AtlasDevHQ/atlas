@@ -3,6 +3,10 @@
  *
  * Verifies that the service can be created, provided via Layer, and
  * accessed in Effect programs. Uses createTestLayer for DI.
+ *
+ * Also carries the `createTestLayer` drop-in-for-`mock.module` cases,
+ * formerly `service-bridge.test.ts` — same Tag, same factory, same file-level
+ * setup, so they were two files asserting one thing.
  */
 import { describe, it, expect } from "bun:test";
 import { Effect } from "effect";
@@ -157,5 +161,86 @@ describe("ConnectionRegistry Effect Service", () => {
       _reset: () => {},
     };
     expect(shape).toBeDefined();
+  });
+
+  it("overrides work with all service methods", async () => {
+    const drainResult = { drained: true, message: "Pool drained and recreated" };
+    const TestLayer = createTestLayer({
+      drain: async () => drainResult,
+      getPoolMetrics: () => ({
+        connectionId: "default",
+        dbType: "postgres",
+        pool: { totalSize: 10, activeCount: 3, idleCount: 7, waitingCount: 0 },
+        totalQueries: 100,
+        totalErrors: 2,
+        avgQueryTimeMs: 50,
+        consecutiveFailures: 0,
+        lastDrainAt: null,
+      }),
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ConnectionRegistry;
+        const drain = yield* Effect.promise(() => registry.drain("default"));
+        const metrics = registry.getPoolMetrics("default");
+        return { drain, metrics };
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
+    expect(result.drain).toEqual(drainResult);
+    expect(result.metrics.totalQueries).toBe(100);
+    expect(result.metrics.pool?.activeCount).toBe(3);
+  });
+
+  it("org-scoped operations work through layer", async () => {
+    const TestLayer = createTestLayer({
+      getForOrg: () => mockConn,
+      isOrgPoolingEnabled: () => true,
+      listOrgs: () => ["org-1", "org-2"],
+      hasOrgPool: (orgId: string) => orgId === "org-1",
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ConnectionRegistry;
+        registry.getForOrg("org-1", "default");
+        const orgs = registry.listOrgs();
+        const hasPool = registry.hasOrgPool("org-1");
+        return { orgs, hasPool };
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
+    expect(result.orgs).toEqual(["org-1", "org-2"]);
+    expect(result.hasPool).toBe(true);
+  });
+
+  it("one layer instance serves multiple independent programs", async () => {
+    // Two programs run concurrently against the SAME layer value: a factory
+    // that captured per-run state would surface here and nowhere else.
+    const connLayer = createTestLayer({
+      get: () => mockConn,
+      getDefault: () => mockConn,
+      list: () => ["default"],
+    });
+
+    const [ids, queryResult] = await Promise.all([
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const registry = yield* ConnectionRegistry;
+          return registry.list();
+        }).pipe(Effect.provide(connLayer)),
+      ),
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const registry = yield* ConnectionRegistry;
+          const conn = registry.getDefault();
+          return conn.query("SELECT 1");
+        }).pipe(Effect.provide(connLayer)),
+      ),
+    ]);
+
+    expect(ids).toEqual(["default"]);
+    expect(queryResult.rows).toEqual([{ id: 1 }]);
   });
 });

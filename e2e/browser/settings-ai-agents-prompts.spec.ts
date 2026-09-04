@@ -6,7 +6,8 @@ import { test, expect, type Page, type Route } from "@playwright/test";
  * Mocks `/api/v1/me/mcp-prompts` so the spec runs without a real
  * semantic-layer scan or canonical-prompts YAML present in the test
  * env. The endpoint is the seam we trust — its tests live in
- * `packages/api/src/api/__tests__/me-mcp-prompts.test.ts`. This file
+ * `packages/api/src/api/__tests__/me-mcp-usage.test.ts` (formerly
+ * `me-mcp-prompts.test.ts`). This file
  * pins the page-level UX:
  *
  *   - Source-grouped preview renders with counts

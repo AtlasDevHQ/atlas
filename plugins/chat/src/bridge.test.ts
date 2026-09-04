@@ -930,22 +930,10 @@ describe("chatPlugin state config validation", () => {
     expect(plugin.id).toBe("chat-interaction");
   });
 
-  it("accepts config without state (defaults to memory)", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      catalog: SLACK_CATALOG,
-      executeQuery: async () => ({
-        answer: "test",
-        sql: [],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 10 },
-      }),
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
+  // The state-absent case is the byte-identical construction already asserted
+  // by `chatPlugin config validation` > "accepts catalog declaring Slack OAuth
+  // (creds live in env, not in config)" — a config with no `state` key builds
+  // the plugin and defaults to memory there.
 
   it("accepts PG state config with custom prefix", async () => {
     const { chatPlugin } = await import("./index");

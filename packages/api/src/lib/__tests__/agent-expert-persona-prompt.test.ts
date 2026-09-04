@@ -9,7 +9,7 @@
  * prefix — and, crucially, the persona is never smuggled under `## Warnings`.
  * A turn with no persona still gets the analyst prefix, so every other surface
  * is unchanged. Asserted against the prompt the mock LLM actually receives,
- * mirroring agent-answer-style-prompt-shape.test.ts.
+ * mirroring agent-answer-style-workspace-default.test.ts.
  */
 
 import { describe, expect, it, mock } from "bun:test";

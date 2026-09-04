@@ -1,20 +1,34 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test";
+/**
+ * `executeRestOperation` tool suite.
+ *
+ * Absorbed rest-operation-audit.test.ts (the "query-audit coverage" describe at
+ * the bottom), which stood alone only because it needs `logQueryAudit` mocked.
+ * The mock now applies file-wide and the two files shared the whole harness —
+ * same spec fixture, same Twenty mock server, same `datasource()` / `call()`.
+ * The SUT and its friends are imported dynamically BELOW the mock so the tool's
+ * audit call resolves to the spy.
+ */
+import { describe, it, expect, beforeAll, afterAll, beforeEach, mock, type Mock } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 
-import { buildOperationGraph } from "@atlas/api/lib/openapi/spec";
 import type { RestDatasource } from "@atlas/api/lib/openapi/datasource";
-import {
-  createExecuteRestOperationTool,
-  type ExecuteRestOperationResult,
-} from "../rest-operation";
-import { _resetRestRateLimits } from "@atlas/api/lib/openapi/validate-rest-operation";
-import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
-import {
-  startTwentyMockServer,
-  type TwentyMock,
-} from "@atlas/api/lib/openapi/__tests__/twenty-acceptance/mock-server";
-import { createOpenApiDatasourceMock } from "@atlas/api/testing/openapi-datasource";
+import type { ExecuteRestOperationResult } from "../rest-operation";
+import type { AuditEntry } from "@atlas/api/lib/auth/audit";
+import type { TwentyMock } from "@atlas/api/lib/openapi/__tests__/twenty-acceptance/mock-server";
+
+const mockLogQueryAudit: Mock<(entry: AuditEntry) => void> = mock(() => {});
+void mock.module("@atlas/api/lib/auth/audit", () => ({ logQueryAudit: mockLogQueryAudit }));
+
+// Import after the mock so the tool's audit call resolves to the spy.
+const { buildOperationGraph } = await import("@atlas/api/lib/openapi/spec");
+const { createExecuteRestOperationTool } = await import("../rest-operation");
+const { _resetRestRateLimits } = await import("@atlas/api/lib/openapi/validate-rest-operation");
+const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
+const { startTwentyMockServer } = await import(
+  "@atlas/api/lib/openapi/__tests__/twenty-acceptance/mock-server"
+);
+const { createOpenApiDatasourceMock } = await import("@atlas/api/testing/openapi-datasource");
 
 const SPEC = JSON.parse(
   fs.readFileSync(
@@ -24,7 +38,7 @@ const SPEC = JSON.parse(
 );
 const graph = buildOperationGraph(SPEC);
 
-let mock: TwentyMock;
+let twentyMock: TwentyMock;
 
 // The mock REST server binds to 127.0.0.1 (loopback), which the #3006 SSRF guard
 // blocks by default. A local test server is the "internal service" case the
@@ -37,17 +51,18 @@ const ORIGINAL_AUTH_SECRET = process.env.BETTER_AUTH_SECRET;
 beforeAll(async () => {
   process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
   process.env.BETTER_AUTH_SECRET = "test-confirm-token-signing-secret-not-a-real-key";
-  mock = await startTwentyMockServer();
+  twentyMock = await startTwentyMockServer();
 });
 afterAll(async () => {
   if (ORIGINAL_EGRESS_FLAG === undefined) delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
   else process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = ORIGINAL_EGRESS_FLAG;
   if (ORIGINAL_AUTH_SECRET === undefined) delete process.env.BETTER_AUTH_SECRET;
   else process.env.BETTER_AUTH_SECRET = ORIGINAL_AUTH_SECRET;
-  await mock.close();
+  await twentyMock.close();
 });
 beforeEach(() => {
-  mock.reset();
+  twentyMock.reset();
+  mockLogQueryAudit.mockClear();
   // The tool now runs validateRestOperation (which debits a per-operation rate
   // bucket) on every read — reset it so a generous default never bleeds across tests.
   _resetRestRateLimits();
@@ -58,7 +73,7 @@ function datasource(overrides: Partial<RestDatasource> = {}): RestDatasource {
     id: "twenty",
     displayName: "Twenty",
     graph,
-    baseUrl: mock.restBaseUrl,
+    baseUrl: twentyMock.restBaseUrl,
     auth: { kind: "bearer", token: "test-token" },
     representationMode: "operation-graph",
     writeAllowlist: new Set<string>(),
@@ -90,7 +105,7 @@ describe("executeRestOperation tool", () => {
     expect(result.httpStatus).toBe(200);
     expect((result.body as { data: { people: unknown[] } }).data.people.length).toBe(2);
     // Bearer auth reached the upstream.
-    const req = mock.matching("/rest/people").at(-1);
+    const req = twentyMock.matching("/rest/people").at(-1);
     expect(req?.headers["authorization"]).toBe("Bearer test-token");
   });
 
@@ -105,7 +120,7 @@ describe("executeRestOperation tool", () => {
     expect(people).toHaveLength(1);
     expect(people[0].emails.primaryEmail).toBe("matt@example.com");
     // The captured upstream query carries the decoded field[op]:value form.
-    const req = mock.matching("/rest/people").at(-1);
+    const req = twentyMock.matching("/rest/people").at(-1);
     expect(req?.query.filter).toBe("emails.primaryEmail[eq]:matt@example.com");
     expect(req?.query.filter).not.toContain("filter[");
   });
@@ -143,17 +158,17 @@ describe("executeRestOperation tool", () => {
     });
     const result = await call(
       { operationId: "listWithHeader", header: { "X-Schema-Version": "2024-01" } },
-      async () => ({ id: "twenty", displayName: "Twenty", graph: headerGraph, baseUrl: mock.restBaseUrl, auth: { kind: "bearer", token: "test-token" }, representationMode: "operation-graph", writeAllowlist: new Set<string>(), sideEffectingOperations: new Set<string>() }),
+      async () => ({ id: "twenty", displayName: "Twenty", graph: headerGraph, baseUrl: twentyMock.restBaseUrl, auth: { kind: "bearer", token: "test-token" }, representationMode: "operation-graph", writeAllowlist: new Set<string>(), sideEffectingOperations: new Set<string>() }),
     );
     expect(result.status).toBe("ok");
-    const req = mock.matching("/rest/people").at(-1);
+    const req = twentyMock.matching("/rest/people").at(-1);
     expect(req?.headers["x-schema-version"]).toBe("2024-01");
   });
 
   it("substitutes path params for {id}-style operations", async () => {
     const result = await call({ operationId: "findOnePerson", pathParams: { id: "p-matt" } });
     expect(result.status).toBe("ok");
-    const req = mock.matching("/rest/people/p-matt").at(-1);
+    const req = twentyMock.matching("/rest/people/p-matt").at(-1);
     expect(req?.method).toBe("GET");
   });
 
@@ -164,7 +179,7 @@ describe("executeRestOperation tool", () => {
       expect(result.status, `${op} should be blocked`).toBe("writes_disabled");
     }
     // No write ever reached the upstream.
-    expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(twentyMock.requests.some((r) => r.method !== "GET")).toBe(false);
   });
 
   it("returns unknown_operation with the available list for a bad operationId", async () => {
@@ -273,7 +288,7 @@ describe("executeRestOperation — write-side opt-in", () => {
     expect(result.confirm.datasourceId).toBe("twenty");
     expect(result.confirm.body).toEqual({ name: { firstName: "Ada" } });
     // Critically: NO write reached the upstream — confirmation is still pending.
-    expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(twentyMock.requests.some((r) => r.method !== "GET")).toBe(false);
   });
 
   it("stages an allowlisted DELETE (highest blast radius) without firing it", async () => {
@@ -286,7 +301,7 @@ describe("executeRestOperation — write-side opt-in", () => {
     if (result.status !== "needs_confirmation") return;
     expect(result.method).toBe("DELETE");
     expect(result.confirm.pathParams).toEqual({ id: "p-matt" });
-    expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(twentyMock.requests.some((r) => r.method !== "GET")).toBe(false);
   });
 
   it("needs_confirmation carries exactly the fields the chat banner + confirm endpoint read", async () => {
@@ -325,7 +340,7 @@ describe("executeRestOperation — write-side opt-in", () => {
       );
       expect(result.status).toBe("client_error");
       // Never staged as needs_confirmation, and nothing dispatched upstream.
-      expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+      expect(twentyMock.requests.some((r) => r.method !== "GET")).toBe(false);
     } finally {
       if (saved.keys === undefined) delete process.env.ATLAS_ENCRYPTION_KEYS;
       else process.env.ATLAS_ENCRYPTION_KEYS = saved.keys;
@@ -344,7 +359,7 @@ describe("executeRestOperation — write-side opt-in", () => {
       async () => ds,
     );
     expect(result.status).toBe("writes_disabled");
-    expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(twentyMock.requests.some((r) => r.method !== "GET")).toBe(false);
   });
 
   it("rejects an allowlisted write missing its required body (invalid_params)", async () => {
@@ -353,7 +368,7 @@ describe("executeRestOperation — write-side opt-in", () => {
     expect(result.status).toBe("invalid_params");
     if (result.status !== "invalid_params") return;
     expect(result.missingParams).toContain("body");
-    expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(twentyMock.requests.some((r) => r.method !== "GET")).toBe(false);
   });
 
   it("rate-limits reads per operation (rate_limited) once the bucket is empty", async () => {
@@ -380,7 +395,7 @@ describe("executeRestOperation — write-side opt-in", () => {
     expect(result.method).toBe("GET");
     expect(result.operationId).toBe("findManyPeople");
     // dispatch:false — the flagged GET did NOT reach the upstream (quota untouched).
-    expect(mock.requests).toHaveLength(0);
+    expect(twentyMock.requests).toHaveLength(0);
   });
 
   it("blocks a config-flagged side-effecting GET that is NOT allowlisted (writes_disabled, #3008)", async () => {
@@ -389,7 +404,7 @@ describe("executeRestOperation — write-side opt-in", () => {
     expect(result.status).toBe("writes_disabled");
     if (result.status !== "writes_disabled") return;
     expect(result.method).toBe("GET");
-    expect(mock.requests).toHaveLength(0);
+    expect(twentyMock.requests).toHaveLength(0);
   });
 
   // #3035 — a candidate-declared read-safe POST (e.g. Notion search) dispatches as
@@ -408,7 +423,7 @@ describe("executeRestOperation — write-side opt-in", () => {
     if (result.status !== "ok") return;
     expect(result.httpStatus).toBe(201);
     // It reached the upstream as a POST — dispatched immediately, never staged.
-    const req = mock.matching("/rest/people").at(-1);
+    const req = twentyMock.matching("/rest/people").at(-1);
     expect(req?.method).toBe("POST");
   });
 
@@ -422,7 +437,7 @@ describe("executeRestOperation — write-side opt-in", () => {
     expect(result.status).toBe("writes_disabled");
     if (result.status !== "writes_disabled") return;
     expect(result.method).toBe("POST");
-    expect(mock.requests).toHaveLength(0); // never reached the upstream
+    expect(twentyMock.requests).toHaveLength(0); // never reached the upstream
   });
 });
 
@@ -451,7 +466,7 @@ describe("executeRestOperation — multi-datasource routing", () => {
       [widgets(), datasource()],
     );
     expect(result.status).toBe("ok");
-    expect(mock.matching("/rest/people").length).toBeGreaterThan(0);
+    expect(twentyMock.matching("/rest/people").length).toBeGreaterThan(0);
   });
 
   it("returns datasource_not_found + availableDatasources for an unknown datasourceId", async () => {
@@ -462,7 +477,7 @@ describe("executeRestOperation — multi-datasource routing", () => {
     expect(result.status).toBe("datasource_not_found");
     if (result.status !== "datasource_not_found") return;
     expect(result.availableDatasources).toEqual(["twenty", "widgets"]);
-    expect(mock.requests).toHaveLength(0); // nothing dispatched
+    expect(twentyMock.requests).toHaveLength(0); // nothing dispatched
   });
 
   it("requires datasourceId when more than one datasource is connected", async () => {
@@ -471,7 +486,7 @@ describe("executeRestOperation — multi-datasource routing", () => {
     if (result.status !== "datasource_not_found") return;
     expect(result.message).toContain("More than one");
     expect(result.availableDatasources).toEqual(["twenty", "widgets"]);
-    expect(mock.requests).toHaveLength(0); // never silently picks the first
+    expect(twentyMock.requests).toHaveLength(0); // never silently picks the first
   });
 
   it("resolves the sole datasource without a datasourceId (single-install shape)", async () => {
@@ -544,7 +559,7 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
     if (result.status !== "ok") return;
     expect(result.httpStatus).toBe(200);
     // The retry actually dispatched to the upstream with the original auth.
-    const req = mock.matching("/rest/people").at(-1);
+    const req = twentyMock.matching("/rest/people").at(-1);
     expect(req?.headers["authorization"]).toBe("Bearer test-token");
   });
 
@@ -562,7 +577,7 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
     expect(result.message).toContain("re-checked");
     // The hint reflects the FRESH graph (findManyPeople is back), not the stale one.
     expect(result.availableOperations).toContain("findManyPeople");
-    expect(mock.requests).toHaveLength(0); // nothing dispatched
+    expect(twentyMock.requests).toHaveLength(0); // nothing dispatched
   });
 
   it("auto-refresh: a cooldown / failed recovery leaves the original rejection standing", async () => {
@@ -579,7 +594,7 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
       // The stale graph's hint — recovery produced nothing fresher.
       expect(result.availableOperations).not.toContain("findManyPeople");
     }
-    expect(mock.requests).toHaveLength(0);
+    expect(twentyMock.requests).toHaveLength(0);
   });
 
   it("auto-refresh: a throwing recovery seam fails closed to the original rejection", async () => {
@@ -619,7 +634,7 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
     expect(result.operationId).toBe("createOnePerson");
     expect(result.confirm.token.length).toBeGreaterThan(0);
     // The retry's full safety stack held: the write was staged, never fired.
-    expect(mock.requests).toHaveLength(0);
+    expect(twentyMock.requests).toHaveLength(0);
   });
 
   it("a recovered NON-allowlisted write rejects writes_disabled on the retry — never dispatched", async () => {
@@ -636,7 +651,7 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
     expect(result.status).toBe("writes_disabled");
     if (result.status !== "writes_disabled") return;
     expect(result.method).toBe("POST");
-    expect(mock.requests).toHaveLength(0);
+    expect(twentyMock.requests).toHaveLength(0);
   });
 
   it("the retry uses the recovery's re-guarded fresh base URL when one is supplied", async () => {
@@ -655,11 +670,11 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
         kind: "refreshed",
         graph,
         operationFound: true,
-        baseUrl: mock.restBaseUrl,
+        baseUrl: twentyMock.restBaseUrl,
       }),
     );
     expect(result.status).toBe("ok");
-    expect(mock.matching("/rest/people").length).toBeGreaterThan(0);
+    expect(twentyMock.matching("/rest/people").length).toBeGreaterThan(0);
   });
 });
 
@@ -714,9 +729,9 @@ describe("executeRestOperation — confirm-before-write surface gate (#5495)", (
 
   it("dispatches NOTHING upstream when the surface gate refuses", async () => {
     const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
-    const before = mock.matching("/rest/people").length;
+    const before = twentyMock.matching("/rest/people").length;
     await callOnSilentSurface({ operationId: "createOnePerson", body: { name: "Ada" } }, async () => ds);
-    expect(mock.matching("/rest/people").length).toBe(before);
+    expect(twentyMock.matching("/rest/people").length).toBe(before);
   });
 
   it("refuses explicitly, not just by omission (writeConfirmationUi: false)", async () => {
@@ -781,5 +796,68 @@ describe("executeRestOperation — confirm-before-write surface gate (#5495)", (
       async () => ds,
     );
     expect(result).not.toHaveProperty("confirm");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Formerly rest-operation-audit.test.ts.
+//
+// The gap these close: `executeSQL` records every execution to the query audit
+// log, but the REST path recorded only `log.info` breadcrumbs — so a reviewer
+// asking "what did the agent do against customer datasources" saw SQL and was
+// blind to REST. They pin that a DISPATCHED REST operation lands in the audit
+// log (mapped into the SQL-shaped `AuditEntry` with a `${method} ${operationId}`
+// descriptor), while a PRE-dispatch rejection does not.
+// ---------------------------------------------------------------------------
+
+describe("executeRestOperation — query-audit coverage", () => {
+  it("audits a dispatched GET read once with success:true, the `${method} ${operationId}` sql, and sourceId", async () => {
+    const result = await call({ operationId: "findManyPeople" });
+    expect(result.status).toBe("ok");
+
+    expect(mockLogQueryAudit).toHaveBeenCalledTimes(1);
+    const entry = mockLogQueryAudit.mock.calls[0][0];
+    expect(entry.success).toBe(true);
+    expect(entry.sql).toBe("GET findManyPeople");
+    expect(entry.sourceId).toBe("twenty");
+    // sourceType is a SQL DBType — a REST op must leave it unset.
+    expect(entry.sourceType).toBeUndefined();
+    // targetHost is the upstream host (the loopback mock).
+    expect(entry.targetHost).toBe(new URL(twentyMock.restBaseUrl).host);
+    expect(entry.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("audits an upstream http_error with success:false and the error message", async () => {
+    const result = await call({ operationId: "findOnePerson", pathParams: { id: "does-not-exist" } });
+    expect(result.status).toBe("http_error");
+
+    expect(mockLogQueryAudit).toHaveBeenCalledTimes(1);
+    const entry = mockLogQueryAudit.mock.calls[0][0];
+    expect(entry.success).toBe(false);
+    expect(entry.sql).toBe("GET findOnePerson");
+    if (entry.success) return; // narrow to the failure variant
+    expect(entry.error).toContain("HTTP 404");
+    expect(entry.rowCount).toBeNull();
+  });
+
+  it("does NOT audit a PRE-dispatch rejection (invalid_params never touched the datasource)", async () => {
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const result = await call({ operationId: "createOnePerson" }, async () => ds);
+    expect(result.status).toBe("invalid_params");
+
+    // The op was rejected before dispatch — nothing reached the upstream, nothing audited.
+    expect(twentyMock.requests).toHaveLength(0);
+    expect(mockLogQueryAudit).not.toHaveBeenCalled();
+  });
+
+  it("does NOT audit a staged write (needs_confirmation) — the CONFIRMED execution is audited by the route", async () => {
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const result = await call(
+      { operationId: "createOnePerson", body: { name: { firstName: "Ada" } } },
+      async () => ds,
+    );
+    expect(result.status).toBe("needs_confirmation");
+    expect(twentyMock.requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(mockLogQueryAudit).not.toHaveBeenCalled();
   });
 });

@@ -92,7 +92,8 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   // fake invokes the callback with a `tx.query` bound to `mockInternalQuery`, so
   // the in-transaction `workspace_plugins` upsert is recorded on the same spy
   // existing assertions read. (Real lock/transaction mechanics — BEGIN, the
-  // advisory lock, ROLLBACK — are covered in `demo-seed-lock.test.ts`.)
+  // advisory lock, ROLLBACK — are covered in `db/__tests__/internal.test.ts`,
+  // under "advisory-lock wrappers", formerly `demo-seed-lock.test.ts`.)
   withDemoSeedLock: mockWithDemoSeedLock,
   internalExecute: () => {},
   encryptSecret: mockEncryptUrl,

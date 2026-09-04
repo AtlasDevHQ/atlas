@@ -91,84 +91,12 @@ describe("buildPythonNsjailArgs", () => {
     process.env = { ...originalEnv };
   });
 
-  it("constructs correct nsjail args with Python-specific config", () => {
-    const args = buildPythonNsjailArgs(
-      "/usr/local/bin/nsjail",
-      "/tmp/pyexec-test",
-      "/tmp/pyexec-test/user_code.py",
-      "/tmp/pyexec-test/wrapper.py",
-      "/tmp/pyexec-test/charts",
-      "__ATLAS_RESULT_test__",
-    );
-
-    // Basic nsjail mode
-    expect(args[0]).toBe("/usr/local/bin/nsjail");
-    expect(args).toContain("--mode");
-    expect(args).toContain("o");
-
-    // Python binary bind-mounts
-    expect(args).toContain("/usr/local/bin");
-    expect(args).toContain("/usr/local/lib");
-
-    // Code and chart bind-mounts
-    const rFlags = args.reduce<string[]>((acc, v, i) => {
-      if (v === "-R" && typeof args[i + 1] === "string") acc.push(args[i + 1] as string);
-      return acc;
-    }, []);
-    expect(rFlags).toContain("/tmp/pyexec-test/wrapper.py:/tmp/wrapper.py");
-    expect(rFlags).toContain("/tmp/pyexec-test/user_code.py:/tmp/user_code.py");
-
-    // Chart dir is bind-mounted writable (-B)
-    const bIndex = args.indexOf("-B");
-    expect(bIndex).toBeGreaterThan(-1);
-    expect(args[bIndex + 1]).toBe("/tmp/pyexec-test/charts:/tmp/charts");
-
-    // Resource limits — higher defaults for Python
-    const memIndex = args.indexOf("--rlimit_as");
-    expect(memIndex).toBeGreaterThan(-1);
-    expect(args[memIndex + 1]).toBe("512");
-
-    const tIndex = args.indexOf("-t");
-    expect(tIndex).toBeGreaterThan(-1);
-    expect(args[tIndex + 1]).toBe("30");
-
-    const nprocIndex = args.indexOf("--rlimit_nproc");
-    expect(nprocIndex).toBeGreaterThan(-1);
-    expect(args[nprocIndex + 1]).toBe("16");
-
-    // File size limit for chart output
-    const fsizeIndex = args.indexOf("--rlimit_fsize");
-    expect(fsizeIndex).toBeGreaterThan(-1);
-    expect(args[fsizeIndex + 1]).toBe("50");
-
-    // Security: run as nobody
-    const uIndex = args.indexOf("-u");
-    expect(uIndex).toBeGreaterThan(-1);
-    expect(args[uIndex + 1]).toBe("65534");
-
-    const gIndex = args.indexOf("-g");
-    expect(gIndex).toBeGreaterThan(-1);
-    expect(args[gIndex + 1]).toBe("65534");
-
-    // stdin passthrough
-    expect(args).toContain("--pass_fd");
-    const passFdIndex = args.indexOf("--pass_fd");
-    expect(args[passFdIndex + 1]).toBe("0");
-
-    // Python execution command
-    const dashDash = args.indexOf("--");
-    expect(args[dashDash + 1]).toBe("/usr/bin/python3");
-    expect(args[dashDash + 2]).toBe("/tmp/wrapper.py");
-    expect(args[dashDash + 3]).toBe("/tmp/user_code.py");
-
-    // Suppress logs
-    expect(args).toContain("--quiet");
-
-    // /proc mount
-    const procIndex = args.indexOf("--proc_path");
-    expect(procIndex).toBeGreaterThan(-1);
-    expect(args[procIndex + 1]).toBe("/proc");
-  });
+  // "constructs correct nsjail args with Python-specific config" was deleted here:
+  // it asserted individual flags of buildPythonNsjailArgs at its defaults, a strict
+  // subset of the exact-array lock in
+  // backends/__tests__/nsjail-args.test.ts ("Python args are byte-for-byte stable
+  // (defaults)"), which compares the WHOLE list for the same call. The env-override
+  // case below is NOT covered there (that file deletes the limit env vars), so it stays.
 
   it("applies configurable resource limits", () => {
     process.env.ATLAS_NSJAIL_TIME_LIMIT = "60";

@@ -118,7 +118,8 @@ does **not** implement `no-restricted-syntax` natively.
       `infer A` captures only the *last* overload signature, and every value matcher upstream
       is an overload pair (`toBe(expected: T)` / `toBe<X = T>(expected: NoInfer<X>)`), so the
       async path lost argument checking entirely: verified in-tree by adding a bogus property
-      to a `.resolves.toEqual({…})` call in `demo-capture.test.ts`, which the mapped type
+      to a `.resolves.toEqual({…})` call in `demo-capture.test.ts` (since merged into
+      `demo.test.ts`), which the mapped type
       accepted silently and the `R`-parameter version reports as `TS2769`. All 1,382
       `.resolves`/`.rejects` sites (`grep -rio '\.resolves\.\|\.rejects\.' packages apps ee
       examples plugins | wc -l`) had unchecked matcher arguments for the life of the mapped

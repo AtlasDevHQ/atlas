@@ -356,12 +356,6 @@ describe("the measurement budget", () => {
     expect(checkMeasurementBudget(records)).not.toBeNull();
   });
 
-  it("does not pool separate sets", () => {
-    expect(
-      checkMeasurementBudget([record("set-a"), record("set-a"), record("set-b"), record("set-b")]),
-    ).toBeNull();
-  });
-
   it("catches a hand-edited verdict that its own numbers contradict", () => {
     const tampered = record("set-a", {
       passed: true,

@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   handleAction,
+  approveActionAsUser,
+  denyActionAsUser,
+  redispatchActionAsUser,
   approveAction,
   denyAction,
   rollbackAction,
@@ -18,9 +21,17 @@ import {
   _resetActionStore,
   ActionTimeoutError,
   type ActionExecutor,
+  type ActionExecutionContext,
 } from "../handler";
 import type { ActionRequest, ActionToolResult } from "@atlas/api/lib/action-types";
-import { loadConfig, _resetConfig } from "@atlas/api/lib/config";
+import {
+  loadConfig,
+  _resetConfig,
+  _setConfigForTest,
+  type ResolvedConfig,
+  type ActionsConfig,
+} from "@atlas/api/lib/config";
+import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { withRequestContext } from "@atlas/api/lib/logger";
 import { _resetPool } from "@atlas/api/lib/db/internal";
 
@@ -51,6 +62,73 @@ function runAction(
  */
 
 const origDbUrl = process.env.DATABASE_URL;
+
+// ---------------------------------------------------------------------------
+// Shared fixtures for the resolution-verb and execution-context suites below
+// (both formerly separate files; see their provenance headers).
+// ---------------------------------------------------------------------------
+const admin = createAtlasUser("admin-1", "simple-key", "admin@test.com", { role: "admin" });
+const member = createAtlasUser("member-1", "simple-key", "member@test.com", { role: "member" });
+// "admin-only" is a legacy name — it requires the OWNER role (permissions.ts).
+const owner = createAtlasUser("owner-1", "simple-key", "owner@test.com", { role: "owner" });
+// A SECOND owner, so an admin-only action requested by `owner` can still be
+// approved by somebody — the separation-of-duties bar rules out only the
+// requester, not the role.
+const owner2 = createAtlasUser("owner-2", "simple-key", "owner2@test.com", { role: "owner" });
+
+function setActions(actions: ActionsConfig): void {
+  _setConfigForTest({
+    datasources: {},
+    tools: [],
+    auth: "none",
+    semanticLayer: "./semantic",
+    maxTotalConnections: 20,
+    actions,
+    source: "env",
+  } as ResolvedConfig);
+}
+
+async function seedPending(actionType: string, requestedBy: string): Promise<string> {
+  const req = buildActionRequest({
+    actionType,
+    target: `target-${Math.random()}`,
+    summary: "Test action",
+    payload: {},
+    reversible: false,
+  });
+  // Registered by TYPE, as an action module does at load (#5570).
+  defineActionExecutor(actionType, async () => "done");
+  await withRequestContext(
+    { requestId: "req-seed", user: { id: requestedBy, label: `${requestedBy}@test.com`, mode: "simple-key" } },
+    () => handleAction(req),
+  );
+  return req.id;
+}
+
+const REQUESTER_ORG = "org-tenant-a";
+const APPROVER_ORG = "org-tenant-b";
+
+function requester(orgId: string | null) {
+  return {
+    requestId: "req-requester",
+    user: {
+      id: "u-requester",
+      label: "analyst@tenant-a.example",
+      mode: "managed" as const,
+      ...(orgId ? { activeOrganizationId: orgId } : {}),
+    },
+  };
+}
+
+function newRequest() {
+  return buildActionRequest({
+    actionType: "jira:create",
+    target: "PROJ",
+    summary: "Create JIRA ticket",
+    payload: { summary: "s", description: "d" },
+    reversible: true,
+  });
+}
 
 beforeEach(() => {
   delete process.env.DATABASE_URL;
@@ -1318,5 +1396,476 @@ describe("cross-org scoping (F-12)", () => {
     const fromBIds = fromB.map((e) => e.id);
     expect(fromBIds).toContain(idB);
     expect(fromBIds).not.toContain(idA);
+  });
+});
+
+// ===========================================================================
+// Formerly execution-context.test.ts — action execution context threading (#3766).
+//
+// `ActionExecutionContext.workspaceId` is what the credential resolver keys on,
+// so which workspace reaches the executor is a multi-tenant boundary, not a
+// convenience. The subtle case is the manual-approval path: the executor runs
+// inside the APPROVER's request, so anything that read the ambient request
+// context at execution time would let the approver's active workspace decide
+// whose Jira the ticket lands in.
+//
+// ⚠️ Since #5570 that boundary has to hold across a RESTART as well. The
+// executor is no longer a closure the requesting process stashed; it is rebuilt
+// from the persisted row by whichever instance handles the approval or the
+// re-dispatch. So "whose workspace" is now answered by `action_log.org_id` on a
+// row, on a process that has never seen the request — which is exactly the
+// shape the last describe block of this section pins.
+// ===========================================================================
+
+describe("auto-approved path", () => {
+  it("hands the executor the requester's workspace", async () => {
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    process.env.ATLAS_ACTION_APPROVAL = "auto";
+    await loadConfig("/tmp/execution-context-test-nonexistent");
+    let seen: ActionExecutionContext | null = null;
+
+    await withRequestContext(requester(REQUESTER_ORG), () =>
+      runAction(newRequest(), async (_payload, ctx) => {
+        seen = ctx;
+        return "done";
+      }),
+    );
+
+    expect(seen).not.toBeNull();
+    expect(seen!.workspaceId).toBe(REQUESTER_ORG);
+  });
+
+  it("hands null when the request carries no active workspace", async () => {
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    process.env.ATLAS_ACTION_APPROVAL = "auto";
+    await loadConfig("/tmp/execution-context-test-nonexistent");
+    let seen: ActionExecutionContext | null = null;
+
+    await withRequestContext(requester(null), () =>
+      runAction(newRequest(), async (_payload, ctx) => {
+        seen = ctx;
+        return "done";
+      }),
+    );
+
+    expect(seen!.workspaceId).toBeNull();
+  });
+});
+
+describe("manual-approval path", () => {
+  it("hands the executor the REQUESTER's workspace, not the approver's", async () => {
+    // The regression this pins: resolving credentials from the ambient request
+    // context at execution time would yield APPROVER_ORG here, and the ticket
+    // would be created against tenant B's Jira for tenant A's action.
+    let seen: ActionExecutionContext | null = null;
+    const request = newRequest();
+
+    const pending = await withRequestContext(requester(REQUESTER_ORG), () =>
+      runAction(request, async (_payload, ctx) => {
+        seen = ctx;
+        return "done";
+      }),
+    );
+    expect(pending.status).toBe("pending");
+    expect(seen).toBeNull(); // not executed yet
+
+    // Approve inside a DIFFERENT workspace's request context.
+    await withRequestContext(
+      {
+        requestId: "req-approver",
+        user: {
+          id: "u-approver",
+          label: "admin@tenant-b.example",
+          mode: "managed",
+          activeOrganizationId: APPROVER_ORG,
+        },
+      },
+      () => approveAction(request.id, "u-approver"),
+    );
+
+    expect(seen).not.toBeNull();
+    expect(seen!.workspaceId).toBe(REQUESTER_ORG);
+    expect(seen!.workspaceId).not.toBe(APPROVER_ORG);
+  });
+
+  it("still passes the action's payload as the first argument", async () => {
+    // The context is an ADDED second parameter — existing executors that only
+    // read the payload must be unaffected.
+    // Captured on an object rather than a `let`: TS's control-flow analysis
+    // does not see an assignment made inside the executor closure, so a `let`
+    // stays narrowed to `null` at the assertion below.
+    const captured: { payload?: Record<string, unknown> } = {};
+    const request = newRequest();
+
+    await withRequestContext(requester(REQUESTER_ORG), () =>
+      runAction(request, async (payload) => {
+        captured.payload = payload;
+        return "done";
+      }),
+    );
+    await withRequestContext(requester(REQUESTER_ORG), () =>
+      approveAction(request.id, "u-approver"),
+    );
+
+    expect(captured.payload).toEqual({ summary: "s", description: "d" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Across a restart (#5570)
+// ---------------------------------------------------------------------------
+
+describe("post-restart execution — the row is the only input", () => {
+  const REGISTRAR_ORG = "org-tenant-c";
+  const approver = createAtlasUser("u-approver", "managed", "admin@tenant-b.example", {
+    role: "admin",
+  });
+
+  /**
+   * Everything the requesting process knew, gone: no executor registered for
+   * any type. What survives is the persisted row — which is the point.
+   */
+  function restart(): void {
+    _resetActionExecutors();
+  }
+
+  it("⭐ approver ≠ requester ≠ registering process, and the ROW's workspace still wins", async () => {
+    // The acceptance criterion, spelled out as three distinct workspaces:
+    //
+    //   requester   → REQUESTER_ORG   (stamped on the row at request time)
+    //   approver    → APPROVER_ORG    (the ambient context at execution time)
+    //   registrar   → REGISTRAR_ORG   (the process that re-registered the type
+    //                                  after the restart, in its own context)
+    //
+    // Only the first may reach the executor. Under the old per-id registry
+    // this scenario could not even run — the approval found no executor and
+    // the row stranded.
+    let seen: ActionExecutionContext | null = null;
+    const request = newRequest();
+
+    const pending = await withRequestContext(requester(REQUESTER_ORG), () =>
+      runAction(request, async () => "the first process, whose closure does not survive"),
+    );
+    expect(pending.status).toBe("pending");
+
+    restart();
+
+    // A different instance boots, in a third workspace's context, and its
+    // action module registers the TYPE. It has never seen this request.
+    await withRequestContext(
+      { requestId: "req-boot", user: { id: "u-registrar", label: "boot", mode: "managed", activeOrganizationId: REGISTRAR_ORG } },
+      async () => {
+        defineActionExecutor("jira:create", async (_payload, ctx) => {
+          seen = ctx;
+          return "done";
+        });
+      },
+    );
+
+    // The approval lands there, inside the APPROVER's workspace.
+    await withRequestContext(
+      {
+        requestId: "req-approver",
+        user: { id: "u-approver", label: "admin@tenant-b.example", mode: "managed", activeOrganizationId: APPROVER_ORG },
+      },
+      () => approveAction(request.id, "u-approver"),
+    );
+
+    expect(seen).not.toBeNull();
+    expect(seen!.workspaceId).toBe(REQUESTER_ORG);
+    expect(seen!.workspaceId).not.toBe(APPROVER_ORG);
+    expect(seen!.workspaceId).not.toBe(REGISTRAR_ORG);
+  });
+
+  it("⭐ re-dispatch resolves credentials from the row's workspace too", async () => {
+    // A stranded row is the one case that reaches the re-dispatch verb, and it
+    // is dispatched by a THIRD party — later, from their own workspace. If
+    // anything read the ambient context there, tenant A's action would fire
+    // with tenant B's credentials, which is the ADR-0046 boundary in its most
+    // exposed form.
+    let seen: ActionExecutionContext | null = null;
+    const request = newRequest();
+
+    await withRequestContext(requester(REQUESTER_ORG), () =>
+      runAction(request, async () => "never runs"),
+    );
+
+    // Strand it: approved on an instance with no executor for the type.
+    restart();
+    await withRequestContext(requester(REQUESTER_ORG), () =>
+      approveAction(request.id, "u-approver"),
+    );
+    expect((await approveAction(request.id, "u-approver"))).toBeNull(); // already left pending
+
+    // The deploy that has the module loaded re-dispatches, from ITS workspace.
+    defineActionExecutor("jira:create", async (_payload, ctx) => {
+      seen = ctx;
+      return "done";
+    });
+    const outcome = await withRequestContext(
+      {
+        requestId: "req-redispatch",
+        user: { id: "u-approver", label: "admin@tenant-b.example", mode: "managed", activeOrganizationId: APPROVER_ORG },
+      },
+      () => redispatchActionAsUser(request.id, { user: approver, orgId: null }),
+    );
+
+    expect(outcome.kind).toBe("redispatched");
+    expect(seen).not.toBeNull();
+    expect(seen!.workspaceId).toBe(REQUESTER_ORG);
+    expect(seen!.workspaceId).not.toBe(APPROVER_ORG);
+  });
+});
+
+// ===========================================================================
+// Formerly resolve-as-user.test.ts — the authorized resolution verbs,
+// `approveActionAsUser` / `denyActionAsUser`.
+//
+// These are the seam both the single-action routes and bulk resolve through, so
+// what belongs here is the outcome vocabulary itself: each refusal kind, the
+// conflict arm, and above all the `approved` vs `approved_not_executed` split —
+// the case where the CAS lands but nothing executes, so the row leaves
+// `pending` and nothing will ever retry it on its own. Until the split existed,
+// that state returned success-shaped and the approver was told the action went
+// through.
+//
+// ⚠️ What reaches that arm NARROWED with #5570. It used to be the ordinary
+// restart / other-instance case, because the registry was keyed by action ID and
+// populated per request. The registry is now keyed by `action_type` and
+// populated at module load, so a restart executes fine (pinned by the suites
+// above). What is left is one residual: the row's TYPE has no executor on this
+// instance at all — actions disabled on this deploy, a module that failed to
+// import, a plugin that did not wire. The pin below says exactly that, and
+// `redispatchActionAsUser` is the way out of it.
+// ===========================================================================
+
+describe("approveActionAsUser — the outcome vocabulary", () => {
+  it("approves and executes when the executor is registered", async () => {
+    const id = await seedPending("test:action", "alice");
+
+    const outcome = await approveActionAsUser(id, { user: admin, orgId: null });
+
+    expect(outcome.kind).toBe("approved");
+    if (outcome.kind !== "approved") throw new Error("unreachable");
+    expect(outcome.entry.status).toBe("executed");
+  });
+
+  it("⭐ names the approved-but-never-executed state instead of shaping it as success", async () => {
+    // The residual hazard, post-#5570: nothing on this instance knows how to
+    // execute the row's action TYPE. The CAS still lands — the row is
+    // approved and has left `pending` — but nothing runs, and nothing will
+    // retry it on its own. The old interface returned the entry
+    // success-shaped; the outcome kind makes the drop visible to every
+    // caller, at compile time.
+    const id = await seedPending("test:action", "alice");
+    _undefineActionExecutor("test:action");
+
+    const outcome = await approveActionAsUser(id, { user: admin, orgId: null });
+
+    expect(outcome.kind).toBe("approved_not_executed");
+    if (outcome.kind !== "approved_not_executed") throw new Error("unreachable");
+    expect(outcome.entry.status).toBe("approved");
+    // And the row really did leave pending — the part that makes this a trap.
+    const row = await getAction(id);
+    expect(row?.status).toBe("approved");
+  });
+
+  it("⭐ reaches that arm ONLY for an unregistered type — an unrelated type going missing is irrelevant", async () => {
+    // The narrowing #5570 bought, stated as a test: the registry is keyed by
+    // action type, so what another action type's module did or did not
+    // register cannot decide whether THIS row executes. Under the old per-id
+    // Map every row was its own registration and this distinction did not
+    // exist.
+    const id = await seedPending("test:action", "alice");
+    _undefineActionExecutor("some:other-type");
+
+    const outcome = await approveActionAsUser(id, { user: admin, orgId: null });
+
+    expect(outcome.kind).toBe("approved");
+  });
+
+  it("returns not_found for an unknown id", async () => {
+    const outcome = await approveActionAsUser("00000000-0000-4000-8000-000000000000", {
+      user: admin,
+      orgId: null,
+    });
+    expect(outcome.kind).toBe("not_found");
+  });
+
+  it("returns forbidden(role) for a member on an admin-only action", async () => {
+    setActions({ "admin:only": { approval: "admin-only" } });
+    const id = await seedPending("admin:only", "alice");
+
+    const outcome = await approveActionAsUser(id, { user: member, orgId: null });
+
+    expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
+    // Refused before any state changed.
+    expect((await getAction(id))?.status).toBe("pending");
+  });
+
+  it("returns forbidden(self_approval) when the requester approves their own admin-only action", async () => {
+    setActions({ "admin:only": { approval: "admin-only" } });
+    const id = await seedPending("admin:only", owner.id);
+
+    const outcome = await approveActionAsUser(id, { user: owner, orgId: null });
+
+    expect(outcome).toEqual({ kind: "forbidden", reason: "self_approval" });
+  });
+
+  it("returns conflict when the action is already resolved", async () => {
+    const id = await seedPending("test:action", "alice");
+    const first = await approveActionAsUser(id, { user: admin, orgId: null });
+    expect(first.kind).toBe("approved");
+
+    const second = await approveActionAsUser(id, { user: admin, orgId: null });
+    expect(second.kind).toBe("conflict");
+  });
+});
+
+describe("redispatchActionAsUser — the way out of approved_not_executed", () => {
+  /** Strand a row exactly as `approved_not_executed` leaves one. */
+  async function seedStranded(actionType: string): Promise<string> {
+    const id = await seedPending(actionType, "alice");
+    _undefineActionExecutor(actionType);
+    const approved = await approveActionAsUser(id, { user: admin, orgId: null });
+    expect(approved.kind).toBe("approved_not_executed");
+    return id;
+  }
+
+  it("⭐ runs a stranded row once the type is registered again", async () => {
+    const id = await seedStranded("test:stranded");
+    // The deploy that has the action module loaded.
+    defineActionExecutor("test:stranded", async () => ({ ran: "at last" }));
+
+    const outcome = await redispatchActionAsUser(id, { user: admin, orgId: null });
+
+    expect(outcome.kind).toBe("redispatched");
+    if (outcome.kind !== "redispatched") throw new Error("unreachable");
+    expect(outcome.entry.status).toBe("executed");
+    expect(outcome.entry.result).toEqual({ ran: "at last" });
+    expect((await getAction(id))?.status).toBe("executed");
+  });
+
+  it("⭐ a second re-dispatch cannot double-execute", async () => {
+    // The CAS claim, from the caller's side. Two admins on the same stranded
+    // row: one dispatch, one 409 — which for an action type that sends email
+    // is the whole reason the claim exists.
+    let runs = 0;
+    const id = await seedStranded("test:double");
+    defineActionExecutor("test:double", async () => {
+      runs += 1;
+      return "sent";
+    });
+
+    const first = await redispatchActionAsUser(id, { user: admin, orgId: null });
+    const second = await redispatchActionAsUser(id, { user: admin, orgId: null });
+
+    expect(first.kind).toBe("redispatched");
+    expect(second.kind).toBe("conflict");
+    expect(runs).toBe(1);
+  });
+
+  it("leaves the row UNTOUCHED when this instance still cannot execute the type", async () => {
+    // The critical ordering: the registration check runs before the claim. If
+    // it did not, this call would stamp the row and permanently refuse the
+    // instance that actually has the type.
+    const id = await seedStranded("test:still-missing");
+
+    const outcome = await redispatchActionAsUser(id, { user: admin, orgId: null });
+
+    expect(outcome.kind).toBe("unregistered_type");
+    const row = await getAction(id);
+    expect(row?.status).toBe("approved");
+    expect(row?.executed_at).toBeNull();
+
+    // ...and the row is still re-dispatchable once the module loads.
+    defineActionExecutor("test:still-missing", async () => "ok");
+    expect((await redispatchActionAsUser(id, { user: admin, orgId: null })).kind).toBe(
+      "redispatched",
+    );
+  });
+
+  it("refuses a row that is still pending — approve it, do not re-dispatch it", async () => {
+    const id = await seedPending("test:action", "alice");
+
+    const outcome = await redispatchActionAsUser(id, { user: admin, orgId: null });
+
+    expect(outcome.kind).toBe("conflict");
+    expect((await getAction(id))?.status).toBe("pending");
+  });
+
+  it("refuses a row that already ran", async () => {
+    const id = await seedPending("test:action", "alice");
+    expect((await approveActionAsUser(id, { user: admin, orgId: null })).kind).toBe("approved");
+
+    const outcome = await redispatchActionAsUser(id, { user: admin, orgId: null });
+
+    expect(outcome.kind).toBe("conflict");
+    expect((await getAction(id))?.status).toBe("executed");
+  });
+
+  it("applies the approve bar — a member is refused before the row is touched", async () => {
+    setActions({ "admin:only": { approval: "admin-only" } });
+    const id = await seedPending("admin:only", "alice");
+    _undefineActionExecutor("admin:only");
+    expect((await approveActionAsUser(id, { user: owner, orgId: null })).kind).toBe(
+      "approved_not_executed",
+    );
+    defineActionExecutor("admin:only", async () => "ok");
+
+    const outcome = await redispatchActionAsUser(id, { user: member, orgId: null });
+
+    expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
+    const row = await getAction(id);
+    expect(row?.status).toBe("approved");
+    expect(row?.executed_at).toBeNull();
+  });
+
+  it("⭐ keeps separation of duties — the requester cannot re-dispatch their own admin-only action", async () => {
+    // Re-dispatch is the EXECUTION half of an approval. Letting the requester
+    // trigger the side effect would reopen exactly what the approve path's
+    // self-approval bar closes, one verb over.
+    setActions({ "admin:only": { approval: "admin-only" } });
+    const id = await seedPending("admin:only", owner.id);
+    _undefineActionExecutor("admin:only");
+    expect((await approveActionAsUser(id, { user: owner2, orgId: null })).kind).toBe(
+      "approved_not_executed",
+    );
+    defineActionExecutor("admin:only", async () => "ok");
+
+    const outcome = await redispatchActionAsUser(id, { user: owner, orgId: null });
+
+    expect(outcome).toEqual({ kind: "forbidden", reason: "self_approval" });
+  });
+
+  it("returns not_found for an unknown id", async () => {
+    const outcome = await redispatchActionAsUser("00000000-0000-4000-8000-000000000000", {
+      user: admin,
+      orgId: null,
+    });
+    expect(outcome.kind).toBe("not_found");
+  });
+});
+
+describe("denyActionAsUser", () => {
+  it("denies with the same refusal vocabulary and records the reason", async () => {
+    const id = await seedPending("test:action", "alice");
+
+    const outcome = await denyActionAsUser(id, { user: admin, orgId: null }, "not today");
+
+    expect(outcome.kind).toBe("denied");
+    if (outcome.kind !== "denied") throw new Error("unreachable");
+    expect(outcome.entry.status).toBe("denied");
+    expect(outcome.entry.error).toBe("not today");
+  });
+
+  it("refuses a member on an admin-only action before any state changes", async () => {
+    setActions({ "admin:only": { approval: "admin-only" } });
+    const id = await seedPending("admin:only", "alice");
+
+    const outcome = await denyActionAsUser(id, { user: member, orgId: null });
+
+    expect(outcome).toEqual({ kind: "forbidden", reason: "role" });
+    expect((await getAction(id))?.status).toBe("pending");
   });
 });

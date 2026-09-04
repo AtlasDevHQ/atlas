@@ -15,6 +15,15 @@
  *     organization."stripeCustomerId" (#3417 contract)
  *   - org scoping: client passes customerType "organization" +
  *     referenceId; non-admin members are rejected by authorizeReference
+ *
+ * Also owns the billing-portal half of the same surface (#3417), formerly
+ * `stripe-billing-portal.test.ts`: the hand-rolled `POST /api/v1/billing/portal`
+ * route was deleted, so portal access goes through the plugin's org-aware
+ * `/api/auth/subscription/billing-portal`, reading the plugin-owned
+ * `organization.stripeCustomerId` and gated by the same `authorizeReference`.
+ * Merged here because both drive the identical harness — one `betterAuth()`
+ * instance over the memory adapter with the production `buildStripePluginOptions`
+ * and a structural Stripe double.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, mock, type Mock } from "bun:test";
@@ -48,11 +57,14 @@ const { stripe: stripePlugin } = await import("@better-auth/stripe");
 
 const STARTER_PRICE = "price_starter_test";
 const CHECKOUT_URL = "https://checkout.stripe.com/c/cs_test_123";
+const PORTAL_URL = "https://billing.stripe.com/p/session/test_123";
 
 const checkoutSessionsCreate: Mock<(params: Record<string, unknown>) => Promise<unknown>> =
   mock((params) => Promise.resolve({ id: "cs_test_123", url: CHECKOUT_URL, ...params }));
 const customersCreate: Mock<(params: Record<string, unknown>) => Promise<unknown>> =
   mock(() => Promise.resolve({ id: "cus_org_new" }));
+const portalSessionsCreate: Mock<(params: Record<string, unknown>) => Promise<unknown>> =
+  mock(() => Promise.resolve({ url: PORTAL_URL }));
 
 function makeStripeClient() {
   return {
@@ -62,12 +74,17 @@ function makeStripeClient() {
     checkout: {
       sessions: { create: checkoutSessionsCreate },
     },
+    billingPortal: {
+      sessions: { create: portalSessionsCreate },
+    },
     customers: {
       // No pre-existing org customer → forces the lazy-creation path.
       search: mock(() => Promise.resolve({ data: [] })),
       create: customersCreate,
-      retrieve: mock(() => Promise.resolve({ id: "cus_org_new", email: "owner@example.com" })),
-      update: mock(() => Promise.resolve({ id: "cus_org_new" })),
+      // Echo the requested id so a seeded org customer (the portal cases)
+      // retrieves as itself rather than as the lazily-created checkout one.
+      retrieve: mock((id: string) => Promise.resolve({ id, email: "owner@example.com" })),
+      update: mock((id: string) => Promise.resolve({ id })),
     },
     prices: {
       retrieve: mock(() =>
@@ -149,6 +166,20 @@ async function postUpgrade(
   );
 }
 
+async function postPortal(
+  auth: ReturnType<typeof makeAuth>,
+  cookie: string,
+  body: Record<string, unknown>,
+) {
+  return auth.handler(
+    new Request("http://localhost:3000/api/auth/subscription/billing-portal", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
 /** Seed an org with N members (ids don't need user rows for adapter.count). */
 function seedOrg(db: MemoryDB, memberCount: number) {
   db.organization.push({ id: "org-1", name: "Acme", slug: "acme", createdAt: new Date() });
@@ -189,6 +220,8 @@ beforeEach(() => {
   );
   checkoutSessionsCreate.mockClear();
   customersCreate.mockClear();
+  portalSessionsCreate.mockClear();
+  portalSessionsCreate.mockImplementation(() => Promise.resolve({ url: PORTAL_URL }));
 });
 
 describe("POST /api/auth/subscription/upgrade (org-scoped first subscription)", () => {
@@ -288,5 +321,86 @@ describe("POST /api/auth/subscription/upgrade (org-scoped first subscription)", 
     const body = (await res.json()) as { message?: string };
     expect(body.message ?? "").toContain("organization-scoped");
     expect(checkoutSessionsCreate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Billing portal (#3417) — formerly stripe-billing-portal.test.ts
+// ---------------------------------------------------------------------------
+
+describe("POST /api/auth/subscription/billing-portal (org-scoped)", () => {
+  /** Seed an org that may or may not already carry a plugin-owned Stripe customer. */
+  function seedOrgWithCustomer(db: MemoryDB, stripeCustomerId: string | null) {
+    db.organization.push({
+      id: "org-1",
+      name: "Acme",
+      slug: "acme",
+      createdAt: new Date(),
+      ...(stripeCustomerId ? { stripeCustomerId } : {}),
+    });
+  }
+
+  it("returns a portal URL for an owner of a workspace with a Stripe customer", async () => {
+    const db = emptyDB();
+    seedOrgWithCustomer(db, "cus_org_1");
+    const auth = makeAuth(db);
+    const cookie = await signUp(auth);
+    // authorizeReference's member lookup hits the (mocked) internal DB.
+    mockInternalQuery.mockImplementation(() => Promise.resolve([{ role: "owner" }]));
+
+    const res = await postPortal(auth, cookie, {
+      customerType: "organization",
+      referenceId: "org-1",
+      returnUrl: "/admin/billing",
+      disableRedirect: true,
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { url?: string };
+    expect(body.url).toBe(PORTAL_URL);
+    // The portal session was created against the PLUGIN-owned org customer.
+    const [params] = portalSessionsCreate.mock.calls[0] as [Record<string, unknown>];
+    expect(params.customer).toBe("cus_org_1");
+  });
+
+  it("rejects a plain member with 401 (authorizeReference)", async () => {
+    const db = emptyDB();
+    seedOrgWithCustomer(db, "cus_org_1");
+    const auth = makeAuth(db);
+    const cookie = await signUp(auth);
+    mockInternalQuery.mockImplementation(() => Promise.resolve([{ role: "member" }]));
+
+    const res = await postPortal(auth, cookie, {
+      customerType: "organization",
+      referenceId: "org-1",
+      returnUrl: "/admin/billing",
+      disableRedirect: true,
+    });
+
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe("UNAUTHORIZED");
+    expect(portalSessionsCreate).not.toHaveBeenCalled();
+  });
+
+  it("returns CUSTOMER_NOT_FOUND before first checkout (UI routes to checkout instead)", async () => {
+    const db = emptyDB();
+    seedOrgWithCustomer(db, null);
+    const auth = makeAuth(db);
+    const cookie = await signUp(auth);
+    mockInternalQuery.mockImplementation(() => Promise.resolve([{ role: "owner" }]));
+
+    const res = await postPortal(auth, cookie, {
+      customerType: "organization",
+      referenceId: "org-1",
+      returnUrl: "/admin/billing",
+      disableRedirect: true,
+    });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe("CUSTOMER_NOT_FOUND");
+    expect(portalSessionsCreate).not.toHaveBeenCalled();
   });
 });

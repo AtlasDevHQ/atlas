@@ -274,7 +274,7 @@ export function mintStagedConfirmToken<TBinding>(
  * request. Pure — it does not touch the nonce store.
  *
  * This is the half that answers *"does this token bind this request?"*, and it
- * is what the per-verb binding tests exercise: `staged-correct.test.ts` asks it
+ * is what the per-verb binding tests exercise: `staged-write.test.ts` asks it
  * WHICH field a tamper broke, a question the gate deliberately flattens into one
  * neutral arm. Every production confirm path calls
  * {@link verifyAndBurnStagedConfirm}, which is this plus the burn, in the one

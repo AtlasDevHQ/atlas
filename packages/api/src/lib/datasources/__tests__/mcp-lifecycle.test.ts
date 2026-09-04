@@ -10,6 +10,10 @@
  *   2. `runDatasourceInstaller` maps the `WorkspaceInstaller` Effect's
  *      result/Cause onto the context-free outcome the MCP tools render —
  *      tagged errors → typed `{ status, code }`, defects → re-throw.
+ *
+ * The REST/OpenAPI provisioning path (`provisionRestDatasource`, formerly
+ * `mcp-lifecycle-provision-rest.test.ts`) is at the bottom of the file — same
+ * module, and its install-handler seam is reached by nothing else here.
  */
 
 import { describe, expect, it, mock, beforeEach } from "bun:test";
@@ -19,6 +23,7 @@ import {
   InstallNotFoundError,
 } from "@atlas/api/lib/effect/errors";
 import { createConnectionMock } from "../../../__mocks__/connection";
+import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/persist-form-install";
 
 // ── Mocks for the DB / registry primitives `listDatasources` calls ────
 //
@@ -182,6 +187,33 @@ void mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   findDatasourcePluginConnection: mock(async () => pluginConnection),
 }));
 
+// ── The openapi-generic form-install seam (`provisionRestDatasource`) ──
+//
+// `getInstallHandler` / `registerBuiltinInstallHandlers` are reached by
+// `provisionRestDatasource` and by nothing else in `mcp-lifecycle.ts`, so
+// shadowing them leaves every other describe in this file on the real graph.
+// Both mocks spread the real module: the REST path is the only consumer, but
+// the surrounding install graph is imported by other modules here.
+let validateConfigImpl: (
+  orgId: string,
+  formData: Record<string, unknown>,
+) => Promise<unknown> = async () => ({
+  installRecord: { id: "rest-xyz", workspaceId: "org_1", catalogId: "openapi-generic" },
+});
+const validateConfigSpy = mock((orgId: string, formData: Record<string, unknown>) =>
+  validateConfigImpl(orgId, formData),
+);
+const realDispatch = await import("@atlas/api/lib/integrations/install/dispatch");
+void mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
+  ...realDispatch,
+  getInstallHandler: mock(() => ({ kind: "form", validateConfig: validateConfigSpy })),
+}));
+const realRegister = await import("@atlas/api/lib/integrations/install/register");
+void mock.module("@atlas/api/lib/integrations/install/register", () => ({
+  ...realRegister,
+  registerBuiltinInstallHandlers: mock(() => {}),
+}));
+
 const {
   listDatasources,
   runDatasourceInstaller,
@@ -189,6 +221,7 @@ const {
   resolveLiveConnection,
   loadProvisionConfigFields,
   publishWorkspaceDrafts,
+  provisionRestDatasource,
 } = await import("../mcp-lifecycle.js");
 
 beforeEach(() => {
@@ -215,6 +248,10 @@ beforeEach(() => {
   reconcileHandler = async () => ({ registered: 0, deregistered: 0 });
   tombstonesAppliedFixture = 0;
   entitiesPromotedFixture = 0;
+  validateConfigSpy.mockClear();
+  validateConfigImpl = async () => ({
+    installRecord: { id: "rest-xyz", workspaceId: "org_1", catalogId: "openapi-generic" },
+  });
 });
 
 describe("listDatasources", () => {
@@ -1011,5 +1048,79 @@ describe("publishWorkspaceDrafts (#4126)", () => {
       knowledgeDocuments: 0,
       brainFacts: 0,
     });
+  });
+});
+
+// ── REST / OpenAPI provisioning (#3547) ───────────────────────────────
+//
+// Formerly `mcp-lifecycle-provision-rest.test.ts`. `provisionRestDatasource`
+// routes the elicited form config through the `openapi-generic` form-install
+// handler (probe-on-install) rather than the native/plugin `createFromConfig`
+// path above, so its two invariants are its own:
+//   1. A `FormInstallValidationError` (bad spec URL / auth / failed probe)
+//      becomes a typed `validation` outcome — never a throw, nothing installed.
+//   2. The credential (`auth_value`) is scrubbed from that validation message.
+describe("provisionRestDatasource", () => {
+  const SPEC_URL = "https://api.example.com/openapi.json";
+  const AUTH_SECRET = "sk-super-secret-token";
+
+  it("installs via the openapi-generic handler and returns the minted install id", async () => {
+    const outcome = await provisionRestDatasource(
+      "org_1",
+      { openapi_url: SPEC_URL, auth_kind: "bearer", auth_value: AUTH_SECRET },
+      ["auth_value"],
+    );
+    expect(outcome).toEqual({ kind: "ok", installId: "rest-xyz" });
+    // The handler received the full formData (credential included).
+    expect((validateConfigSpy.mock.calls[0][1] as Record<string, unknown>).auth_value).toBe(AUTH_SECRET);
+  });
+
+  it("maps a FormInstallValidationError to a `validation` outcome, scrubbing the credential", async () => {
+    validateConfigImpl = async () => {
+      throw new FormInstallValidationError({
+        fieldErrors: { openapi_url: [`spec fetch failed for ${SPEC_URL} with token ${AUTH_SECRET}`] },
+        formErrors: [],
+      });
+    };
+    const outcome = await provisionRestDatasource(
+      "org_1",
+      { openapi_url: SPEC_URL, auth_kind: "bearer", auth_value: AUTH_SECRET },
+      ["auth_value"],
+    );
+    expect(outcome.kind).toBe("validation");
+    if (outcome.kind === "validation") {
+      expect(outcome.message).toContain("openapi_url:");
+      // The secret credential never rides the surfaced message.
+      expect(outcome.message).not.toContain(AUTH_SECRET);
+      expect(outcome.message).toContain("[redacted]");
+    }
+  });
+
+  it("re-throws a non-validation error for the caller's internal_error path", async () => {
+    validateConfigImpl = async () => {
+      throw new Error("internal DB pool exhausted");
+    };
+    await expect(
+      provisionRestDatasource("org_1", { openapi_url: SPEC_URL }, []),
+    ).rejects.toThrow(/DB pool exhausted/);
+  });
+
+  it("scrubs the credential from a re-thrown non-validation error", async () => {
+    validateConfigImpl = async () => {
+      throw new Error(`probe blew up with Authorization: Bearer ${AUTH_SECRET}`);
+    };
+    await expect(
+      provisionRestDatasource(
+        "org_1",
+        { openapi_url: SPEC_URL, auth_value: AUTH_SECRET },
+        ["auth_value"],
+      ),
+    ).rejects.toThrow(/\[redacted\]/);
+    // And the secret itself never rides the thrown message.
+    await provisionRestDatasource("org_1", { openapi_url: SPEC_URL, auth_value: AUTH_SECRET }, ["auth_value"]).catch(
+      (e: unknown) => {
+        expect(e instanceof Error ? e.message : String(e)).not.toContain(AUTH_SECRET);
+      },
+    );
   });
 });

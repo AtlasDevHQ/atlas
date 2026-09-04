@@ -656,22 +656,10 @@ describe("validateSOQL", () => {
       expect(result.valid).toBe(true);
     });
 
-    test("still rejects non-whitelisted objects in WHERE semi-join", () => {
-      const result = validateSOQL(
-        "SELECT Id FROM Account WHERE Id IN (SELECT AccountId FROM CustomObject__c)",
-        ALLOWED,
-      );
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain("CustomObject__c");
-    });
-
-    test("allows whitelisted objects in WHERE semi-join", () => {
-      const result = validateSOQL(
-        "SELECT Id FROM Account WHERE Id IN (SELECT AccountId FROM Contact)",
-        ALLOWED,
-      );
-      expect(result.valid).toBe(true);
-    });
+    // The two WHERE semi-join cases that used to sit here were byte-identical
+    // to `object whitelist` > "checks subquery objects in WHERE" / "allows
+    // subquery with whitelisted objects"; that suite is the survivor. The
+    // combined relationship-plus-WHERE case below is what this suite adds.
 
     test("accepts relationship subquery AND valid WHERE subquery together", () => {
       const result = validateSOQL(

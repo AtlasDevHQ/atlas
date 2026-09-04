@@ -1,9 +1,19 @@
 /**
  * BYOT integration test — validates JWT auth against a real JWKS HTTP server.
  *
- * Separate from byot.test.ts because that file uses mock.module("jose", ...)
- * which is sticky within its module graph. This file imports jose and byot.ts
- * without any mocking.
+ * Separate from `byot.test.ts` because that file injects a LOCAL key set
+ * through the `_setJWKS` test seam, so it never exercises `createRemoteJWKSet`
+ * or an actual HTTP fetch. This file stands up an ephemeral Bun.serve JWKS
+ * endpoint and lets `byot.ts` resolve keys the way production does.
+ *
+ * Scope is deliberately the two things only the real fetch can prove:
+ *   - a valid token verifies against a key set retrieved over HTTP, and
+ *   - a token signed by a DIFFERENT key is rejected against that key set.
+ *
+ * The claim-level denials (expired / wrong issuer / wrong audience / missing
+ * `sub`) and the empty-`ATLAS_AUTH_AUDIENCE` config error are decided AFTER key
+ * resolution, so re-running them here proved nothing the injected-key-set suite
+ * did not already prove — they live in `byot.test.ts` only.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
@@ -134,49 +144,6 @@ describe("BYOT integration (real JWKS server)", () => {
     }
   });
 
-  it("expired JWT returns 401", async () => {
-    const token = await signJWT({ sub: "user_integ_1" }, { expiresIn: "-1h" });
-    const result = await validateBYOT(
-      makeRequest({ Authorization: `Bearer ${token}` }),
-    );
-
-    expect(result.authenticated).toBe(false);
-    if (!result.authenticated) {
-      expect(result.status).toBe(401);
-      expect(result.error).toContain("Invalid or expired");
-    }
-  });
-
-  it("wrong issuer returns 401", async () => {
-    const token = await signJWT(
-      { sub: "user_integ_1" },
-      { issuer: "https://evil.example.com" },
-    );
-    const result = await validateBYOT(
-      makeRequest({ Authorization: `Bearer ${token}` }),
-    );
-
-    expect(result.authenticated).toBe(false);
-    if (!result.authenticated) {
-      expect(result.status).toBe(401);
-    }
-  });
-
-  it("wrong audience returns 401", async () => {
-    const token = await signJWT(
-      { sub: "user_integ_1" },
-      { audience: "wrong-audience" },
-    );
-    const result = await validateBYOT(
-      makeRequest({ Authorization: `Bearer ${token}` }),
-    );
-
-    expect(result.authenticated).toBe(false);
-    if (!result.authenticated) {
-      expect(result.status).toBe(401);
-    }
-  });
-
   it("token signed with wrong key returns 401", async () => {
     const token = await signJWT(
       { sub: "user_integ_1" },
@@ -190,50 +157,5 @@ describe("BYOT integration (real JWKS server)", () => {
     if (!result.authenticated) {
       expect(result.status).toBe(401);
     }
-  });
-
-  it("empty ATLAS_AUTH_AUDIENCE is a hard config error (#3342 L-2)", async () => {
-    // Pre-L-2 behavior silently skipped audience validation for an
-    // explicitly-set-but-empty value. Now it throws (middleware maps it to
-    // a 500); UNSET remains the documented no-audience-check mode.
-    process.env.ATLAS_AUTH_AUDIENCE = "";
-    resetJWKSCache();
-
-    const token = await signJWT(
-      { sub: "user_integ_1" },
-      { audience: "any-audience-should-work" },
-    );
-    await expect(
-      validateBYOT(makeRequest({ Authorization: `Bearer ${token}` })),
-    ).rejects.toThrow(/ATLAS_AUTH_AUDIENCE/);
-
-    // Unset → audience check skipped, token accepted.
-    delete process.env.ATLAS_AUTH_AUDIENCE;
-    resetJWKSCache();
-    const result = await validateBYOT(
-      makeRequest({ Authorization: `Bearer ${token}` }),
-    );
-    expect(result.authenticated).toBe(true);
-  });
-
-  it("JWT missing sub claim returns 401", async () => {
-    const token = await new SignJWT({ email: "nosub@example.com" })
-      .setProtectedHeader({ alg: "RS256", kid: "integration-key-1" })
-      .setIssuedAt()
-      .setExpirationTime("1h")
-      .setIssuer(TEST_ISSUER)
-      .setAudience(TEST_AUDIENCE)
-      .sign(privateKey);
-
-    const result = await validateBYOT(
-      makeRequest({ Authorization: `Bearer ${token}` }),
-    );
-
-    expect(result).toEqual({
-      authenticated: false,
-      mode: "byot",
-      status: 401,
-      error: "JWT missing sub claim",
-    });
   });
 });

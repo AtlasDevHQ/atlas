@@ -1,6 +1,13 @@
 /**
- * Integration test for `handleLearn` — asserts that CLI arguments wire
- * through to `generateSuggestions` with the correct `autoApprove` flag.
+ * `handleLearn` — the `atlas-operator learn` command handler.
+ *
+ * Two blocks: the `--auto-approve` argument guard (formerly `learn.test.ts`),
+ * and the CLI → `generateSuggestions` wire-through. They share this file's
+ * mocked internal DB and `generateSuggestions` recorder; the guard exits before
+ * either is reached, so the mocks are inert for it.
+ *
+ * The wire-through half asserts that CLI arguments reach
+ * `generateSuggestions` with the correct `autoApprove` flag.
  *
  * Covers acceptance criterion from #1482: "Integration test: run atlas
  * learn against a test layer, assert pending rows exist." The unit tests
@@ -22,7 +29,7 @@
  * path.resolve("semantic")` resolves at the dynamic import below, so
  * the chdir-then-import ordering inside the hook is load-bearing.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
+import { describe, it, expect, afterEach, beforeAll, afterAll, beforeEach, mock } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -154,5 +161,61 @@ describe("handleLearn — CLI to generateSuggestions wire-through", () => {
     await handleLearn(["--suggestions", "--auto-approve"]);
     expect(generateSuggestionsCalls).toHaveLength(1);
     expect(generateSuggestionsCalls[0]).toEqual({ orgId: null, autoApprove: true });
+  });
+});
+
+/**
+ * The `--auto-approve` flag only affects query-suggestion rows, so it must be
+ * combined with `--suggestions`. Without this guard, an operator could pass
+ * `atlas-operator learn --auto-approve` expecting rows to be published, and get
+ * the YAML improvement path instead — with zero rows written.
+ *
+ * ⚠️ Hooks are describe-scoped ON PURPOSE. A file-level `afterEach` here would
+ * also run after the wire-through tests below, and the original file's
+ * `mock.restore()` would tear down this file's `mock.module` registrations
+ * mid-suite. The console/exit capture is all this block needs.
+ */
+describe("handleLearn — --auto-approve guard", () => {
+  const errors: string[] = [];
+  const origExit = process.exit;
+  let exitCode: number | null = null;
+  // The file mutes `console.error` in `beforeAll`; capture whatever is
+  // installed at that point and put it back, rather than un-muting the suite.
+  let mutedConsoleError: typeof console.error;
+
+  beforeEach(() => {
+    errors.length = 0;
+    exitCode = null;
+    mutedConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map((a) => String(a)).join(" "));
+    };
+    // Cast via unknown so TypeScript accepts the thrower signature — the
+    // production exit() never returns either, so behaviorally this is
+    // equivalent. We catch the thrown sentinel in each test.
+    process.exit = ((code?: number) => {
+      exitCode = code ?? 0;
+      throw new Error(`__process_exit__:${exitCode}`);
+    }) as unknown as typeof process.exit;
+  });
+
+  afterEach(() => {
+    console.error = mutedConsoleError;
+    process.exit = origExit;
+  });
+
+  it("exits 1 when --auto-approve is passed without --suggestions", async () => {
+    let caught: Error | null = null;
+    try {
+      await handleLearn(["--auto-approve"]);
+    } catch (err) {
+      caught = err instanceof Error ? err : new Error(String(err));
+    }
+    expect(caught?.message).toBe("__process_exit__:1");
+    expect(exitCode).toBe(1);
+    // The error message must tell the operator WHY the command failed —
+    // a generic "invalid arguments" would hide the coupling between
+    // --auto-approve and --suggestions.
+    expect(errors.some((line) => line.includes("--auto-approve") && line.includes("--suggestions"))).toBe(true);
   });
 });

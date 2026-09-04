@@ -89,7 +89,7 @@ const ResendConfigSchema = z.object({
 
 /**
  * Mask a secret value for display. Exported so tests exercise the real
- * implementation (see __tests__/admin-email-provider.test.ts).
+ * implementation (see __tests__/admin-email-provider-route.test.ts).
  */
 export function maskSecret(value: string): string {
   if (value.length <= 8) return "••••••••";

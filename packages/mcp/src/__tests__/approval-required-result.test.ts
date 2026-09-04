@@ -18,11 +18,16 @@
  *      null`, which would fail the declared output schemas);
  *   5. the payload validates against every consuming tool's declared
  *      output schema (executeSQL / runMetric / query approval branch).
+ *
+ * Also home to the `withResumeHint` unit tests (#3750) — formerly
+ * `resume-hint.test.ts`, merged here because both suites pin the same module
+ * (`structured-output.ts`) and neither installs a `mock.module`.
  */
 
 import { describe, it, expect } from "bun:test";
 import {
   approvalRequiredResult,
+  withResumeHint,
   MCP_APPROVAL_RESUME_HINT,
   executeSqlOutputSchema,
   runMetricOutputSchema,
@@ -207,5 +212,34 @@ describe("approvalRequiredResult (#4199)", () => {
     expect(String(body.message)).toContain(MCP_APPROVAL_RESUME_HINT);
     // A non-reserved `extra` field still passes through.
     expect(body.answer).toBe("kept");
+  });
+});
+
+/**
+ * #3750 — `withResumeHint` (the helper `approvalRequiredResult` builds on).
+ *
+ * Pins the three behaviors the helper guarantees: append to an existing
+ * message, tolerate a missing/non-string upstream message (return the bare
+ * hint), and idempotency (never double-append when the hint is already there).
+ */
+describe("withResumeHint (#3750)", () => {
+  it("appends the hint to a non-empty message (with a separating space)", () => {
+    const out = withResumeHint("Approval required. Rule: X.");
+    expect(out).toBe(`Approval required. Rule: X. ${MCP_APPROVAL_RESUME_HINT}`);
+  });
+
+  it("returns the bare hint when the message is missing / empty / non-string", () => {
+    expect(withResumeHint(undefined)).toBe(MCP_APPROVAL_RESUME_HINT);
+    expect(withResumeHint("")).toBe(MCP_APPROVAL_RESUME_HINT);
+    expect(withResumeHint(null)).toBe(MCP_APPROVAL_RESUME_HINT);
+    expect(withResumeHint(42)).toBe(MCP_APPROVAL_RESUME_HINT);
+  });
+
+  it("is idempotent — does not double-append when the hint is already present", () => {
+    const once = withResumeHint("Needs approval.");
+    const twice = withResumeHint(once);
+    expect(twice).toBe(once);
+    // Exactly one occurrence of the hint.
+    expect(twice.split(MCP_APPROVAL_RESUME_HINT)).toHaveLength(2);
   });
 });

@@ -1,4 +1,11 @@
-import { describe, expect, test } from "bun:test";
+/**
+ * `ui/lib/helpers`.
+ *
+ * Merged 2026-09-04; formerly also src/ui/lib/__tests__/category-match.test.ts
+ * and src/ui/lib/__tests__/helpers-attachment.test.ts.
+ */
+
+import { describe, expect, it, test } from "bun:test";
 import {
   parseCSV,
   parseSuggestions,
@@ -8,6 +15,8 @@ import {
   getToolResult,
   isToolComplete,
   coerceExcelCell,
+  categoryMatchesSelection,
+  parseAttachmentFilename,
 } from "../lib/helpers";
 
 /* ------------------------------------------------------------------ */
@@ -349,5 +358,80 @@ describe("isToolComplete", () => {
 
   test("returns false for null", () => {
     expect(isToolComplete(null)).toBe(false);
+  });
+});
+
+// #3219 (Codex review) — the cross-filter selection value is stored normalized
+// (a `date` drilldown keeps only `YYYY-MM-DD`), but chart/table cells can be raw
+// timestamps. `categoryMatchesSelection` bridges that so the selected row / bar
+// still highlights, while never producing a false positive for text/number cats.
+describe("categoryMatchesSelection", () => {
+  it("matches an exact string", () => {
+    expect(categoryMatchesSelection("us", "us")).toBe(true);
+  });
+
+  it("matches a number cell against its string selection", () => {
+    expect(categoryMatchesSelection(5, "5")).toBe(true);
+  });
+
+  it("matches an ISO timestamp cell against a normalized YYYY-MM-DD date filter", () => {
+    expect(categoryMatchesSelection("2026-06-04T12:00:00Z", "2026-06-04")).toBe(true);
+  });
+
+  it("matches a space-separated timestamp against a normalized date filter", () => {
+    expect(categoryMatchesSelection("2026-06-04 12:00:00", "2026-06-04")).toBe(true);
+  });
+
+  it("does not match a different day", () => {
+    expect(categoryMatchesSelection("2026-06-04T12:00:00Z", "2026-06-05")).toBe(false);
+  });
+
+  it("does not match a non-selected text value", () => {
+    expect(categoryMatchesSelection("emea", "us")).toBe(false);
+  });
+
+  it("does not treat a plain date prefix without a time component as a timestamp", () => {
+    // A bare `YYYY-MM-DD` cell only matches its exact selection — the prefix
+    // fallback requires a `T`/space separator, so this never over-matches.
+    expect(categoryMatchesSelection("2026-06-04", "2026-06")).toBe(false);
+  });
+
+  it("treats null / undefined cells as the empty string", () => {
+    expect(categoryMatchesSelection(null, "")).toBe(true);
+    expect(categoryMatchesSelection(undefined, "us")).toBe(false);
+  });
+});
+
+describe("parseAttachmentFilename", () => {
+  it("extracts a quoted plain filename", () => {
+    expect(
+      parseAttachmentFilename('attachment; filename="revenue-overview-20260604-123045.pdf"'),
+    ).toBe("revenue-overview-20260604-123045.pdf");
+  });
+
+  it("extracts an unquoted plain filename", () => {
+    expect(parseAttachmentFilename("attachment; filename=board.png")).toBe("board.png");
+  });
+
+  it("prefers and decodes the RFC 5987 filename* form", () => {
+    expect(
+      parseAttachmentFilename("attachment; filename=\"fallback.pdf\"; filename*=UTF-8''q2%20sales.pdf"),
+    ).toBe("q2 sales.pdf");
+  });
+
+  it("falls back to the plain form when filename* is malformed", () => {
+    // %E0%A4%A is an incomplete percent-escape — decodeURIComponent throws.
+    expect(
+      parseAttachmentFilename("attachment; filename=\"safe.pdf\"; filename*=UTF-8''%E0%A4%A"),
+    ).toBe("safe.pdf");
+  });
+
+  it("returns null for an absent header", () => {
+    expect(parseAttachmentFilename(null)).toBeNull();
+  });
+
+  it("returns null when the header carries no filename", () => {
+    expect(parseAttachmentFilename("attachment")).toBeNull();
+    expect(parseAttachmentFilename("inline")).toBeNull();
   });
 });

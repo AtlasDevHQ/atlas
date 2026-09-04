@@ -1,3 +1,9 @@
+/**
+ * `ui/components/user-menu` — the avatar menu and its deriveInitials helper.
+ *
+ * Merged 2026-09-04; formerly also user-menu-initials.test.ts.
+ */
+
 import { describe, expect, test, mock, beforeEach } from "bun:test";
 import React from "react";
 
@@ -23,7 +29,7 @@ void mock.module("@/ui/context", () => ({
 }));
 
 import { render, cleanup } from "@testing-library/react";
-import { UserMenu } from "../components/user-menu";
+import { UserMenu, deriveInitials } from "../components/user-menu";
 
 beforeEach(() => {
   cleanup();
@@ -50,5 +56,33 @@ describe("UserMenu", () => {
     const { container } = render(<UserMenu />);
     const trigger = container.querySelector('button[aria-label="Account menu"]');
     expect(trigger?.textContent).toBe("AL");
+  });
+});
+
+describe("deriveInitials", () => {
+  test("uses first letter of two name parts", () => {
+    expect(deriveInitials("Ada Lovelace", null)).toBe("AL");
+  });
+
+  test("falls back to email when name is missing", () => {
+    expect(deriveInitials(null, "ada.lovelace@example.com")).toBe("AL");
+  });
+
+  test("returns single letter for one-word name", () => {
+    expect(deriveInitials("Ada", null)).toBe("A");
+  });
+
+  test("falls back to '?' when both inputs are blank", () => {
+    expect(deriveInitials(null, null)).toBe("?");
+    expect(deriveInitials("", "")).toBe("?");
+    expect(deriveInitials("   ", "   ")).toBe("?");
+  });
+
+  test("name takes precedence over email", () => {
+    expect(deriveInitials("Bob Builder", "ada@example.com")).toBe("BB");
+  });
+
+  test("handles email-only input with single local part", () => {
+    expect(deriveInitials(null, "ada@example.com")).toBe("AE");
   });
 });

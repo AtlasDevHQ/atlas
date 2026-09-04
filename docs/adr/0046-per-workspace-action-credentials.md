@@ -30,7 +30,7 @@ So a workspace row is used only when it satisfies every **required** field of th
 
 `lib/tools/actions/credentials/resolver.ts` is the single place the ladder is decided. Individual actions stay credential-agnostic — they receive a credential set as an argument.
 
-The workspace is threaded to the executor through a new `ActionExecutionContext`, carrying `action_log.org_id` — the workspace stamped at **request** time. It is deliberately not re-read from the ambient request context at execution time, because a manual-approval action executes inside the *approver's* request: reading the context there would let whoever approves decide whose credentials fire. `packages/api/src/lib/tools/actions/__tests__/execution-context.test.ts` pins that with an approver in a different workspace than the requester.
+The workspace is threaded to the executor through a new `ActionExecutionContext`, carrying `action_log.org_id` — the workspace stamped at **request** time. It is deliberately not re-read from the ambient request context at execution time, because a manual-approval action executes inside the *approver's* request: reading the context there would let whoever approves decide whose credentials fire. `packages/api/src/lib/tools/actions/__tests__/handler.test.ts` (the "Formerly execution-context.test.ts" section) pins that with an approver in a different workspace than the requester.
 
 ## Storage: a new table, not `integration_credentials`
 

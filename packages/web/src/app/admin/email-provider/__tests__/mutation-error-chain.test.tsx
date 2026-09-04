@@ -238,3 +238,125 @@ describe("/admin/email-provider mutation error chain", () => {
     expect(document.querySelector('[role="alert"]')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Merged from dirty-gate.test.tsx (#4204) — same source module (`../page`),
+// no mock.module in either file, and a byte-identical harness
+// (stubAuthClient, Wrapper, jsonResponse, originalFetch, openEditor,
+// typeIntoInput), which the moved suite now shares.
+// ---------------------------------------------------------------------------
+
+/**
+ * Regression guard for #4204: the email-provider save had no dirty gate —
+ * Save always fired, even on an untouched form. The page now rides
+ * `useConfigForm`, whose `dirty` compare derives from `toForm`, so:
+ *
+ *  - with a saved override and no edits, "Replace" is disabled and no PUT
+ *    can fire;
+ *  - with no override, "Save" is disabled until the admin types something;
+ *  - any edit (credentials or from-address) enables the button.
+ */
+
+const NO_OVERRIDE_CONFIG = {
+  config: {
+    baseline: { provider: "resend", fromAddress: "noreply@atlas.dev" },
+    override: null,
+  },
+};
+
+const OVERRIDE_CONFIG = {
+  config: {
+    baseline: { provider: "resend", fromAddress: "noreply@atlas.dev" },
+    override: {
+      provider: "resend",
+      fromAddress: "sender@acme.com",
+      secretLabel: "API key",
+      secretMasked: "re_****abcd",
+      hints: {},
+      installedAt: "2026-06-01T00:00:00.000Z",
+    },
+  },
+};
+
+/**
+ * Route GET to the given config. Any write throws — these tests assert the
+ * dirty gate keeps writes from firing, so a PUT reaching the mock is itself
+ * the failure.
+ */
+function mockReadOnlyApi(config: unknown) {
+  globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = init?.method ?? "GET";
+    if (method === "GET" && url.endsWith("/api/v1/admin/email-provider")) {
+      return Promise.resolve(jsonResponse(config));
+    }
+    throw new Error(`unexpected ${method} ${url}`);
+  }) as unknown as typeof fetch;
+}
+
+function findButton(label: string): HTMLButtonElement {
+  const button = Array.from(document.querySelectorAll("button")).find(
+    (b) => b.textContent?.trim() === label,
+  );
+  expect(button).toBeDefined();
+  return button as HTMLButtonElement;
+}
+
+describe("/admin/email-provider dirty gate (#4204)", () => {
+  beforeEach(() => {
+    testQueryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+  });
+
+  afterEach(() => {
+    testQueryClient.clear();
+    cleanup();
+    globalThis.fetch = originalFetch;
+  });
+
+  test("with a saved override and no edits, Replace is disabled (no save can fire)", async () => {
+    mockReadOnlyApi(OVERRIDE_CONFIG);
+
+    render(<EmailProviderPage />, { wrapper: Wrapper });
+
+    const replaceButton = await waitFor(() => findButton("Replace"));
+    expect(replaceButton.disabled).toBe(true);
+
+    // Clicking the unchanged form must not fire a PUT — the read-only mock
+    // throws on any write, so reaching it would fail the test loudly.
+    await act(async () => {
+      fireEvent.click(replaceButton);
+    });
+    expect(findButton("Replace").disabled).toBe(true);
+  });
+
+  test("editing the from-address on a saved override enables Replace", async () => {
+    mockReadOnlyApi(OVERRIDE_CONFIG);
+
+    render(<EmailProviderPage />, { wrapper: Wrapper });
+
+    await waitFor(() => findButton("Replace"));
+    await act(async () => {
+      typeIntoInput("fromAddress", "new-sender@acme.com");
+    });
+    expect(findButton("Replace").disabled).toBe(false);
+  });
+
+  test("with no override, Save is disabled until a credential is typed", async () => {
+    mockReadOnlyApi(NO_OVERRIDE_CONFIG);
+
+    render(<EmailProviderPage />, { wrapper: Wrapper });
+
+    await openEditor();
+    expect(findButton("Save").disabled).toBe(true);
+
+    await act(async () => {
+      typeIntoInput("resendApiKey", "re_freshkey");
+    });
+    expect(findButton("Save").disabled).toBe(false);
+  });
+});

@@ -3,7 +3,8 @@
  *
  * Covers: GET /billing, POST /billing/byot. (The portal route was
  * deleted in #3417 — portal access goes through the Better Auth Stripe
- * plugin's /subscription/billing-portal; see stripe-billing-portal.test.ts.)
+ * plugin's /subscription/billing-portal; see stripe-checkout.test.ts,
+ * which absorbed the former stripe-billing-portal.test.ts.)
  */
 
 import { createConnectionMock } from "@atlas/api/testing/connection";

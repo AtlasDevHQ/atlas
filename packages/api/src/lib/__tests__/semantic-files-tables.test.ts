@@ -1,15 +1,21 @@
 /**
- * Tests for discoverTables() in semantic-files.ts.
+ * Tests for semantic/files.ts — getSemanticRoot(), discoverEntities() and
+ * discoverTables().
  *
- * Uses temp directories with entity YAMLs to test table discovery with
- * column details, covering both array and object-map dimension formats.
+ * discoverTables(): temp directories with entity YAMLs exercise table discovery
+ * with column details, covering both array and object-map dimension formats.
+ * discoverEntities(): warning accumulation when YAML files fail to parse or are
+ * missing the required `table` field.
+ * getSemanticRoot(): the canonical semantic root resolution respects
+ * ATLAS_SEMANTIC_ROOT, rejects empty values, and resolves relative paths.
  */
 import { describe, it, expect, afterEach } from "bun:test";
-import { resolve } from "path";
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
-import { discoverTables } from "../semantic/files";
+import { resolve, join } from "path";
+import { mkdirSync, writeFileSync, rmSync, existsSync, mkdtempSync } from "fs";
+import { tmpdir } from "os";
+import { discoverEntities, discoverTables, getSemanticRoot } from "../semantic/files";
 
-const tmpBase = resolve(__dirname, ".tmp-tables-test");
+const tmpBase = resolve(__dirname, ".tmp-semantic-files-test");
 let counter = 0;
 
 function makeRoot(suffix: string): string {
@@ -252,5 +258,100 @@ describe("discoverTables", () => {
       // A dot-split fragment must NOT match an opaque identifier.
       expect(discoverTables(root, new Set(["access-default"])).tables).toEqual([]);
     });
+  });
+});
+
+describe("discoverEntities", () => {
+  it("returns entities with no warnings when all files are valid", () => {
+    const root = makeRoot("clean");
+    writeEntity(root, "users", "table: users\ndescription: Users table\n");
+
+    const { entities, warnings } = discoverEntities(root);
+    expect(entities).toHaveLength(1);
+    expect(entities[0].table).toBe("users");
+    expect(warnings).toEqual([]);
+  });
+
+  it("returns warnings for malformed YAML files", () => {
+    const root = makeRoot("malformed");
+    writeEntity(root, "broken", "{{{not valid yaml");
+    writeEntity(root, "good", "table: good_table\ndescription: Valid\n");
+
+    const { entities, warnings } = discoverEntities(root);
+    expect(entities).toHaveLength(1);
+    expect(entities[0].table).toBe("good_table");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/Failed to parse entity:.*broken\.yml/);
+  });
+
+  it("returns warnings for malformed YAML in per-source subdirectory", () => {
+    const root = makeRoot("sub-malformed");
+    writeEntity(root, "ok", "table: ok_table\ndescription: Fine\n");
+    writeEntity(root, "bad", "{{{not valid yaml", "warehouse");
+
+    const { entities, warnings } = discoverEntities(root);
+    expect(entities).toHaveLength(1);
+    expect(entities[0].table).toBe("ok_table");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/Failed to parse entity:.*bad\.yml/);
+  });
+
+  it("returns warning for entity file missing table field", () => {
+    const root = makeRoot("no-table");
+    writeEntity(root, "bad", "description: No table field\ndimensions:\n  id:\n    type: number\n");
+    writeEntity(root, "good", "table: good_table\ndescription: Valid\n");
+
+    const { entities, warnings } = discoverEntities(root);
+    expect(entities).toHaveLength(1);
+    expect(entities[0].table).toBe("good_table");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/missing required 'table' field:.*bad\.yml/);
+  });
+
+  it("returns empty entities and no warnings for non-existent root", () => {
+    const { entities, warnings } = discoverEntities("/tmp/nonexistent-atlas-entities-test");
+    expect(entities).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+});
+
+/**
+ * The test preload points `ATLAS_SEMANTIC_ROOT` at a per-process sandbox
+ * (#4655). Restore that value rather than deleting the var, or every suite
+ * that runs after this one writes org YAML into the checkout again.
+ */
+const SANDBOX_ROOT = process.env.ATLAS_SEMANTIC_ROOT;
+
+function restoreSandboxRoot(): void {
+  if (SANDBOX_ROOT === undefined) delete process.env.ATLAS_SEMANTIC_ROOT;
+  else process.env.ATLAS_SEMANTIC_ROOT = SANDBOX_ROOT;
+}
+
+afterEach(restoreSandboxRoot);
+
+describe("getSemanticRoot", () => {
+  it("defaults to cwd/semantic when env var is not set", () => {
+    delete process.env.ATLAS_SEMANTIC_ROOT;
+    expect(getSemanticRoot()).toBe(resolve(process.cwd(), "semantic"));
+  });
+
+  it("respects ATLAS_SEMANTIC_ROOT when set to an absolute path", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "atlas-root-"));
+    try {
+      process.env.ATLAS_SEMANTIC_ROOT = tmpDir;
+      expect(getSemanticRoot()).toBe(tmpDir);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves a relative ATLAS_SEMANTIC_ROOT against cwd", () => {
+    process.env.ATLAS_SEMANTIC_ROOT = "custom/semantic";
+    expect(getSemanticRoot()).toBe(resolve(process.cwd(), "custom/semantic"));
+  });
+
+  it("throws when ATLAS_SEMANTIC_ROOT is set to an empty string", () => {
+    process.env.ATLAS_SEMANTIC_ROOT = "";
+    expect(() => getSemanticRoot()).toThrow("ATLAS_SEMANTIC_ROOT is set but empty");
   });
 });

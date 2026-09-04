@@ -1,3 +1,10 @@
+/**
+ * `ui/components/search-params` — the chat surface's URL contract.
+ *
+ * Merged 2026-09-04; formerly also conversation-url.test.ts (the pure
+ * resolver) and prompt-prefill.test.tsx (#3081).
+ */
+
 import { describe, it, expect, mock, afterEach } from "bun:test";
 import { render, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import { createElement, useEffect, useRef, useState, type ReactNode } from "react";
@@ -6,6 +13,7 @@ import { NuqsTestingAdapter, type UrlUpdateEvent } from "nuqs/adapters/testing";
 import {
   chatSearchParams,
   resolveConversationUrlAction,
+  type ConversationUrlInput,
 } from "../components/search-params";
 
 /**
@@ -197,5 +205,185 @@ describe("conversation URL open/navigate (#3068)", () => {
     resolveFirst(); // conv-1's load resolves late — must bail as stale
     await waitFor(() => expect(committed).toHaveBeenCalledWith("conv-2"));
     expect(committed).not.toHaveBeenCalledWith("conv-1");
+  });
+});
+
+/**
+ * `resolveConversationUrlAction` is the pure decision behind AtlasChat's
+ * URL-driven conversation-open effect (#3068). It maps the current `?id=`
+ * value (plus auth/groups readiness) to open / clear / noop.
+ *
+ * The branch that matters most: a signed-in managed user must WAIT for the
+ * connection-groups fetch to settle (so #3065 scope restore validates against
+ * real groups), but a self-hosted / simple-key deploy NEVER fetches groups —
+ * gating on `envGroupsHasLoaded` there would leave a deep-linked conversation
+ * permanently unopened.
+ */
+function input(overrides: Partial<ConversationUrlInput> = {}): ConversationUrlInput {
+  return {
+    urlId: "",
+    loadedId: null,
+    authSettled: true,
+    isSignedIn: true,
+    envGroupsHasLoaded: true,
+    ...overrides,
+  };
+}
+
+describe("resolveConversationUrlAction", () => {
+  it("waits until auth is settled", () => {
+    expect(
+      resolveConversationUrlAction(input({ urlId: "conv-1", authSettled: false })),
+    ).toEqual({ kind: "noop" });
+  });
+
+  it("does nothing for an empty URL on a fresh chat", () => {
+    expect(resolveConversationUrlAction(input({ urlId: "", loadedId: null }))).toEqual({
+      kind: "noop",
+    });
+  });
+
+  it("clears when the URL empties but a conversation is loaded (back-nav to empty)", () => {
+    expect(
+      resolveConversationUrlAction(input({ urlId: "", loadedId: "conv-1" })),
+    ).toEqual({ kind: "clear" });
+  });
+
+  it("does nothing when the URL already names the loaded conversation", () => {
+    expect(
+      resolveConversationUrlAction(input({ urlId: "conv-1", loadedId: "conv-1" })),
+    ).toEqual({ kind: "noop" });
+  });
+
+  it("opens a deep-linked conversation once groups have settled (signed in)", () => {
+    expect(
+      resolveConversationUrlAction(
+        input({
+          urlId: "conv-1",
+          loadedId: null,
+          isSignedIn: true,
+          envGroupsHasLoaded: true,
+        }),
+      ),
+    ).toEqual({ kind: "open", id: "conv-1" });
+  });
+
+  it("waits for the groups fetch to settle before opening (signed in)", () => {
+    expect(
+      resolveConversationUrlAction(
+        input({
+          urlId: "conv-1",
+          loadedId: null,
+          isSignedIn: true,
+          envGroupsHasLoaded: false,
+        }),
+      ),
+    ).toEqual({ kind: "noop" });
+  });
+
+  it("opens immediately on self-hosted / simple-key (no groups fetch to wait on)", () => {
+    // The connection-groups query is disabled when not signed in, so its
+    // `hasLoaded` never flips. Gating on it would strand the deep link forever.
+    expect(
+      resolveConversationUrlAction(
+        input({
+          urlId: "conv-1",
+          loadedId: null,
+          isSignedIn: false,
+          envGroupsHasLoaded: false,
+        }),
+      ),
+    ).toEqual({ kind: "open", id: "conv-1" });
+  });
+
+  it("opens a different conversation on back/forward navigation", () => {
+    expect(
+      resolveConversationUrlAction(
+        input({ urlId: "conv-2", loadedId: "conv-1", envGroupsHasLoaded: true }),
+      ),
+    ).toEqual({ kind: "open", id: "conv-2" });
+  });
+
+  it("still waits for groups when switching conversations while signed in", () => {
+    expect(
+      resolveConversationUrlAction(
+        input({
+          urlId: "conv-2",
+          loadedId: "conv-1",
+          isSignedIn: true,
+          envGroupsHasLoaded: false,
+        }),
+      ),
+    ).toEqual({ kind: "noop" });
+  });
+});
+
+/**
+ * Coverage for the `?prompt=` prefill on the unified chat surface (#3081). The
+ * hosted `WorkspaceShell` delivers a query through `?prompt=` (`deliverPrompt`);
+ * `AtlasChat`'s prefill effect must (a) put the text in the composer and
+ * (b) clear `?prompt=` WITHOUT clobbering `?id=` — nuqs merges keys, and the
+ * conversation deep link must survive a prompt delivery. As with the #3068 URL
+ * tests, this drives the REAL `chatSearchParams` parser through a real nuqs
+ * adapter and mirrors the component's effect rather than mounting the whole chat.
+ */
+function PromptHarness(props: { onPrefill: (text: string) => void }) {
+  const [params, setParams] = useQueryStates(chatSearchParams);
+  const lastPrefilledRef = useRef<string | null>(null);
+  const onPrefillRef = useRef(props.onPrefill);
+  onPrefillRef.current = props.onPrefill;
+  useEffect(() => {
+    const text = params.prompt;
+    if (!text) return;
+    if (text === lastPrefilledRef.current) return;
+    lastPrefilledRef.current = text;
+    onPrefillRef.current(text);
+    void setParams({ prompt: "" });
+  }, [params.prompt, setParams]);
+  return createElement(
+    "div",
+    null,
+    createElement("span", { "data-testid": "id" }, params.id),
+    createElement("span", { "data-testid": "prompt" }, params.prompt),
+  );
+}
+
+describe("?prompt= prefill (#3081)", () => {
+  it("prefills the composer from ?prompt= and clears it, preserving ?id=", async () => {
+    const onPrefill = mock((_text: string) => {});
+    const { getByTestId } = render(createElement(PromptHarness, { onPrefill }), {
+      wrapper: wrapper({ id: "conv-1", prompt: "What's our GMV?" }),
+    });
+
+    // The text reaches the composer.
+    await waitFor(() => expect(onPrefill).toHaveBeenCalledWith("What's our GMV?"));
+    // `?prompt=` is cleared back to its default…
+    await waitFor(() => expect(getByTestId("prompt").textContent).toBe(""));
+    // …while the conversation deep link survives the clear (nuqs merges keys).
+    expect(getByTestId("id").textContent).toBe("conv-1");
+  });
+
+  it("does not prefill when ?prompt= is absent", async () => {
+    const onPrefill = mock((_text: string) => {});
+    render(createElement(PromptHarness, { onPrefill }), {
+      wrapper: wrapper({ id: "conv-1" }),
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onPrefill).not.toHaveBeenCalled();
+  });
+
+  it("keeps the conversation-open resolver independent of the new prompt key", () => {
+    // The additive `prompt` key must not perturb the #3068 open/clear decision,
+    // which reads only `id`.
+    expect(chatSearchParams.prompt).toBeDefined();
+    expect(
+      resolveConversationUrlAction({
+        urlId: "conv-9",
+        loadedId: null,
+        authSettled: true,
+        isSignedIn: false,
+        envGroupsHasLoaded: false,
+      }),
+    ).toEqual({ kind: "open", id: "conv-9" });
   });
 });

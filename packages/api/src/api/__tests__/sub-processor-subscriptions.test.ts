@@ -4,7 +4,7 @@
  * Covers the auth gate, validation (URL safety + token length), the
  * unique-violation 409 path, and the no-internal-DB 503 path. The
  * downstream encryption call is exercised in
- * src/lib/__tests__/create-subscription-encryption.test.ts; the
+ * src/lib/__tests__/sub-processor-publisher-encryption.test.ts; the
  * publisher tick is exercised in
  * src/lib/__tests__/sub-processor-publisher-tick.test.ts.
  */

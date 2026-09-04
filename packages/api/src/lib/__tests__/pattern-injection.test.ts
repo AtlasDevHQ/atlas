@@ -672,35 +672,6 @@ describe("pattern cache invalidation", () => {
     expect(fresh.length).toBe(0);
   });
 
-  test("invalidation is org-scoped", async () => {
-    mockApprovedPatterns = [
-      {
-        id: "1",
-        org_id: "org-1",
-        pattern_sql: "SELECT SUM(revenue) FROM companies",
-        description: "Revenue",
-        source_entity: "companies",
-        confidence: 0.9,
-      },
-    ];
-
-    // Populate cache for org-1
-    await getRelevantPatterns("org-1", "What is the revenue?");
-
-    // Change data
-    mockApprovedPatterns = [];
-
-    // Invalidate a different org — org-1 cache untouched
-    invalidatePatternCache("org-2");
-    const stillCached = await getRelevantPatterns("org-1", "What is the revenue?");
-    expect(stillCached.length).toBe(1);
-
-    // Invalidate org-1
-    invalidatePatternCache("org-1");
-    const fresh = await getRelevantPatterns("org-1", "What is the revenue?");
-    expect(fresh.length).toBe(0);
-  });
-
   test("DB failure returns empty without caching the failure", async () => {
     mockGetApprovedPatternsError = new Error("relation learned_patterns does not exist");
 
@@ -856,5 +827,141 @@ describe("edge cases", () => {
 
     const results = await getRelevantPatterns(null, "what is the");
     expect(results.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cache lifecycle (merged from pattern-cache.test.ts): LRU eviction at
+// MAX_ENTRIES, and the #3612 invalidation contract — an admin approve/reject
+// must force the next read to re-fetch instead of serving the stale TTL copy.
+// ---------------------------------------------------------------------------
+
+describe("pattern cache LRU eviction", () => {
+  beforeEach(() => {
+    _resetPatternCache();
+    mockApprovedPatterns = [{
+      id: "1",
+      org_id: null,
+      pattern_sql: "SELECT SUM(revenue) FROM companies",
+      description: "Total revenue",
+      source_entity: "companies",
+      confidence: 0.9,
+    }];
+    mockConfigLearn = { confidenceThreshold: 0.7 };
+    getApprovedPatternsCalls = [];
+    mockPatternsByGroup = null;
+    mockGetApprovedPatternsError = null;
+  });
+
+  test("evicts oldest entry when cache exceeds MAX_ENTRIES", async () => {
+    // Fill cache with 501 org entries (MAX_ENTRIES = 500)
+    for (let i = 0; i <= 500; i++) {
+      await getRelevantPatterns(`org:${i}`, "revenue");
+    }
+
+    // All 501 calls should have hit the DB
+    expect(getApprovedPatternsCalls.length).toBe(501);
+
+    // org:0 should have been evicted (oldest) — fetching again hits DB
+    const countBefore = getApprovedPatternsCalls.length;
+    await getRelevantPatterns("org:0", "revenue");
+    expect(getApprovedPatternsCalls.length).toBe(countBefore + 1);
+
+    // org:500 should still be cached — fetching again does NOT hit DB
+    const countBefore2 = getApprovedPatternsCalls.length;
+    await getRelevantPatterns("org:500", "revenue");
+    expect(getApprovedPatternsCalls.length).toBe(countBefore2);
+  });
+
+  test("updates lastAccessedAt on cache hit to prevent eviction", async () => {
+    // Fill 499 entries
+    for (let i = 0; i < 499; i++) {
+      await getRelevantPatterns(`org:${i}`, "revenue");
+    }
+
+    // Access org:0 again (refreshes lastAccessedAt)
+    await getRelevantPatterns("org:0", "revenue");
+
+    // Fill 2 more to trigger eviction (total 501)
+    await getRelevantPatterns("org:499", "revenue");
+    await getRelevantPatterns("org:500", "revenue");
+
+    // org:0 was recently accessed, so it should still be cached
+    const countBefore = getApprovedPatternsCalls.length;
+    await getRelevantPatterns("org:0", "revenue");
+    expect(getApprovedPatternsCalls.length).toBe(countBefore);
+
+    // org:1 was NOT accessed again, so it should have been evicted
+    const countBefore2 = getApprovedPatternsCalls.length;
+    await getRelevantPatterns("org:1", "revenue");
+    expect(getApprovedPatternsCalls.length).toBe(countBefore2 + 1);
+  });
+});
+
+describe("pattern cache invalidation (#3612)", () => {
+  beforeEach(() => {
+    _resetPatternCache();
+    mockApprovedPatterns = [{
+      id: "1",
+      org_id: "org-1",
+      pattern_sql: "SELECT SUM(revenue) FROM companies",
+      description: "Total revenue",
+      source_entity: "companies",
+      confidence: 0.9,
+    }];
+    mockConfigLearn = { confidenceThreshold: 0.7 };
+    getApprovedPatternsCalls = [];
+    mockPatternsByGroup = null;
+    mockGetApprovedPatternsError = null;
+  });
+
+  // The bug behind #3612: an admin approve flips the row to `approved`, but
+  // until the org cache is invalidated the next agent turn keeps serving the
+  // stale 5-min TTL copy. This proves invalidation forces a fresh DB read.
+  test("invalidatePatternCache forces the next read to fetch fresh patterns", async () => {
+    // First read populates the cache (one DB fetch).
+    await getRelevantPatterns("org-1", "revenue");
+    expect(getApprovedPatternsCalls.length).toBe(1);
+
+    // Second read is served from cache — no new fetch.
+    await getRelevantPatterns("org-1", "revenue");
+    expect(getApprovedPatternsCalls.length).toBe(1);
+
+    // An approve/reject would call this. After it, the cached copy is stale and
+    // must be re-fetched on the next read.
+    invalidatePatternCache("org-1");
+
+    // A newly approved pattern is now visible to the DB layer.
+    mockApprovedPatterns = [
+      ...mockApprovedPatterns,
+      {
+        id: "2",
+        org_id: "org-1",
+        pattern_sql: "SELECT AVG(revenue) FROM companies",
+        description: "Average revenue",
+        source_entity: "companies",
+        confidence: 0.95,
+      },
+    ];
+
+    const fresh = await getRelevantPatterns("org-1", "revenue");
+    expect(getApprovedPatternsCalls.length).toBe(2);
+    expect(fresh).toHaveLength(2);
+  });
+
+  test("invalidating one org does not evict another org's cache", async () => {
+    await getRelevantPatterns("org-1", "revenue");
+    await getRelevantPatterns("org-2", "revenue");
+    expect(getApprovedPatternsCalls.length).toBe(2);
+
+    invalidatePatternCache("org-1");
+
+    // org-2 is untouched — still served from cache.
+    await getRelevantPatterns("org-2", "revenue");
+    expect(getApprovedPatternsCalls.length).toBe(2);
+
+    // org-1 was evicted — re-fetches.
+    await getRelevantPatterns("org-1", "revenue");
+    expect(getApprovedPatternsCalls.length).toBe(3);
   });
 });

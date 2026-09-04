@@ -1,5 +1,24 @@
+/**
+ * DashboardTopBar.
+ *
+ * Merged 2026-09-04; formerly also dashboard-topbar-touch.test.tsx (#4323).
+ *
+ * Viewing-first on touch (#4323): on a coarse (touch) pointer the layout-Edit
+ * affordance is HIDDEN with a one-line "editing is desktop-only" explanation,
+ * rather than shown-and-inert (the grid is a read-only stack on touch anyway).
+ * A fine pointer keeps the View/Edit toggle. `useCoarsePointer` is mocked
+ * through a mutable flag so both pointer classes are exercised; it defaults to
+ * `false`, which is what the real hook returns in jsdom (no `matchMedia`), so
+ * the non-touch tests below are unaffected.
+ */
+
 import { describe, expect, test, afterEach, mock } from "bun:test";
 import type { ReactNode } from "react";
+
+let coarse = false;
+void mock.module("@/ui/hooks/use-coarse-pointer", () => ({
+  useCoarsePointer: () => coarse,
+}));
 
 void mock.module("next/navigation", () => ({
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
@@ -199,5 +218,114 @@ describe("DashboardTopBar", () => {
     expect(screen.getByRole("button", { name: "Switch dashboard" })).toBeTruthy();
     fireEvent.click(screen.getByText("Revenue overview"));
     expect(screen.queryByRole("button", { name: "Switch dashboard" })).toBeNull();
+  });
+});
+
+const touchNoop = () => {};
+
+const touchBaseProps = {
+  dashboardId: "d-1",
+  title: "Revenue overview",
+  cardCount: 3,
+  description: null,
+  onTitleChange: touchNoop as (next: string) => void,
+  refreshing: false,
+  refreshSchedule: null,
+  onScheduleChange: touchNoop as (v: string) => void,
+  onRefreshAll: touchNoop,
+  onSuggest: touchNoop,
+  suggesting: false,
+  onExport: touchNoop as (format: "png" | "pdf") => void,
+  exporting: false,
+  onDelete: touchNoop,
+  shareSlot: <button type="button">Share</button>,
+  editing: false,
+  onEditingChange: touchNoop as (next: boolean) => void,
+  density: "comfortable" as Density,
+  onDensityChange: touchNoop as (next: Density) => void,
+};
+
+function touchWrapper({ children }: { children: ReactNode }) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+  return (
+    <QueryClientProvider client={client}>
+      <AtlasProvider
+        config={{
+          apiUrl: "http://localhost:3001",
+          isCrossOrigin: false as const,
+          authClient: stubAuthClient,
+        }}
+      >
+        {children}
+      </AtlasProvider>
+    </QueryClientProvider>
+  );
+}
+
+describe("DashboardTopBar — touch (#4323)", () => {
+  afterEach(() => {
+    cleanup();
+    coarse = false;
+  });
+
+  test("a fine pointer shows the View/Edit mode toggle", () => {
+    coarse = false;
+    render(<DashboardTopBar {...touchBaseProps} />, { wrapper: touchWrapper });
+    expect(screen.getByRole("group", { name: "Mode" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Edit/ })).toBeTruthy();
+    expect(screen.queryByTestId("edit-desktop-only-hint")).toBeNull();
+  });
+
+  test("a coarse (touch) pointer hides the toggle and explains editing is desktop-only", () => {
+    coarse = true;
+    render(<DashboardTopBar {...touchBaseProps} />, { wrapper: touchWrapper });
+    expect(screen.queryByRole("group", { name: "Mode" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Edit/ })).toBeNull();
+    const hint = screen.getByTestId("edit-desktop-only-hint");
+    expect(hint.textContent).toContain("Editing is desktop-only");
+  });
+});
+
+describe("DashboardTopBar — stacked (narrow) grid (#4689)", () => {
+  afterEach(() => {
+    cleanup();
+    coarse = false;
+  });
+
+  test("a fine-pointer narrow window (grid stacked) hides the toggle and reads 'widen the window', NOT 'desktop-only'", () => {
+    coarse = false;
+    render(<DashboardTopBar {...touchBaseProps} stacked={true} />, { wrapper: touchWrapper });
+    // The drag/resize toggle is gone — the stacked grid can't honor a drag.
+    expect(screen.queryByRole("group", { name: "Mode" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Edit/ })).toBeNull();
+    // Reason tracks the signal: a resized DESKTOP browser is not "desktop-only".
+    expect(screen.queryByTestId("edit-desktop-only-hint")).toBeNull();
+    const hint = screen.getByTestId("edit-too-narrow-hint");
+    expect(hint.textContent).toContain("Widen the window to edit");
+  });
+
+  test("stacked suppresses the 'drag tiles' help even when editing is still true (held from a prior wide session)", () => {
+    coarse = false;
+    render(<DashboardTopBar {...touchBaseProps} stacked={true} editing={true} />, { wrapper: touchWrapper });
+    expect(screen.queryByText(/drag tiles to rearrange/)).toBeNull();
+    expect(screen.queryByText("Add from chat")).toBeNull();
+  });
+
+  test("a coarse pointer wins the hint copy even when also stacked", () => {
+    coarse = true;
+    render(<DashboardTopBar {...touchBaseProps} stacked={true} />, { wrapper: touchWrapper });
+    const hint = screen.getByTestId("edit-desktop-only-hint");
+    expect(hint.textContent).toContain("Editing is desktop-only");
+    expect(screen.queryByTestId("edit-too-narrow-hint")).toBeNull();
+  });
+
+  test("a fine pointer with a wide (non-stacked) grid keeps the View/Edit toggle", () => {
+    coarse = false;
+    render(<DashboardTopBar {...touchBaseProps} stacked={false} />, { wrapper: touchWrapper });
+    expect(screen.getByRole("group", { name: "Mode" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Edit/ })).toBeTruthy();
+    expect(screen.queryByTestId("edit-too-narrow-hint")).toBeNull();
   });
 });

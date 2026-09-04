@@ -9,7 +9,7 @@
  * the injectable-deps seam (no `mock.module`), matching the claim-gate
  * test style. The executeAgentQuery-level integration (throws, zero
  * agent spend) is pinned separately in
- * `lib/__tests__/agent-query-claim-gate.test.ts` and `agent-query-billing.test.ts`.
+ * `lib/__tests__/agent-query-billing.test.ts`.
  */
 
 import { describe, it, expect, mock } from "bun:test";

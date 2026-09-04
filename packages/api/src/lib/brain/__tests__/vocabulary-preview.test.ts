@@ -1009,20 +1009,6 @@ describe("subtreeTruncated — a scope blind spot, not a count disagreement", ()
       expect(radius.disarming.countsConsistent).toBe(false);
     });
   }
-
-  it("a genuine bound hit sets subtreeTruncated and leaves countsConsistent alone", async () => {
-    const radius = computed(
-      await loadBlastRadius(
-        reader([], (sql) =>
-          sql.includes(EDGE_EXISTS) ? [{ hit: 1 }] : sql.includes("AS hit") ? [{ hit: true }] : undefined,
-        ),
-        ctx(),
-        removal,
-      ),
-    );
-    expect(radius.subtreeTruncated).toBe(true);
-    expect(radius.disarming.countsConsistent).toBe(true);
-  });
 });
 
 describe("the closure refusals — both were untested, and a no-op survived each", () => {

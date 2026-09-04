@@ -4,6 +4,13 @@
  * Uses the cache-busting import pattern from connection.test.ts to bypass
  * global mocks registered by other test files. Mocks pg and mysql2/promise
  * so register() can create connections without real databases.
+ *
+ * Also carries the health-check, pool-limit/LRU and Effect-fiber suites that
+ * used to live in three sibling files, all of which drove this same
+ * `ConnectionRegistry` behind an equivalent pg/mysql2 mock pair:
+ * formerly registry-health.test.ts, registry-pool-limits.test.ts and
+ * health-effect.test.ts. The pg double below is the union of the three
+ * (constructor options + pool-stat getters), which every suite tolerates.
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { resolve } from "path";
@@ -11,6 +18,7 @@ import { resolve } from "path";
 // Mock database drivers before importing connection module
 void mock.module("pg", () => ({
   Pool: class MockPool {
+    constructor(public opts?: Record<string, unknown>) {}
     async query() {
       return { rows: [], fields: [] };
     }
@@ -23,11 +31,21 @@ void mock.module("pg", () => ({
       };
     }
     async end() {}
+    get totalCount() {
+      return 0;
+    }
+    get idleCount() {
+      return 0;
+    }
+    get waitingCount() {
+      return 0;
+    }
   },
 }));
 
 void mock.module("mysql2/promise", () => ({
-  createPool: () => ({
+  createPool: (opts?: Record<string, unknown>) => ({
+    _opts: opts,
     async getConnection() {
       return {
         async execute() {
@@ -51,6 +69,8 @@ const ConnectionRegistry = connMod.ConnectionRegistry as typeof import("../conne
 const connections = connMod.connections as import("../connection").ConnectionRegistry;
 const getDB = connMod.getDB as typeof import("../connection").getDB;
 const detectDBType = connMod.detectDBType as typeof import("../connection").detectDBType;
+const extractTargetHost = connMod.extractTargetHost as typeof import("../connection").extractTargetHost;
+type DBConnection = import("../connection").DBConnection;
 
 // Import semantic module with cache-busting too
 const semModPath = resolve(__dirname, "../../semantic/whitelist.ts");
@@ -394,5 +414,309 @@ describe("per-connection whitelist", () => {
     const b = getWhitelistedTables("b");
     // When no entity uses `connection:`, all connections share the same table set
     expect(a.size).toBe(b.size);
+  });
+});
+
+/**
+ * ── Moved from registry-health.test.ts and health-effect.test.ts ──
+ *
+ * Health checks over a fresh `new ConnectionRegistry()`. `health-effect.test.ts`
+ * covered the same three probe outcomes plus the Effect-fiber lifecycle
+ * (stop-without-start, `_reset`, `shutdown`); only the fiber-lifecycle cases
+ * moved, the three probe cases it duplicated did not.
+ */
+describe("ConnectionRegistry health checks", () => {
+  let registry: InstanceType<typeof ConnectionRegistry>;
+
+  beforeEach(() => {
+    registry = new ConnectionRegistry();
+  });
+
+  afterEach(() => {
+    registry._reset();
+  });
+
+  function mockConn(opts?: { failQuery?: boolean }): DBConnection {
+    return {
+      async query() {
+        if (opts?.failQuery) throw new Error("connection refused");
+        return { columns: ["?column?"], rows: [{ "?column?": 1 }] };
+      },
+      async close() {},
+    };
+  }
+
+  it("healthy on successful health check", async () => {
+    registry.registerDirect("test", mockConn(), "postgres");
+    const result = await registry.healthCheck("test");
+    expect(result.status).toBe("healthy");
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(result.checkedAt).toBeInstanceOf(Date);
+  });
+
+  it("degraded after 1 failure", async () => {
+    registry.registerDirect("test", mockConn({ failQuery: true }), "postgres");
+    const result = await registry.healthCheck("test");
+    expect(result.status).toBe("degraded");
+    expect(result.message).toContain("connection refused");
+  });
+
+  it("unhealthy after 3 failures spanning > 5 minutes", async () => {
+    const conn = mockConn({ failQuery: true });
+    registry.registerDirect("test", conn, "postgres");
+
+    // Simulate 3 failures over 5+ minutes
+    await registry.healthCheck("test"); // failure 1
+
+    // Manipulate the entry's firstFailureAt to simulate time passing
+    // Access private field via any cast
+    const entries = (registry as unknown as { entries: Map<string, { firstFailureAt: number | null; consecutiveFailures: number }> }).entries;
+    const entry = entries.get("test")!;
+    entry.firstFailureAt = Date.now() - (5 * 60 * 1000 + 1000); // 5min + 1s ago
+    entry.consecutiveFailures = 2; // already had 2 failures
+
+    const result = await registry.healthCheck("test"); // failure 3
+    expect(result.status).toBe("unhealthy");
+  });
+
+  it("recovers from unhealthy to healthy on success", async () => {
+    let shouldFail = true;
+    const conn: DBConnection = {
+      async query() {
+        if (shouldFail) throw new Error("down");
+        return { columns: ["?column?"], rows: [{ "?column?": 1 }] };
+      },
+      async close() {},
+    };
+
+    registry.registerDirect("test", conn, "postgres");
+
+    // Make it unhealthy
+    const entries = (registry as unknown as { entries: Map<string, { firstFailureAt: number | null; consecutiveFailures: number }> }).entries;
+    await registry.healthCheck("test");
+    const entry = entries.get("test")!;
+    entry.firstFailureAt = Date.now() - (5 * 60 * 1000 + 1000);
+    entry.consecutiveFailures = 2;
+    const unhealthy = await registry.healthCheck("test");
+    expect(unhealthy.status).toBe("unhealthy");
+
+    // Now recover
+    shouldFail = false;
+    const recovered = await registry.healthCheck("test");
+    expect(recovered.status).toBe("healthy");
+  });
+
+  it("describe() includes health status", async () => {
+    registry.registerDirect("test", mockConn(), "postgres", "Test DB");
+    await registry.healthCheck("test");
+
+    const meta = registry.describe();
+    expect(meta).toHaveLength(1);
+    expect(meta[0].health).toBeDefined();
+    expect(meta[0].health!.status).toBe("healthy");
+  });
+
+  it("describe() omits health when no check has been run", async () => {
+    registry.registerDirect("test", mockConn(), "postgres");
+    const meta = registry.describe();
+    expect(meta[0].health).toBeUndefined();
+  });
+
+  it("_reset() stops health checks", () => {
+    registry.startHealthChecks(60000);
+    registry._reset();
+    // Should not throw — interval is already cleared
+    registry.stopHealthChecks();
+  });
+
+  it("startHealthChecks is idempotent", () => {
+    registry.startHealthChecks(60000);
+    registry.startHealthChecks(60000); // should not create a second interval
+    registry.stopHealthChecks();
+  });
+
+  it("getTargetHost returns host for registered connection", () => {
+    registry.register("pg", {
+      url: "postgresql://user:pass@db-host.example.com:5432/mydb",
+    });
+    expect(registry.getTargetHost("pg")).toBe("db-host.example.com");
+  });
+
+  it("getTargetHost returns (unknown) for unregistered connection", () => {
+    expect(registry.getTargetHost("nonexistent")).toBe("(unknown)");
+  });
+
+  // ── The Effect-fiber lifecycle, formerly health-effect.test.ts ──
+  // Verifies that the setInterval replacement (Effect.repeat + Fiber)
+  // correctly starts and stops health check cycles.
+  it("stopHealthChecks is safe to call without start", () => {
+    registry.stopHealthChecks(); // no-op, no error
+  });
+
+  it("_reset stops health check fiber", () => {
+    registry.registerDirect("test", mockConn(), "postgres");
+    registry.startHealthChecks(60000);
+    registry._reset();
+    // If fiber was properly interrupted, this should not throw
+    expect(registry.list()).toEqual([]);
+  });
+
+  it("shutdown stops health check fiber and closes pools", async () => {
+    let closed = false;
+    const conn: DBConnection = {
+      async query() { return { columns: [], rows: [] }; },
+      async close() { closed = true; },
+    };
+    registry.registerDirect("test", conn, "postgres");
+    registry.startHealthChecks(60000);
+
+    await registry.shutdown();
+
+    expect(closed).toBe(true);
+    expect(registry.list()).toEqual([]);
+  });
+});
+
+/** Moved from registry-health.test.ts. */
+describe("extractTargetHost", () => {
+  it("extracts hostname from postgresql URL", () => {
+    expect(extractTargetHost("postgresql://user:pass@db.example.com:5432/mydb")).toBe("db.example.com");
+  });
+
+  it("extracts hostname from mysql URL", () => {
+    expect(extractTargetHost("mysql://user:pass@mysql.host:3306/db")).toBe("mysql.host");
+  });
+
+  it("extracts hostname from clickhouse URL", () => {
+    expect(extractTargetHost("clickhouse://user:pass@ch.host:8123/default")).toBe("ch.host");
+  });
+
+  it("extracts hostname from snowflake URL", () => {
+    expect(extractTargetHost("snowflake://user:pass@account123/db/schema")).toBe("account123");
+  });
+
+  it("extracts hostname from duckdb URL", () => {
+    // duckdb://:memory: doesn't have a parseable hostname
+    expect(extractTargetHost("duckdb://:memory:")).toBe("(unknown)");
+  });
+
+  it("returns (unknown) for unparseable URL", () => {
+    expect(extractTargetHost("not-a-url")).toBe("(unknown)");
+  });
+
+  it("never exposes credentials", () => {
+    const host = extractTargetHost("postgresql://admin:s3cret@db.example.com:5432/production");
+    expect(host).toBe("db.example.com");
+    expect(host).not.toContain("admin");
+    expect(host).not.toContain("s3cret");
+  });
+});
+
+/**
+ * Moved from registry-pool-limits.test.ts — pool limit and LRU eviction.
+ * The pg/mysql2 doubles above capture their constructor options for these.
+ */
+describe("ConnectionRegistry pool limits", () => {
+  let registry: InstanceType<typeof ConnectionRegistry>;
+
+  beforeEach(() => {
+    registry = new ConnectionRegistry();
+  });
+
+  afterEach(() => {
+    registry._reset();
+  });
+
+  it("threads maxConnections to pg Pool constructor", () => {
+    registry.register("pg", {
+      url: "postgresql://user:pass@localhost:5432/db",
+      maxConnections: 20,
+    });
+    expect(registry.get("pg")).toBeDefined();
+  });
+
+  it("threads maxConnections to mysql pool constructor", () => {
+    registry.register("my", {
+      url: "mysql://user:pass@localhost:3306/db",
+      maxConnections: 15,
+    });
+    expect(registry.get("my")).toBeDefined();
+  });
+
+  it("uses default maxConnections=10 when not specified", () => {
+    registry.register("pg", {
+      url: "postgresql://user:pass@localhost:5432/db",
+    });
+    expect(registry.get("pg")).toBeDefined();
+  });
+
+  it("evicts LRU connection when total pool slots exceed max", async () => {
+    registry.setMaxTotalConnections(20);
+
+    // Register two connections (10 slots each = 20 total, at cap)
+    registry.register("a", { url: "postgresql://user:pass@localhost:5432/a" });
+    registry.register("b", { url: "postgresql://user:pass@localhost:5432/b" });
+    expect(registry.list()).toContain("a");
+    expect(registry.list()).toContain("b");
+
+    // Touch "b" so "a" is LRU
+    registry.get("b");
+    await new Promise((r) => setTimeout(r, 5));
+
+    // Register a third — should evict "a" (LRU)
+    registry.register("c", { url: "postgresql://user:pass@localhost:5432/c" });
+    expect(registry.list()).not.toContain("a");
+    expect(registry.list()).toContain("b");
+    expect(registry.list()).toContain("c");
+  });
+
+  it("re-registration does not trigger eviction", () => {
+    registry.setMaxTotalConnections(10);
+    registry.register("a", { url: "postgresql://user:pass@localhost:5432/a" });
+
+    // Re-register "a" — should NOT evict since it replaces in-place
+    registry.register("a", { url: "postgresql://user:pass@localhost:5432/a-new" });
+    expect(registry.list()).toEqual(["a"]);
+  });
+
+  it("setMaxTotalConnections changes the cap", () => {
+    registry.setMaxTotalConnections(10);
+    registry.register("a", { url: "postgresql://user:pass@localhost:5432/a" });
+    expect(registry.list()).toEqual(["a"]);
+    // New connection (total would be 20) — should evict "a"
+    registry.register("b", { url: "postgresql://user:pass@localhost:5432/b" });
+    expect(registry.list()).not.toContain("a");
+    expect(registry.list()).toContain("b");
+  });
+
+  it("get() updates lastQueryAt for LRU tracking", async () => {
+    registry.setMaxTotalConnections(20);
+    registry.register("a", { url: "postgresql://user:pass@localhost:5432/a" });
+    await new Promise((r) => setTimeout(r, 10));
+    registry.register("b", { url: "postgresql://user:pass@localhost:5432/b" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Access "a" to make it more recent than "b"
+    registry.get("a");
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Register "c" — should evict "b" (LRU)
+    registry.register("c", { url: "postgresql://user:pass@localhost:5432/c" });
+    expect(registry.list()).toContain("a");
+    expect(registry.list()).not.toContain("b");
+    expect(registry.list()).toContain("c");
+  });
+
+  it("close() is called on evicted connection", async () => {
+    let closeCalled = 0;
+    registry.setMaxTotalConnections(10);
+    registry.register("a", { url: "postgresql://user:pass@localhost:5432/a" });
+    const origConn = registry.get("a");
+    const origClose = origConn.close;
+    origConn.close = async () => { closeCalled++; return origClose.call(origConn); };
+
+    registry.register("b", { url: "postgresql://user:pass@localhost:5432/b" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(closeCalled).toBe(1);
   });
 });

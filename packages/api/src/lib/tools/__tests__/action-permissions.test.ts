@@ -11,7 +11,7 @@
  * `src/api/__tests__/actions.test.ts`'s job; the verb↔route composition and
  * the full outcome vocabulary (conflict, approved_not_executed,
  * self_approval) are pinned in
- * `src/lib/tools/actions/__tests__/resolve-as-user.test.ts`. What THIS file
+ * `src/lib/tools/actions/__tests__/handler.test.ts` (the "Formerly resolve-as-user.test.ts" section). What THIS file
  * keeps is the matrix's subject, unchanged: the REAL `canApprove` against
  * real config resolution —
  * - member / admin / owner on manual and admin-only, both verbs
@@ -23,7 +23,7 @@
  * NOTE: "admin-only" is a legacy name — it requires the OWNER role
  * (`APPROVAL_MODE_MIN_ROLE` in `src/lib/auth/permissions.ts`).
  *
- * Memory-only path, on resolve-as-user.test.ts's pattern: delete
+ * Memory-only path, on handler.test.ts's pattern: delete
  * DATABASE_URL + reset the pg pool so the in-memory store is exercised.
  * No mock.module.
  */
@@ -89,7 +89,7 @@ afterEach(() => {
 });
 
 // Requested by a user distinct from every approver below, so the
-// separation-of-duties arm (covered in resolve-as-user.test.ts) never trips.
+// separation-of-duties arm (covered in handler.test.ts) never trips.
 const REQUESTER = "requester-1";
 
 const managedMember = createAtlasUser("member-1", "managed", "member@test.com", { role: "member" });

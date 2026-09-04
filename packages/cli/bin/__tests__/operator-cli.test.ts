@@ -5,7 +5,7 @@
  * (ops/seed/proactive/export/learn) are NOT reachable from the published
  * `atlas` CLI and ARE reachable from the `atlas-operator` binary. Behavior +
  * gates of the commands themselves are covered by the per-command suites in
- * src/__tests__/{ops,seed,proactive,learn,ops-smoke-crm-cli,ops-teardown-verify}.test.ts
+ * src/__tests__/{ops,seed,proactive,learn-integration,ops-smoke-crm-cli,ops-teardown-verify}.test.ts
  * (only the command *source* moved into commands/operator/; the suites stayed
  * put). `export` has no standalone suite — its handler is exercised only by the
  * routing/discriminator test in this file. This file pins the routing/help partition.

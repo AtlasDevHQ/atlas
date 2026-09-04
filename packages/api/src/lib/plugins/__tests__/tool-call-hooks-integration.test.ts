@@ -3,7 +3,8 @@
  *
  * These test the wrapper function that wraps each tool's execute() with
  * beforeToolCall / afterToolCall plugin hook dispatch. Unlike
- * tool-call-hooks.test.ts (which tests dispatchMutableHook directly), these
+ * hooks.test.ts (which tests dispatchMutableHook directly — the
+ * beforeToolCall / afterToolCall cases formerly in tool-call-hooks.test.ts), these
  * tests verify the actual wrapping behavior: rejection returns strings,
  * afterToolCall rejection propagates, mutated args reach origExecute, and
  * the tool call counter increments correctly.

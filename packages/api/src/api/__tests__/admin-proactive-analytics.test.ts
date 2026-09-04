@@ -1,11 +1,23 @@
 /**
- * Route test for `GET /api/v1/admin/proactive/analytics` (#2296).
+ * Route tests for the EE-gated proactive admin surfaces that reach their
+ * implementation through the `EELayer` Tags (post-#3999):
  *
- * The route reads `AnswerMeter.summary` via the Effect service. The
- * test stubs the `summarizeMeterEvents` export with `mock.module()` so
- * the route's `AnswerMeterLive` provider resolves to a fake summary
- * shape — keeping the test free of Postgres while still exercising the
- * full Hono → Effect → service path.
+ *   - `GET  /api/v1/admin/proactive/analytics`                (#2296, #2301)
+ *   - `GET  /api/v1/admin/proactive/events`                   (#2622)
+ *   - `POST /api/v1/admin/proactive/events/:messageId/review` (#2622)
+ *   - `/api/v1/admin/proactive/public-dataset/*`              (#2297)
+ *
+ * The routes read `AnswerMeter` (summary / listEvents / reviewSummary) and
+ * the composite `ProactiveService` (quota, review upsert, allowlist CRUD,
+ * refused rollup) via Effect Tags, all provided by one mocked `EELayer`
+ * below — keeping the tests free of Postgres while still exercising the full
+ * Hono → Effect → service path. The enterprise gate is a `ProactiveGate`
+ * stub flipped via `enterpriseEnabled`, so the EE-off path lands on a typed
+ * `EnterpriseError` rather than chasing global env state. `mock.module()`
+ * factories must be sync (CLAUDE.md).
+ *
+ * The workspace / channels surfaces (`admin-proactive.test.ts`) mount the
+ * sub-router with hand-rolled mocks and stay in their own file.
  */
 
 import {
@@ -18,13 +30,22 @@ import {
   type Mock,
 } from "bun:test";
 import type {
+  ListEventsResult,
+  ProactiveEventRow,
   ProactiveMeterEvent,
   ProactiveMeterSummary,
+  ProactiveReviewSummary,
 } from "@atlas/api/lib/proactive/answer-meter";
+import type {
+  PublicDatasetEntry,
+  PublicRefusedRollupRow,
+  UpsertReviewInput,
+  UpsertReviewResult,
+} from "@atlas/api/lib/proactive/types";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
 // ---------------------------------------------------------------------------
-// Default summary used across tests
+// Analytics — default summary + quota used across tests
 // ---------------------------------------------------------------------------
 
 const baseSummary: ProactiveMeterSummary = {
@@ -75,16 +96,6 @@ function emptyFeedback() {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Proactive seams (post-#3999)
-//
-// The proactive implementation moved to `@atlas/ee/proactive`; the route
-// now reaches the meter summary via the `AnswerMeter` Tag and the monthly
-// quota via the composite `ProactiveService` Tag, both provided by the
-// EELayer (mocked below). No per-lib-module mock — we supply test layers
-// for the Tags. `mock.module()` factories must be sync (CLAUDE.md).
-// ---------------------------------------------------------------------------
-
 const mockSummary: Mock<
   (workspaceId: string, sinceMs: number) => Promise<ProactiveMeterSummary>
 > = mock(async () => baseSummary);
@@ -109,10 +120,137 @@ const mockQuotaStatus: Mock<
 > = mock(async () => baseQuota);
 
 // ---------------------------------------------------------------------------
-// Enterprise gate + proactive Tags — the route yields `ProactiveGate`
-// (gate), `AnswerMeter` (summary), and `ProactiveService` (quota) from
-// EELayer. Default-on so the route reaches the meter; flip
-// `enterpriseEnabled` to drive the 403 path.
+// Events — meter + review fixtures
+// ---------------------------------------------------------------------------
+
+function baseEvents(): ProactiveEventRow[] {
+  return [
+    {
+      id: "row-1",
+      workspaceId: "org-alpha",
+      channelId: "C-alpha",
+      messageId: "1700000000.000123",
+      eventType: "classify",
+      outcome: null,
+      tokens: 42,
+      costMicroUsd: 1200,
+      confidence: 0.85,
+      actorUserId: null,
+      metadata: { action: "react", reason: "matched-question-shape" },
+      createdAt: "2026-05-19T03:00:00.000Z",
+      review: null,
+    },
+    {
+      id: "row-2",
+      workspaceId: "org-alpha",
+      channelId: "C-alpha",
+      messageId: "1700000000.000124",
+      eventType: "classify",
+      outcome: null,
+      tokens: 41,
+      costMicroUsd: 1100,
+      confidence: 0.72,
+      actorUserId: null,
+      metadata: { action: "skip", reason: "low-confidence" },
+      createdAt: "2026-05-19T02:00:00.000Z",
+      review: {
+        verdict: "correct",
+        note: null,
+        reviewerUserId: "u-1",
+        createdAt: "2026-05-19T02:30:00.000Z",
+        updatedAt: "2026-05-19T02:30:00.000Z",
+      },
+    },
+  ];
+}
+
+const baseReviewSummary: ProactiveReviewSummary = {
+  classifyCount: 12,
+  reviewedCount: 4,
+  misfireCount: 1,
+  correctCount: 2,
+  unsureCount: 1,
+};
+
+const mockListEvents: Mock<
+  (workspaceId: string, options: unknown) => Promise<ListEventsResult>
+> = mock(async () => ({ events: baseEvents(), nextCursor: null }));
+
+const mockReviewSummary: Mock<
+  (workspaceId: string, sinceMs: number) => Promise<ProactiveReviewSummary>
+> = mock(async () => baseReviewSummary);
+
+// classification-review — verdict upsert + classify-row existence guard.
+// After #3999 these reach the route through the `ProactiveService` Tag
+// (provided by the mocked EELayer below) rather than a per-module mock.
+const mockUpsertReview: Mock<
+  (input: UpsertReviewInput) => Promise<UpsertReviewResult>
+> = mock(async (input) => ({
+  workspaceId: input.workspaceId,
+  messageId: input.messageId,
+  verdict: input.verdict,
+  reviewerUserId: input.reviewerUserId,
+  note: input.note,
+  previousVerdict: null,
+  createdAt: "2026-05-19T03:00:00.000Z",
+  updatedAt: "2026-05-19T03:00:00.000Z",
+}));
+const mockLookupChannel: Mock<
+  (workspaceId: string, messageId: string) => Promise<string | null>
+> = mock(async () => "C-alpha");
+
+// Internal DB — `createApiTestMocks` owns the canonical
+// `@atlas/api/lib/db/internal` mock for this file (it re-installs the
+// mock during construction and exposes `mocks.hasInternalDB` as the
+// per-test setter). We deliberately do NOT re-mock the module here
+// because the later `mock.module()` call from `createApiTestMocks`
+// would overwrite ours and the route would read the helper's value.
+
+// ---------------------------------------------------------------------------
+// Public-dataset fns — supplied through the mocked EELayer below (no
+// per-lib-module mock), same as the meter/review seams.
+// ---------------------------------------------------------------------------
+
+const mockGetAllowlist: Mock<(workspaceId: string) => Promise<PublicDatasetEntry[]>> = mock(
+  async () => [],
+);
+const mockAddEntry: Mock<
+  (workspaceId: string, entityName: string, denyMetrics?: string[]) => Promise<void>
+> = mock(async () => {});
+const mockRemoveEntry: Mock<
+  (workspaceId: string, entityName: string) => Promise<{ removed: boolean }>
+> = mock(async () => ({ removed: true }));
+const mockSummarizeRefused: Mock<
+  (workspaceId: string, sinceMs: number) => Promise<PublicRefusedRollupRow[]>
+> = mock(async () => []);
+
+// ---------------------------------------------------------------------------
+// Audit dual-write capture (events review route)
+// ---------------------------------------------------------------------------
+
+interface ObservedAuditCall {
+  actionType: string;
+  targetType: string;
+  targetId: string;
+  scope?: "platform" | "workspace";
+  metadata?: Record<string, unknown>;
+}
+const observedAuditCalls: ObservedAuditCall[] = [];
+
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
+const realAuditAdmin = require("@atlas/api/lib/audit/admin") as typeof import("@atlas/api/lib/audit/admin");
+void mock.module("@atlas/api/lib/audit/admin", () => ({
+  ...realAuditAdmin,
+  logAdminAction: (entry: ObservedAuditCall) => {
+    observedAuditCalls.push(entry);
+  },
+}));
+
+// ---------------------------------------------------------------------------
+// Enterprise gate + proactive Tags — the routes yield `ProactiveGate`
+// (gate), `AnswerMeter` (summary / events) and `ProactiveService` (quota,
+// review, allowlist) from EELayer. Default-on so the routes reach the
+// services; flip `enterpriseEnabled` to drive the 403 path.
 // ---------------------------------------------------------------------------
 
 let enterpriseEnabled = true;
@@ -150,10 +288,24 @@ void mock.module("@atlas/ee/layers", () => {
         const meter = services.createAnswerMeterTestLayer({
           record: mockRecord,
           summary: mockSummary,
+          listEvents: mockListEvents,
+          reviewSummary: mockReviewSummary,
         });
         const proactive = services.createProactiveServiceTestLayer({
           getWorkspaceQuotaStatus: (workspaceId: string) =>
             E.promise(() => mockQuotaStatus(workspaceId)),
+          lookupClassifyChannel: (workspaceId: string, messageId: string) =>
+            E.promise(() => mockLookupChannel(workspaceId, messageId)),
+          upsertClassificationReview: (input) =>
+            E.promise(() => mockUpsertReview(input)),
+          getAllowlist: (workspaceId: string) =>
+            E.promise(() => mockGetAllowlist(workspaceId)),
+          addEntry: (workspaceId: string, entityName: string, denyMetrics: string[]) =>
+            E.promise(() => mockAddEntry(workspaceId, entityName, denyMetrics)),
+          removeEntry: (workspaceId: string, entityName: string) =>
+            E.promise(() => mockRemoveEntry(workspaceId, entityName)),
+          summarizePublicRefused: (workspaceId: string, sinceMs: number) =>
+            E.promise(() => mockSummarizeRefused(workspaceId, sinceMs)),
         });
         return Layer.mergeAll(gate, meter, proactive);
       }),
@@ -183,10 +335,39 @@ afterAll(() => mocks.cleanup());
 beforeEach(() => {
   mocks.hasInternalDB = true;
   enterpriseEnabled = true;
+  observedAuditCalls.length = 0;
   mockSummary.mockClear();
   mockSummary.mockImplementation(async () => baseSummary);
   mockQuotaStatus.mockClear();
   mockQuotaStatus.mockImplementation(async () => baseQuota);
+  mockListEvents.mockClear();
+  mockListEvents.mockImplementation(async () => ({
+    events: baseEvents(),
+    nextCursor: null,
+  }));
+  mockReviewSummary.mockClear();
+  mockReviewSummary.mockImplementation(async () => baseReviewSummary);
+  mockUpsertReview.mockClear();
+  mockUpsertReview.mockImplementation(async (input) => ({
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    verdict: input.verdict,
+    reviewerUserId: input.reviewerUserId,
+    note: input.note,
+    previousVerdict: null,
+    createdAt: "2026-05-19T03:00:00.000Z",
+    updatedAt: "2026-05-19T03:00:00.000Z",
+  }));
+  mockLookupChannel.mockClear();
+  mockLookupChannel.mockImplementation(async () => "C-alpha");
+  mockGetAllowlist.mockClear();
+  mockGetAllowlist.mockImplementation(async () => []);
+  mockAddEntry.mockClear();
+  mockAddEntry.mockImplementation(async () => {});
+  mockRemoveEntry.mockClear();
+  mockRemoveEntry.mockImplementation(async () => ({ removed: true }));
+  mockSummarizeRefused.mockClear();
+  mockSummarizeRefused.mockImplementation(async () => []);
 });
 
 // ---------------------------------------------------------------------------
@@ -200,8 +381,47 @@ function adminRequest(path: string): Request {
   });
 }
 
+function getEvents(path = "/api/v1/admin/proactive/events"): Request {
+  return new Request(`http://localhost${path}`, {
+    method: "GET",
+    headers: { Authorization: "Bearer test-key" },
+  });
+}
+
+function postReview(messageId: string, body: unknown): Request {
+  return new Request(
+    `http://localhost/api/v1/admin/proactive/events/${messageId}/review`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-key",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+function adminGET(path: string): Request {
+  return new Request(`http://localhost${path}`, {
+    method: "GET",
+    headers: { Authorization: "Bearer test-key" },
+  });
+}
+
+function adminBody(method: "POST" | "PUT" | "DELETE", path: string, body?: unknown): Request {
+  return new Request(`http://localhost${path}`, {
+    method,
+    headers: {
+      Authorization: "Bearer test-key",
+      "Content-Type": "application/json",
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
 // ---------------------------------------------------------------------------
-// Tests
+// GET /analytics
 // ---------------------------------------------------------------------------
 
 describe("GET /api/v1/admin/proactive/analytics", () => {
@@ -314,5 +534,430 @@ describe("GET /api/v1/admin/proactive/analytics", () => {
       quota: { capReached: boolean };
     };
     expect(body.quota.capReached).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /events (#2622)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/admin/proactive/events", () => {
+  it("returns the events page + review summary by default", async () => {
+    const res = await app.fetch(getEvents());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      workspaceId: string;
+      sinceMs: number;
+      events: ProactiveEventRow[];
+      nextCursor: string | null;
+      reviewSummary: ProactiveReviewSummary;
+    };
+    expect(body.workspaceId).toBe("org-alpha");
+    expect(body.sinceMs).toBe(30 * 24 * 60 * 60 * 1000);
+    expect(body.events).toHaveLength(2);
+    expect(body.events[0]!.messageId).toBe("1700000000.000123");
+    expect(body.reviewSummary.misfireCount).toBe(1);
+    expect(mockListEvents).toHaveBeenCalledTimes(1);
+    expect(mockListEvents.mock.calls[0]![0]).toBe("org-alpha");
+  });
+
+  it("threads since= and eventType= into the meter call", async () => {
+    await app.fetch(
+      getEvents("/api/v1/admin/proactive/events?since=7d&eventType=react"),
+    );
+    expect(mockListEvents.mock.calls[0]![1]).toMatchObject({
+      sinceMs: 7 * 24 * 60 * 60 * 1000,
+      eventType: "react",
+    });
+  });
+
+  it("ignores unknown eventType values (treated as no filter)", async () => {
+    await app.fetch(
+      getEvents("/api/v1/admin/proactive/events?eventType=garbage"),
+    );
+    const options = mockListEvents.mock.calls[0]![1] as { eventType?: string };
+    expect(options.eventType).toBeUndefined();
+  });
+
+  it("encodes nextCursor as `<createdAt>|<uuid>`", async () => {
+    const ROW_ID = "550e8400-e29b-41d4-a716-446655440000";
+    mockListEvents.mockImplementationOnce(async () => ({
+      events: baseEvents(),
+      nextCursor: { createdAt: "2026-05-19T02:00:00.000Z", id: ROW_ID },
+    }));
+    const res = await app.fetch(getEvents());
+    const body = (await res.json()) as { nextCursor: string | null };
+    expect(body.nextCursor).toBe(`2026-05-19T02:00:00.000Z|${ROW_ID}`);
+  });
+
+  it("decodes a well-formed cursor query param back into structured form", async () => {
+    const ROW_ID = "550e8400-e29b-41d4-a716-446655440000";
+    await app.fetch(
+      getEvents(
+        `/api/v1/admin/proactive/events?cursor=2026-05-19T02:00:00.000Z|${ROW_ID}`,
+      ),
+    );
+    const options = mockListEvents.mock.calls[0]![1] as {
+      cursor?: { createdAt: string; id: string };
+    };
+    expect(options.cursor).toEqual({
+      createdAt: "2026-05-19T02:00:00.000Z",
+      id: ROW_ID,
+    });
+  });
+
+  // Cursor decoder fallbacks — each malformed shape should NOT 400; the
+  // route should silently fall back to first-page (cursor=null upstream)
+  // and emit a warn line (not asserted here — just the behavioural fallback).
+  for (const [label, cursor] of [
+    ["missing separator", "justatimestamp"],
+    ["empty timestamp half", "|550e8400-e29b-41d4-a716-446655440000"],
+    ["empty id half", "2026-05-19T02:00:00.000Z|"],
+    ["unparseable timestamp", "not-a-date|550e8400-e29b-41d4-a716-446655440000"],
+    ["non-UUID id", "2026-05-19T02:00:00.000Z|row-2"],
+    ["truncated UUID", "2026-05-19T02:00:00.000Z|550e8400-e29b-41d4"],
+  ] as const) {
+    it(`falls back to first page when cursor is malformed: ${label}`, async () => {
+      const res = await app.fetch(
+        getEvents(
+          `/api/v1/admin/proactive/events?cursor=${encodeURIComponent(cursor)}`,
+        ),
+      );
+      expect(res.status).toBe(200);
+      const options = mockListEvents.mock.calls[0]![1] as {
+        cursor?: { createdAt: string; id: string } | null;
+      };
+      expect(options.cursor ?? null).toBeNull();
+    });
+  }
+
+  it("round-trips encode → decode for a real UUID cursor", async () => {
+    const ROW_ID = "11111111-2222-3333-4444-555555555555";
+    mockListEvents.mockImplementationOnce(async () => ({
+      events: baseEvents(),
+      nextCursor: { createdAt: "2026-05-19T02:00:00.000Z", id: ROW_ID },
+    }));
+    const firstRes = await app.fetch(getEvents());
+    const { nextCursor } = (await firstRes.json()) as { nextCursor: string };
+    expect(nextCursor).not.toBeNull();
+    mockListEvents.mockClear();
+    await app.fetch(
+      getEvents(
+        `/api/v1/admin/proactive/events?cursor=${encodeURIComponent(nextCursor)}`,
+      ),
+    );
+    const options = mockListEvents.mock.calls[0]![1] as {
+      cursor?: { createdAt: string; id: string };
+    };
+    expect(options.cursor).toEqual({
+      createdAt: "2026-05-19T02:00:00.000Z",
+      id: ROW_ID,
+    });
+  });
+
+  it("returns 403 enterprise_required when EE is disabled", async () => {
+    enterpriseEnabled = false;
+    const res = await app.fetch(getEvents());
+    expect(res.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /events/:messageId/review (#2622)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/admin/proactive/events/:messageId/review", () => {
+  it("upserts the verdict and writes a proactive.review audit row", async () => {
+    const res = await app.fetch(
+      postReview("1700000000.000123", { verdict: "misfire", note: "fp" }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as UpsertReviewResult;
+    expect(body.verdict).toBe("misfire");
+    expect(body.note).toBe("fp");
+    expect(mockUpsertReview).toHaveBeenCalledTimes(1);
+    expect(mockUpsertReview.mock.calls[0]![0]).toMatchObject({
+      workspaceId: "org-alpha",
+      messageId: "1700000000.000123",
+      verdict: "misfire",
+      note: "fp",
+    });
+
+    const reviewAudit = observedAuditCalls.find(
+      (c) => c.actionType === "proactive.review",
+    );
+    expect(reviewAudit).toBeDefined();
+    expect(reviewAudit!.targetId).toBe("1700000000.000123");
+    expect(reviewAudit!.scope).toBe("workspace");
+    expect(reviewAudit!.metadata).toMatchObject({
+      workspaceId: "org-alpha",
+      channelId: "C-alpha",
+      messageId: "1700000000.000123",
+      verdict: "misfire",
+      previousVerdict: null,
+      note: "fp",
+    });
+  });
+
+  it("stamps previousVerdict on the audit row when relabelling", async () => {
+    mockUpsertReview.mockImplementationOnce(async (input) => ({
+      workspaceId: input.workspaceId,
+      messageId: input.messageId,
+      verdict: input.verdict,
+      reviewerUserId: input.reviewerUserId,
+      note: input.note,
+      previousVerdict: "correct",
+      createdAt: "2026-05-19T01:00:00.000Z",
+      updatedAt: "2026-05-19T03:00:00.000Z",
+    }));
+    await app.fetch(
+      postReview("1700000000.000123", { verdict: "misfire" }),
+    );
+    const audit = observedAuditCalls.find(
+      (c) => c.actionType === "proactive.review",
+    );
+    expect(audit!.metadata).toMatchObject({
+      verdict: "misfire",
+      previousVerdict: "correct",
+    });
+  });
+
+  it("returns 404 when no matching classify row exists", async () => {
+    mockLookupChannel.mockImplementationOnce(async () => null);
+    const res = await app.fetch(
+      postReview("ghost-msg", { verdict: "misfire" }),
+    );
+    expect(res.status).toBe(404);
+    expect(mockUpsertReview).not.toHaveBeenCalled();
+    expect(
+      observedAuditCalls.find((c) => c.actionType === "proactive.review"),
+    ).toBeUndefined();
+  });
+
+  it("returns 400 on an invalid verdict", async () => {
+    const res = await app.fetch(
+      postReview("1700000000.000123", { verdict: "garbage" }),
+    );
+    expect(res.status).toBe(400);
+    expect(mockUpsertReview).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when note exceeds 1024 characters (privacy floor)", async () => {
+    const note = "x".repeat(1025);
+    const res = await app.fetch(
+      postReview("1700000000.000123", { verdict: "misfire", note }),
+    );
+    expect(res.status).toBe(400);
+    expect(mockUpsertReview).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the internal DB is not configured (admin-router gate)", async () => {
+    // `requireOrgContext()` middleware checks hasInternalDB() and 404s
+    // before the route runs — we pin the gate at the middleware layer
+    // here rather than at a route-level fallback (the route check would
+    // be unreachable). Matches the public-dataset tests below.
+    mocks.hasInternalDB = false;
+    const res = await app.fetch(
+      postReview("1700000000.000123", { verdict: "misfire" }),
+    );
+    expect(res.status).toBe(404);
+    expect(mockUpsertReview).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 enterprise_required when EE is disabled", async () => {
+    enterpriseEnabled = false;
+    const res = await app.fetch(
+      postReview("1700000000.000123", { verdict: "misfire" }),
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /public-dataset/* (#2297)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/admin/proactive/public-dataset", () => {
+  it("returns the allowlist for the active workspace", async () => {
+    mockGetAllowlist.mockImplementation(async () => [
+      { entityName: "marketing.users", denyMetrics: [] },
+      { entityName: "finance.revenue", denyMetrics: ["amount_cents"] },
+    ]);
+    const res = await app.fetch(
+      adminGET("/api/v1/admin/proactive/public-dataset/"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entries: PublicDatasetEntry[] };
+    expect(body.entries).toHaveLength(2);
+    expect(body.entries[0].entityName).toBe("marketing.users");
+    expect(body.entries[1].denyMetrics).toEqual(["amount_cents"]);
+    expect(mockGetAllowlist).toHaveBeenCalledTimes(1);
+    expect(mockGetAllowlist.mock.calls[0]![0]).toBe("org-alpha");
+  });
+
+  it("returns 404 when no internal DB is configured (admin-router gate)", async () => {
+    // `requireOrgContext()` short-circuits with 404 before the route
+    // runs when `hasInternalDB()` is false; the test asserts the gate
+    // rather than the route-level fallback to keep behaviour pinned
+    // at the middleware layer.
+    mocks.hasInternalDB = false;
+    const res = await app.fetch(
+      adminGET("/api/v1/admin/proactive/public-dataset/"),
+    );
+    expect(res.status).toBe(404);
+    expect(mockGetAllowlist).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when enterprise is disabled", async () => {
+    enterpriseEnabled = false;
+    const res = await app.fetch(
+      adminGET("/api/v1/admin/proactive/public-dataset/"),
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("POST /api/v1/admin/proactive/public-dataset", () => {
+  it("upserts an entry with denyMetrics", async () => {
+    const res = await app.fetch(
+      adminBody("POST", "/api/v1/admin/proactive/public-dataset/", {
+        entityName: "marketing.users",
+        denyMetrics: ["email"],
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PublicDatasetEntry;
+    expect(body.entityName).toBe("marketing.users");
+    expect(body.denyMetrics).toEqual(["email"]);
+    expect(mockAddEntry).toHaveBeenCalledTimes(1);
+    const call = mockAddEntry.mock.calls[0]!;
+    expect(call[0]).toBe("org-alpha");
+    expect(call[1]).toBe("marketing.users");
+    expect(call[2]).toEqual(["email"]);
+  });
+
+  it("defaults denyMetrics to [] when omitted", async () => {
+    const res = await app.fetch(
+      adminBody("POST", "/api/v1/admin/proactive/public-dataset/", {
+        entityName: "finance.revenue",
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PublicDatasetEntry;
+    expect(body.denyMetrics).toEqual([]);
+    expect(mockAddEntry.mock.calls[0]![2]).toEqual([]);
+  });
+
+  it("returns 422 for an empty entityName", async () => {
+    const res = await app.fetch(
+      adminBody("POST", "/api/v1/admin/proactive/public-dataset/", {
+        entityName: "",
+      }),
+    );
+    expect(res.status).toBe(422);
+    expect(mockAddEntry).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when no internal DB is configured (admin-router gate)", async () => {
+    // See list test above — the admin-router middleware gates here, not
+    // the route handler.
+    mocks.hasInternalDB = false;
+    const res = await app.fetch(
+      adminBody("POST", "/api/v1/admin/proactive/public-dataset/", {
+        entityName: "marketing.users",
+      }),
+    );
+    expect(res.status).toBe(404);
+    expect(mockAddEntry).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when enterprise is disabled", async () => {
+    enterpriseEnabled = false;
+    const res = await app.fetch(
+      adminBody("POST", "/api/v1/admin/proactive/public-dataset/", {
+        entityName: "marketing.users",
+      }),
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("DELETE /api/v1/admin/proactive/public-dataset/:entityName", () => {
+  it("deletes an entry when present", async () => {
+    mockRemoveEntry.mockImplementation(async () => ({ removed: true }));
+    const res = await app.fetch(
+      adminBody(
+        "DELETE",
+        "/api/v1/admin/proactive/public-dataset/marketing.users",
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean };
+    expect(body.success).toBe(true);
+    expect(mockRemoveEntry).toHaveBeenCalledTimes(1);
+    expect(mockRemoveEntry.mock.calls[0]![1]).toBe("marketing.users");
+  });
+
+  it("returns 404 when the entry was already gone", async () => {
+    mockRemoveEntry.mockImplementation(async () => ({ removed: false }));
+    const res = await app.fetch(
+      adminBody(
+        "DELETE",
+        "/api/v1/admin/proactive/public-dataset/marketing.users",
+      ),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 403 when enterprise is disabled", async () => {
+    enterpriseEnabled = false;
+    const res = await app.fetch(
+      adminBody(
+        "DELETE",
+        "/api/v1/admin/proactive/public-dataset/marketing.users",
+      ),
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("GET /api/v1/admin/proactive/public-dataset/refused", () => {
+  it("returns the discoverability rollup with default 30-day window", async () => {
+    mockSummarizeRefused.mockImplementation(async () => [
+      { entityName: "finance.revenue", count: 12 },
+      { entityName: "marketing.users", count: 4 },
+    ]);
+    const res = await app.fetch(
+      adminGET("/api/v1/admin/proactive/public-dataset/refused"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      sinceMs: number;
+      rollup: PublicRefusedRollupRow[];
+    };
+    expect(body.sinceMs).toBe(30 * 24 * 60 * 60 * 1000);
+    expect(body.rollup).toHaveLength(2);
+    expect(body.rollup[0].entityName).toBe("finance.revenue");
+    expect(body.rollup[0].count).toBe(12);
+  });
+
+  it("parses since=7d into a 7-day lookback window", async () => {
+    const res = await app.fetch(
+      adminGET("/api/v1/admin/proactive/public-dataset/refused?since=7d"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sinceMs: number };
+    expect(body.sinceMs).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(mockSummarizeRefused.mock.calls[0]![1]).toBe(
+      7 * 24 * 60 * 60 * 1000,
+    );
+  });
+
+  it("returns 403 when enterprise is disabled", async () => {
+    enterpriseEnabled = false;
+    const res = await app.fetch(
+      adminGET("/api/v1/admin/proactive/public-dataset/refused"),
+    );
+    expect(res.status).toBe(403);
   });
 });

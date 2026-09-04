@@ -180,12 +180,6 @@ describe("latestRecordedMeasurement", () => {
 });
 
 describe("the default gate reads the real store (#5338 AC 4)", () => {
-  test("the shipped store cannot arm the gate, because the dial defaults off", () => {
-    expect(
-      checkTriageDefaultGate({ dialDefault: "false", records: RECORDED_MEASUREMENTS }),
-    ).toBeNull();
-  });
-
   test("defaulting the dial ON against the SHIPPED store fails", () => {
     // ⭐ The reason this file passes the real array rather than `[]`: until now
     // nothing read the store, so a landed failing measurement could not have

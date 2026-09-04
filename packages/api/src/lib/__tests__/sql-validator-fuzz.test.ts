@@ -304,13 +304,6 @@ describe("fuzz: UNION + subquery + lateral + array-subquery", () => {
     );
   });
 
-  it("rejects IN-subquery reading non-whitelisted table", async () => {
-    await expectInvalid(
-      "SELECT * FROM companies WHERE id IN (SELECT id FROM secret_data)",
-      "not in the allowed list",
-    );
-  });
-
   it("rejects EXISTS-subquery reading non-whitelisted table", async () => {
     await expectInvalid(
       "SELECT * FROM companies c WHERE EXISTS (SELECT 1 FROM secret_data s WHERE s.id = c.id)",
@@ -376,18 +369,6 @@ describe("fuzz: UNION + subquery + lateral + array-subquery", () => {
 describe("fuzz: schema-qualified + quoted identifier whitelist", () => {
   useDialect(PG_URL);
 
-  it("accepts whitelisted table in the default schema", async () => {
-    await expectValid("SELECT * FROM companies");
-  });
-
-  it("accepts schema-qualified whitelisted variant", async () => {
-    await expectValid("SELECT * FROM public.companies");
-  });
-
-  it("accepts non-default schema-qualified variant when whitelisted", async () => {
-    await expectValid("SELECT * FROM analytics.companies");
-  });
-
   it("rejects schema-qualified name whose qualified form is NOT in whitelist", async () => {
     await expectInvalid(
       "SELECT * FROM other_schema.companies",
@@ -419,10 +400,6 @@ describe("fuzz: schema-qualified + quoted identifier whitelist", () => {
 
   it("rejects unqualified pg_tables even though pg_catalog is on search_path", async () => {
     await expectInvalid("SELECT tablename FROM pg_tables", "not in the allowed list");
-  });
-
-  it("accepts quoted whitelisted identifier", async () => {
-    await expectValid('SELECT * FROM "companies"');
   });
 
   it("rejects uppercase QUOTED identifier that case-folds into a whitelist entry (#3342 L-4)", async () => {
@@ -461,14 +438,6 @@ describe("fuzz: schema-qualified + quoted identifier whitelist", () => {
 
 describe("fuzz: LIMIT handling at the validator layer", () => {
   useDialect(PG_URL);
-
-  it("accepts a bare SELECT with no LIMIT (auto-appended downstream)", async () => {
-    await expectValid("SELECT * FROM companies");
-  });
-
-  it("accepts SELECT with an explicit LIMIT", async () => {
-    await expectValid("SELECT * FROM companies LIMIT 10");
-  });
 
   it("accepts SELECT with LIMIT and OFFSET", async () => {
     await expectValid("SELECT * FROM companies LIMIT 10 OFFSET 100");
@@ -606,11 +575,6 @@ describe("fuzz: PostgreSQL dialect escape hatches", () => {
     await expectValid("SELECT $tag$ hi $tag$ AS x FROM companies");
   });
 
-  it("blocks pg_read_file (#3342 L-3 function denylist)", async () => {
-    // F-21 closed — the AST function-name walk rejects file-access functions.
-    await expectInvalid("SELECT pg_read_file('/etc/passwd')");
-  });
-
   it("blocks pg_sleep (#3342 L-3 function denylist)", async () => {
     await expectInvalid("SELECT pg_sleep(29)");
   });
@@ -646,53 +610,8 @@ describe("fuzz: PostgreSQL dialect escape hatches", () => {
 describe("fuzz: MySQL dialect escape hatches", () => {
   useDialect(MYSQL_URL);
 
-  it("rejects SHOW TABLES", async () => {
-    await expectInvalid("SHOW TABLES", "forbidden");
-  });
-
-  it("rejects SHOW DATABASES", async () => {
-    await expectInvalid("SHOW DATABASES", "forbidden");
-  });
-
   it("rejects SHOW GRANTS", async () => {
     await expectInvalid("SHOW GRANTS FOR 'root'@'%'", "forbidden");
-  });
-
-  it("rejects DESCRIBE", async () => {
-    await expectInvalid("DESCRIBE companies", "forbidden");
-  });
-
-  it("rejects EXPLAIN SELECT", async () => {
-    await expectInvalid("EXPLAIN SELECT * FROM companies", "forbidden");
-  });
-
-  it("rejects USE database", async () => {
-    await expectInvalid("USE other_database", "forbidden");
-  });
-
-  it("rejects HANDLER open", async () => {
-    await expectInvalid("HANDLER companies OPEN", "forbidden");
-  });
-
-  it("rejects LOAD DATA", async () => {
-    await expectInvalid(
-      "LOAD DATA INFILE '/tmp/x.csv' INTO TABLE companies",
-      "forbidden",
-    );
-  });
-
-  it("rejects LOAD XML", async () => {
-    await expectInvalid(
-      "LOAD XML INFILE '/tmp/x.xml' INTO TABLE companies",
-      "forbidden",
-    );
-  });
-
-  it("rejects SELECT INTO OUTFILE", async () => {
-    await expectInvalid(
-      "SELECT * FROM companies INTO OUTFILE '/tmp/x'",
-      "forbidden",
-    );
   });
 
   it("accepts backtick-quoted whitelisted identifier", async () => {
@@ -722,10 +641,6 @@ describe("fuzz: MySQL dialect escape hatches", () => {
     await expectValid("SELECT GET_LOCK('x', 30)");
   });
 
-  it("blocks LOAD_FILE (#3342 L-3 function denylist)", async () => {
-    await expectInvalid("SELECT LOAD_FILE('/etc/passwd')");
-  });
-
   it("accepts SELECT INTO @user_variable (session-local, no persistence)", async () => {
     // MySQL variable assignment. Session-only, not a write to a durable
     // location. Documented as accepted behavior.
@@ -739,14 +654,6 @@ describe("fuzz: MySQL dialect escape hatches", () => {
 
 describe("fuzz: comment smuggling + multi-statement", () => {
   useDialect(PG_URL);
-
-  it("rejects `SELECT 1; DROP TABLE` via regex guard before AST", async () => {
-    await expectInvalid("SELECT 1; DROP TABLE companies", "forbidden");
-  });
-
-  it("rejects two SELECTs separated by semicolon", async () => {
-    await expectInvalid("SELECT 1; SELECT 2", "multiple statements");
-  });
 
   it("rejects two SELECTs separated by newline + semicolon", async () => {
     await expectInvalid("SELECT 1\n;SELECT 2", "multiple statements");

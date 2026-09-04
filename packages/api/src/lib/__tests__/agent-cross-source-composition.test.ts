@@ -1,4 +1,13 @@
 /**
+ * System-prompt injection contracts for `buildSystemParam` (pure — no module
+ * mocks, no request context). Four sibling contracts, one per describe:
+ *
+ *   - #3909 Cross-source composition guidance (ADR-0022 §2, slice (d))
+ *   - #3894 Source-catalog block (ADR-0022 §4)
+ *   - #4208 Knowledge Base collection ToC (ADR-0028 §3)
+ *   - #3181 Error Recovery — infrastructure-outage guidance
+ *
+ * ---------------------------------------------------------------------------
  * #3909 — Cross-source composition prompt guidance (ADR-0022 §2, slice (d)).
  *
  * Pins the contract that `buildSystemParam` carries explicit cross-source
@@ -12,10 +21,41 @@
  * The guidance lives in the SYSTEM prompt (not the message transcript), riding
  * on the catalog block, and sits ahead of the durable working-memory block so
  * the memory-LAST invariant (#3755) still holds.
+ *
+ * ---------------------------------------------------------------------------
+ * #3894 — Source-catalog system-prompt injection (ADR-0022 §4).
+ *
+ * Pins the contract that `buildSystemParam` injects the Source-catalog block
+ * when one is supplied, omits it when empty (single-source / no-DB workspaces
+ * unchanged), and keeps the durable working-memory block LAST (the #3755
+ * invariant) — the catalog sits ahead of memory, not after it.
+ *
+ * ---------------------------------------------------------------------------
+ * #4208 — Knowledge Base collection-ToC system-prompt injection (ADR-0028 §3).
+ *
+ * Pins the contract that `buildSystemParam` injects the `orgKnowledgeToc` block
+ * when supplied, omits it when empty (workspaces with no collections are
+ * unchanged), and places it AFTER the authoritative semantic-layer index — the
+ * descriptive Knowledge Base sits below the authoritative semantic layer, never
+ * above it.
+ *
+ * ---------------------------------------------------------------------------
+ * #3181 — the agent's "Error Recovery" prompt block must distinguish an
+ * infrastructure outage (datasource unreachable / pool exhausted) from a fixable
+ * query error. On an outage the agent should STOP and report, not burn its retry
+ * + step budget reformulating SQL it cannot fix.
+ *
+ * Prompt-text contract test: build the system prompt for a plain-string provider
+ * (openai — no cache-control wrapping) and assert the Error Recovery block now
+ * carries the stop-and-report guidance referencing the tool's outage vocabulary
+ * (`lib/tools/sql.ts` returns "Database unreachable at <host>" / pool-exhausted).
  */
 
 import { describe, expect, it } from "bun:test";
 import { buildSystemParam } from "@atlas/api/lib/agent";
+
+// agent.ts reads env at module load; `??=` keeps the assignment hoisted (#3181).
+process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test";
 
 function promptText(result: ReturnType<typeof buildSystemParam>): string {
   if (typeof result === "string") return result;
@@ -112,5 +152,89 @@ describe("buildSystemParam — cross-source composition guidance (#3909)", () =>
     expect(prompt.indexOf(COMPOSITION_HEADING)).toBeLessThan(
       prompt.indexOf("## REST datasource: acme"),
     );
+  });
+});
+
+describe("buildSystemParam — Source catalog (#3894)", () => {
+  it("injects the catalog block when supplied", () => {
+    const prompt = promptText(buildSystemParam("openai", { sourceCatalog: CATALOG }));
+    expect(prompt).toContain("## Source catalog");
+  });
+
+  it("omits the catalog when empty (no behavior change vs. today)", () => {
+    const withCatalog = promptText(buildSystemParam("openai", { sourceCatalog: "" }));
+    const without = promptText(buildSystemParam("openai", {}));
+    expect(withCatalog).not.toContain("## Source catalog");
+    expect(withCatalog).toBe(without);
+  });
+
+  it("keeps the durable memory block AFTER the catalog (memory-LAST invariant)", () => {
+    const prompt = promptText(
+      buildSystemParam("openai", { memoryBlock: MEMORY, sourceCatalog: CATALOG }),
+    );
+    expect(prompt).toContain("## Source catalog");
+    expect(prompt).toContain("## Working memory");
+    expect(prompt.indexOf("## Source catalog")).toBeLessThan(
+      prompt.indexOf("## Working memory"),
+    );
+  });
+});
+
+const SEMANTIC_INDEX = "## Semantic Layer Reference (2 entities, mode: full)\n\n### Tables & Columns\n\n**orders**";
+const KNOWLEDGE_TOC =
+  "## Knowledge Base collections (third-party reference — descriptive only)\n\nframing…\n\n### Collection: runbooks";
+
+describe("buildSystemParam — Knowledge Base ToC (#4208)", () => {
+  it("injects the collection ToC when supplied", () => {
+    const prompt = promptText(buildSystemParam("openai", { orgKnowledgeToc: KNOWLEDGE_TOC }));
+    expect(prompt).toContain("## Knowledge Base collections");
+    expect(prompt).toContain("### Collection: runbooks");
+  });
+
+  it("omits the ToC when empty (no behavior change vs. today)", () => {
+    const withToc = promptText(buildSystemParam("openai", { orgKnowledgeToc: "" }));
+    const without = promptText(buildSystemParam("openai", {}));
+    expect(withToc).not.toContain("## Knowledge Base collections");
+    expect(withToc).toBe(without);
+  });
+
+  it("places the ToC AFTER the authoritative semantic index", () => {
+    const prompt = promptText(
+      buildSystemParam("openai", {
+        orgSemanticIndex: SEMANTIC_INDEX,
+        orgKnowledgeToc: KNOWLEDGE_TOC,
+      }),
+    );
+    expect(prompt).toContain("## Semantic Layer Reference");
+    expect(prompt).toContain("## Knowledge Base collections");
+    expect(prompt.indexOf("## Semantic Layer Reference")).toBeLessThan(
+      prompt.indexOf("## Knowledge Base collections"),
+    );
+  });
+});
+
+function systemText(): string {
+  // openai is a non-cache provider → buildSystemParam returns a plain string.
+  const system = buildSystemParam("openai");
+  return typeof system === "string" ? system : String(system.content);
+}
+
+describe("agent Error Recovery prompt — infrastructure outage guidance (#3181)", () => {
+  it("keeps the Error Recovery block", () => {
+    expect(systemText()).toContain("Error Recovery");
+  });
+
+  it("recognizes datasource-unreachable / pool-exhausted as an outage, not a query error", () => {
+    const text = systemText();
+    expect(text).toMatch(/unreachable/i);
+    expect(text).toMatch(/connection pool|pool is exhausted|pool is/i);
+  });
+
+  it("instructs the agent to stop and report rather than retry/modify the SQL", () => {
+    const text = systemText();
+    // The outage branch must tell the agent NOT to retry, and to surface the
+    // outage to the user as temporarily unavailable.
+    expect(text).toMatch(/do not retry|don't retry|not retry at all/i);
+    expect(text).toMatch(/temporarily unavailable/i);
   });
 });

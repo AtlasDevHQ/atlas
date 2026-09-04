@@ -110,11 +110,22 @@ import {
   type CoveragePersistReport,
   type EnumeratedSurveyUnit,
 } from "@atlas/api/lib/brain/coverage-enumeration";
+import crypto from "node:crypto";
 import { approve } from "@atlas/api/lib/brain/review-gate";
+import { ingestDocuments } from "@atlas/api/lib/knowledge/ingest-bundle";
+import {
+  KNOWLEDGE_INSTALL_UPSERT_SQL,
+  OKF_UPLOAD_CATALOG_ID,
+} from "@atlas/api/lib/integrations/install/okf-upload-form-handler";
+import { assertKnowledgeCollectionSlugFree } from "@atlas/api/lib/integrations/install/knowledge-collection-install";
+import { renderOkfDocument } from "@atlas/okf-bundle";
+import type { WorkspaceId } from "@useatlas/types";
 import type { EpisodeSource } from "@atlas/api/lib/brain/sources";
 import {
   CHANNELS,
   CONTRADICTION_CLAIMS,
+  DEMO_COLLECTION_SLUG,
+  DOCUMENTS,
   CONTRADICTION_PREDICATE_SURFACE,
   DEMO_ID_MARKER,
   EPISODES,
@@ -449,6 +460,130 @@ export async function seedDemoCorpusCoverage(params: {
 }
 
 // ---------------------------------------------------------------------------
+// Phase: documents
+// ---------------------------------------------------------------------------
+
+export interface DocumentsPhaseReport {
+  readonly workspaceId: string;
+  /** The collection slug the documents landed in. */
+  readonly collectionSlug: string;
+  /** `workspace_plugins.id` of the collection container. */
+  readonly installId: string;
+  /** New documents written. */
+  readonly created: number;
+  readonly updated: number;
+  readonly unchanged: number;
+  /** Documents processed in total — the corpus's own count when nothing was rejected. */
+  readonly documents: number;
+  /** Documents archived because their path left the corpus — always 0 on a corpus that only grows. */
+  readonly archivedAbsent: number | null;
+  readonly published: boolean;
+  /** Per-file rejections. A non-empty list here means a corpus document is malformed. */
+  readonly rejected: readonly { readonly path: string; readonly reason: string }[];
+}
+
+/**
+ * Put the NovaMart handbook in the Knowledge Base.
+ *
+ * Two seams, in order, and neither is reimplemented here:
+ *
+ *   1. `upsertKnowledgeCollectionRow` with the `okf-upload` handler's own
+ *      UPSERT — the collection container, `pillar='knowledge'`, whose
+ *      `install_id` IS the slug. Re-running edits it in place, so the phase is
+ *      idempotent at the container as well as at the documents.
+ *   2. `ingestDocuments`, the one ingest seam, with `source: "upload"` and
+ *      `publish: true`. Documents ingest as `draft` and the upload-and-publish
+ *      promotion (ADR-0028 §4, upload collections only) is what makes them
+ *      readable — without it the demo's third store stays empty in a way no
+ *      reader could distinguish from having no documents at all.
+ *
+ * `archiveAbsent` is deliberately ON: a document dropped from `DOCUMENTS`
+ * should stop being served on the next seed rather than linger as a page no
+ * source vouches for.
+ */
+export async function seedDemoCorpusDocuments(params: {
+  readonly workspaceRef: string;
+}): Promise<DocumentsPhaseReport> {
+  const workspaceId = await resolveDemoWorkspace(params.workspaceRef);
+
+  // The slug guard, but NOT the plan cap. `assertCollectionInstallable` pairs
+  // the two, and the cap half has nothing to resolve here: the demo workspace
+  // is Atlas's own and carries no subscription, so the check fails closed with
+  // `check_failed` — a 503 about billing raised against a seed that has no
+  // plan to be capped by. The slug half applies to any workspace and is kept.
+  // The SQL is still the okf-upload handler's own exported constant, so the
+  // container's shape stays single-homed with the tenant path.
+  await assertKnowledgeCollectionSlugFree(
+    workspaceId as WorkspaceId,
+    DEMO_COLLECTION_SLUG,
+    OKF_UPLOAD_CATALOG_ID,
+  );
+  const installRows = await internalQuery<{ id: string }>(KNOWLEDGE_INSTALL_UPSERT_SQL, [
+    crypto.randomUUID(),
+    workspaceId,
+    OKF_UPLOAD_CATALOG_ID,
+    DEMO_COLLECTION_SLUG,
+    JSON.stringify({ description: "The NovaMart handbook — the demo company's own pages." }),
+  ]);
+  const installId = installRows[0]?.id;
+  if (installId === undefined) {
+    throw new Error(
+      `demo corpus: the collection upsert returned no row for "${DEMO_COLLECTION_SLUG}" — the container was not created and no documents were written.`,
+    );
+  }
+
+  const files = DOCUMENTS.map((doc) => ({
+    path: doc.path,
+    content: renderOkfDocument(
+      { title: doc.title, description: doc.description, timestamp: doc.timestamp },
+      doc.tags,
+      doc.body,
+    ),
+  }));
+
+  const outcome = await ingestDocuments({
+    workspaceId,
+    collectionId: DEMO_COLLECTION_SLUG,
+    source: "upload",
+    files,
+    publish: true,
+    archiveAbsent: true,
+  });
+
+  if (outcome.kind !== "ok") {
+    // Every non-ok kind is a real failure of this phase — there is no partial
+    // success worth reporting as one, because a half-ingested handbook is a
+    // demo that contradicts itself.
+    throw new Error(
+      `demo corpus: document ingest failed (${outcome.kind}) for collection "${DEMO_COLLECTION_SLUG}"`,
+    );
+  }
+
+  const rejected = outcome.rejected.map((r) => ({ path: r.path, reason: r.reason }));
+  if (rejected.length > 0) {
+    log.warn(
+      { workspaceId, rejected },
+      "demo corpus: documents rejected at ingest — a corpus page is malformed and was NOT written",
+    );
+  }
+
+  const report: DocumentsPhaseReport = {
+    workspaceId,
+    collectionSlug: DEMO_COLLECTION_SLUG,
+    installId,
+    created: outcome.report.created,
+    updated: outcome.report.updated,
+    unchanged: outcome.report.unchanged,
+    documents: outcome.report.documents,
+    archivedAbsent: outcome.archivedAbsent,
+    published: outcome.published,
+    rejected,
+  };
+  log.info({ ...report }, "demo corpus: documents phase complete");
+  return report;
+}
+
+// ---------------------------------------------------------------------------
 // Phase: approve
 // ---------------------------------------------------------------------------
 
@@ -478,6 +613,35 @@ const CORPUS_FACTS_SQL = `SELECT f.id, f.subject, f.predicate, f.object, e.sourc
 const TENSION_EDGES_SQL = `SELECT count(*)::text AS n FROM brain_edges WHERE workspace_id = $1 AND edge_type = 'in-tension-with'`;
 
 /**
+ * The reviewer named by `--reviewed-by` must already be a member of the demo
+ * workspace. The seed VERIFIES and never creates: minting an Atlas account
+ * would put this seed in Better Auth's tables, which is the same line
+ * {@link DEMO_ATLAS_WORKSPACE_SLUG} refuses to cross for organizations.
+ */
+const REVIEWER_SQL = `SELECT u.id, u.name
+   FROM "user" u
+   JOIN member m ON m."userId" = u.id
+  WHERE u.id = $1 AND m."organizationId" = $2`;
+
+/** `--reviewed-by` names an account that is not a member of the demo workspace. */
+export class ReviewerNotAMemberError extends Error {
+  constructor(readonly reviewerId: string, readonly workspaceId: string) {
+    super(
+      `The reviewer ${reviewerId} is not a member of the demo workspace ${workspaceId}. ` +
+        "Create the account and add it to the workspace first — the seed verifies this id, it does not mint one.",
+    );
+    this.name = "ReviewerNotAMemberError";
+  }
+}
+
+async function resolveReviewer(workspaceId: string, reviewerId: string): Promise<{ id: string; name: string }> {
+  const rows = await internalQuery<{ id: string; name: string }>(REVIEWER_SQL, [reviewerId, workspaceId]);
+  const row = rows[0];
+  if (row === undefined) throw new ReviewerNotAMemberError(reviewerId, workspaceId);
+  return { id: row.id, name: row.name };
+}
+
+/**
  * What the approve phase did about the contradiction's cardinality, keyed to
  * the slot the published rivals occupy (#5620).
  *
@@ -495,7 +659,12 @@ export type ApproveCardinalityOutcome =
 
 export interface ApprovePhaseReport {
   readonly workspaceId: string;
+  /** The operator who ran the seed — the audit row's actor. */
   readonly approvedBy: string;
+  /** The workspace member stamped on every promoted fact as its approver. */
+  readonly reviewedBy: string;
+  /** That member's display name, as a reader of the fact will see it. */
+  readonly reviewerName: string;
   /** Draft ids the gate actually promoted this run. Empty on a re-run, which is the idempotent outcome. */
   readonly promoted: readonly string[];
   /** Draft ids the gate refused, with its reasons — left `draft` for a person. */
@@ -542,8 +711,14 @@ async function declareContradictionSlot(
 
 export async function seedDemoCorpusApprove(params: {
   readonly workspaceRef: string;
-  /** The human approving — a user id, or `local-operator`. Becomes the audit row's actor. */
+  /** The human RUNNING the seed — a user id, or `local-operator`. Becomes the audit row's actor. */
   readonly approvedBy: string;
+  /**
+   * The workspace member whose name a promoted fact carries as its approver
+   * (`brain_facts.published_by`, #5635) — the corpus's reviewer, not the
+   * operator. Verified to be a member; never created here.
+   */
+  readonly reviewedBy: string;
   readonly requestId?: string;
 }): Promise<ApprovePhaseReport> {
   const workspaceId = await resolveDemoWorkspace(params.workspaceRef);
@@ -554,6 +729,10 @@ export async function seedDemoCorpusApprove(params: {
   // resolves them as `actor_id` exactly as it does for the publish route —
   // not a `system:` principal with the person tucked into metadata.
   const approver = createAtlasUser(params.approvedBy, "simple-key", params.approvedBy);
+  // Resolved BEFORE any write: a bad `--reviewed-by` should cost nothing, and
+  // failing after promotion would leave facts approved by the operator again —
+  // the exact state this split exists to end.
+  const reviewer = await resolveReviewer(workspaceId, params.reviewedBy);
 
   return withRequestContext(
     { requestId, user: approver, agentOrigin: "chat", actor: { kind: "human" } },
@@ -565,10 +744,14 @@ export async function seedDemoCorpusApprove(params: {
       let refused: { id: string; reasons: readonly string[] }[] = [];
       if (draftIds.length > 0) {
         const report = await withInternalTransaction("demo-corpus-approve", (client) =>
-          // The approver is stamped onto every promoted row (#5635), not only
-          // onto the audit row — the same real human this file's header
-          // insists on, now readable from the fact itself.
-          Effect.runPromise(approve(client, workspaceId, draftIds, approver.id)),
+          // Two different people, two different questions. The audit row's
+          // actor is the operator who RAN the seed (the request context above,
+          // which `logAdminAction` reads); `published_by` is the workspace
+          // member who stood behind the claim (#5635), which is what a reader
+          // sees on the fact. Collapsing them made every demo fact report the
+          // operator as its own approver, and made the claim's author and its
+          // approver the same person wherever the operator was also an author.
+          Effect.runPromise(approve(client, workspaceId, draftIds, reviewer.id)),
         );
         refused = (report.refused ?? []).map((r) => ({ id: r.rowId, reasons: r.reasons }));
         const refusedIds = new Set(refused.map((r) => r.id));
@@ -610,6 +793,7 @@ export async function seedDemoCorpusApprove(params: {
         targetId: workspaceId,
         metadata: {
           phase: "approve",
+          reviewedBy: reviewer.id,
           promotedFactIds: promoted,
           refused,
           tensionEdges,
@@ -640,6 +824,8 @@ export async function seedDemoCorpusApprove(params: {
       return {
         workspaceId,
         approvedBy: params.approvedBy,
+        reviewedBy: reviewer.id,
+        reviewerName: reviewer.name,
         promoted,
         refused,
         tensionEdges,

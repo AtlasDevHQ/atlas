@@ -9,11 +9,13 @@
  * `correctFact`, so the row is emitted once, by the machinery, for every entry
  * point present or future.
  *
- * Split from `correction.test.ts` for the reason `acl-logging.test.ts` and
- * `grant-sweep-logging.test.ts` are split from theirs: it needs
- * `mock.module("@atlas/api/lib/logger")` and `mock.module("@atlas/api/lib/audit")`
- * installed before the module under test is imported, and the sibling suite
- * deliberately runs with no module mocking at all.
+ * Split from `correction.test.ts` for the reason `acl-logging.test.ts` is
+ * split from its sibling: it needs `mock.module("@atlas/api/lib/logger")` and
+ * `mock.module("@atlas/api/lib/audit")` installed before the module under test
+ * is imported, and the sibling suite deliberately runs with no module mocking
+ * at all. (The split is a choice, not a constraint — `grant-sweep.test.ts`
+ * absorbed its logging sibling in #5645 via `@atlas/api/testing/logger`; see
+ * `.claude/rules/testing.md`.)
  *
  * What is pinned here, and why each half is load-bearing:
  *

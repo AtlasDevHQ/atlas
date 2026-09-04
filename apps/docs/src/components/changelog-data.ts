@@ -20,6 +20,19 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.30",
+    title: "The Demo Corpus Cites What It Names",
+    date: "2026-09-04",
+    summary:
+      "The demo's return-window disagreement referred to a Terms page that did not exist. Two people disagreed about the policy, and the transcript naming the document as the tiebreaker pointed at nothing — which reads exactly like a working citation until you follow it. This release gives the demo corpus a document tier, so the disagreement now has three sources across two stores and the page it cites is really there. Facts also gain dated decay bands, and the person who approved a demo fact is now recorded separately from the operator who ran the seed.",
+    highlights: [
+      "Three NovaMart handbook pages now live in the demo's Knowledge Base, seeded through the same path a real workspace uses. The returns page states a thirty-day window, which is the claim the finance and support messages disagree about — so the contradiction the demo shows has a document, a message and a second message behind it, not two messages and a dead reference",
+      "Two dated engineering discussions land in the aging and stale freshness bands, so a demo answer shows what an aging fact looks like rather than presenting everything as equally current. The dates are absolute, so the bands keep meaning the right thing as real time passes",
+      "Seeding the demo now takes two separate names: who ran the seed, and who approved the claims. They answer different questions and were previously stamped from one flag. The reviewer must be a real member of the workspace — the seed verifies this and refuses rather than inventing a person to put on a fact",
+      "Fixed: the guard that stops two knowledge collections claiming the same name was bundled with a subscription-plan cap. The demo workspace is Atlas's own and holds no plan, so seeding a document into it raised a billing error instead of a clear refusal. The two checks are now separable; every customer-facing path still runs both",
+    ],
+  },
+  {
     version: "v0.2.29",
     title: "The Approval Names Its Approver",
     date: "2026-09-03",

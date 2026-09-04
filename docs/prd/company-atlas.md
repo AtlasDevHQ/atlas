@@ -8,8 +8,7 @@ Read alongside:
 
 - [ADR-0036](../adr/0036-atlas-as-company-brain.md) — the bet, the wedge, the trust tiers, the milestone cut
 - [ADR-0037](../adr/0037-claim-identity-in-the-brain.md) — claim identity
-- [`.claude/research/ROADMAP.md`](../../.claude/research/ROADMAP.md) — the live tracker. Where this document and the ROADMAP disagree about status, **the ROADMAP is right**
-- **[Project: The Company Atlas — Finish Conditions](https://github.com/orgs/AtlasDevHQ/projects/3)** — the board keyed by *condition*, added 2026-08-24. This document holds the destination and declines to track; the ROADMAP tracks but is keyed by *date*. Between the two, nothing was keyed by condition, and work fell through the gap — conditions 1 and 3 were *held* by the Coverage Surface milestone rather than closed by it, and were unmilestoned four days after it closed. **If you are asking "where does condition N stand", the board is the answer, not the snapshot below.**
+- **[Project: The Company Atlas — Finish Conditions](https://github.com/orgs/AtlasDevHQ/projects/3)** — the board keyed by *condition*, added 2026-08-24. This document holds the destination and declines to track. Before the board, nothing was keyed by condition, and work fell through the gap — conditions 1 and 3 were *held* by the Coverage Surface milestone rather than closed by it, and were unmilestoned four days after it closed. **If you are asking "where does condition N stand", the board is the answer, not the snapshot below.**
 
 ---
 
@@ -197,7 +196,7 @@ The test for a borderline proposal: **does it help a person know something, or d
 >
 > The table is left as written rather than edited in place. It dates the moment the destination was set, and a status table that is quietly refreshed cannot show how far the arc moved — which was the point of writing it down.
 
-Explicitly dated and explicitly perishable. **The ROADMAP is authoritative for status**; this is here once, to make the gap visible at the moment the destination was written.
+Explicitly dated and explicitly perishable. **The Finish Conditions board is authoritative for status**; this is here once, to make the gap visible at the moment the destination was written.
 
 | # | Condition | Status |
 |---|---|---|

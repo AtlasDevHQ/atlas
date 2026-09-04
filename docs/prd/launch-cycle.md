@@ -7,7 +7,7 @@ Read alongside:
 
 - [`company-atlas.md`](./company-atlas.md) — the destination. The sentence below is that page's claim, said to a buyer. Where the two disagree, the destination is right and this page is amended
 - [ADR-0038](../adr/0038-the-atlas-is-the-product-the-brain-is-the-category.md) — *brain* is the category, *Atlas* is the product. Every surface in the cycle is written in that split
-- [`.claude/research/ROADMAP.md`](../../.claude/research/ROADMAP.md) — where the gate's verdict is written when it is read
+- [#5613](https://github.com/AtlasDevHQ/atlas/issues/5613) — where the gate's verdict is written when it is read
 
 **Why this page exists.** Every later issue in the milestone renders the same three things — a sentence, a buyer, a demo — and one number decides whether the cycle continues. Written once here, before any surface moves, so that the landing page (#5606), the README (#5607), the docs (#5608), the launch post (#5610) and the Show HN (#5612) cannot drift from each other, and so that the number in week five is **read from a named source, not recalled.** An issue is not where a person checks a number six weeks later; this page is.
 
@@ -82,9 +82,9 @@ Each measure names the exact source that produces its number. The person reading
 
 - **Rethink** if two or more measures land in the Rethink column
 - **Continue** if three or more land in the Continue column and none in Rethink
-- **Otherwise the maintainer decides**, and the ROADMAP entry says why, with the numbers beside the reasoning. The gap between the columns is where judgement is allowed in; the columns are where it is not
+- **Otherwise the maintainer decides**, and the verdict says why, with the numbers beside the reasoning. The gap between the columns is where judgement is allowed in; the columns are where it is not
 
-**Where it is written.** In [`.claude/research/ROADMAP.md`](../../.claude/research/ROADMAP.md) under `## Next`, as a dated entry in the record's style: the four numbers, each with its source query and the date and time it was read, the column each landed in, the one-word verdict, and what did not hold. The same four lines are appended to the log at the end of this page. **If continue:** the next milestone is design-partner-driven, and finish conditions 1 and 3 of the destination are its first two issues. **If rethink:** the HN thread and the conversations log say which of the buyer or the sentence was wrong, and the next entry on this page is a new sentence or a new buyer, dated.
+**Where it is written.** As a comment on [#5613](https://github.com/AtlasDevHQ/atlas/issues/5613), and in the log at the end of this page: the four numbers, each with its source query and the date and time it was read, the column each landed in, the one-word verdict, and what did not hold. The same four lines are appended to the log at the end of this page. **If continue:** the next milestone is design-partner-driven, and finish conditions 1 and 3 of the destination are its first two issues. **If rethink:** the HN thread and the conversations log say which of the buyer or the sentence was wrong, and the next entry on this page is a new sentence or a new buyer, dated.
 
 ---
 

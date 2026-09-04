@@ -147,6 +147,50 @@ Parking `eu`/`apac` was acceptable **only** because both held 0 conversations.
 The same list in reverse, plus: migrate any real workspace to `us` **before**
 step 1, and scale the service down **after** the config reaches prod.
 
+### ⚠️ The 2026-09-01 park never did the scale-down — and `railway scale` cannot do it
+
+`api-eu` and `api-apac` each kept **one replica and ~0.5 GB resident** until
+2026-09-04. Every surface correctly reported both regions as parked, so nothing
+looked wrong; the *entire* stated reason for parking (memory is 90% of the bill)
+simply went unrealized. The step above said only *"scale the service down"* and
+named no mechanism, so there was nothing to fail.
+
+**`railway scale <home-region>=0` does not park a service.** Measured on prod
+2026-09-04, on both services:
+
+| Command | Resulting `multiRegionConfig` |
+|---|---|
+| *(before)* | `europe-west4-drams3a: 1` |
+| `railway scale --service api-eu europe-west4-drams3a=0` | `us-west2: 1` |
+| `railway scale --service api-eu europe-west4-drams3a=1` | `europe-west4-drams3a: 1`, **`us-west2: 1`** |
+| `railway scale --service api-eu europe-west4-drams3a=1 us-west2=0` | `europe-west4-drams3a: 1` |
+
+Two behaviours, both surprising, and each one costs a prod redeploy to discover:
+
+1. **Zeroing the only region does not stop the service** — it removes that region
+   and Railway assigns a **default** one (`us-west2`) at one replica. The EU
+   service kept serving, from the US. `curl /api/health` returned `200` with
+   `{"region":"eu"}` throughout, because the region string is config, not
+   topology. **A parked region that still answers its health check is the
+   symptom to look for.**
+2. **The command merges, it does not replace.** Setting the home region back to
+   `1` left the stray `us-west2` arm in place — two replicas, which silently
+   violates the `numReplicas: 1` cap in [deploy/README.md](../../deploy/README.md)
+   that hosted MCP sessions depend on. Removing a region requires naming it
+   explicitly as `=0` in the same call as the ones you are keeping.
+
+**So do not use `railway scale` to park.** Railway's documented scale-to-zero is
+the **serverless / app-sleep** toggle — *"you can scale to zero by toggling
+serverless in your service settings. After 10 minutes, a serverless container
+that has not done any work will be fully put to sleep and wake up upon receiving
+a request"* ([scaling](https://docs.railway.com/guides/scaling-your-application#vertical-scaling)).
+That is the mechanism to use, and it has not been tried here yet.
+
+Whatever mechanism is used, **verify against `multiRegionConfig` and the deployed
+commit, never against `/api/health`** — a service keeps answering from its old
+container while a redeploy runs, and answers from the wrong region without
+saying so.
+
 ## What parking does NOT change
 
 ADR-0024 stands in full. Regional identity isolation is **built** and stays

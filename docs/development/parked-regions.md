@@ -147,6 +147,124 @@ Parking `eu`/`apac` was acceptable **only** because both held 0 conversations.
 The same list in reverse, plus: migrate any real workspace to `us` **before**
 step 1, and scale the service down **after** the config reaches prod.
 
+### ⚠️ The 2026-09-01 park never did the scale-down — and `railway scale` cannot do it
+
+`api-eu` and `api-apac` each kept **one replica and ~0.5 GB resident** until
+2026-09-04. Every surface correctly reported both regions as parked, so nothing
+looked wrong; the *entire* stated reason for parking (memory is 90% of the bill)
+simply went unrealized. The step above said only *"scale the service down"* and
+named no mechanism, so there was nothing to fail.
+
+**`railway scale <home-region>=0` does not park a service.** Measured on prod
+2026-09-04, on both services:
+
+| Command | Resulting `multiRegionConfig` |
+|---|---|
+| *(before)* | `europe-west4-drams3a: 1` |
+| `railway scale --service api-eu europe-west4-drams3a=0` | `us-west2: 1` |
+| `railway scale --service api-eu europe-west4-drams3a=1` | `europe-west4-drams3a: 1`, **`us-west2: 1`** |
+| `railway scale --service api-eu europe-west4-drams3a=1 us-west2=0` | `europe-west4-drams3a: 1` |
+
+Two behaviours, both surprising, and each one costs a prod redeploy to discover:
+
+1. **Zeroing the only region does not stop the service** — it removes that region
+   and Railway assigns a **default** one (`us-west2`) at one replica. The EU
+   service kept serving, from the US. `curl /api/health` returned `200` with
+   `{"region":"eu"}` throughout, because the region string is config, not
+   topology. **A parked region that still answers its health check is the
+   symptom to look for.**
+2. **The command merges, it does not replace.** Setting the home region back to
+   `1` left the stray `us-west2` arm in place — two replicas, which silently
+   violates the `numReplicas: 1` cap in [deploy/README.md](../../deploy/README.md)
+   that hosted MCP sessions depend on. Removing a region requires naming it
+   explicitly as `=0` in the same call as the ones you are keeping.
+
+**So do not use `railway scale` to park.**
+
+### Serverless does not park it either
+
+The obvious next candidate — Railway's **serverless / app-sleep** toggle, which
+their scaling guide calls scale-to-zero — was enabled on both services on
+2026-09-04 and is **the wrong tool for this process**. Railway sleeps on
+*outbound* inactivity, and two lines in their own docs rule it out here:
+
+> "an open database connection pool counts as outbound traffic and prevents
+> sleep; if you want sleep behavior, connect per-request instead of holding a
+> pool" ([serverless](https://docs.railway.com/guides/cut-idle-costs-serverless))
+
+> "Private network traffic does not appear [in the metrics graph], but it still
+> counts as outbound and still prevents sleep. If a service refuses to sleep and
+> the metrics graph looks quiet, look at private network calls first"
+
+The API holds a persistent internal-DB pool (`PgClient.layerFromPool()`,
+`lib/db/internal.ts`) over Railway's **private network** to
+`<region>-int-postgres`. That pins the container awake, and it is invisible in
+the metrics graph — so the failure looks exactly like success. The ~35
+`registerPeriodicFiber` registrations in `lib/effect/layers.ts` are a second,
+independent reason: each tick is DB work and several make outbound vendor calls.
+
+⚠️ **Never enable serverless on `api` (us).** Beyond not working, hosted MCP
+session state is an in-process `Map` (`packages/mcp/src/hosted.ts`), so a sleep
+would drop every live session, and a cold wake adds latency to the anonymous
+demo door.
+
+### What actually parks a service: `railway down`
+
+```bash
+railway down --service api-apac --yes    # removes the deployment; container stops
+```
+
+Verified on prod 2026-09-04 for both regions: the latest deployment flips to
+`REMOVED`, `https://api-<region>.useatlas.dev/api/health` returns **404** rather
+than `200`, and CPU drops to 0. The service, its variables, its domains and its
+region map all survive — only the running container goes.
+
+This is the exact inverse of the un-park step already documented above
+(`railway redeploy --service api-<region>`), which is the clue that `down` was
+always the intended mechanism; the parking side just never named it.
+
+### ⚠️ `railway down` alone does not hold — the next release undoes it
+
+Both parked services have `source.branch = prod` and **autodeploy enabled by
+default**, so the next `/release` rebuilds and restarts them. This is not
+theoretical: the v0.2.30 prod push on 2026-09-04 deployed `api-eu` and
+`api-apac` alongside `api` and `web` (`meta.branch: prod`, `reason: deploy`).
+Releases here run roughly daily, so a `down`-only park would silently undo
+itself within a day and look correct the whole time.
+
+Disable autodeploy per service, production environment only:
+
+```bash
+railway api 'mutation($i:ServiceInstanceAutoDeployUpdateInput!){serviceInstanceAutoDeployUpdate(input:$i){enabled}}' \
+  --var i='{"enabled":false,"projectId":"<project>","environmentId":"<env>","serviceId":"<service>"}'
+```
+
+Check it with the matching query, which is the read half and takes the same ids:
+
+```bash
+railway api 'query($p:String!,$e:String!,$s:String!){serviceInstanceAutoDeployStatus(projectId:$p,environmentId:$e,serviceId:$s){enabled canEnable}}' \
+  --var p=<project> --var e=<env> --var s=<service>
+```
+
+**Leave `api` (us) and `web` on autodeploy** — they are the serving stack and
+`/release` depends on it.
+
+### Parking is three writes, and each was found only by the previous one failing
+
+| # | Write | Without it |
+|---|---|---|
+| 1 | Config → `selectable: false` (+ `requestable: true`) | The picker still offers a region that is about to die |
+| 2 | `railway down --service api-<region> --yes` | The container keeps running and billing; every surface still says "parked" |
+| 3 | `serviceInstanceAutoDeployUpdate(enabled: false)` | The next release restarts it and the park silently reverts |
+
+Un-parking reverses all three: autodeploy back to `true`, `railway redeploy`,
+then the config and copy steps in the checklist above.
+
+Whatever mechanism is used, **verify against `multiRegionConfig` and the deployed
+commit, never against `/api/health`** — a service keeps answering from its old
+container while a redeploy runs, and answers from the wrong region without
+saying so.
+
 ## What parking does NOT change
 
 ADR-0024 stands in full. Regional identity isolation is **built** and stays

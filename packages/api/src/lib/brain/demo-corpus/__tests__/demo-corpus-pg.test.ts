@@ -29,6 +29,8 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
+import { OKF_UPLOAD_CATALOG_ID } from "@atlas/api/lib/integrations/install/okf-upload-form-handler";
+import { ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 import { Effect } from "effect";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
@@ -45,6 +47,9 @@ import { chatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
 import { sweepTensionEdges } from "@atlas/api/lib/brain/tension-sweep";
 import {
   CHANNELS,
+  CORPUS_REVIEWER,
+  DEMO_COLLECTION_SLUG,
+  DOCUMENTS,
   EPISODES,
   EXPECTED_CLAIMS,
   PEOPLE,
@@ -58,7 +63,11 @@ import {
   DEMO_ATLAS_WORKSPACE_SLUG,
   NotTheDemoWorkspaceError,
   corpusSourceId,
+  PendingBrainDraftsError,
+  ReviewerNotAMemberError,
+  ReviewerNotTheCorpusReviewerError,
   seedDemoCorpusApprove,
+  seedDemoCorpusDocuments,
   seedDemoCorpusCoverage,
   seedDemoCorpusIngest,
 } from "../seed";
@@ -73,7 +82,14 @@ const DEMO_ORG_NO_HINT = "org_nmd_demo_nohint_test";
 const DEMO_ORG_REPHRASED = "org_nmd_demo_rephrased_test";
 const DEMO_ORG_SPLIT_KEYS = "org_nmd_demo_splitkeys_test";
 const TENANT_ORG = "org_nmd_tenant_test";
-const APPROVER = "user_nmd_reviewer";
+/** The operator who RUNS the seed — the audit row's actor. */
+const APPROVER = "user_nmd_operator";
+/** The workspace member stamped on each promoted fact as its approver. */
+const REVIEWER = "user_nmd_dana";
+/** A real account that is NOT a member of the demo workspace. */
+const OUTSIDER = "user_nmd_outsider";
+/** A real MEMBER of the demo workspace who is not the corpus's reviewer. */
+const IMPOSTOR = "user_nmd_impostor";
 
 const FAKE_MODEL = {
   model: "fake-model" as unknown as ResolvedExtractionModel["model"],
@@ -84,6 +100,21 @@ const FAKE_MODEL = {
 /** The corpus's chat messages in one channel, in corpus order. */
 function chatIn(channel: DemoChannelKey): readonly DemoChatMessage[] {
   return EPISODES.filter((e): e is DemoChatMessage => e.kind === "chat" && e.channel === channel);
+}
+
+/**
+ * One chat message, found by a phrase in its body.
+ *
+ * Positional indexing into a channel carries an ordering contract in a comment;
+ * this carries it in the assertion, so inserting an episode ahead of another
+ * cannot silently repoint a fixture claim at the wrong message.
+ */
+function chatSaying(channel: DemoChannelKey, phrase: string): DemoChatMessage {
+  const found = chatIn(channel).filter((e) => e.body.includes(phrase));
+  if (found.length !== 1) {
+    throw new Error(`corpus has ${found.length} #${channel} messages containing ${JSON.stringify(phrase)}, expected 1`);
+  }
+  return found[0];
 }
 
 function only<T extends DemoEpisode>(kind: T["kind"]): T {
@@ -128,10 +159,13 @@ function deterministicClaims(
   // Shaped as `toFactCandidates` shapes the extractor's output (#5615): the hint
   // arms the exact slot only, so an anchor flood here would be a real one.
   const hint = hintSingle ? { predicateCardinality: "single" as const, anchorReach: "curated-only" as const } : {};
-  const [finance30, , financeGmv] = chatIn("finance");
-  const [support14] = chatIn("support");
-  const [engineeringDecision] = chatIn("engineering");
-  const [leadershipThreshold] = chatIn("leadership");
+  const finance30 = chatSaying("finance", "return window is 30 days");
+  const financeGmv = chatSaying("finance", "GMV for December 2024");
+  const support14 = chatSaying("support", "return window is 14 days");
+  const engineeringDecision = chatSaying("engineering", "the nightly ETL moves to 02:00 UTC");
+  const engineeringProcessor = chatSaying("engineering", "primary payment processor");
+  const engineeringRetention = chatSaying("engineering", "raw event logs");
+  const leadershipThreshold = chatSaying("leadership", "free-shipping threshold");
 
   set(finance30, [{ subject: "NovaMart", predicate: rivalPredicates[0], object: "30 days from delivery", ...hint }]);
   set(financeGmv, [{ subject: "NovaMart", predicate: "GMV for December 2024", object: "about $1.9M" }]);
@@ -139,6 +173,12 @@ function deterministicClaims(
   set(engineeringDecision, [
     { subject: "nightly ETL", predicate: "runs at", object: "02:00 UTC" },
     { subject: "nightly ETL", predicate: "owned by", object: "Dana Okafor" },
+  ]);
+  set(engineeringProcessor, [
+    { subject: "NovaMart", predicate: "primary payment processor", object: "Stripe" },
+  ]);
+  set(engineeringRetention, [
+    { subject: "NovaMart raw event logs", predicate: "retention period", object: "90 days" },
   ]);
   set(leadershipThreshold, [
     { subject: "NovaMart", predicate: "free-shipping threshold for Q4 2026", object: "$75" },
@@ -201,18 +241,68 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     // creating it in the test schema shadows any `public.organization` a
     // local dev DB carries, so the assertions never read dev data.
     await pool.query(
-      `CREATE TABLE IF NOT EXISTS organization (id text PRIMARY KEY, name text, slug text, "createdAt" timestamptz)`,
+      // The seed's own guard reads `id` and `slug`; the document phase's cap
+      // resolution reads the whole workspace row through `getWorkspaceDetails`,
+      // and a FAULT there fails closed (a genuinely absent plan fails open), so
+      // a stub missing those columns denies the ingest for a billing reason
+      // that does not exist. The columns mirror that query.
+      `CREATE TABLE IF NOT EXISTS organization (
+         id text PRIMARY KEY, name text, slug text, workspace_status text, plan_tier text,
+         byot boolean, "stripeCustomerId" text, trial_ends_at timestamptz, suspended_at timestamptz,
+         suspension_source text, plan_override_until timestamptz, deleted_at timestamptz,
+         region text, region_assigned_at timestamptz, "createdAt" timestamptz)`,
     );
     _resetPool(pool);
+    // Same reasoning as `organization`: the approve phase verifies the reviewer
+    // through `"user"` × `member`, both Better Auth's, both skipped above. The
+    // stubs carry only the columns the lookup reads.
+    await pool.query(`CREATE TABLE IF NOT EXISTS "user" (id text PRIMARY KEY, name text, email text)`);
     await pool.query(
-      `INSERT INTO organization (id, name, slug, "createdAt") VALUES
-         ($1, 'NovaMart Demo', $2, now()),
-         ($3, 'NovaMart Demo (no hint)', $2, now()),
-         ($4, 'Tenant X', 'tenant-x', now()),
-         ($5, 'NovaMart Demo (rephrased)', $2, now()),
-         ($6, 'NovaMart Demo (split keys)', $2, now())
+      `CREATE TABLE IF NOT EXISTS member (id text PRIMARY KEY, "organizationId" text, "userId" text, role text)`,
+    );
+    await pool.query(
+      // `plan_tier` is not decoration: the cap resolver indexes the plan table
+      // by it, so a NULL tier is a TypeError rather than an absent plan.
+      // `free` is the tier the demo workspace actually carries — off SaaS it
+      // means "platform knob only", which is the cap the seed runs under.
+      `INSERT INTO organization (id, name, slug, plan_tier, "createdAt") VALUES
+         ($1, 'NovaMart Demo', $2, 'free', now()),
+         ($3, 'NovaMart Demo (no hint)', $2, 'free', now()),
+         ($4, 'Tenant X', 'tenant-x', 'free', now()),
+         ($5, 'NovaMart Demo (rephrased)', $2, 'free', now()),
+         ($6, 'NovaMart Demo (split keys)', $2, 'free', now())
        ON CONFLICT DO NOTHING`,
       [DEMO_ORG, DEMO_ATLAS_WORKSPACE_SLUG, DEMO_ORG_NO_HINT, TENANT_ORG, DEMO_ORG_REPHRASED, DEMO_ORG_SPLIT_KEYS],
+    );
+    // The `okf-upload` catalog row is seeded into `plugin_catalog` at BOOT
+    // (`integrations/catalog-seeder.ts`), not by a migration, so a schema that
+    // only ran migrations has none and the collection's FK would fail. Same
+    // move as `workspace-capability-pg.test.ts`: the test owns the row rather
+    // than depending on boot-time seed drift.
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, install_model, pillar, enabled)
+       VALUES ($1, 'Knowledge Base (Upload)', 'okf-upload', 'context', 'form', 'knowledge', true)
+       ON CONFLICT (id) DO NOTHING`,
+      [OKF_UPLOAD_CATALOG_ID],
+    );
+    await pool.query(
+      // The reviewer's email is what ties the account to `CORPUS_REVIEWER`, so
+      // it comes from the corpus rather than being typed here. `IMPOSTOR` is a
+      // member with the wrong identity — the case membership alone would admit.
+      `INSERT INTO "user" (id, name, email) VALUES ($1, $4, $5), ($2, 'Outside Person', 'outsider@novamart.example'), ($3, 'Someone Else', 'someone.else@novamart.example') ON CONFLICT DO NOTHING`,
+      [REVIEWER, OUTSIDER, IMPOSTOR, PEOPLE[CORPUS_REVIEWER].realName, PEOPLE[CORPUS_REVIEWER].email],
+    );
+    // The reviewer belongs to every demo org the suite seeds; the outsider to
+    // none, which is what the refusal case reads.
+    for (const org of [DEMO_ORG, DEMO_ORG_NO_HINT, DEMO_ORG_REPHRASED, DEMO_ORG_SPLIT_KEYS]) {
+      await pool.query(
+        `INSERT INTO member (id, "organizationId", "userId", role) VALUES ($1, $2, $3, 'admin') ON CONFLICT DO NOTHING`,
+        [`member_${org}`, org, REVIEWER],
+      );
+    }
+    await pool.query(
+      `INSERT INTO member (id, "organizationId", "userId", role) VALUES ($1, $2, $3, 'admin') ON CONFLICT DO NOTHING`,
+      [`member_impostor`, DEMO_ORG, IMPOSTOR],
     );
   }, PG_TEST_TIMEOUT_MS);
 
@@ -236,7 +326,7 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     await expect(seedDemoCorpusCoverage({ workspaceRef: "org_does_not_exist" })).rejects.toBeInstanceOf(
       NotTheDemoWorkspaceError,
     );
-    await expect(seedDemoCorpusApprove({ workspaceRef: TENANT_ORG, approvedBy: APPROVER })).rejects.toBeInstanceOf(
+    await expect(seedDemoCorpusApprove({ workspaceRef: TENANT_ORG, approvedBy: APPROVER, reviewedBy: REVIEWER })).rejects.toBeInstanceOf(
       NotTheDemoWorkspaceError,
     );
     const { rows } = await pool.query<{ n: string }>(
@@ -319,12 +409,65 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
   });
 
   it("approves nothing before extraction has run, and reports every expected claim missing rather than inventing one", async () => {
-    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG, approvedBy: APPROVER });
+    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG, approvedBy: APPROVER, reviewedBy: REVIEWER });
     expect(report.promoted).toEqual([]);
     expect(report.refused).toEqual([]);
     expect(report.missing).toEqual(EXPECTED_CLAIMS.map((c) => c.key));
     const { rows } = await pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM brain_facts WHERE workspace_id = $1`,
+      [DEMO_ORG],
+    );
+    expect(rows[0]?.n).toBe("0");
+  });
+
+  it("puts the handbook in the Knowledge Base, published, and is idempotent on a re-run", async () => {
+    const first = await seedDemoCorpusDocuments({ workspaceRef: DEMO_ORG });
+    expect(first.collectionSlug).toBe(DEMO_COLLECTION_SLUG);
+    expect(first.created).toBe(DOCUMENTS.length);
+    expect(first.rejected).toEqual([]);
+    expect(first.published).toBe(true);
+
+    // The container is one `workspace_plugins` row whose install_id IS the slug.
+    const install = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM workspace_plugins
+        WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'knowledge'`,
+      [DEMO_ORG, DEMO_COLLECTION_SLUG],
+    );
+    expect(install.rows[0]?.n).toBe("1");
+
+    const docs = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM knowledge_documents WHERE workspace_id = $1 AND status = 'published'`,
+      [DEMO_ORG],
+    );
+    expect(docs.rows[0]?.n).toBe(String(DOCUMENTS.length));
+
+    // A second run writes nothing new — the demo is seeded repeatedly and a
+    // phase that duplicated its own pages would grow the store every time.
+    const again = await seedDemoCorpusDocuments({ workspaceRef: DEMO_ORG });
+    expect(again.created).toBe(0);
+    expect(again.unchanged).toBe(DOCUMENTS.length);
+    const after = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM knowledge_documents WHERE workspace_id = $1`,
+      [DEMO_ORG],
+    );
+    expect(after.rows[0]?.n).toBe(String(DOCUMENTS.length));
+  });
+
+  it("refuses a workspace member who is not the corpus's reviewer", async () => {
+    // Membership alone would admit any member as the approver a reader sees,
+    // which makes CORPUS_REVIEWER a convention the operator can break silently.
+    await expect(
+      seedDemoCorpusApprove({ workspaceRef: DEMO_ORG, approvedBy: APPROVER, reviewedBy: IMPOSTOR }),
+    ).rejects.toBeInstanceOf(ReviewerNotTheCorpusReviewerError);
+  });
+
+  it("refuses a reviewer who is not a member of the workspace, before promoting anything", async () => {
+    await expect(
+      seedDemoCorpusApprove({ workspaceRef: DEMO_ORG, approvedBy: APPROVER, reviewedBy: OUTSIDER }),
+    ).rejects.toBeInstanceOf(ReviewerNotAMemberError);
+    // The refusal is pre-write: no draft was promoted on the way to it.
+    const { rows } = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM brain_facts WHERE workspace_id = $1 AND status = 'published'`,
       [DEMO_ORG],
     );
     expect(rows[0]?.n).toBe("0");
@@ -343,11 +486,70 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     );
     expect(drafts.rows.length).toBeGreaterThan(0);
 
-    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG, approvedBy: APPROVER });
+    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG, approvedBy: APPROVER, reviewedBy: REVIEWER });
     expect([...report.promoted].sort()).toEqual(drafts.rows.map((r) => r.id).sort());
     expect(report.refused).toEqual([]);
     expect(report.missing).toEqual([]);
     expect(report.expected.every((e) => e.found)).toBe(true);
+    expect(report.reviewedBy).toBe(REVIEWER);
+    expect(report.reviewerName).toBe("Dana Okafor");
+    // The promoted rows carry the REVIEWER, not the operator who ran the seed.
+    // Both ids are real and distinct here, so this fails if the two ever
+    // collapse back into one argument.
+    const approvers = await pool.query<{ published_by: string }>(
+      `SELECT DISTINCT published_by FROM brain_facts WHERE workspace_id = $1 AND status = 'published'`,
+      [DEMO_ORG],
+    );
+    expect(approvers.rows.map((r) => r.published_by)).toEqual([REVIEWER]);
+    expect(approvers.rows.map((r) => r.published_by)).not.toContain(APPROVER);
+
+    // "No seeded fact has the same person as both its claim author and its
+    // approver" — checked end to end, over the facts that actually got
+    // published, because whether an episode yields a claim is the extractor's
+    // answer and not one the corpus file can assert. The reviewer's vendor
+    // handles are what `brain_episodes.source_actor` stores.
+    const reviewerPerson = PEOPLE[CORPUS_REVIEWER];
+    const authored = await pool.query<{ source_actor: string }>(
+      `SELECT DISTINCT e.source_actor
+         FROM brain_facts f
+         JOIN brain_episodes e ON e.id = f.source_episode_id
+        WHERE f.workspace_id = $1 AND f.status = 'published'`,
+      [DEMO_ORG],
+    );
+    const reviewerHandles = [reviewerPerson.slackId, reviewerPerson.zoomId, reviewerPerson.email];
+    for (const row of authored.rows) {
+      expect(reviewerHandles).not.toContain(row.source_actor);
+    }
+
+    // The audit row names the OPERATOR, not the reviewer — the two ids answer
+    // different questions and the split is only real if both land.
+    const seedAudit = await pool.query<{ actor_id: string; metadata: Record<string, unknown> }>(
+      `SELECT actor_id, metadata FROM admin_action_log
+        WHERE target_id = $1 AND action_type = $2
+        ORDER BY timestamp DESC LIMIT 1`,
+      [DEMO_ORG, ADMIN_ACTIONS.brain.demoCorpusSeed],
+    );
+    expect(seedAudit.rows[0]?.actor_id).toBe(APPROVER);
+    expect(seedAudit.rows[0]?.metadata.reviewedBy).toBe(REVIEWER);
+
+    // Both bands are covered, read through the SAME anchor the search surface
+    // uses rather than re-derived from the episode dates.
+    expect(report.decayBands.stale).toBeGreaterThanOrEqual(1);
+    expect(report.decayBands.aging).toBeGreaterThanOrEqual(1);
+
+    // The documents phase refuses while drafts are pending, because its publish
+    // is workspace-wide and would stamp them with no approver at all.
+    await pool.query(
+      `UPDATE brain_facts SET status = 'draft' WHERE workspace_id = $1 AND id = $2`,
+      [DEMO_ORG, report.promoted[0]],
+    );
+    await expect(seedDemoCorpusDocuments({ workspaceRef: DEMO_ORG })).rejects.toBeInstanceOf(
+      PendingBrainDraftsError,
+    );
+    await pool.query(
+      `UPDATE brain_facts SET status = 'published' WHERE workspace_id = $1 AND id = $2`,
+      [DEMO_ORG, report.promoted[0]],
+    );
     // The rivals carry the literal key here, so the keyed declaration lands on
     // the same entry the ingest phase wrote — one entry, not two.
     expect(report.cardinality).toMatchObject({ kind: "declaration", ok: true, slot: "return window", cardinality: "single" });
@@ -383,7 +585,7 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
   }, PG_TEST_TIMEOUT_MS);
 
   it("a second approve is a no-op: nothing left to promote, every expected claim still found", async () => {
-    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG, approvedBy: APPROVER });
+    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG, approvedBy: APPROVER, reviewedBy: REVIEWER });
     expect(report.promoted).toEqual([]);
     expect(report.missing).toEqual([]);
   });
@@ -409,7 +611,7 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     const cycle = await extractWith(deterministicClaims(false));
     expect(cycle.status).toBe("success");
 
-    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_NO_HINT, approvedBy: APPROVER });
+    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_NO_HINT, approvedBy: APPROVER, reviewedBy: REVIEWER });
     expect(report.missing).toEqual([]);
     // What a fresh demo gets when the live model does not hint: both rivals
     // published, no edge yet. The seed does not sweep (one caller, ADR-0037 §7).
@@ -439,7 +641,7 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     const cycle = await extractWith(deterministicClaims(false, ["has return window of", "has return window of"]));
     expect(cycle.status).toBe("success");
 
-    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_REPHRASED, approvedBy: APPROVER });
+    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_REPHRASED, approvedBy: APPROVER, reviewedBy: REVIEWER });
     expect(report.missing).toEqual([]);
     expect(report.tensionEdges).toBe(0);
     expect(report.cardinality).toMatchObject({
@@ -462,7 +664,7 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     expect(entry.rows[0]).toEqual({ source_class: "human", proposed_by: APPROVER, reviewed_by: APPROVER });
 
     // Idempotent: a second approve re-declares the same key and adds no entry.
-    const again = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_REPHRASED, approvedBy: APPROVER });
+    const again = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_REPHRASED, approvedBy: APPROVER, reviewedBy: REVIEWER });
     expect(again.promoted).toEqual([]);
     expect(again.cardinality).toMatchObject({
       kind: "declaration",
@@ -492,7 +694,7 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     const cycle = await extractWith(deterministicClaims(false, ["return window", "has return window of"]));
     expect(cycle.status).toBe("success");
 
-    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_SPLIT_KEYS, approvedBy: APPROVER });
+    const report = await seedDemoCorpusApprove({ workspaceRef: DEMO_ORG_SPLIT_KEYS, approvedBy: APPROVER, reviewedBy: REVIEWER });
     expect(report.missing).toEqual([]);
     expect(report.cardinality).toMatchObject({
       kind: "declaration",

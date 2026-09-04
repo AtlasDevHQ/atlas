@@ -23,7 +23,8 @@
  *
  * ## What the corpus is designed to produce, on first load of the demo
  *
- * Four properties the demo shows, each traceable to specific episodes below:
+ * Six properties the demo shows, each traceable to specific episodes or
+ * documents below:
  *
  *   1. **Approved claims with a name on them.** Every episode has a synthetic
  *      author whose directory identity the seed captures, so a claim renders as
@@ -42,6 +43,15 @@
  *      covers (its rows run 2020 to early 2025), so the live rows can outrank
  *      her recollection (Surveyed beats Attested). Whether the AGENT does so is
  *      the recording's to show; the corpus only guarantees the overlap exists.
+ *   5. **A document in the argument.** `DOCUMENTS` puts the NovaMart handbook
+ *      in the Knowledge Base, and its returns page — the Terms page the
+ *      all-hands names — still says 30 days. The return-window disagreement
+ *      therefore has three sources across two stores, and the document is the
+ *      oldest voice in it.
+ *   6. **Facts old enough to say so.** Two `#engineering` episodes are dated
+ *      into the `aging` and `stale` decay bands relative to
+ *      {@link CORPUS_REFERENCE_DATE}, so a reader sees the system report an
+ *      age rather than present every claim as equally current.
  *
  * ## Why the text reads the way it does
  *
@@ -126,6 +136,38 @@ export const PEOPLE = Object.freeze({
 } as const satisfies Record<string, DemoPerson>);
 
 export type DemoPersonKey = keyof typeof PEOPLE;
+
+/**
+ * The date the corpus was written to be read from — the anchor its decay bands
+ * were chosen against, and what tests read those bands at rather than
+ * wall-clock now. The header explains why the dates are absolute; the
+ * consequence here is that the bands migrate as real time passes, which the
+ * approve phase reports so an operator sees the drift.
+ */
+export const CORPUS_REFERENCE_DATE = "2026-09-04T00:00:00.000Z" as const;
+
+/**
+ * The person whose name a seeded fact carries as its APPROVER.
+ *
+ * Distinct from the operator who runs the seed, and deliberately not an author
+ * of either return-window claim: a reviewer who is also the claimant answers
+ * "who stood behind this" with the same name twice, which is the shape the
+ * approval column exists to avoid.
+ *
+ * ⚠️ This names a PERSON in the fiction, not an account. The seed does not
+ * create the Atlas user it maps to — see `seed.ts`, which takes that id as
+ * `--reviewed-by` and refuses to invent one, on the same rule that keeps this
+ * seed out of Better Auth's tables.
+ *
+ * ⚠️ Whoever this names must not AUTHOR a claim-bearing episode. Dana speaks
+ * twice in the corpus and both are acknowledgements that assert nothing; the
+ * two dated episodes are authored by Sam for exactly this reason, though the
+ * retention one would read as naturally from the data lead. The end-to-end
+ * check is in `demo-corpus-pg.test.ts`, over published facts rather than over
+ * this list, because whether an episode yields a claim is the extractor's
+ * answer and not one this file can assert.
+ */
+export const CORPUS_REVIEWER: DemoPersonKey = "dana";
 
 // ---------------------------------------------------------------------------
 // Channels — the chat class's survey units
@@ -278,6 +320,24 @@ export const EPISODES: readonly DemoEpisode[] = Object.freeze([
     "2026-08-12T12:00:00.000Z",
     "FYI the analytics warehouse is Postgres 16 and will stay on Postgres through at least the end of 2026. We are not migrating to a managed warehouse this year; the numbers do not justify it.",
   ),
+  // The two episodes below are dated to land in the `aging` and `stale` decay
+  // bands (see CORPUS_REFERENCE_DATE). Both state a claim an agent would
+  // otherwise repeat with a straight face, which is what makes an age worth
+  // showing; neither touches the return-window slot.
+  chat(
+    "engineering",
+    "sam",
+    "1737374400.000400",
+    "2026-01-20T12:00:00.000Z",
+    "For the record now that the migration is done: NovaMart's primary payment processor is Stripe. We moved off Braintree during the 2025 relaunch and the old credentials are revoked.",
+  ),
+  chat(
+    "engineering",
+    "sam",
+    "1750852800.000500",
+    "2026-06-25T12:00:00.000Z",
+    "Retention change is live: NovaMart's raw event logs are kept for 90 days, down from 400. Aggregates are unaffected and keep their full history.",
+  ),
 
   // ── #leadership (private) ────────────────────────────────────────────────
   chat(
@@ -335,6 +395,109 @@ export const EPISODES: readonly DemoEpisode[] = Object.freeze([
       "",
       "Priya Natarajan",
       "Head of Finance, NovaMart",
+    ].join("\n"),
+  },
+]);
+
+// ---------------------------------------------------------------------------
+// Documents — the Knowledge Base class
+// ---------------------------------------------------------------------------
+
+/**
+ * The collection every corpus document is ingested into (an `okf-upload`
+ * install, so the slug is the `workspace_plugins.install_id`).
+ */
+export const DEMO_COLLECTION_SLUG = "novamart-handbook" as const;
+
+/**
+ * One hosted knowledge document. Rendered to OKF at seed time by
+ * `renderOkfDocument` rather than written as raw frontmatter here, so the wire
+ * format stays single-homed in `@atlas/okf-bundle` and this file stays prose.
+ */
+export interface DemoDocument {
+  /** Path inside the collection; the document's stable identity across re-seeds. */
+  readonly path: string;
+  readonly title: string;
+  readonly description: string;
+  readonly tags: readonly string[];
+  /** ISO date the page itself claims it was last reviewed. */
+  readonly timestamp: string;
+  readonly body: string;
+}
+
+/**
+ * Three pages of the NovaMart handbook.
+ *
+ * `returns-and-refunds` is the Terms page the all-hands transcript names, and
+ * it still says 30 days. That is the point of including it: the return-window
+ * disagreement has three sources, not two — a document, a finance message and
+ * a support message — and a reader can see that the document is the stalest
+ * voice in the argument while still being the one a customer would be shown.
+ *
+ * These are third-party descriptive content in the tool's sense — never
+ * instructions — and, like every episode above, they are extraction INPUT and
+ * never a training example (ADR-0044; the header states this for the corpus as
+ * a whole and it holds here without exception).
+ */
+export const DOCUMENTS: readonly DemoDocument[] = Object.freeze([
+  {
+    path: "policies/returns-and-refunds.md",
+    title: "Returns and Refunds",
+    description: "The customer-facing returns policy, as published on the Terms page.",
+    tags: ["policy", "returns", "customer-facing"],
+    timestamp: "2025-11-03",
+    body: [
+      "## Return window",
+      "",
+      "NovaMart's return window is 30 days from delivery, for every category. This is the wording published on the Terms page and it is what customer-facing copy should match.",
+      "",
+      "## Refunds",
+      "",
+      "Refunds are returned to the original payment method within 5 business days of the item arriving at the warehouse.",
+      "",
+      "## Exceptions",
+      "",
+      "Final-sale items and gift cards are not returnable. Items damaged in transit are replaced rather than refunded, and do not count against the return window.",
+    ].join("\n"),
+  },
+  {
+    path: "runbooks/support-escalation.md",
+    title: "Support Escalation Runbook",
+    description: "When a tier-one agent escalates, and to whom.",
+    tags: ["runbook", "support"],
+    timestamp: "2026-02-17",
+    body: [
+      "## When to escalate",
+      "",
+      "Escalate to the Support Lead when a customer disputes a policy rather than a transaction, when a refund exceeds $500, or when the same order has been contacted about three times.",
+      "",
+      "## Who owns what",
+      "",
+      "The Support Lead owns the macro library and is the only person who edits a customer-facing macro. Policy wording itself is owned by Finance.",
+      "",
+      "## Response targets",
+      "",
+      "First response within 4 business hours. Resolution or a named owner within 2 business days.",
+    ].join("\n"),
+  },
+  {
+    path: "runbooks/analytics-access.md",
+    title: "Getting Access to the Analytics Warehouse",
+    description: "How an engineer or analyst gets read access, and what the warehouse is.",
+    tags: ["runbook", "engineering", "data"],
+    timestamp: "2026-05-12",
+    body: [
+      "## What the warehouse is",
+      "",
+      "The NovaMart analytics warehouse is Postgres 16. Access is read-only for everyone outside the data team.",
+      "",
+      "## Requesting access",
+      "",
+      "Ask in #engineering and tag the Data Engineering Lead, who owns the nightly ETL and the access rota. Access is granted per-schema, never per-table.",
+      "",
+      "## What not to do",
+      "",
+      "Do not query the warehouse from a customer-facing path, and do not copy rows into a spreadsheet that leaves the company drive.",
     ].join("\n"),
   },
 ]);
@@ -432,6 +595,18 @@ export const EXPECTED_CLAIMS: readonly ExpectedClaim[] = Object.freeze([
     subjectHint: "",
     predicateHint: "free",
     objectHints: ["75"],
+  },
+  {
+    key: "payment-processor",
+    subjectHint: "novamart",
+    predicateHint: "processor",
+    objectHints: ["stripe"],
+  },
+  {
+    key: "event-log-retention",
+    subjectHint: "",
+    predicateHint: "retention",
+    objectHints: ["90 day", "90"],
   },
 ]);
 

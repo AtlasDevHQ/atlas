@@ -175,7 +175,7 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 // The seam dynamically imports the YAML-apply helper. Mock it so the tests
 // never touch disk / the semantic layer — we assert it was invoked with the
 // claimed row between claim and stamp. The mock mirrors the real contract's
-// null-payload guard (unit-tested in apply-from-payload.test.ts): a missing
+// null-payload guard (unit-tested in apply-to-entity.test.ts): a missing
 // payload THROWS, it is never silently skipped (#4506). `applyAmendment` /
 // `resolveAmendmentBaseline` keep the module mock total (mock-all-exports).
 void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
@@ -527,7 +527,7 @@ describe("admin-semantic-improve", () => {
       // applies from the STORED row, so the glossary payload and its Connection
       // group flow into applyAmendmentFromPayload — which writes the group's
       // glossary document (the write itself is unit-tested in
-      // expert/apply-glossary.test.ts). This pins the route → decide → apply
+      // expert/apply-to-entity.test.ts). This pins the route → decide → apply
       // path for the glossary type that used to silently no-op.
       mockPendingAmendments = [{
         id: "amd-gloss",

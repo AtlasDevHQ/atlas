@@ -89,7 +89,7 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 // Apply mock mirroring the REAL module's contract (unit-tested in
-// apply-from-payload.test.ts): throws on a missing payload BEFORE any YAML
+// apply-to-entity.test.ts): throws on a missing payload BEFORE any YAML
 // mutation; otherwise records the applied identity.
 let applyCalls: Array<Record<string, unknown>> = [];
 let applyThrows: Error | null = null;

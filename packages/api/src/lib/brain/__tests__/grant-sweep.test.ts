@@ -19,11 +19,30 @@
  * double-count it and drown the entirely-malformed row this exists to surface.
  * So "has at least one usable principal ⇒ not this sweep's business" is a
  * behavioural contract, not an implementation detail.
+ *
+ * The THIRD thing under test is the log line — the sweep's actual deliverable
+ * (#4797), pinned in the `the findings line` / `the fault lines are
+ * distinguishable` / `the interval knob` blocks at the bottom. Formerly
+ * `grant-sweep-logging.test.ts`, merged here in #5645: it was a separate file
+ * only because it needed `mock.module("@atlas/api/lib/logger")` installed
+ * before the module under test was imported, and this file "deliberately ran
+ * with no module mocking at all". A stub that covers every value export of
+ * `lib/logger.ts` is indistinguishable from the real logger to a test that
+ * never reads the log, so one registration serves both halves —
+ * `installLoggerMock()` from `@atlas/api/testing/logger`. The module under test
+ * is imported DYNAMICALLY below so the stub is in place before
+ * `createLogger()` runs at module evaluation.
  */
 
-import { describe, expect, it } from "bun:test";
-import { ACL_GATED_TABLES, type AclGatedTable } from "@atlas/api/lib/brain/acl";
-import {
+import { beforeEach, describe, expect, it } from "bun:test";
+import type { AclGatedTable } from "@atlas/api/lib/brain/acl";
+import type { GrantSweepDeps, GrantSweepResult } from "../grant-sweep";
+import { installLoggerMock, type LogCall } from "@atlas/api/testing/logger";
+
+const logger = installLoggerMock();
+
+const { ACL_GATED_TABLES } = await import("@atlas/api/lib/brain/acl");
+const {
   DEFAULT_GRANT_SWEEP_INTERVAL_HOURS,
   GRANT_SWEEP_ROW_CAP,
   MALFORMED_SAMPLE_CAP,
@@ -32,9 +51,11 @@ import {
   getGrantSweepIntervalMs,
   grantScanSql,
   runGrantSweepCycle,
-  type GrantSweepDeps,
-  type GrantSweepResult,
-} from "../grant-sweep";
+} = await import("../grant-sweep");
+
+beforeEach(() => {
+  logger.reset();
+});
 
 const WORKSPACE = "ws-1";
 
@@ -87,6 +108,20 @@ function harness(
     },
   };
   return { deps, scans, bindings };
+}
+
+/** Drive the registry knob through its env mirror; restored on the way out. */
+function withInterval<T>(value: string | undefined, fn: () => T): T {
+  const key = "ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS";
+  const prior = process.env[key];
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+  try {
+    return fn();
+  } finally {
+    if (prior === undefined) delete process.env[key];
+    else process.env[key] = prior;
+  }
 }
 
 describe("runGrantSweepCycle — what counts as malformed", () => {
@@ -448,20 +483,6 @@ describe("runGrantSweepCycle — degradation is visible", () => {
 });
 
 describe("getGrantSweepIntervalMs", () => {
-  /** Drive the registry knob through its env mirror; restored on the way out. */
-  function withInterval<T>(value: string | undefined, fn: () => T): T {
-    const key = "ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS";
-    const prior = process.env[key];
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-    try {
-      return fn();
-    } finally {
-      if (prior === undefined) delete process.env[key];
-      else process.env[key] = prior;
-    }
-  }
-
   it("defaults to daily — a permanent defect is a digest, not an event stream", () => {
     expect(withInterval(undefined, getGrantSweepIntervalMs)).toBe(
       DEFAULT_GRANT_SWEEP_INTERVAL_HOURS * 3_600_000,
@@ -517,5 +538,172 @@ describe("getGrantSweepIntervalMs", () => {
 
     expect(bindings).toHaveLength(ACL_GATED_TABLES.length);
     expect(bindings.every((b) => b?.[0] === GRANT_SWEEP_ROW_CAP)).toBe(true);
+  });
+});
+
+// ── The log line (#4797) — formerly grant-sweep-logging.test.ts ──────────────
+//
+// Why these exist rather than trusting the log calls to stay put: EVERY
+// `log.warn` in `grant-sweep.ts` could be deleted and every suite above would
+// stay green — verified by replacing the module's logger with a no-op, which
+// failed nothing. That is a worse hole here than in `acl.ts`. There,
+// the log is the reporting half of an enforcement that is structural either
+// way; HERE the log IS the product. The module writes nothing, gates nothing,
+// and repairs nothing — a count on a span and this line are its entire output,
+// and the line is the only half that names the rows an operator has to go fix.
+//
+// The digest contract is also a behavioural claim and is pinned here: the
+// module's whole cadence argument (daily, not the audience sync's 30m) rests on
+// a clean cycle being SILENT. A sweep that warned every cycle regardless would
+// be the alert fatigue the design went out of its way to avoid.
+
+// A sweep wired straight to per-table rows, with no scan bookkeeping — the
+// logging tests read the log, not the query. Keyed on `AclGatedTable`, NOT
+// `string`: a typo'd fixture key would otherwise compile, serve zero rows, and
+// make the silence assertion below pass for the wrong reason.
+const sweep = (byTable: Partial<Record<AclGatedTable, readonly Row[]>>, rowCap?: number) =>
+  withDatabaseUrl(() =>
+    runGrantSweepCycle({
+      ...(rowCap !== undefined ? { rowCap } : {}),
+      query: (sql: string) => {
+        const table = ACL_GATED_TABLES.find((t) => sql.includes(`FROM ${t}`));
+        return Promise.resolve(table ? (byTable[table] ?? []) : []);
+      },
+    }),
+  );
+
+const payloadOf = (call: LogCall | undefined) => call?.payload as Record<string, unknown> | undefined;
+
+describe("the findings line", () => {
+  it("names the rows, the grant, and the scope — one line per cycle", async () => {
+    await sweep({
+      brain_facts: [row("f_1", ["everyone"]), row("f_2", ["role:bogus"], { workspace_id: "ws-2" })],
+      brain_episodes: [row("e_1", ["team:eng"])],
+    });
+
+    const found = logger.warns("no parseable principal");
+    expect(found).toHaveLength(1);
+
+    const payload = payloadOf(found[0]);
+    expect(payload?.malformedRows).toBe(3);
+    expect(payload?.malformedWorkspaces).toBe(2);
+    expect(payload?.rowsScanned).toBe(3);
+    // The fix list: an operator debugging "the agent doesn't know X" has to be
+    // able to go from this line to the rows without another query.
+    expect(payload?.sample).toEqual([
+      { table: "brain_facts", workspaceId: "ws-1", rowId: "f_1", status: null, grant: ["everyone"] },
+      { table: "brain_facts", workspaceId: "ws-2", rowId: "f_2", status: null, grant: ["role:bogus"] },
+      { table: "brain_episodes", workspaceId: "ws-1", rowId: "e_1", status: null, grant: ["team:eng"] },
+    ]);
+    // The message has to say what an operator should DO, not just what happened.
+    expect(found[0]?.message).toContain("invisible to every reader");
+    expect(found[0]?.message).toContain("Re-grant");
+  });
+
+  it("is SILENT on a clean cycle — the digest contract the daily cadence rests on", async () => {
+    // The whole "1 line/day/replica is a digest, 48 is noise" argument assumes
+    // a healthy deployment says nothing at all. A sweep that logged every cycle
+    // regardless would be the alert fatigue the design exists to avoid.
+    const result = await sweep({
+      brain_facts: [row("f_1", ["org"]), row("f_2", ["user:u1"])],
+    });
+
+    // Non-vacuity backstop: silence is also what an EMPTY scan produces, so the
+    // claim means nothing without proof that rows were actually examined.
+    expect(result.rowsScanned).toBe(2);
+    expect(logger.warns("no parseable principal")).toHaveLength(0);
+    expect(logger.warns()).toHaveLength(0);
+  });
+
+  it("bounds the sample and says so when it clipped", async () => {
+    // Without the cap this line carries one object per malformed row, verbatim
+    // grants included — on the fiber whose stated property is that its cost is
+    // bounded by CADENCE rather than by row count. Deleting the `.slice` left
+    // every other test green.
+    const many = Array.from({ length: 25 }, (_, i) => row(`f_${i}`, ["everyone"]));
+    await sweep({ brain_facts: many });
+
+    const payload = payloadOf(logger.warns("no parseable principal")[0]);
+    expect(payload?.malformedRows).toBe(25);
+    expect(payload?.sample).toHaveLength(20);
+    expect(payload?.sampleTruncated).toBe(true);
+  });
+
+  it("does not claim truncation when the sample fits", async () => {
+    await sweep({ brain_facts: [row("f_1", ["everyone"])] });
+
+    const payload = payloadOf(logger.warns("no parseable principal")[0]);
+    expect(payload?.sampleTruncated).toBe(false);
+  });
+});
+
+describe("the fault lines are distinguishable", () => {
+  it("reports an unreadable row shape separately, naming the table", async () => {
+    // The "wrong file" argument: an unreadable shape is query drift and a
+    // malformed grant is a data defect. Reporting them alike would send the
+    // investigation to the wrong place — and the two tables' projections
+    // deliberately differ, so the line has to say WHICH one drifted.
+    await sweep({
+      brain_episodes: [
+        { workspace_id: "ws-1", id: "e_1", visible_to: "not-an-array", status: null } as never,
+      ],
+    });
+
+    const drift = logger.warns("unreadable shape");
+    expect(drift).toHaveLength(1);
+    expect(payloadOf(drift[0])?.table).toBe("brain_episodes");
+    expect(payloadOf(drift[0])?.unreadable).toBe(1);
+    // Not counted as a finding.
+    expect(logger.warns("no parseable principal")).toHaveLength(0);
+  });
+
+  it("reports the row cap as a floor, not a total", async () => {
+    // `countIsFloor` reaches the span, but "the count is a floor" as something
+    // an operator can read exists only here.
+    await sweep({ brain_facts: [row("f_1", ["everyone"]), row("f_2", ["everyone"])] }, 2);
+
+    const capped = logger.warns("row cap was reached");
+    expect(capped).toHaveLength(1);
+    expect(payloadOf(capped[0])?.rowCap).toBe(2);
+    expect(capped[0]?.message).toContain("floor, not a total");
+  });
+
+  it("names the table whose scan failed", async () => {
+    await withDatabaseUrl(() =>
+      runGrantSweepCycle({
+        query: (sql: string) =>
+          sql.includes("FROM brain_episodes")
+            ? Promise.reject(new Error("relation gone"))
+            : Promise.resolve([]),
+      }),
+    );
+
+    const failed = logger.warns("scan failed");
+    expect(failed).toHaveLength(1);
+    expect(payloadOf(failed[0])?.table).toBe("brain_episodes");
+    expect(payloadOf(failed[0])?.err).toContain("relation gone");
+  });
+});
+
+describe("the interval knob's two fallback arms are distinguishable", () => {
+  it("stays silent on an EMPTY knob but warns on an unparseable one", async () => {
+    // `""`, not undefined: the registry defines `default: "24"`, so
+    // `getSettingAuto` never returns undefined for this key and the empty
+    // string is the reachable "operator cleared the field" arm.
+    //
+    // Both return the default, so the return value alone cannot tell them
+    // apart — an operator whose typo is being ignored has only this line.
+    withInterval("", () => getGrantSweepIntervalMs());
+    expect(logger.warns()).toHaveLength(0);
+
+    withInterval("nonsense", () => getGrantSweepIntervalMs());
+    expect(logger.warns("non-positive or unparseable")).toHaveLength(1);
+  });
+
+  it("warns when clamping an over-large interval", async () => {
+    // Unclamped this value stops the fiber ticking entirely, so the clamp
+    // changes behaviour silently unless it says so.
+    expect(withInterval("600", () => getGrantSweepIntervalMs())).toBe(MAX_TIMER_DELAY_MS);
+    expect(logger.warns("exceeds the max timer delay")).toHaveLength(1);
   });
 });

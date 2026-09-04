@@ -49,6 +49,71 @@ cd packages/api && bun test --parallel --changed=HEAD~3        # last-3-commit w
 - **Use the shared mock factory** — connection mocks use `createConnectionMock()` from `packages/api/src/__mocks__/connection.ts`. Don't create inline connection mocks.
 - `mock.module()` does **not** need a paired `mock.restore()` — bun's `--isolate` resets module mocks between files.
 
+## One registration, drivable per test (#5645)
+
+**The decision:** the file count is driven by `mock.module()` being file-scoped, and the
+fix is a drivable-fixture helper — option 1 of the three the issue posed — not dependency
+injection at the seam (option 2) and not "leave the splits" (option 3). It changes no
+runtime code.
+
+**Why the constraint looked structural and is not.** `mock.module(specifier, factory)` is
+registered once per test file and the last registration wins, so five suites that each
+needed a different fixed `getEntity` for `lib/semantic/expert/apply.ts` — a glossary store
+that threw on entity reads, a synthetic row keyed on group, a name+group lookup table, a
+constant published row, a call-counting refetch — could not be concatenated. But the
+registration is the only file-scoped thing. The spy inside it is a bun `Mock`, and a `Mock`
+takes `mockImplementation` / `mockImplementationOnce` at any point. One of the five
+(`apply-dual-apply`) was already doing exactly that for one spy. Generalise it and the
+contradiction disappears: register once, install each `describe`'s baseline in its own
+`beforeEach`.
+
+**The one thing bun does not give you.** Measured on bun 1.4.0: `mockReset()` clears the
+calls AND the implementation — the spy then returns `undefined` — it does not restore the
+function `mock(fn)` was given. So a suite that resets between tests loses its baseline
+unless something re-installs it. `drivable(fn)` in `packages/api/src/__mocks__/drivable.ts`
+is a `Mock` with a `reset()` that does `mockReset()` and then `mockImplementation(fn)`;
+it also flushes any unconsumed `mockImplementationOnce` a previous test queued, which
+`mockClear()` alone would leak into the next test.
+
+**The helpers, all under `@atlas/api/testing/*`:**
+
+- `drivable` — the primitive: `drivable(defaultImpl)`, `resetAll(spies)`, and
+  `notDriven(name, fixture)` for exports a fixture registers but does not model (throws
+  by name on first use — never a link-time `Export named 'X' not found`, never a silent
+  `undefined`).
+- `logger` — `installLoggerMock()` stubs every value export of `lib/logger.ts` and
+  captures `{ level, component, payload, message }`. The factory is typed
+  `Record<keyof typeof RealLogger, unknown>` over a type-only import, so a new export in
+  `logger.ts` is a compile error in the helper, not a link error in a suite.
+- `semantic-store` — `installSemanticStoreMock()` covers `lib/semantic/entities`,
+  `lib/semantic` and `lib/semantic/sync` the same way, with typed spy signatures so
+  `.mock.calls[n][i]` assertions type-check.
+
+**How it was proved, on the proving ground the issue named.** The five `apply-*.test.ts`
+files became `apply-to-entity.test.ts` with every test carried, inputs and assertions
+unchanged, and bun's per-run `expect()` count equal before and after. Then one production
+branch per former file was deleted in turn — the unscoped fallback lookup, the named-group
+glossary scope, the tombstone skip, the pre-image rollback write, the entity hash-carried
+claim guard — and the merged suite went red each time. The same was done for the second
+cluster (the former `grant-sweep-logging.test.ts` into `grant-sweep.test.ts`: the findings
+warn, the row-cap warn), and the static `expect(` count across `packages/api` was compared
+before and after. The counts are recorded with the work in #5645 and its PR, not here: a
+number in this page is a measurement nothing re-runs.
+
+**Where the split still wins — do not merge these:**
+
+- one suite must exercise the REAL module the other mocks (a test of the logger's own
+  scrubbing cannot share a file with a suite that stubs the logger);
+- a generated mutation table names the file as a column (`scripts/mutations/*.mutations.ts`
+  — `warehouse-producer-logging`, `reconcile-logging`, `alias-proposal-logging`,
+  `vocabulary-rekey-logging`). Moving the tests moves the column; regenerate, don't retype;
+- the suites test different modules and only happen to share a mock. A merge that buys
+  nothing but a lower file count is the count driving the design.
+
+Any other `*-logging.test.ts` sibling without a mutation-table column is eligible under the
+same technique; one worked example per cluster is what the issue asked for, and the merge
+is now mechanical.
+
 ## Effect test layers preferred
 
 For new tests, prefer `createConnectionTestLayer()` / `TestAppLayer` / `buildTestLayer()` from `packages/api/src/__test-utils__/layers.ts` (or `createXxxTestLayer()` from `services.ts`) over `mock.module()`. Composable Layers are type-safe and don't leak state between tests. Prefer `Layer.provide` over `mock.module()` for new Effect-based tests.

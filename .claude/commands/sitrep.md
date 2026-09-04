@@ -93,39 +93,6 @@ Drift is the column that matters, not the version. A local version ahead of npm 
 publish is pending. Bumping consuming refs before that publish lands breaks Deploy
 Validation scaffolds on `npm install` (CLAUDE.md).
 
-**7. The record**
-
-`.claude/research/ROADMAP.md` is the record, and `## Next` holds the in-flight tag's
-entries. Read it — but read it for what it is.
-
-**A ⚠️ there marks a finding an entry PRODUCED, not an open defect.** They accumulate:
-almost all are attached to work that shipped, and the entry says so. There are over a
-hundred. Reprinting them is a copy, not a reading — and a copy that mixes shipped lessons
-with live defects is worse than none, because the reader cannot tell which is which.
-
-So the reading is **which warnings are still live**, and that is a fact you can check:
-
-1. Take the ⚠️ from entries dated inside the Step 1 window (`$SINCE`), plus anything under
-   `## Today` or an explicitly in-flight heading. Count the rest; do not read them.
-2. For every issue number a ⚠️ cites, read its state. One call, never an inference:
-   ```bash
-   gh issue view <N> -R AtlasDevHQ/atlas --json number,title,state,milestone
-   ```
-3. Sort each ⚠️ into exactly one of three, by what you just read:
-
-   | Class | Test | What to print |
-   |---|---|---|
-   | **closed** | cites an issue now CLOSED, or a merged PR/SHA that fixed it | nothing |
-   | **tracked** | cites an OPEN issue | its number only — it is already in the Step 2 counts |
-   | **UNFILED** | names a live defect and cites no issue | **in full** |
-
-**UNFILED is the entire product of this step.** It is the only class the issue counts
-cannot show you, and it is why the record is read at all. If every ⚠️ in the window is
-closed or tracked, say exactly that in one line — that is a clean result, not an empty one.
-
-A ⚠️ outside the window is **unread, not clean**. Its count goes in **Could not
-determine**, with the window as the reason.
-
 ## Step 2 — Report
 
 ```markdown
@@ -155,13 +122,6 @@ Blocked: <issues carrying `blocked`, by number> / none
 ### Packages
 <the derived table from step 6, with the drift column>
 
-### From the record
-UNFILED — a live defect the record names and no issue tracks:
-<each in full, with the entry it came from / "none">
-
-Tracked: <#N, #N — open issues, already counted above> / none
-Read: <N> ⚠️ from entries since <SINCE>. Unread: <N> older ⚠️ (see Could not determine).
-
 ### Could not determine
 <every UNKNOWN above, with its reason. Omit this section only when it is empty.>
 ```
@@ -173,13 +133,10 @@ in the same table style as the readings. It is gone. **Could not determine** tak
 place.
 
 Ask for a recommendation as a separate question. Then the answer arrives labelled as a
-judgement, not as a reading. Here, only the CI row, `Blocked`, and the UNFILED list say
-what to do next, and this command reads all three.
+judgement, not as a reading. Here, only the CI row and `Blocked` say what to do next, and
+this command reads both.
 
-Nor does it reprint the record. Step 7 used to say *"read every ⚠️"*, and a run on
-2026-08-20 did what that asked: it pasted six findings from the two newest entries, four of
-which were already closed or already tracked issues, and reported the other 103 as *"not
-read"*. Every line was true and the section was still useless — the reader could not tell a
-shipped lesson from a live defect, which is the only question the record is read to answer.
-The classification above replaces it, and the class that matters is the one nothing else in
-this report can surface.
+Nor does it read `.claude/research/ROADMAP.md`. A step that classified its ⚠️ markers into
+closed / tracked / unfiled was dropped on 2026-09-04, when `## Next` was collapsed to the
+archive and the file stopped being maintained per-shipment. Reading a frozen file for live
+defects reports staleness as signal.

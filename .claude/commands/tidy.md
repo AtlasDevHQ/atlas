@@ -1,11 +1,10 @@
 ---
-description: "Reconcile merged work against issues, labels, ROADMAP and stale branches. Applies only fact-determined fixes; proposes every judgement call with its evidence. Run after a burst of merged PRs."
+description: "Reconcile merged work against issues, labels and stale branches. Applies only fact-determined fixes; proposes every judgement call with its evidence. Run after a burst of merged PRs."
 ---
 
 # Tidy
 
-Reconcile recent merged work against GitHub issues, labels, the ROADMAP, and local
-branches.
+Reconcile recent merged work against GitHub issues, labels, and local branches.
 
 Run it after a burst of PRs land.
 
@@ -25,7 +24,7 @@ not is the action risky.
 | Lane | Test | Behaviour |
 |---|---|---|
 | **APPLY** | A fact decides it. The remote branch is gone. The issue is closed. A merged PR carries a closing keyword for an issue that is closed. | Act. Report what you did. |
-| **PROPOSE** | A person decides it. *Which* area label. *Whether* this shipped. *What* the ROADMAP entry says. *Whether* this needs an issue. | Print the proposal and the evidence. Stop. |
+| **PROPOSE** | A person decides it. *Which* area label. *Whether* this shipped. *Whether* this needs an issue. | Print the proposal and the evidence. Stop. |
 
 Do not apply a PROPOSE item because it looks obvious. "Obvious to the session that wrote
 the code" is the failure this split exists to stop.
@@ -47,9 +46,6 @@ gh issue list -R AtlasDevHQ/atlas --state closed --limit 100 --search "closed:>=
 
 Pass `-R AtlasDevHQ/atlas` to every `gh` call. Prefer REST over GraphQL: GraphQL returns
 503 often enough here that a sweep must verify by re-listing (`docs/agents/issue-tracker.md`).
-
-Read only the `## Next` section of `.claude/research/ROADMAP.md`. The archive is cold
-storage; reading it costs context and reconciles nothing.
 
 ## Step 2 — APPLY
 
@@ -124,15 +120,6 @@ done
 **Never delete a remote branch here.** That reaches other machines and other people, and
 GitHub already deletes merged branches for you.
 
-### 2c. ROADMAP checkboxes
-
-Change `- [ ]` to `- [x]` only when a merged PR body carries a closing keyword for issue N
-**and** N is closed. Anything weaker belongs in 3c.
-
-⚠️ A `#N` anywhere in a PR body parses as a real edge, and a closing keyword ignores
-negation — *"does not fix #N"* still closes it (`docs/agents/issue-tracker.md`). So confirm
-against the closed state of N. Do not trust the keyword alone.
-
 ## Step 3 — PROPOSE
 
 Print each item with its evidence. Apply nothing in this step.
@@ -154,25 +141,7 @@ met. Never close an issue from this command.
 
 Never close an issue that has open sub-issues. Propose a status comment instead.
 
-### 3c. ROADMAP entries
-
-Propose the text. Do not write it.
-
-Match the shape of the entries around it. Read them first. Today that shape is:
-
-- `**Shipped YYYY-MM-DD — <hook>** ([#N](url); PR [#M](url)) — what changed, and why.`
-- `⭐` marks a transferable finding. `⚠️` marks a hazard or a breaking change. Each one ends
-  in the general form of the claim.
-- Detail lives in the issue, the PR body, and `.claude/research/architecture-wins.md` for
-  refactors that deepen a module. Link to it. Do not copy it.
-- When a milestone closes, collapse its section to one `- [x]` line. Move the detail
-  verbatim to `ROADMAP-archive.md`, so `ROADMAP.md` stays cheap to edit.
-
-Not every closed `architecture` issue earns an `architecture-wins.md` entry. That file
-tracks a contract that had copies and now has one home. A guard refinement, or a feature
-that touches many files, stops at the ROADMAP.
-
-### 3d. Untracked work
+### 3c. Untracked work
 
 Merged PRs that reference no issue. Propose an issue only for significant work. Typos and
 one-line fixes are noise. Search first, so you do not propose a duplicate.
@@ -183,7 +152,6 @@ one-line fixes are noise. Search first, so you do not propose a duplicate.
 ### Applied
 - Waiting-labels removed: N (verified by re-list: N)
 - Branches deleted: <names> · Worktrees removed: <paths> · Skipped: <name — reason>
-- ROADMAP checkboxes ticked: N
 
 ### Proposed — needs your call
 <one block per item: what, the evidence, the command that applies it>
@@ -192,12 +160,9 @@ one-line fixes are noise. Search first, so you do not propose a duplicate.
 <anything that errored, and what is therefore unverified>
 ```
 
-Commit a changed `.claude/research/ROADMAP.md` as `docs: tidy — …`. **Do not push unless
-asked.** A push reaches other people, and this command often runs unattended.
-
 ## What is not a rule here
 
 Everything in Step 3 is a note, in the sense `docs/agents/practices.md` defines. It informs
-judgement and gates nothing. No gate can tell a good ROADMAP entry from a plausible one.
+judgement and gates nothing. No gate can tell a good label choice from a plausible one.
 APPLY is the only lane whose correctness is checkable, and that is why it is the only lane
 that acts.

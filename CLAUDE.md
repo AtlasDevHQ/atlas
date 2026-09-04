@@ -141,8 +141,8 @@ sequences against external systems that fail loudly, which no finding implicated
 the directory to eleven operational runbooks; `docs/agents/practices.md` records the
 grounds.
 The replacement is one page: **[docs/agents/practices.md](docs/agents/practices.md)** — the
-bar a practice must clear (a gate, or a measurement that can fail, or it is a note in
-ROADMAP), and the one structural rule (the actor that builds a check may not be its only
+bar a practice must clear (a gate, or a measurement that can fail, or it is a note that
+lives with the work that produced it), and the one structural rule (the actor that builds a check may not be its only
 judge). Read it before adding any process.
 
 - **Engineering skills** come from the upstream plugin: `claude plugin install mattpocock-skills`
@@ -174,5 +174,9 @@ CLOSED as of 2026-08-18, and *Notebooks* is history only. A new context is a new
 
 ### The record
 
-`.claude/research/ROADMAP.md` is where measured findings live, and it survived the deletion
-deliberately. The commands were a lossy copy of it.
+**There is no separate record to keep updated.** A finding lives with the work that produced
+it — the PR body, the commit message, the issue. `.claude/research/ROADMAP.md ## Next` was
+that record until 2026-09-04, when seven weeks and 133 entries were collapsed into
+[`ROADMAP-archive.md`](.claude/research/ROADMAP-archive.md) and the per-shipment obligation
+was removed from `/tidy` and `/sitrep`. The archive is history; nothing keeps it current.
+`## Planned tags` and `## Backlog` in `ROADMAP.md` are still live forward-look.

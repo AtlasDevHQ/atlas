@@ -33,8 +33,12 @@ A practice earns a place here only if it is one of these. Nothing else is a rule
    remembering it.
 2. **A measurement that can fail** — a mutation row, a test observed red against the
    defect and green with the fix. Not "there is a test"; *this mutant turns it red*.
-3. **Otherwise it is a note**, and notes live in `.claude/research/ROADMAP.md` with the
-   incident that produced them. Notes inform judgement. They do not gate work.
+3. **Otherwise it is a note**, and a note lives with the work that produced it — the PR
+   body, the commit message, the issue. Not in a separate record. `## Next` in
+   `.claude/research/ROADMAP.md` was that record until 2026-09-04; it had accumulated 133
+   entries over seven weeks and 548 ⭐/⚠️ markers, of which 80 carried the generalizable
+   claim the file existed to hold. The other 85% restated what the commit already said.
+   Notes inform judgement. They do not gate work, and they do not earn a second home.
 
 Corollary, and the one that does the work: **if you cannot say what would go red, you have
 not closed anything — you have moved it to where it costs more.**
@@ -99,7 +103,9 @@ Two limits, stated because this page's own failure mode is claiming more than it
 - **One dead rule was dropped rather than carried across.** The old `/tidy` capped ROADMAP
   bullets at *"≤ 2 sentences / ~240 chars"*. `ROADMAP.md` abandoned that long ago, so the
   command and the file disagreed for months. A rule the artifact contradicts is worse than
-  no rule. *"Match the entries around it"* replaces it.
+  no rule. The ROADMAP-entry step was removed from `/tidy` entirely on 2026-09-04, which
+  is the same failure one level up: the command asked for an entry, and the entry was a
+  sixth copy of content the PR, commit, issue, Release and changelog already carried.
 
 ## What is deliberately not here
 
@@ -108,8 +114,9 @@ No workflow ritual, no per-phase catalogue, no restatement of anything CLAUDE.md
 rules by the guards they name — and a second copy is a second thing to keep true. The
 previous layer had three copies of several rules and they disagreed.
 
-Evidence for every claim above is in `.claude/research/ROADMAP.md`, which is the record.
-This file is the practice. When they conflict, the record wins and this file is wrong.
+Evidence for every claim above is in git history and the issues and PRs it references.
+`.claude/research/ROADMAP-archive.md` holds the record as it stood through `v0.2.29`; it is
+history now, not a live tracker, and nothing is expected to keep it current.
 
 ## What enforces this file
 

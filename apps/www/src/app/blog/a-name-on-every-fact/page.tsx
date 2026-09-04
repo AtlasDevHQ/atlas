@@ -94,7 +94,7 @@ export default function ANameOnEveryFact() {
         </Lead>
 
         <P>
-          Here is the case that made us build Atlas. A support agent, wired to
+          Here is the case that made me build Atlas. A support agent, wired to
           a company&apos;s chat history, told a customer the return window was
           30 days. Finance had said so in a pinned message in July. Support had
           changed the macro to 14 days in August and said, in the same channel,
@@ -151,7 +151,7 @@ export default function ANameOnEveryFact() {
         <P>
           Most memory systems write silently: a hook runs on every prompt, a
           fact is scored, and a conflict is resolved toward the newest message.
-          It is a reasonable design and it is the one we refused. When the
+          It is a reasonable design and it is the one I refused. When the
           newest message wins, the intern outranks the head of finance by
           posting later. When a model resolves the conflict, the answer to
           &ldquo;who decided this was true?&rdquo; is a confidence score.
@@ -169,7 +169,7 @@ export default function ANameOnEveryFact() {
 
         <H2>What this costs</H2>
         <P>
-          Two things, and we are paying both on purpose. The first is breadth.
+          Two things, and I am paying both on purpose. The first is breadth.
           A vendor that indexes everything will always win a connector count,
           and if your job is to make ten thousand documents findable you should
           buy that vendor. Atlas is a smaller set of facts you can actually
@@ -178,11 +178,11 @@ export default function ANameOnEveryFact() {
         </P>
         <P>
           The second is adoption. Consulting Atlas is always an explicit act, a
-          tool call an agent makes and a person can see. We do not silently
-          inject ourselves into other tools&apos; prompts, because a fact an agent acts
+          tool call an agent makes and a person can see. Atlas does not silently
+          inject itself into other tools&apos; prompts, because a fact an agent acts
           on should arrive through a door someone opened. That is slower to
-          spread than a hook that fires on every prompt. We think a company
-          fact with a name on it is worth the friction, and we would rather be
+          spread than a hook that fires on every prompt. I think a company
+          fact with a name on it is worth the friction, and I would rather be
           argued with on that than on a benchmark. The sharpest version of the
           other position is{" "}
           <a

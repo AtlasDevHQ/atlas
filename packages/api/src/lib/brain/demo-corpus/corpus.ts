@@ -139,19 +139,10 @@ export type DemoPersonKey = keyof typeof PEOPLE;
 
 /**
  * The date the corpus was written to be read from — the anchor its decay bands
- * were chosen against.
- *
- * Episode dates here are ABSOLUTE, because a Slack `ts` is absolute and a
- * corpus whose ids moved with the clock would not be one fiction. The
- * consequence is that the bands migrate: what is `fresh` against this date is
- * `aging` some weeks later and `stale` some months after that
- * (`DECAY_AGING_AFTER_DAYS` / `DECAY_STALE_AFTER_DAYS` in `../staleness`).
- *
- * So this constant is what tests assert bands against, never wall-clock now,
- * and the seed's report prints the observed distribution so an operator can
- * see how far the corpus has drifted from it. Re-dating the episodes is the
- * fix when it has drifted too far; there is no clever alternative that keeps
- * both the fixed ids and a fixed band.
+ * were chosen against, and what tests read those bands at rather than
+ * wall-clock now. The header explains why the dates are absolute; the
+ * consequence here is that the bands migrate as real time passes, which the
+ * approve phase reports so an operator sees the drift.
  */
 export const CORPUS_REFERENCE_DATE = "2026-09-04T00:00:00.000Z" as const;
 

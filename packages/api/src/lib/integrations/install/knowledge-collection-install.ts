@@ -121,27 +121,6 @@ function throwCollectionDenial(
  * their documents still live under the slug and an explicit re-ingest may
  * resurrect them (ADR-0028 §5).
  */
-/**
- * The cross-catalog slug probe on its own, without the plan-cap check that
- * {@link assertCollectionInstallable} pairs it with.
- *
- * Exported for the ONE caller whose collection is not a tenant's: the demo
- * corpus seed writes Atlas's own demo workspace, which holds no subscription
- * by design, so a plan cap has nothing to resolve against and a `check_failed`
- * would fail a seed for a billing reason that does not apply to it. The slug
- * guard still does apply — two catalogs owning one slug is a data problem in
- * any workspace — so it is separable, and separated here rather than copied.
- *
- * Every tenant-facing install path must keep using `assertCollectionInstallable`.
- */
-export async function assertKnowledgeCollectionSlugFree(
-  workspaceId: WorkspaceId,
-  collectionSlug: string,
-  ownCatalogId: string,
-): Promise<void> {
-  await assertCollectionSlugFree(workspaceId, collectionSlug, ownCatalogId);
-}
-
 async function assertCollectionSlugFree(
   workspaceId: WorkspaceId,
   collectionSlug: string,

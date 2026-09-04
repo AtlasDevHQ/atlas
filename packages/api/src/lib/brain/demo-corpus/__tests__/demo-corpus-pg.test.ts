@@ -30,6 +30,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
 import { OKF_UPLOAD_CATALOG_ID } from "@atlas/api/lib/integrations/install/okf-upload-form-handler";
+import { ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 import { Effect } from "effect";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
@@ -62,7 +63,9 @@ import {
   DEMO_ATLAS_WORKSPACE_SLUG,
   NotTheDemoWorkspaceError,
   corpusSourceId,
+  PendingBrainDraftsError,
   ReviewerNotAMemberError,
+  ReviewerNotTheCorpusReviewerError,
   seedDemoCorpusApprove,
   seedDemoCorpusDocuments,
   seedDemoCorpusCoverage,
@@ -85,6 +88,8 @@ const APPROVER = "user_nmd_operator";
 const REVIEWER = "user_nmd_dana";
 /** A real account that is NOT a member of the demo workspace. */
 const OUTSIDER = "user_nmd_outsider";
+/** A real MEMBER of the demo workspace who is not the corpus's reviewer. */
+const IMPOSTOR = "user_nmd_impostor";
 
 const FAKE_MODEL = {
   model: "fake-model" as unknown as ResolvedExtractionModel["model"],
@@ -95,6 +100,21 @@ const FAKE_MODEL = {
 /** The corpus's chat messages in one channel, in corpus order. */
 function chatIn(channel: DemoChannelKey): readonly DemoChatMessage[] {
   return EPISODES.filter((e): e is DemoChatMessage => e.kind === "chat" && e.channel === channel);
+}
+
+/**
+ * One chat message, found by a phrase in its body.
+ *
+ * Positional indexing into a channel carries an ordering contract in a comment;
+ * this carries it in the assertion, so inserting an episode ahead of another
+ * cannot silently repoint a fixture claim at the wrong message.
+ */
+function chatSaying(channel: DemoChannelKey, phrase: string): DemoChatMessage {
+  const found = chatIn(channel).filter((e) => e.body.includes(phrase));
+  if (found.length !== 1) {
+    throw new Error(`corpus has ${found.length} #${channel} messages containing ${JSON.stringify(phrase)}, expected 1`);
+  }
+  return found[0];
 }
 
 function only<T extends DemoEpisode>(kind: T["kind"]): T {
@@ -139,13 +159,13 @@ function deterministicClaims(
   // Shaped as `toFactCandidates` shapes the extractor's output (#5615): the hint
   // arms the exact slot only, so an anchor flood here would be a real one.
   const hint = hintSingle ? { predicateCardinality: "single" as const, anchorReach: "curated-only" as const } : {};
-  const [finance30, , financeGmv] = chatIn("finance");
-  const [support14] = chatIn("support");
-  // Positional against the corpus's own #engineering order: the ETL decision,
-  // Dana's ack, the Postgres note, then the two dated episodes that carry the
-  // aging and stale bands.
-  const [engineeringDecision, , , engineeringProcessor, engineeringRetention] = chatIn("engineering");
-  const [leadershipThreshold] = chatIn("leadership");
+  const finance30 = chatSaying("finance", "return window is 30 days");
+  const financeGmv = chatSaying("finance", "GMV for December 2024");
+  const support14 = chatSaying("support", "return window is 14 days");
+  const engineeringDecision = chatSaying("engineering", "the nightly ETL moves to 02:00 UTC");
+  const engineeringProcessor = chatSaying("engineering", "primary payment processor");
+  const engineeringRetention = chatSaying("engineering", "raw event logs");
+  const leadershipThreshold = chatSaying("leadership", "free-shipping threshold");
 
   set(finance30, [{ subject: "NovaMart", predicate: rivalPredicates[0], object: "30 days from delivery", ...hint }]);
   set(financeGmv, [{ subject: "NovaMart", predicate: "GMV for December 2024", object: "about $1.9M" }]);
@@ -236,7 +256,7 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     // Same reasoning as `organization`: the approve phase verifies the reviewer
     // through `"user"` × `member`, both Better Auth's, both skipped above. The
     // stubs carry only the columns the lookup reads.
-    await pool.query(`CREATE TABLE IF NOT EXISTS "user" (id text PRIMARY KEY, name text)`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS "user" (id text PRIMARY KEY, name text, email text)`);
     await pool.query(
       `CREATE TABLE IF NOT EXISTS member (id text PRIMARY KEY, "organizationId" text, "userId" text, role text)`,
     );
@@ -266,8 +286,11 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
       [OKF_UPLOAD_CATALOG_ID],
     );
     await pool.query(
-      `INSERT INTO "user" (id, name) VALUES ($1, 'Dana Okafor'), ($2, 'Outside Person') ON CONFLICT DO NOTHING`,
-      [REVIEWER, OUTSIDER],
+      // The reviewer's email is what ties the account to `CORPUS_REVIEWER`, so
+      // it comes from the corpus rather than being typed here. `IMPOSTOR` is a
+      // member with the wrong identity — the case membership alone would admit.
+      `INSERT INTO "user" (id, name, email) VALUES ($1, $4, $5), ($2, 'Outside Person', 'outsider@novamart.example'), ($3, 'Someone Else', 'someone.else@novamart.example') ON CONFLICT DO NOTHING`,
+      [REVIEWER, OUTSIDER, IMPOSTOR, PEOPLE[CORPUS_REVIEWER].realName, PEOPLE[CORPUS_REVIEWER].email],
     );
     // The reviewer belongs to every demo org the suite seeds; the outsider to
     // none, which is what the refusal case reads.
@@ -277,6 +300,10 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
         [`member_${org}`, org, REVIEWER],
       );
     }
+    await pool.query(
+      `INSERT INTO member (id, "organizationId", "userId", role) VALUES ($1, $2, $3, 'admin') ON CONFLICT DO NOTHING`,
+      [`member_impostor`, DEMO_ORG, IMPOSTOR],
+    );
   }, PG_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
@@ -426,6 +453,14 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     expect(after.rows[0]?.n).toBe(String(DOCUMENTS.length));
   });
 
+  it("refuses a workspace member who is not the corpus's reviewer", async () => {
+    // Membership alone would admit any member as the approver a reader sees,
+    // which makes CORPUS_REVIEWER a convention the operator can break silently.
+    await expect(
+      seedDemoCorpusApprove({ workspaceRef: DEMO_ORG, approvedBy: APPROVER, reviewedBy: IMPOSTOR }),
+    ).rejects.toBeInstanceOf(ReviewerNotTheCorpusReviewerError);
+  });
+
   it("refuses a reviewer who is not a member of the workspace, before promoting anything", async () => {
     await expect(
       seedDemoCorpusApprove({ workspaceRef: DEMO_ORG, approvedBy: APPROVER, reviewedBy: OUTSIDER }),
@@ -485,6 +520,36 @@ describeIfPg("demo corpus seed (real Postgres)", () => {
     for (const row of authored.rows) {
       expect(reviewerHandles).not.toContain(row.source_actor);
     }
+
+    // The audit row names the OPERATOR, not the reviewer — the two ids answer
+    // different questions and the split is only real if both land.
+    const seedAudit = await pool.query<{ actor_id: string; metadata: Record<string, unknown> }>(
+      `SELECT actor_id, metadata FROM admin_action_log
+        WHERE target_id = $1 AND action_type = $2
+        ORDER BY timestamp DESC LIMIT 1`,
+      [DEMO_ORG, ADMIN_ACTIONS.brain.demoCorpusSeed],
+    );
+    expect(seedAudit.rows[0]?.actor_id).toBe(APPROVER);
+    expect(seedAudit.rows[0]?.metadata.reviewedBy).toBe(REVIEWER);
+
+    // Both bands are covered, read through the SAME anchor the search surface
+    // uses rather than re-derived from the episode dates.
+    expect(report.decayBands.stale).toBeGreaterThanOrEqual(1);
+    expect(report.decayBands.aging).toBeGreaterThanOrEqual(1);
+
+    // The documents phase refuses while drafts are pending, because its publish
+    // is workspace-wide and would stamp them with no approver at all.
+    await pool.query(
+      `UPDATE brain_facts SET status = 'draft' WHERE workspace_id = $1 AND id = $2`,
+      [DEMO_ORG, report.promoted[0]],
+    );
+    await expect(seedDemoCorpusDocuments({ workspaceRef: DEMO_ORG })).rejects.toBeInstanceOf(
+      PendingBrainDraftsError,
+    );
+    await pool.query(
+      `UPDATE brain_facts SET status = 'published' WHERE workspace_id = $1 AND id = $2`,
+      [DEMO_ORG, report.promoted[0]],
+    );
     // The rivals carry the literal key here, so the keyed declaration lands on
     // the same entry the ingest phase wrote — one entry, not two.
     expect(report.cardinality).toMatchObject({ kind: "declaration", ok: true, slot: "return window", cardinality: "single" });

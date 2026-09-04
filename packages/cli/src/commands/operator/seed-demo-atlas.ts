@@ -148,6 +148,15 @@ export async function handleSeedDemoAtlas(args: string[]): Promise<void> {
       for (const ref of r.refused) console.log(`${TAG}   refused ${ref.id}: ${ref.reasons.join(", ")}`);
       for (const e of r.expected) console.log(`${TAG}   ${e.found ? "✓" : "✗"} ${e.key}`);
       console.log(`${TAG} cardinality (keyed to the published rivals): ${describeCardinality(r.cardinality)}`);
+      const b = r.decayBands;
+      console.log(
+        `${TAG} decay bands at the corpus anchor: fresh=${b.fresh} aging=${b.aging} stale=${b.stale} unknown=${b.unknown}`,
+      );
+      if (b.stale === 0 || b.aging === 0) {
+        console.log(
+          `${TAG} the corpus no longer covers both the aging and the stale band — its episode dates are absolute, so the bands drift as real time passes. Re-date the two dated #engineering episodes, or accept that the demo can no longer show an age.`,
+        );
+      }
       if (r.promoted.length > 0 && r.tensionEdges === 0) {
         console.log(
           `${TAG} no in-tension-with edge on the workspace: the extractor did not hint the return-window predicate single, so reconcile minted nothing at write time. The predicate is declared single (the literal surface at ingest, the rivals' own key at approve), so an admin's tension sweep (the facts page, or POST /api/v1/admin/brain-facts/tension-sweep) will mint the contradiction's edge — deliberately not run from here (ADR-0037 §7: one caller).`,

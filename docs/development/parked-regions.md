@@ -260,6 +260,24 @@ railway api 'query($p:String!,$e:String!,$s:String!){serviceInstanceAutoDeploySt
 Un-parking reverses all three: autodeploy back to `true`, `railway redeploy`,
 then the config and copy steps in the checklist above.
 
+### The gate that would have caught all of this
+
+```bash
+bash scripts/check-parked-regions.sh
+```
+
+For every region the config marks parked (`selectable: false` + `requestable:
+true`, derived — nothing is hard-coded), it asserts Railway has autodeploy
+**disabled** and **no live deployment**. It exits `1` on either, and `3` —
+never `0` — when it has no credentials to look with.
+
+It runs from `/release` step 9b, because a `prod` push is what creates this
+drift. Verified against the real incident: given the state that actually held
+from 2026-09-01 to 2026-09-04 (both services `SUCCESS`, autodeploy on) it fails
+loudly on both counts. Adversarial fixtures live in
+`scripts/__tests__/check-parked-regions.test.sh` and drive both failing
+directions separately, since each one hid the other on the day.
+
 Whatever mechanism is used, **verify against `multiRegionConfig` and the deployed
 commit, never against `/api/health`** — a service keeps answering from its old
 container while a redeploy runs, and answers from the wrong region without

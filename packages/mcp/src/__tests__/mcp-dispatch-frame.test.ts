@@ -29,8 +29,8 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type * as RealEntities from "@atlas/api/lib/semantic/entities";
 import type { SemanticEntityRow, SemanticEntityStatus } from "@atlas/api/lib/semantic/entities";
-import { createConnectionMock } from "@atlas/api/__mocks__/connection";
-import { notDriven } from "@atlas/api/__mocks__/drivable";
+import { createConnectionMock } from "@atlas/api/testing/connection";
+import { notDriven } from "@atlas/api/testing/drivable";
 import { createAtlasUser, type AtlasUser } from "@atlas/api/lib/auth/types";
 import { getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
 

@@ -86,7 +86,7 @@ does **not** implement `no-restricted-syntax` natively.
     methods return a real thenable that must be awaited (the ⚠️ note below refines what
     a dropped `await` actually costs on bun 1.4).
     Not a bun-1.4 bump (that is a runtime rewrite; the matcher return types on bun
-    `main` are still `void`). **Fix: a repo-side `bun` patch** (`patches/bun-types@1.4.0.patch`
+    `main` are still `void`). **Fix: a repo-side `bun` patch** (`patches/bun-types@1.4.1.patch`
     via `patchedDependencies`) that rewrites only the async matcher path — a return-type
     parameter `R` (default `void`) threaded through every `MatchersBuiltin` signature and
     instantiated as `Promise<void>` on `resolves`/`rejects`, leaving the synchronous

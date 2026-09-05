@@ -14,6 +14,11 @@ import {
 } from "@atlas/api/lib/knowledge/gitbook/client";
 
 const SPACE_ID = "space-123";
+// A value no error message can contain by accident. The redaction assertions
+// below check `not.toContain(TOKEN)`, and a short fixture like "tok" is a
+// substring of "token", which JSON.parse's own error text contains
+// ("Unrecognized token").
+const TOKEN = "gb_secret_4bd1e9c7";
 
 interface FixturePage {
   id: string;
@@ -100,7 +105,7 @@ function makeFetch(opts: FixtureOptions = {}) {
 function client(opts: FixtureOptions = {}, maxDocs?: number) {
   const { impl, calls } = makeFetch(opts);
   const c = createGitbookVendorClient(
-    { spaceId: SPACE_ID, apiToken: "tok", collectionSlug: "gitbook-docs" },
+    { spaceId: SPACE_ID, apiToken: TOKEN, collectionSlug: "gitbook-docs" },
     { fetchImpl: impl as unknown as typeof globalThis.fetch, ...(maxDocs !== undefined ? { maxDocs } : {}) },
   );
   return { c, calls };
@@ -109,7 +114,7 @@ function client(opts: FixtureOptions = {}, maxDocs?: number) {
 /** Build a client over a bespoke raw fetch impl (for coverage/error-mapping cases). */
 function rawClient(impl: (input: string | URL | Request) => Promise<Response>) {
   return createGitbookVendorClient(
-    { spaceId: SPACE_ID, apiToken: "tok", collectionSlug: "gitbook-docs" },
+    { spaceId: SPACE_ID, apiToken: TOKEN, collectionSlug: "gitbook-docs" },
     { fetchImpl: impl as unknown as typeof globalThis.fetch },
   );
 }
@@ -268,7 +273,7 @@ describe("GitbookVendorClient error mapping", () => {
       const message = err instanceof Error ? err.message : String(err);
       expect(message).toMatch(/non-JSON response/i);
       expect(message).toContain("api.gitbook.com");
-      expect(message).not.toContain("tok"); // the bearer token is never surfaced
+      expect(message).not.toContain(TOKEN); // the bearer token is never surfaced
       expect((err as { cause?: unknown }).cause).toBeDefined();
     }
   });
@@ -293,7 +298,7 @@ describe("verifyGitbookAccess", () => {
     const { impl } = makeFetch();
     await expect(
       verifyGitbookAccess(
-        { spaceId: SPACE_ID, apiToken: "tok", collectionSlug: "c" },
+        { spaceId: SPACE_ID, apiToken: TOKEN, collectionSlug: "c" },
         { fetchImpl: impl as unknown as typeof globalThis.fetch },
       ),
     ).resolves.toBeUndefined();
@@ -303,7 +308,7 @@ describe("verifyGitbookAccess", () => {
     const { impl } = makeFetch({ spaceMissing: true });
     await expect(
       verifyGitbookAccess(
-        { spaceId: SPACE_ID, apiToken: "tok", collectionSlug: "c" },
+        { spaceId: SPACE_ID, apiToken: TOKEN, collectionSlug: "c" },
         { fetchImpl: impl as unknown as typeof globalThis.fetch },
       ),
     ).rejects.toThrow(/was not found or is not visible/i);

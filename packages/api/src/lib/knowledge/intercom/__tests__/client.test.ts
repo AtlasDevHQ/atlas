@@ -19,6 +19,12 @@ import {
 } from "@atlas/api/lib/knowledge/intercom/client";
 import { ConnectorRateLimitError } from "@atlas/api/lib/knowledge/connectors";
 
+// A value no error message can contain by accident. The redaction assertions
+// below check `not.toContain(TOKEN)`, and a short fixture like "tok" is a
+// substring of "token", which JSON.parse's own error text contains
+// ("Unrecognized token").
+const TOKEN = "ic_secret_7c30aa5e";
+
 /** 2026-07-01T10:00:00Z / 2026-07-05T08:00:00Z in epoch seconds. */
 const T_JUL1 = 1782900000;
 const T_JUL5 = 1783238400;
@@ -130,7 +136,7 @@ function makeFetch(opts: {
 function client(opts: Parameters<typeof makeFetch>[0] = {}, maxDocs?: number) {
   const { impl, state } = makeFetch(opts);
   const c = createIntercomVendorClient(
-    { apiToken: "tok", collectionSlug: "intercom-docs" },
+    { apiToken: TOKEN, collectionSlug: "intercom-docs" },
     { fetchImpl: impl, ...(maxDocs !== undefined ? { maxDocs } : {}) },
   );
   return { c, state };
@@ -239,7 +245,7 @@ describe("fetchAll (reconciliation)", () => {
     const impl = (async (): Promise<Response> =>
       jsonResponse({ type: "list", data: [], pages: { next: { starting_after: "stuck" } } })) as unknown as typeof globalThis.fetch;
     const c = createIntercomVendorClient(
-      { apiToken: "tok", collectionSlug: "intercom-docs" },
+      { apiToken: TOKEN, collectionSlug: "intercom-docs" },
       { fetchImpl: impl },
     );
     await expect(c.fetchAll()).rejects.toThrow(/did not terminate/i);
@@ -317,7 +323,7 @@ describe("authentication", () => {
     const { c, state } = client();
     await c.fetchAll();
     expect(state.authHeaders.length).toBeGreaterThan(0);
-    for (const header of state.authHeaders) expect(header).toBe("Bearer tok");
+    for (const header of state.authHeaders) expect(header).toBe(`Bearer ${TOKEN}`);
   });
 });
 
@@ -359,13 +365,13 @@ describe("vendor failure mapping", () => {
       (e: unknown) => e,
     );
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).not.toContain("tok");
+    expect((err as Error).message).not.toContain(TOKEN);
   });
 
   it("wraps a non-JSON body in a host-redacted error carrying the cause (never the token)", async () => {
     const impl = (async (): Promise<Response> =>
       new Response("<html>oops</html>", { status: 200, headers: { "content-type": "text/html" } })) as unknown as typeof globalThis.fetch;
-    const c = createIntercomVendorClient({ apiToken: "tok", collectionSlug: "c" }, { fetchImpl: impl });
+    const c = createIntercomVendorClient({ apiToken: TOKEN, collectionSlug: "c" }, { fetchImpl: impl });
     try {
       await c.fetchAll();
       throw new Error("expected throw");
@@ -373,7 +379,7 @@ describe("vendor failure mapping", () => {
       const message = err instanceof Error ? err.message : String(err);
       expect(message).toMatch(/non-JSON response/i);
       expect(message).toContain("api.intercom.io");
-      expect(message).not.toContain("tok");
+      expect(message).not.toContain(TOKEN);
       expect((err as { cause?: unknown }).cause).toBeDefined();
     }
   });
@@ -383,7 +389,7 @@ describe("verifyIntercomAccess", () => {
   it("resolves when /me returns an identity", async () => {
     const { impl } = makeFetch({});
     await expect(
-      verifyIntercomAccess({ apiToken: "tok", collectionSlug: "c" }, { fetchImpl: impl }),
+      verifyIntercomAccess({ apiToken: TOKEN, collectionSlug: "c" }, { fetchImpl: impl }),
     ).resolves.toBeUndefined();
   });
 
@@ -397,7 +403,7 @@ describe("verifyIntercomAccess", () => {
   it("throws when /me returns a hollow body with no identity", async () => {
     const { impl } = makeFetch({ me: {} });
     await expect(
-      verifyIntercomAccess({ apiToken: "tok", collectionSlug: "c" }, { fetchImpl: impl }),
+      verifyIntercomAccess({ apiToken: TOKEN, collectionSlug: "c" }, { fetchImpl: impl }),
     ).rejects.toThrow(/did not return a recognizable identity/i);
   });
 });

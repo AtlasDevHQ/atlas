@@ -5,7 +5,7 @@ you need to get started.
 
 ## Prerequisites
 
-- **[bun](https://bun.sh/)** 1.4.0 — package manager and runtime (pinned `>=1.4.0 <1.5.0`). The old `>=1.3.13 <1.3.14` pin existed to ban 1.3.14 for the `--isolate` TLA regression (#2811); that regression is fixed on the 1.4 line, which is why the pin could move.
+- **[bun](https://bun.sh/)** 1.4.2 — package manager and runtime (pinned `>=1.4.2 <1.5.0`). The old `>=1.3.13 <1.3.14` pin existed to ban 1.3.14 for the `--isolate` TLA regression (#2811); that regression is fixed on the 1.4 line, which is why the pin could move.
 - **[Docker](https://www.docker.com/)** — for the local Postgres database and sandbox sidecar
 
 ## Dev Setup

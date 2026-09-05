@@ -46,7 +46,16 @@ permissions:
   contents: read
 
 env:
-  BUN_VERSION: "1.4.2"
+  # ⚠️ Held at 1.4.0. bun 1.4.1/1.4.2 crash the `api-tests (1/4)` worker with
+  # SIGSEGV at address 0x10 inside `JSC::JSModuleLoader::loadModule` (via
+  # `moduleLoadTopSettled`) while loading a `mock.module()` + top-level
+  # `await import("../index")` suite — the 1.4.1 change that stops `--isolate`
+  # keeping the module graph alive. Measured 7 crashes in 9 shard-1 runs on
+  # 1.4.2 (#5652, #5653, #5654), zero on 1.4.0; a native `--parallel` worker
+  # crash aborts the whole shard and nothing retries it. Not reproducible
+  # outside the parallel worker protocol. Before bumping past 1.4.0 again, run
+  # the full shard set several times on the candidate and read `api-tests (1/4)`.
+  BUN_VERSION: "1.4.0"
 
 # The historic `ci` job was a single linear pipeline (install → drift → build
 # → type → lint → test:others → test:e2e:integration) that took ~3m30s end-

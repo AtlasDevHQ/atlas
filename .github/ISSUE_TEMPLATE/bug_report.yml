@@ -50,7 +50,7 @@ body:
     id: bun-version
     attributes:
       label: bun version
-      placeholder: "e.g. 1.4.2"
+      placeholder: "e.g. 1.4.0"
     validations:
       required: false
 

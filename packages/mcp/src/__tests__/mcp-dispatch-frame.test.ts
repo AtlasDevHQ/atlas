@@ -79,6 +79,10 @@ const mockListConnectionGroupMembers = mock<typeof RealEntities.listConnectionGr
   async () => [],
 );
 
+// Hand-rolled rather than `@atlas/api/testing/semantic-store`: that fixture also
+// registers `@atlas/api/lib/semantic` with `loadOrgWhitelist` as a thrower, and
+// this suite needs the REAL whitelist under the real `validateSQL` — the
+// "one suite must exercise the real module" case testing.md keeps.
 const FIXTURE = "mcp-dispatch-frame";
 void mock.module(
   "@atlas/api/lib/semantic/entities",
@@ -146,7 +150,7 @@ type Frame = ReturnType<typeof getRequestContext>;
 async function observeFrame(
   dispatch: ReturnType<typeof createMcpDispatch>,
 ): Promise<{ frame: Frame; requestId: string }> {
-  let frame: Frame;
+  let frame: Frame = undefined;
   let requestId = "";
   const result = await dispatch.dispatch("probe", READ_TOOL, async (id) => {
     frame = getRequestContext();
@@ -154,7 +158,7 @@ async function observeFrame(
     return { content: [{ type: "text", text: "ok" }] };
   });
   expect(result.isError).toBeFalsy();
-  return { frame: frame!, requestId };
+  return { frame, requestId };
 }
 
 /** The frame the anonymous door opens (`demo.ts`), minus the identity it mints. */

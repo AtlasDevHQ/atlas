@@ -107,7 +107,7 @@ export interface McpDispatcher {
   ): Promise<CallToolResult>;
 }
 
-/** The request frame the door opened around this dispatch, if any. */
+/** The request frame a door opens around this dispatch (absent on a bare stdio server). */
 type OuterFrame = NonNullable<ReturnType<typeof getRequestContext>>;
 
 function dispatchId(toolName: string): string {

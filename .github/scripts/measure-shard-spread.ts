@@ -40,9 +40,11 @@
  *
  * Usage:
  *   bun .github/scripts/measure-shard-spread.ts \
- *     [--threshold 1.5] [--min-runs 5] [--shards 4] \
- *     [--job-pattern '^api-tests \('] [--step-pattern '^Test @atlas/api'] \
- *     <jobs.json>...
+ *     [--threshold 1.5] [--min-runs 5] [--shards 4] <jobs.json>...
+ *
+ * The job and step names it reads are the two constants below. They are not
+ * flags: a regex built from argv is what CodeQL's js/regex-injection is for,
+ * and nothing needed them to vary.
  *
  * Adversarial fixtures: scripts/__tests__/measure-shard-spread.test.sh
  */
@@ -64,12 +66,14 @@ interface Job {
   readonly steps: readonly Step[];
 }
 
+/** The matrix job (`api-tests (N/4)`) and the step inside it that runs the tests. */
+const JOB_PATTERN = /^api-tests \(/;
+const STEP_PATTERN = /^Test @atlas\/api/;
+
 interface Options {
   threshold: number;
   minRuns: number;
   shards: number;
-  jobPattern: RegExp;
-  stepPattern: RegExp;
   inputs: string[];
 }
 
@@ -83,8 +87,6 @@ function parseArgs(argv: readonly string[]): Options {
     threshold: 1.5,
     minRuns: 5,
     shards: 4,
-    jobPattern: /^api-tests \(/,
-    stepPattern: /^Test @atlas\/api/,
     inputs: [],
   };
   const num = (flag: string, raw: string | undefined): number => {
@@ -98,8 +100,6 @@ function parseArgs(argv: readonly string[]): Options {
     if (arg === "--threshold") opts.threshold = num(arg, argv[++i]);
     else if (arg === "--min-runs") opts.minRuns = num(arg, argv[++i]);
     else if (arg === "--shards") opts.shards = num(arg, argv[++i]);
-    else if (arg === "--job-pattern") opts.jobPattern = new RegExp(argv[++i] ?? die("--job-pattern needs a value", 2));
-    else if (arg === "--step-pattern") opts.stepPattern = new RegExp(argv[++i] ?? die("--step-pattern needs a value", 2));
     else if (arg.startsWith("--")) die(`unknown flag ${arg}`, 2);
     else opts.inputs.push(arg);
   }
@@ -153,11 +153,11 @@ function median(values: readonly number[]): number {
 function measureRun(jobs: readonly Job[], opts: Options): { readonly perShard: number[] } | { readonly skip: string } {
   const perShard = new Array<number | undefined>(opts.shards).fill(undefined);
   for (const job of jobs) {
-    if (!opts.jobPattern.test(job.name)) continue;
+    if (!JOB_PATTERN.test(job.name)) continue;
     const shard = shardOf(job.name);
     if (shard === undefined || shard < 1 || shard > opts.shards) return { skip: `job '${job.name}' is not shard 1..${opts.shards}` };
-    const step = job.steps.find((s) => opts.stepPattern.test(s.name));
-    if (step === undefined) return { skip: `${job.name} has no step matching ${opts.stepPattern}` };
+    const step = job.steps.find((s) => STEP_PATTERN.test(s.name));
+    if (step === undefined) return { skip: `${job.name} has no step matching ${STEP_PATTERN}` };
     const secs = seconds(step);
     if (secs === undefined) return { skip: `${job.name} test step did not complete successfully (${step.conclusion ?? "no conclusion"})` };
     if (perShard[shard - 1] !== undefined) return { skip: `${job.name} appears twice` };

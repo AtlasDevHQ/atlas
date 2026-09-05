@@ -1,0 +1,13 @@
+# scripts/ci-local-parity-allowlist.txt — gates ci-local.sh launches that NO
+# workflow runs, each with the reason it is local-only BY DESIGN.
+#
+# Read by scripts/check-ci-local-parity.sh. One `scripts/check-*.sh|ts` path per
+# line, then `#` and the reason. The gate FAILS on an entry that has outlived
+# its reason — the gate becomes wired in a workflow, or ci-local.sh stops
+# launching it — so delete the line when either happens.
+#
+# The other direction has no allowlist: a gate ci.yml runs must be launched
+# locally, and one that cannot run locally should DECLINE (exit 3) from inside
+# ci-local.sh rather than be left off the roster.
+
+scripts/check-published-symbols.ts  # local pre-push only, by its own header: needs the npm registry, and remote CI catches the same drift later in Deploy Validation's scaffold smoke

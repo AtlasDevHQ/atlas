@@ -54,11 +54,7 @@ jobs:
       # time — `@useatlas/types` resolves to its dist via package exports,
       # so without these the Next build fails on `cannot find module`.
       - name: Build SDK packages
-        run: |
-          bun run --filter '@useatlas/types' build
-          bun run --filter '@useatlas/plugin-sdk' build
-          bun run --filter '@useatlas/sdk' build
-          bun run --filter '@useatlas/react' build
+        run: bun run build:sdk
 
       - name: Build apps/www (static export)
         run: bun run --filter '@atlas/www' build

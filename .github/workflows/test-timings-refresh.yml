@@ -85,7 +85,7 @@ jobs:
       # Same preamble as ci.yml's api-tests: both packages resolve to their
       # `dist/` via "exports", so api tests cannot import them unbuilt.
       - name: Build @useatlas/types + @useatlas/plugin-sdk
-        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build
+        run: bun run build:sdk:core
 
       - name: Measure shard ${{ matrix.shard }}/4
         working-directory: packages/api

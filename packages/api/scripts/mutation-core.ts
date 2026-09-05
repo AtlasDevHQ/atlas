@@ -940,3 +940,132 @@ export function render(
 
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Sharding: a shard owns ROWS, not specs.
+//
+// The CI sweep runs the specs in parallel, and until this existed the unit of
+// parallelism was the spec: shard I verified every spec at glob position I-1
+// (mod N). Cost tracks a spec's row count times its target suites' runtime,
+// and round-robin by position ignores both, so the long pole was whichever
+// shard drew the two heavy specs — measured 633s against a 319s ideal
+// (1916s of measurement over 344 rows, run 33937489562). The floor under a
+// spec-level partition is the heaviest single spec, and going below it needs
+// the runner to partition its own mutation list. This is that.
+//
+// Ownership is a pure function of (row position within the spec, I, N):
+// identical in every process, never dependent on a selection that one runner
+// may have widened and another not. Every shard runs every selected spec's
+// BASELINE (guardrail 1 is per-process) and measures only its own rows; the
+// other rows are read back from the committed table so `--check` can still
+// compare the whole file. A row that drifted is caught by the shard that owns
+// it; the header, preamble, suite sizes and notes are checked by every shard.
+// ---------------------------------------------------------------------------
+
+/** A parsed `--shard I/N`: 1-based index, both bounded. */
+export interface Shard {
+  readonly index: number;
+  readonly total: number;
+}
+
+/**
+ * Parse `I/N`. Returns the error text rather than throwing, so the CLI can
+ * print it under its own `error` prefix. The bounds match the gate's own
+ * validation in `scripts/check-mutation-tables.sh` — a malformed value must be
+ * a hard error here too, because a fall-through would run every row on every
+ * shard and read as green.
+ */
+export function parseShard(raw: string): Shard | { readonly error: string } {
+  const m = /^([1-9][0-9]{0,3})\/([1-9][0-9]{0,3})$/.exec(raw);
+  if (m === null) return { error: `--shard expects I/N, both integers 1-9999 (got '${raw}')` };
+  const index = Number(m[1]);
+  const total = Number(m[2]);
+  if (index > total) return { error: `--shard ${raw} — index exceeds total.` };
+  return { index, total };
+}
+
+/** Whether shard `shard` owns the row at 0-based `position` in a spec. */
+export function shardOwns(position: number, shard: Shard): boolean {
+  return position % shard.total === shard.index - 1;
+}
+
+/** The inverse of {@link escapeCell}, for reading a label back out of a table. */
+export function unescapeCell(text: string): string {
+  return text.replace(/\\\\\\\||\\\|/g, (match) => (match === "\\|" ? "|" : "\\|"));
+}
+
+/**
+ * The inverse of {@link renderCell}. `undefined` for the `—` a never-measured
+ * cell renders as, and for any text that is not a rendered cell — the caller
+ * then renders `—` in its place, and a `--check` against the committed bytes
+ * fails loudly rather than trusting an unreadable cell.
+ */
+export function parseCell(text: string): Cell | undefined {
+  const t = text.trim();
+  if (t === "—") return undefined;
+  if (t === TIMEOUT_CELL) return { kind: "timeout" };
+  const whole = /^(\d+) ⚠️$/.exec(t);
+  if (whole !== null) return { kind: "count", fail: Number(whole[1]), wholeSuite: true };
+  if (/^\d+$/.test(t)) return { kind: "count", fail: Number(t) };
+  if (t.startsWith("⚠️ ")) return { kind: "unmeasured", reason: t.slice("⚠️ ".length) };
+  return undefined;
+}
+
+/**
+ * Split one `| a | b | c |` table line into its cells, honouring the pipe
+ * escapes {@link escapeCell} writes. Placeholders rather than a lookbehind
+ * regex, because `\\\|` (an escaped backslash before an escaped pipe) and `\|`
+ * must be told apart and a single lookbehind cannot count the backslashes.
+ * The placeholders are control characters no label can carry.
+ */
+export function splitTableRow(line: string): readonly string[] {
+  const ESCAPED_BACKSLASH_PIPE = "";
+  const ESCAPED_PIPE = "";
+  const body = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return body
+    .replace(/\\\\\\\|/g, ESCAPED_BACKSLASH_PIPE)
+    .replace(/\\\|/g, ESCAPED_PIPE)
+    .split("|")
+    .map((cell) =>
+      cell.trim().replaceAll(ESCAPED_BACKSLASH_PIPE, "\\\\\\|").replaceAll(ESCAPED_PIPE, "\\|"),
+    );
+}
+
+/**
+ * Read the rows of a table {@link render} wrote, keyed the way `measure`
+ * keys them: label → target name → cell. Rows whose cell cannot be parsed are
+ * returned WITHOUT that cell, so they render as `—` and fail the comparison.
+ *
+ * The header row must name exactly the given targets, in order; if it does
+ * not, the table is for a different target set and NO rows are returned —
+ * every non-owned row then renders as `—`, and the mismatch is reported
+ * rather than a stale column silently carried forward.
+ */
+export function parseTableRows(
+  markdown: string,
+  targets: readonly MutationTarget[],
+): Map<string, Map<string, Cell>> {
+  const rows = new Map<string, Map<string, Cell>>();
+  const lines = markdown.split("\n");
+  const expectedHeader = ["Mutation", ...targets.map((t) => escapeCell(t.name))];
+  const headerAt = lines.findIndex((line) => {
+    if (!line.startsWith("| Mutation |")) return false;
+    const cells = splitTableRow(line);
+    return cells.length === expectedHeader.length && cells.every((c, i) => c === expectedHeader[i]);
+  });
+  if (headerAt === -1) return rows;
+  for (let i = headerAt + 2; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === undefined || !line.startsWith("|")) break;
+    const cells = splitTableRow(line);
+    if (cells.length !== expectedHeader.length) continue;
+    const label = unescapeCell(cells[0] ?? "");
+    const parsed = new Map<string, Cell>();
+    targets.forEach((t, k) => {
+      const cell = parseCell(cells[k + 1] ?? "");
+      if (cell !== undefined) parsed.set(t.name, cell);
+    });
+    rows.set(label, parsed);
+  }
+  return rows;
+}

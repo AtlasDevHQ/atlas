@@ -28,8 +28,14 @@ import {
   importSpecifiers,
   isWholeSuite,
   parseBunSummary,
+  parseCell,
+  parseShard,
+  parseTableRows,
   render,
   renderCell,
+  shardOwns,
+  splitTableRow,
+  unescapeCell,
   restoreAll,
   suiteTimeoutMs,
   SUITE_TIMEOUT_FACTOR,
@@ -1132,5 +1138,139 @@ describe("cell and label escaping", () => {
     expect(renderCell({ kind: "count", fail: 0 })).toBe("0");
     expect(renderCell({ kind: "timeout" })).toBe(TIMEOUT_CELL);
     expect(renderCell({ kind: "unmeasured", reason: "boom" })).toBe("⚠️ boom");
+  });
+});
+
+describe("⚠️ sharding — a shard owns ROWS, and the partition is total and disjoint", () => {
+  test("every position over 13 rows lands on exactly one of 4 shards", () => {
+    // 13 deliberately does not divide by 4, so an uneven split is exercised.
+    const owners = Array.from({ length: 13 }, (_, position) =>
+      [1, 2, 3, 4].filter((index) => shardOwns(position, { index, total: 4 })),
+    );
+    expect(owners.every((o) => o.length === 1)).toBe(true);
+    expect(owners.map((o) => o[0])).toEqual([1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 1]);
+  });
+
+  test("a single shard owns everything", () => {
+    expect([0, 1, 2, 3, 4].every((p) => shardOwns(p, { index: 1, total: 1 }))).toBe(true);
+  });
+
+  test("a shard whose index exceeds the row count owns nothing — the honest-empty case", () => {
+    expect([0, 1, 2].some((p) => shardOwns(p, { index: 5, total: 8 }))).toBe(false);
+  });
+
+  test("parseShard accepts I/N and rejects the shapes the gate rejects", () => {
+    expect(parseShard("2/6")).toEqual({ index: 2, total: 6 });
+    expect(parseShard("1/1")).toEqual({ index: 1, total: 1 });
+    for (const bad of ["0/4", "1a/4", "1/4x", "1/4/9", "4", "", "1/99999999999999999999"]) {
+      const parsed = parseShard(bad);
+      expect("error" in parsed && parsed.error).toContain("--shard expects I/N");
+    }
+    const past = parseShard("9/4");
+    expect("error" in past && past.error).toContain("index exceeds total");
+  });
+});
+
+describe("⚠️ parseTableRows — the inverse of render, so a shard can read the rows it did not measure", () => {
+  const targets = [
+    { name: "a|pipe", file: "src/a.test.ts" },
+    { name: "b", file: "src/b.test.ts" },
+  ];
+  const spec: MutationSpec = {
+    title: "T",
+    out: "scripts/mutations/t.md",
+    targets,
+    mutations: [
+      { label: "plain row", edits: [] },
+      { label: "row with | a pipe", edits: [], note: "noted" },
+      { label: "row with \\| an escaped pipe", edits: [] },
+    ],
+  };
+  const baselines = new Map([
+    ["a|pipe", 10],
+    ["b", 4],
+  ]);
+  const rows = new Map<string, Map<string, Cell>>([
+    [
+      "plain row",
+      new Map<string, Cell>([
+        ["a|pipe", { kind: "count", fail: 3 }],
+        ["b", { kind: "timeout" }],
+      ]),
+    ],
+    [
+      "row with | a pipe",
+      new Map<string, Cell>([
+        ["a|pipe", { kind: "count", fail: 10, wholeSuite: true }],
+        ["b", { kind: "count", fail: 0 }],
+      ]),
+    ],
+    ["row with \\| an escaped pipe", new Map<string, Cell>([["b", { kind: "count", fail: 2 }]])],
+  ]);
+  const markdown = render(spec, targets, spec.mutations, baselines, rows, "t.mutations.ts");
+
+  test("POSITIVE CONTROL: the rows read back are the rows rendered", () => {
+    expect(parseTableRows(markdown, targets)).toEqual(rows);
+  });
+
+  test("⚠️ re-rendering from the parsed rows reproduces the file BYTE FOR BYTE", () => {
+    // This is the property `--check --shard` rests on: non-owned rows come from
+    // the committed table, and the comparison is still whole-file.
+    const back = parseTableRows(markdown, targets);
+    expect(render(spec, targets, spec.mutations, baselines, back, "t.mutations.ts")).toBe(markdown);
+  });
+
+  test("every cell kind survives the round trip, including whole-suite and timeout", () => {
+    expect(parseCell(renderCell({ kind: "count", fail: 7 }))).toEqual({ kind: "count", fail: 7 });
+    expect(parseCell(renderCell({ kind: "count", fail: 7, wholeSuite: true }))).toEqual({
+      kind: "count",
+      fail: 7,
+      wholeSuite: true,
+    });
+    expect(parseCell(renderCell({ kind: "timeout" }))).toEqual({ kind: "timeout" });
+    expect(parseCell(renderCell({ kind: "unmeasured", reason: "ANCHOR: 0 matches" }))).toEqual({
+      kind: "unmeasured",
+      reason: "ANCHOR: 0 matches",
+    });
+  });
+
+  test("a `—` (never measured) parses to NO cell, never to a zero", () => {
+    expect(parseCell("—")).toBeUndefined();
+    expect(parseCell("")).toBeUndefined();
+    expect(parseCell("seven")).toBeUndefined();
+  });
+
+  test("labels with pipes and escaped pipes round-trip through escape/unescape and the row splitter", () => {
+    for (const label of ["a|b", "x\\|y", "plain", "a|b|c", "tail\\"]) {
+      expect(unescapeCell(escapeCell(label))).toBe(label);
+    }
+    expect(splitTableRow(`| ${escapeCell("a|b")} | 3 | ${escapeCell("x\\|y")} |`)).toEqual([
+      escapeCell("a|b"),
+      "3",
+      escapeCell("x\\|y"),
+    ]);
+  });
+
+  test("⚠️ a header naming DIFFERENT targets yields NO rows — a stale column is never carried forward", () => {
+    const other = [{ name: "one", file: "src/one.test.ts" }];
+    expect(parseTableRows(markdown, other).size).toBe(0);
+    expect(parseTableRows(markdown, [targets[1] as { name: string; file: string }]).size).toBe(0);
+  });
+
+  test("a row the table lacks is simply absent, so it renders as `—` and fails the comparison", () => {
+    const back = parseTableRows(markdown, targets);
+    expect(back.has("row the spec added since")).toBe(false);
+  });
+
+  test("an unparseable cell is dropped from its row rather than read as a number", () => {
+    const tampered = markdown.replace("| plain row | 3 |", "| plain row | three |");
+    const back = parseTableRows(tampered, targets);
+    expect(back.get("plain row")?.has("a|pipe")).toBe(false);
+    expect(back.get("plain row")?.get("b")).toEqual({ kind: "timeout" });
+  });
+
+  test("parsing stops at the blank line after the table, so the Notes section is not a row", () => {
+    const back = parseTableRows(markdown, targets);
+    expect(back.size).toBe(3);
   });
 });

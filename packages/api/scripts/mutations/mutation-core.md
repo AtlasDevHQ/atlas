@@ -28,7 +28,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `validateSpec` stops rejecting an empty anchor | 2 |
 | `validateSpec` returns the FIRST problem instead of all of them | 1 |
 | `countOccurrences` loops forever on an empty needle (guard removed) | ⚠️ HANGS — timed out |
-| `renderCell` loses its `unmeasured` arm (a no-count cell throws instead of rendering its reason) | 3 |
+| `renderCell` loses its `unmeasured` arm (a no-count cell throws instead of rendering its reason) | 4 |
 | ⚠️ the refusal narrows to the DEAD-ANCHOR member again (#5077's shape) | 3 |
 | `unmeasurableOutcome` stops refusing a SKIPPED or TODO'd run | 7 |
 | `unmeasurableOutcome` stops cross-checking the buckets against `Ran N` | 7 |
@@ -39,13 +39,13 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the TIMEOUT cell carries a wall-clock number again (determinism lost) | 1 |
 | `importSpecifiers` sees only SINGLE-LINE import statements | 1 |
 | `importCandidates` drops the `@atlas/api/*` alias arm | 1 |
-| `render` defaults an unmeasured cell to `0` instead of a dash | 1 |
-| `escapeCell` stops escaping `\|` | 2 |
+| `render` defaults an unmeasured cell to `0` instead of a dash | 2 |
+| `escapeCell` stops escaping `\|` | 7 |
 | `render` stamps the output with a date (determinism lost) | 1 |
 | `render` drops the DO-NOT-EDIT header | 1 |
 | `render` drops the suite-size line | 1 |
 
-Suite sizes: **mutate-core.test.ts** 86 tests (`src/__tests__/mutate-core.test.ts`).
+Suite sizes: **mutate-core.test.ts** 99 tests (`src/__tests__/mutate-core.test.ts`).
 
 ## Notes
 

@@ -7,6 +7,7 @@
  *   bun run scripts/mutate.ts <spec> --only "<label substring>"   (repeatable)
  *   bun run scripts/mutate.ts <spec> --target here
  *   bun run scripts/mutate.ts <spec> --check     # fail if the output would change
+ *   bun run scripts/mutate.ts <spec> --check --shard I/N   # this shard's ROWS only
  *
  * ## Why this exists
  *
@@ -67,7 +68,10 @@ import {
   importCandidates,
   importSpecifiers,
   parseBunSummary,
+  parseShard,
+  parseTableRows,
   render,
+  shardOwns,
   restoreAll,
   suiteTimeoutMs,
   SUITE_TIMEOUT_FLOOR_MS,
@@ -75,6 +79,7 @@ import {
   unmeasuredRows,
   validateSpec,
   type Cell,
+  type Shard,
   type SuiteOutcome,
 } from "./mutation-core";
 import type { Mutation, MutationSpec, MutationTarget } from "./mutation-spec";
@@ -118,6 +123,11 @@ interface Options {
   readonly files: boolean;
   /** Overrides the baseline-derived per-suite timeout. */
   readonly timeoutMs?: number;
+  /**
+   * With `--check`: verify only the rows this shard owns (see "Sharding" in
+   * mutation-core.ts), reading the others back from the committed table.
+   */
+  readonly shard?: Shard;
 }
 
 function parseArgs(argv: readonly string[]): Options {
@@ -127,6 +137,7 @@ function parseArgs(argv: readonly string[]): Options {
   let check = false;
   let files = false;
   let timeoutMs: number | undefined;
+  let shard: Shard | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -139,6 +150,11 @@ function parseArgs(argv: readonly string[]): Options {
       const parsed = Number(raw);
       if (!Number.isFinite(parsed) || parsed <= 0) fail(`--timeout expects milliseconds, got: ${raw}`);
       timeoutMs = parsed;
+    } else if (arg === "--shard" && argv[i + 1] !== undefined) {
+      if (shard !== undefined) fail("--shard given twice; the second would silently win.");
+      const parsed = parseShard(argv[++i] as string);
+      if ("error" in parsed) fail(parsed.error);
+      shard = parsed;
     } else if (arg === "--check") {
       check = true;
     } else if (arg === "--files") {
@@ -155,10 +171,17 @@ function parseArgs(argv: readonly string[]): Options {
   if (specPath === undefined) {
     fail(
       "Usage: bun run scripts/mutate.ts <spec.mutations.ts> " +
-        "[--only <label>] [--target <name>] [--timeout <ms>] [--check] [--files]",
+        "[--only <label>] [--target <name>] [--timeout <ms>] [--check [--shard I/N]] [--files]",
     );
   }
-  return { specPath, only, targets, check, files, timeoutMs };
+  // A shard verifies its rows against the committed table; there is no table
+  // to write from a partial measurement, and --only/--target already narrow
+  // the run for a human. Combining them would make "which rows" ambiguous.
+  if (shard !== undefined && !check) fail("--shard is only meaningful with --check.");
+  if (shard !== undefined && (only.length > 0 || targets.length > 0)) {
+    fail("--shard cannot be combined with --only or --target.");
+  }
+  return { specPath, only, targets, check, files, timeoutMs, ...(shard === undefined ? {} : { shard }) };
 }
 
 /**
@@ -527,10 +550,28 @@ if (mutations.length === 0) {
 const partial =
   targets.length !== spec.targets.length || mutations.length !== spec.mutations.length;
 
+// Row-level sharding (see "Sharding" in mutation-core.ts). Decided BEFORE the
+// baselines run, so a shard that owns nothing in this spec costs nothing — and
+// says so, because a silent exit 0 here is indistinguishable from a verified one
+// to the gate that reads it.
+const shard = options.shard;
+const owned =
+  shard === undefined ? mutations : mutations.filter((_, position) => shardOwns(position, shard));
+if (shard !== undefined && owned.length === 0) {
+  console.log(
+    `shard ${shard.index}/${shard.total} owns 0 of ${mutations.length} rows of ${options.specPath} — ` +
+      "nothing to verify on this shard; every row is owned by a lower-numbered shard.",
+  );
+  process.exit(0);
+}
+
 console.log(
   `${DIM}spec${RESET} ${options.specPath}  ` +
     `${DIM}targets${RESET} ${targets.map((t) => t.name).join(", ")}  ` +
-    `${DIM}mutations${RESET} ${mutations.length}`,
+    `${DIM}mutations${RESET} ${mutations.length}` +
+    (shard === undefined
+      ? ""
+      : `  ${DIM}shard${RESET} ${shard.index}/${shard.total} owns ${owned.length} row(s)`),
 );
 
 // --- Baseline. Every count below is meaningless if this is not green. ---
@@ -596,7 +637,7 @@ for (const target of targets) {
 
 let rows: Map<string, Map<string, Cell>>;
 try {
-  rows = await measure(targets, mutations, baselines, timeouts);
+  rows = await measure(targets, owned, baselines, timeouts);
 } finally {
   // measure() restores per mutation; this covers a throw between apply and the
   // inner finally, and costs nothing when the map is already empty.
@@ -643,6 +684,31 @@ if (unmeasured.length > 0) {
   );
 }
 
+const outAbs = resolve(ROOT, spec.out);
+const existing = await Bun.file(outAbs)
+  .text()
+  .catch(() => null); // intentionally ignored: absent on first generation
+
+if (shard !== undefined) {
+  // The rows this shard did not measure come from the committed table, so the
+  // comparison below is still whole-file: a header, preamble, note or suite-size
+  // change fails on every shard, and a drifted row fails on the shard that owns
+  // it. A non-owned row the table lacks parses to nothing, renders as `—`, and
+  // fails here too — loudly, which is the right direction for a missing row.
+  if (existing === null) {
+    fail(
+      `${spec.out} does not exist — nothing for shard ${shard.index}/${shard.total} to verify ` +
+        `against. Generate it: cd packages/api && bun run scripts/mutate.ts ${options.specPath}`,
+    );
+  }
+  const committed = parseTableRows(existing, targets);
+  for (const mutation of mutations) {
+    if (rows.has(mutation.label)) continue;
+    const fromTable = committed.get(mutation.label);
+    if (fromTable !== undefined) rows.set(mutation.label, fromTable);
+  }
+}
+
 const markdown = render(spec, targets, mutations, baselines, rows, options.specPath);
 
 if (partial) {
@@ -657,18 +723,17 @@ if (partial) {
   process.exit(0);
 }
 
-const outAbs = resolve(ROOT, spec.out);
-const existing = await Bun.file(outAbs)
-  .text()
-  .catch(() => null); // intentionally ignored: absent on first generation
-
 if (options.check) {
+  const scope =
+    shard === undefined
+      ? ""
+      : ` (shard ${shard.index}/${shard.total}: ${owned.length} of ${mutations.length} rows re-measured)`;
   if (existing === markdown) {
-    console.log(`\n${GREEN}CHECK OK${RESET} ${spec.out} is current.`);
+    console.log(`\n${GREEN}CHECK OK${RESET} ${spec.out} is current${scope}.`);
     process.exit(0);
   }
   fail(
-    `${spec.out} is stale. Regenerate: cd packages/api && bun run scripts/mutate.ts ${options.specPath}`,
+    `${spec.out} is stale${scope}. Regenerate: cd packages/api && bun run scripts/mutate.ts ${options.specPath}`,
   );
 }
 

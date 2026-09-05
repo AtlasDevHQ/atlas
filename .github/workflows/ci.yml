@@ -862,25 +862,32 @@ jobs:
         #
         #   gh workflow run test-timings-refresh.yml --ref <branch>
         #
-        # then download the `test-timings-merged` artifact over
-        # `packages/api/scripts/test-timings.json` and update the line below.
+        # It opens (or force-updates) a PR from `ci/test-timings-refresh` with
+        # the merged file and the line below; merge it. It also runs monthly on
+        # a schedule, and whenever the `shard-balance` job below fires.
         #
-        # LAST REGENERATED: 2026-09-04, from run 33936592365 on `main` at
-        # 7931c4eb5 (#5647), because #5644 folded 121 test files and shard
-        # 2/4 was then running 170s against 82s for 3/4. Before that:
-        # 2026-08-23 (run 32650149461, #5397), and before that never — every
-        # number was a measurement of the suite as it stood at #2802, roughly
-        # two thousand commits earlier.
-        # Re-trigger when a shard's wall time drifts past ~1.25x its siblings on
-        # a green `main` run, or after a PR adds several `-pg` suites (they are
-        # the heavy ones).
+        # LAST REGENERATED: 2026-09-04 run 33936592365 main 7931c4eb5 (workflow_dispatch)
         #
-        # ⚠️ Check the refresh MEASURED before trusting it, because the way it
-        # fails is silent. Two cheap reads on the merged artifact: every `-pg`
-        # suite should carry a duration in the seconds (88 of them did, median
-        # 4.7s), and NONE should appear among the hundred fastest files. A
-        # refresh that ran without a database produces a well-formed file in
-        # which the sixty heaviest suites are the lightest entries.
+        # ⚠️ The line above is MACHINE-OWNED. test-timings-refresh.yml rewrites
+        # everything after the colon and stops if it finds the prefix zero or
+        # several times, so keep it one line and put history here instead.
+        # History: 2026-09-04 (#5647) because #5644 folded 121 test files and
+        # shard 2/4 was running 170s against 82s for 3/4; 2026-08-23 (run
+        # 32650149461, #5397); before that never — every number was a
+        # measurement of the suite as it stood at #2802, roughly two thousand
+        # commits earlier.
+        #
+        # Drift is MEASURED, not eyeballed. `shard-balance` reads this step's
+        # wall time across the last ten green `main` runs and fails when the
+        # heaviest shard's median exceeds the lightest's by 1.5x. Why a median
+        # and why 1.5x — a single run ranges 1.1x..2.4x on an unchanged tree —
+        # is in `.github/scripts/measure-shard-spread.ts`.
+        #
+        # A refresh that ran without a database would produce a well-formed
+        # file in which the heaviest suites are the lightest entries. The merge
+        # step refuses it (measured `-pg` median must clear 500ms, in
+        # merge-test-timings.ts), so the artifact and the PR have already
+        # passed the read this comment used to ask for by hand.
         #
         # ⚠️ A rebalance does NOT fix a PREEMPTED shard. `The runner has received
         # a shutdown signal` and `The operation was canceled` are runner loss;
@@ -910,6 +917,72 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+  # Post-merge measurement, `main` only: is the api-tests balancer still
+  # balancing? Reads this run's four test-step durations plus the last nine
+  # green `main` runs' and fails when the heaviest shard's MEDIAN exceeds the
+  # lightest's by 1.5x, then dispatches test-timings-refresh.yml, which opens
+  # the PR that fixes it. The statistic and the threshold are argued in the
+  # script; the short version is that one run is one runner's mood.
+  #
+  # Not in the `ci` umbrella's `needs`, deliberately: it never runs on a PR
+  # (there is no green-`main` history to read on a merge ref), and on `main`
+  # a red here is the signal — it stays red until the refresh PR merges, and
+  # no push is blocked by it. `actions: write` is what `gh workflow run`
+  # needs; the reads it also covers.
+  shard-balance:
+    name: shard-balance
+    needs: api-tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.api-tests.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - uses: ./.github/actions/setup-bun-cached
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+          install: "false"
+
+      - name: Collect api-tests durations from this run and the last nine green main runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/spread
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            --paginate --slurp > /tmp/spread/current.json
+          gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success \
+            --limit 9 --json databaseId --jq '.[].databaseId' \
+          | while read -r id; do
+              gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs?per_page=100" \
+                --paginate --slurp > "/tmp/spread/${id}.json"
+            done
+          ls /tmp/spread
+
+      - name: Fail when the shard spread has drifted
+        id: spread
+        run: bun .github/scripts/measure-shard-spread.ts --threshold 1.5 --min-runs 5 /tmp/spread/*.json
+
+      - name: Dispatch a timings refresh
+        # Only on the spread step's own failure — a collection error above is
+        # not drift. One open refresh PR at a time: while it waits, every main
+        # push would otherwise burn four runners re-measuring the same tree.
+        if: failure() && steps.spread.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          open=$(gh pr list -R "$GITHUB_REPOSITORY" --head ci/test-timings-refresh --state open --json number --jq 'length')
+          if [ "$open" != "0" ]; then
+            echo "a refresh PR is already open from ci/test-timings-refresh; not dispatching another sweep"
+            exit 0
+          fi
+          gh workflow run test-timings-refresh.yml -R "$GITHUB_REPOSITORY" --ref main
+          echo "dispatched test-timings-refresh.yml on main"
+
   ee-stub-build:
     # Proof that core (packages/api/src/) has zero structural coupling
     # to ee/. Replaces ee/ with a minimal stub exposing only

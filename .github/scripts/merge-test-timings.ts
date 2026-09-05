@@ -19,6 +19,15 @@
  *   - **A collision between shards.** Disjointness is the premise. If two shards
  *     claim the same file, the composition did not match the one being measured
  *     under, and last-writer-wins would pick an arbitrary number.
+ *   - **A sweep that ran without a database.** The `-pg` suites self-skip in
+ *     milliseconds when `TEST_DATABASE_URL` is unset, and a refresh measured
+ *     that way is well-formed JSON in which the hundred heaviest files are the
+ *     lightest entries. ci.yml used to ask the operator to eyeball this on the
+ *     artifact. The MEASURED `-pg` durations must have a median above
+ *     `PG_MEDIAN_FLOOR_MS`: on runners with Postgres it is ~4.3s (104 suites,
+ *     2026-09-04), without Postgres ~10ms, so 500ms sits an order of magnitude
+ *     from either. Per-file floors do not work — ten real `-pg` suites
+ *     legitimately finish under a second.
  *
  * A file present in the baseline but measured by no shard is carried over and
  * REPORTED rather than dropped: dropping it makes the balancer treat the file as
@@ -43,6 +52,23 @@ import { basename } from "node:path";
 interface TimingsFile {
   readonly version: number;
   readonly files: Record<string, number>;
+}
+
+/**
+ * Median of the measured `-pg` suite durations below this means the sweep had
+ * no database. See the refusal list above for the two measured values it sits
+ * between.
+ */
+const PG_MEDIAN_FLOOR_MS = 500;
+const PG_SUITE = /-pg\.test\.ts$/;
+
+function median(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const hi = sorted[mid];
+  const lo = sorted[mid - 1];
+  if (hi === undefined) die("median of nothing");
+  return sorted.length % 2 === 0 && lo !== undefined ? (lo + hi) / 2 : hi;
 }
 
 function die(message: string): never {
@@ -139,6 +165,26 @@ function main(): void {
     }
     console.log(`  ${basename(path)}: ${names.length} files`);
   }
+
+  // Only what the SHARDS measured counts here — the baseline carry-over below
+  // would smuggle last refresh's real durations into this refusal's median.
+  const measuredPg = [...merged].filter(([name]) => PG_SUITE.test(name)).map(([, ms]) => ms);
+  if (measuredPg.length === 0) {
+    die(
+      `no -pg suite was measured by any shard. Either the sweep ran no Postgres suites or ` +
+        `the naming convention moved; a balancer without them puts the heaviest files anywhere.`,
+    );
+  }
+  const pgMedian = median(measuredPg);
+  if (pgMedian < PG_MEDIAN_FLOOR_MS) {
+    die(
+      `median measured -pg suite duration is ${pgMedian}ms across ${measuredPg.length} suite(s), ` +
+        `below the ${PG_MEDIAN_FLOOR_MS}ms floor. The sweep ran WITHOUT a database, so those ` +
+        `suites self-skipped and recorded as the fastest files in the tree. Committing this would ` +
+        `ship a balancer worse than the stale one. Check TEST_DATABASE_URL and the postgres service.`,
+    );
+  }
+  console.log(`  -pg suites measured: ${measuredPg.length}, median ${pgMedian}ms`);
 
   const missing = Object.keys(baseline)
     .filter((name) => !merged.has(name))

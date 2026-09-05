@@ -163,7 +163,7 @@ permissions:
   pull-requests: write # informational-gate PR comments only
 
 env:
-  BUN_VERSION: "1.4.0"
+  BUN_VERSION: "1.4.2"
 
 jobs:
   # LLM-driven MCP eval (#2119 Part B). Runs every canonical question

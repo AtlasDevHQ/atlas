@@ -16,6 +16,8 @@ import {
   CONTRADICTION_CLAIMS,
   DOCUMENTS,
   EPISODES,
+  EXPECTED_CLAIMS,
+  matchesExpectedClaim,
   PEOPLE,
   type DemoEpisode,
 } from "../corpus";
@@ -75,6 +77,26 @@ describe("demo corpus: the reviewer", () => {
     expect(CONTRADICTION_CLAIMS).toHaveLength(2);
     expect(CONTRADICTION_CLAIMS[0].objectHints).not.toEqual(CONTRADICTION_CLAIMS[1].objectHints);
   });
+});
+
+describe("demo corpus: expected claims", () => {
+  // Phrasings the live extractor has actually produced on prod. A hint that
+  // admits only the fixture's wording reports a published, correct fact as
+  // missing (the etl-owner and retention claims both did), so each key is
+  // pinned against the wording that was served rather than the one imagined.
+  const served = [
+    { key: "etl-owner", subject: "Dana Okafor", predicate: "owns", object: "nightly ETL" },
+    { key: "event-log-retention", subject: "NovaMart's raw event logs", predicate: "are kept for", object: "90 days" },
+    { key: "payment-processor", subject: "NovaMart", predicate: "uses primary payment processor", object: "Stripe" },
+  ];
+
+  for (const row of served) {
+    it(`admits the live extractor's phrasing for ${row.key}`, () => {
+      const claim = EXPECTED_CLAIMS.find((c) => c.key === row.key);
+      expect(claim).toBeDefined();
+      expect(matchesExpectedClaim(row, claim!)).toBe(true);
+    });
+  }
 });
 
 describe("demo corpus: documents", () => {

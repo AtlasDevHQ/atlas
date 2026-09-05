@@ -219,17 +219,11 @@ g_test() {
   return 3
 }
 
-g_gate_fixtures() {
-  # Adversarial fixtures that test the drift gates themselves. Bundled into one
-  # table row — they rarely fail for an app PR and only matter when a gate
-  # script changes.
-  local rc=0 t
-  for t in scripts/__tests__/*.test.sh; do
-    echo ":: $t"
-    bash "$t" || rc=1
-  done
-  return "$rc"
-}
+# Adversarial fixtures that test the drift gates themselves. Bundled into one
+# table row — they rarely fail for an app PR and only matter when a gate script
+# changes. The same runner ci.yml's `gate-fixtures` job calls; `--all` also runs
+# the suites that runner skips for lack of a tool (they decline on their own).
+g_gate_fixtures()    { bash scripts/run-gate-fixtures.sh --all; }
 
 # run_fg <name> <fn-or-cmd...> — run a gate in the foreground (Stage 0 / 2),
 # capturing log + exit + seconds the same way the parallel launcher does.

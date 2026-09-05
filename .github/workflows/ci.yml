@@ -156,20 +156,15 @@ jobs:
           EXPECTED_BUN: ${{ env.BUN_VERSION }}
         run: bash scripts/check-dockerfile-bun-pins.sh
 
-      - name: Adversarial fixtures for the dockerfile-bun-pins gate
-        run: bash scripts/__tests__/check-dockerfile-bun-pins.test.sh
-
-      # ⚠️ THE GUARD THAT REPLACED A HAND-MAINTAINED CENSUS. `ci-local.sh` GLOBS
-      # `scripts/__tests__/*.test.sh` while this workflow ENUMERATES them, so a new
-      # suite runs locally and never runs in CI — a guard measuring nothing on the
-      # gate that decides whether code ships. That was tracked by a comment
-      # counting the suites, which had to be rewritten three times in the change
-      # that removed it. It is now checked.
+      # Both this workflow (the `gate-fixtures` job) and ci-local.sh now run the
+      # fixture suites through `scripts/run-gate-fixtures.sh`, a glob — this
+      # workflow used to ENUMERATE them as 30 named steps, which is the drift
+      # this gate was built for (#5296). It now guards what a glob cannot: that
+      # the runner is invoked at all, and that every suite the runner SKIPS
+      # (`scripts/gate-fixtures-exclude.txt`) is run by the workflow that
+      # installs its tool.
       - name: Check every fixture suite is run by a workflow (#5296)
         run: bash scripts/check-gate-fixtures-wired.sh
-
-      - name: Adversarial fixtures for the gate-fixtures-wired gate (#5296)
-        run: bash scripts/__tests__/check-gate-fixtures-wired.test.sh
 
       # The sibling of the gate above, for the check-* GATES rather than the
       # fixture suites: this job and ci-local.sh each enumerate their gates by
@@ -178,18 +173,12 @@ jobs:
       - name: Check ci.yml and ci-local.sh run the same check-* gates
         run: bash scripts/check-ci-local-parity.sh
 
-      - name: Adversarial fixtures for the ci-local-parity gate
-        run: bash scripts/__tests__/check-ci-local-parity.test.sh
-
       # The enforcement half of docs/agents/practices.md. Until this existed,
       # that page's own claims were unenforced prose — the failure mode it
       # describes. Three false paths and six dead command references were found
       # BY HAND in the 2026-08-17 audit; nothing in CI could catch a fourth.
       - name: Check no doc names a missing path, command or count (#5299)
         run: bash scripts/check-agent-doc-paths.sh
-
-      - name: Adversarial fixtures for the agent-doc-paths gate (#5299)
-        run: bash scripts/__tests__/check-agent-doc-paths.test.sh
 
       # A test file's HEADER is load-bearing prose here — it argues why a suite
       # is split from its sibling, and source comments say "X is pinned by
@@ -200,25 +189,11 @@ jobs:
       - name: Check no comment names a test file that no longer exists
         run: bash scripts/check-test-file-references.sh
 
-      - name: Adversarial fixtures for the test-file-references gate
-        run: bash scripts/__tests__/check-test-file-references.test.sh
-
-      # `/release`'s version inference used `git tag -l 'v*.*.*'`, which is
-      # matched against the whole tag name — so the ~20 package/sandbox tag
-      # trains in this repo all matched it, and `vercel-sandbox-v0.0.5`
-      # version-sorted above `v0.2.15`. An unvalidated inference feeding an
-      # irreversible action (tags are immutable) is the shape this closes.
-      - name: Adversarial fixtures for the release-version resolver (#5384)
-        run: bash scripts/__tests__/next-release-tag.test.sh
-
       # Three brand invariants that prose asked for and nothing measured: the
       # root <body> hardcoded white/zinc over the tokenized ground, the SQL pane
       # rendered light-on-white in light mode, and neither brand font loaded.
       - name: Check the product surface follows its brand tokens (#5306)
         run: bash scripts/check-web-brand-tokens.sh
-
-      - name: Adversarial fixtures for the web-brand-tokens gate (#5306)
-        run: bash scripts/__tests__/check-web-brand-tokens.test.sh
 
       # ⚠️ THE SOURCE-SCAN SIBLING OF check-test-discipline.sh, AND THE REASON
       # ITS ALLOWLIST IS SAFE. That gate reads the TREE; this one reads BUN.
@@ -248,18 +223,6 @@ jobs:
       # `packages/okf-bundle` was copied into the api image and watched by nobody.
       - name: Check Railway watchPatterns cover every bundled workspace path (#4738)
         run: bash scripts/check-railway-watch.sh
-
-      - name: Adversarial fixtures for the railway-watch gate (#4738)
-        run: bash scripts/__tests__/check-railway-watch.test.sh
-
-      # The gate itself reads live Railway and so cannot run here — CI has no
-      # Railway credentials, and it exits 3 (DECLINED) rather than 0 when it
-      # cannot look. This suite drives it through its config/probe seams, so
-      # every branch including both failing directions is covered with no
-      # network. The gate runs from the release runbook, where the credentials
-      # exist and where the drift it catches is created.
-      - name: Adversarial fixtures for the parked-regions gate
-        run: bash scripts/__tests__/check-parked-regions.test.sh
 
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
@@ -296,9 +259,6 @@ jobs:
       - name: Check deploy/docs/Caddyfile is a valid Caddy config (#5242)
         run: bash scripts/check-caddyfile.sh
 
-      - name: Adversarial fixtures for the Caddyfile config gate (#5242)
-        run: bash scripts/__tests__/check-caddyfile.test.sh
-
       # The Lighthouse report path was duplicated EIGHT ways — `lighthouserc.js`'s
       # `upload.outputDir`, the verify step's `dir=`, its diagnostic `find`, the
       # artifact `path:` and `name:`, the renderer's `REPORT_ROOT`, `.gitignore`,
@@ -309,20 +269,6 @@ jobs:
       - name: Check Lighthouse report paths agree with lighthouserc.js (#5174)
         run: bash scripts/check-lighthouse-report-paths.sh
 
-      - name: Adversarial fixtures for the lighthouse-report-paths gate (#5174)
-        run: bash scripts/__tests__/check-lighthouse-report-paths.test.sh
-
-      # The PR-comment renderer, plus the RETIRED-WORDING RATCHET that used to
-      # live only in an uncommitted out-of-tree harness. It renders a claim about
-      # a run, and #4899 was a false one that stood for 1200+ runs; its fix
-      # produced six false-or-overreaching message claims across two rounds, four
-      # of them introduced by the fix for a previous one. The ratchet runs over
-      # RENDERED BODIES, never the source — the renderer's comments name the
-      # retired wordings in order to explain them, so a source scan would flag its
-      # own documentation.
-      - name: Adversarial fixtures for the Lighthouse comment renderer (#5174)
-        run: bash scripts/__tests__/lighthouse-comment.test.sh
-
       - name: Check no publishable package version is merged-but-unpublished
         run: bun scripts/check-unpublished-versions.ts
 
@@ -332,14 +278,8 @@ jobs:
       - name: Check pricing-page entitlement mirror ↔ FEATURE_ENTITLEMENTS drift (#3996)
         run: bash scripts/check-pricing-parity.sh
 
-      - name: Adversarial fixtures for the pricing-parity gate (#3996)
-        run: bash scripts/__tests__/check-pricing-parity.test.sh
-
       - name: Check canonical plugin count is consistent across surfaces (#4066)
         run: bash scripts/check-plugin-count.sh
-
-      - name: Adversarial fixtures for the plugin-count gate (#4066)
-        run: bash scripts/__tests__/check-plugin-count.test.sh
 
       - name: Check the launch sentence renders verbatim on every surface (#5606)
         run: bash scripts/check-launch-sentence.sh
@@ -347,14 +287,8 @@ jobs:
       - name: Check boot-loaded plugins ↔ api Dockerfile wiring lockstep (#4880)
         run: bun scripts/check-plugin-lockstep.ts
 
-      - name: Adversarial fixtures for the plugin-lockstep gate (#4880)
-        run: bash scripts/__tests__/check-plugin-lockstep.test.sh
-
       - name: Check entitlement SSOT ↔ route-layer enforcement drift (#3997)
         run: bash scripts/check-enforcement-parity.sh
-
-      - name: Adversarial fixtures for the enforcement-parity gate (#3997)
-        run: bash scripts/__tests__/check-enforcement-parity.test.sh
 
       - name: Check Drizzle schema ↔ migration drift
         run: bash scripts/check-schema-drift.sh
@@ -362,98 +296,26 @@ jobs:
       - name: Check migration rename/drop discipline (expand-contract, #3686)
         run: bash scripts/check-migration-rename-discipline.sh
 
-      - name: Adversarial fixtures for the migration-rename-discipline gate (#3686)
-        run: bash scripts/__tests__/check-migration-rename-discipline.test.sh
-
       - name: Check vendored @atlas/oauth-helper ↔ canonical drift
         run: bash scripts/check-oauth-helper-drift.sh
 
       - name: Check core never imports from @atlas/ee
         run: bash scripts/check-ee-imports.sh
 
-      - name: Adversarial fixtures for the EE-imports gate
-        run: bash scripts/__tests__/check-ee-imports.test.sh
-
       - name: Check Twenty operator resolver is confined to ee/saas-crm (#2850)
         run: bash scripts/check-twenty-resolver-imports.sh
-
-      - name: Adversarial fixtures for the Twenty-resolver-imports gate (#2850)
-        run: bash scripts/__tests__/check-twenty-resolver-imports.test.sh
 
       - name: Check the Better Auth admin plugin stays removed (#3159)
         run: bash scripts/check-no-admin-plugin.sh
 
-      - name: Adversarial fixtures for the admin-plugin-removal gate (#3159)
-        run: bash scripts/__tests__/check-no-admin-plugin.test.sh
-
-      - name: Adversarial fixtures for the web vacuous-type-program guard (#4447/#4450)
-        run: bash scripts/__tests__/check-type-program-not-vacuous.test.sh
-
-      # The scripts/ gate has no script of its own — it is `type:scripts` inside
-      # `bun run type` plus `scripts/` in the two lint path lists, all of which
-      # the `type`, `lint` and `lint-type-aware` jobs already run. This suite is
-      # what makes that arrangement non-silent: it reintroduces #5169's defect
-      # into a real scripts/ file and requires the gate to go red, and it fails
-      # if the include glob narrows or a path list drops scripts/.
-      #
-      # ⚠️ THE NAME BELOW SAYS "repo-wide" BECAUSE THIS STEP CAN GO RED WITH
-      # NOTHING WRONG UNDER `scripts/`. Its lint cases invoke the SHIPPED
-      # commands — `bun run lint`, `bun run lint:type-aware` — deliberately, so
-      # that turning linting of `scripts/` off is caught rather than
-      # re-implemented around. Those commands scan `packages/ ee/ plugins/ apps/
-      # examples/ create-atlas/ scripts/`, and each case first requires a
-      # probe-free baseline to be CLEAN, so a diagnostic anywhere in the repo
-      # reds it. On #5083 it did exactly that, printing a `packages/web`
-      # diagnostic under the old name — which sent the operator to `scripts/`.
-      # The suite's own failure text now names the dirty baseline separately and
-      # says the fault is elsewhere.
-      - name: Adversarial fixtures for the scripts/ type + lint gate — runs the shipped repo-wide lint commands (#5173)
-        run: bash scripts/__tests__/check-scripts-typecheck.test.sh
-
       - name: Check streaming agent responses attach CORS headers (#2037)
         run: bash scripts/check-streaming-cors.sh
-
-      - name: Adversarial fixtures for the streaming-CORS gate (#2037)
-        run: bash scripts/__tests__/check-streaming-cors.test.sh
 
       - name: Check no legacy `connections` / `connection_groups` SQL outside migrations (#2744)
         run: bash scripts/check-no-legacy-connections-sql.sh
 
       - name: Check brain facts are promoted only by the atomic publish endpoint (#4769)
         run: bash scripts/check-brain-fact-promotion.sh
-
-      - name: Adversarial fixtures for the brain-fact promotion gate (#4769)
-        run: bash scripts/__tests__/check-brain-fact-promotion.test.sh
-
-      # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
-      # while ci-local.sh globs the directory — so a new suite runs locally and
-      # silently never runs in CI.
-      #
-      # ⚠️ THE CENSUS THAT USED TO LIVE HERE IS GONE, replaced by
-      # `scripts/check-gate-fixtures-wired.sh`. It was a hand-maintained count
-      # ("there are N now, all covered") that nothing verified — and it had to be
-      # rewritten three times in the single change that removed it. A number
-      # nothing checks, sitting in the workflow that runs the mutation gate, is
-      # the exact shape that gate exists to refuse.
-      # It builds throwaway trees and needs no Postgres; ~2 seconds.
-      - name: Adversarial fixtures for the mutation-tables gate (#5077, #5097)
-        run: bash scripts/__tests__/check-mutation-tables.test.sh
-
-      # Enumerated here for the reason stated above. This one covers the
-      # WRAPPER's verdict — ci-local.sh was the only gate script with no
-      # fixtures, and it shipped a declined run that printed two contradictory
-      # RESULT lines and exited 0 (#5151). It sources
-      # scripts/lib/ci-local-report.sh rather than invoking ci-local.sh, because
-      # ci-local.sh runs this very directory and would recurse. Milliseconds.
-      - name: Adversarial fixtures for the ci-local verdict (#5151)
-        run: bash scripts/__tests__/ci-local-verdict.test.sh
-
-      # Enumerated here for the reason stated above. This one gates the
-      # eval workflow's own pass/fail meaning — it must not be the suite
-      # that only ever ran locally. Pure bash, no network; well under a
-      # second.
-      - name: Adversarial fixtures for the eval informational gate (#5040)
-        run: bash scripts/__tests__/eval-informational-gate.test.sh
 
       - name: Check test-file discipline (1.5.4 / #2796)
         run: bash scripts/check-test-discipline.sh
@@ -467,12 +329,6 @@ jobs:
       - name: Check Company Atlas env reference ↔ settings registry (#5161)
         run: bun scripts/check-brain-settings-doc.ts
 
-      # Proves the gate above can FAIL. Two of its arms were empirically silent
-      # in review (a reworded sentence, a digit count), and a third passed a
-      # renamed section because the heading was matched with indexOf.
-      - name: Adversarial fixtures for the Company Atlas doc gate (#5161)
-        run: bash scripts/__tests__/check-brain-settings-doc.test.sh
-
       - name: Check /auth.md ↔ .well-known discovery parity (#3825)
         # Runs from packages/api so the guard's `@atlas/api/*` imports resolve.
         run: cd packages/api && bun scripts/check-auth-md-discovery-parity.ts
@@ -482,9 +338,6 @@ jobs:
 
       - name: Check docs internal links + anchors (#4480)
         run: bun scripts/check-docs-links.ts
-
-      - name: Test the docs-links gate itself (adversarial fixtures)
-        run: bash scripts/__tests__/check-docs-links.test.sh
 
       - name: Check REST endpoint removals are ledgered on the stability page (2026-08-27 audit)
         # The gate diffs openapi.json's path set against the latest v* release
@@ -500,17 +353,32 @@ jobs:
       - name: Check published Brain* contract snippets against their declarations (#5165)
         run: bun scripts/check-docs-brain-snippets.ts
 
-      # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
-      # while ci-local.sh globs the directory — see the mutation-tables note
-      # above. Builds throwaway trees under `mktemp -d` and asserts `git status
-      # --porcelain` is unchanged after every case (#5172); it used to rewrite
-      # two tracked files in place and trap-restore them, which is why it sits in
-      # ci-local.sh's serial stage 2 — it stays there only because three OTHER
-      # suites under that glob still do. No Postgres; ~20s measured on WSL2 — 39
-      # `bun` spawns over a four-file synthetic tree, against ~33s for the 22
-      # spawns over the real repo it replaces.
-      - name: Adversarial fixtures for the brain-snippets gate (#5165)
-        run: bash scripts/__tests__/check-docs-brain-snippets.test.sh
+  # The adversarial fixture suites — every `scripts/__tests__/*.test.sh` —
+  # as their own job. They sat inside `drift` as 30 named steps and were ~60%
+  # of its wall clock (measured on #5647's run: drift 298s, the suites ~175s of
+  # it, `check-scripts-typecheck.test.sh` alone 74s because it runs the shipped
+  # repo-wide lint commands), which made `drift` the critical path of the whole
+  # workflow. Beside it, both finish near the api-tests shards. Serial WITHIN
+  # the job, deliberately: several suites rewrite tracked source and
+  # trap-restore it (see the runner's header), so they cannot fan out.
+  #
+  # The roster is the directory listing, same as ci-local.sh — see
+  # scripts/run-gate-fixtures.sh. A suite that needs a tool this runner lacks
+  # is listed in scripts/gate-fixtures-exclude.txt and runs from the workflow
+  # that installs it; check-gate-fixtures-wired.sh (in `drift`) requires that.
+  # No Postgres: none of the suites need one.
+  gate-fixtures:
+    name: gate-fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - uses: ./.github/actions/setup-bun-cached
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Run every adversarial fixture suite under scripts/__tests__/
+        run: bash scripts/run-gate-fixtures.sh
 
   lint:
     name: lint
@@ -707,7 +575,7 @@ jobs:
   # be `success`, including `changes` itself.
   ci:
     name: ci
-    needs: [changes, drift, lint, lint-type-aware, type, build, test-others, test-e2e-integration, api-tests, mutation-tables, ee-stub-build]
+    needs: [changes, drift, gate-fixtures, lint, lint-type-aware, type, build, test-others, test-e2e-integration, api-tests, mutation-tables, ee-stub-build]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -715,6 +583,7 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           DRIFT_RESULT: ${{ needs.drift.result }}
+          GATE_FIXTURES_RESULT: ${{ needs.gate-fixtures.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           LINT_TYPE_AWARE_RESULT: ${{ needs.lint-type-aware.result }}
           TYPE_RESULT: ${{ needs.type.result }}
@@ -727,7 +596,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for pair in "changes=$CHANGES_RESULT" "drift=$DRIFT_RESULT" "lint=$LINT_RESULT" "lint-type-aware=$LINT_TYPE_AWARE_RESULT" "type=$TYPE_RESULT" "build=$BUILD_RESULT" "test-others=$TEST_OTHERS_RESULT" "test-e2e-integration=$TEST_E2E_RESULT" "api-tests=$API_TESTS_RESULT" "mutation-tables=$MUTATION_TABLES_RESULT"; do
+          for pair in "changes=$CHANGES_RESULT" "drift=$DRIFT_RESULT" "gate-fixtures=$GATE_FIXTURES_RESULT" "lint=$LINT_RESULT" "lint-type-aware=$LINT_TYPE_AWARE_RESULT" "type=$TYPE_RESULT" "build=$BUILD_RESULT" "test-others=$TEST_OTHERS_RESULT" "test-e2e-integration=$TEST_E2E_RESULT" "api-tests=$API_TESTS_RESULT" "mutation-tables=$MUTATION_TABLES_RESULT"; do
             name=${pair%%=*}
             result=${pair#*=}
             if [ "$result" != "success" ]; then
@@ -1011,9 +880,12 @@ jobs:
         # then download the `test-timings-merged` artifact over
         # `packages/api/scripts/test-timings.json` and update the line below.
         #
-        # LAST REGENERATED: 2026-08-23, from run 32650149461 on `main` at
-        # 7a1e804a (#5397). Before that: never — every number was a measurement
-        # of the suite as it stood at #2802, roughly two thousand commits ago.
+        # LAST REGENERATED: 2026-09-04, from run 33936592365 on `main` at
+        # 7931c4eb5 (#5647), because #5644 folded 121 test files and shard
+        # 2/4 was then running 170s against 82s for 3/4. Before that:
+        # 2026-08-23 (run 32650149461, #5397), and before that never — every
+        # number was a measurement of the suite as it stood at #2802, roughly
+        # two thousand commits earlier.
         # Re-trigger when a shard's wall time drifts past ~1.25x its siblings on
         # a green `main` run, or after a PR adds several `-pg` suites (they are
         # the heavy ones).

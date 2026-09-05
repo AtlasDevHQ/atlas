@@ -1,0 +1,9 @@
+# scripts/gate-fixtures-exclude.txt — fixture suites scripts/run-gate-fixtures.sh
+# SKIPS (unless --all) because the CI runner that calls it lacks a tool they
+# need. Each runs from the workflow that installs the tool, and
+# scripts/check-gate-fixtures-wired.sh FAILS on an entry that no workflow names,
+# or that names a suite the directory no longer has.
+#
+# One suite basename per line, then `#` and the reason.
+
+scan-image.test.sh  # its scan half needs trivy; runs from image-scan.yml after setup-trivy

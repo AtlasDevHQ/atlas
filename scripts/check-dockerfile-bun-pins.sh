@@ -60,7 +60,7 @@ while IFS= read -r f; do
     echo "::error file=${f#"$ROOT"/}::Dockerfile pins bun '${actual:-<none>}', expected $expected"
     errors=$((errors + 1))
   fi
-done < <(find "$ROOT" -name 'Dockerfile*' -type f -not -path '*/.git/*' -not -path '*/node_modules/*' | sort)
+done < <(find "$ROOT" \( -name node_modules -o -name .git \) -prune -o -name 'Dockerfile*' -type f -print | sort)
 
 if [ "$checked" -eq 0 ]; then
   die "no Dockerfile* under $ROOT pins oven/bun: — the scan found nothing, so this gate verified NOTHING."

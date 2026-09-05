@@ -12,7 +12,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
-import { getRequestContext } from "@atlas/api/lib/logger";
+import { getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
 import pkg from "../../package.json" with { type: "json" };
 
 // Server tests inject the actor directly so they don't depend on
@@ -276,13 +276,21 @@ describe("MCP server integration", () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
 
-    await client.callTool({ name: "explore", arguments: { command: "ls" } });
+    // The hosted route's outermost transport frame (`hosted.ts`): published
+    // mode, no `connectionId` pin. The tool body must read the mode through
+    // the dispatch's own frame (#5626).
+    await withRequestContext(
+      { requestId: "hosted-transport", user: TEST_ACTOR, atlasMode: "published", agentOrigin: "mcp" },
+      () => client.callTool({ name: "explore", arguments: { command: "ls" } }),
+    );
 
     expect(observed!.actor).toEqual({
       kind: "mcp",
       clientId: "claude-desktop",
       toolName: "explore",
     });
+    expect(observed!.atlasMode).toBe("published");
+    expect(observed!.requestId).not.toBe("hosted-transport");
     // The dispatch frame carries a `connectionId` pin only when the door that
     // mounted it set one (the anonymous demo does). The hosted server pins
     // nothing, so its tools resolve their own default — asserted here so the

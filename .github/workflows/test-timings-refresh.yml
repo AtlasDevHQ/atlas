@@ -41,11 +41,31 @@ name: Refresh test timings
 #
 # ## Using it
 #
-#   gh workflow run test-timings-refresh.yml --ref <branch>
+#   gh workflow run test-timings-refresh.yml --ref main
 #
-# Download the `test-timings-merged` artifact, drop it at
-# `packages/api/scripts/test-timings.json`, commit, and update the
-# "last regenerated" line in `ci.yml`'s `api-tests` job.
+# The merge job opens (or force-updates) a PR from `ci/test-timings-refresh`
+# carrying the merged file and the rewritten `LAST REGENERATED` line in
+# `ci.yml`'s `api-tests` job. Three things trigger it:
+#
+#   - `schedule`, monthly. The file goes stale in ways no one sees — a PR that
+#     adds six `-pg` suites changes nothing in the balancer — so a fixed cadence
+#     bounds the staleness whether or not anyone looks.
+#   - `ci.yml`'s `shard-balance` job, which measures the spread on every green
+#     `main` push and dispatches this when it passes 1.5x (see
+#     `.github/scripts/measure-shard-spread.ts` for why the median and why 1.5x).
+#   - By hand, as above.
+#
+# ⚠️ A PR opened with `GITHUB_TOKEN` gets NO workflow runs — GitHub suppresses
+# events raised by that token — so its required checks never appear and it
+# cannot be merged as-is. Close and reopen it (a human event) and every check
+# runs. To skip that step, add a fine-grained PAT with `contents` and
+# `pull-requests` write on this repo as the `TIMINGS_REFRESH_PAT` secret; the
+# merge job uses it when present and falls back to `GITHUB_TOKEN` otherwise.
+#
+# The merge REFUSES a sweep that ran without a database (the `-pg` median
+# floor in merge-test-timings.ts), so the PR body's merge log is the evidence
+# the durations are real; the eyeball check ci.yml used to describe is now a
+# gate.
 #
 # ⚠️ This does NOT fix a preempted shard. A runner that receives a shutdown
 # signal was not slow, and rebalancing cannot touch it — see #5383's own comment
@@ -60,6 +80,11 @@ on:
   # only ever disagree with it is a footgun rather than a feature. To reshard,
   # change BOTH matrices and the merge step's --expect-shards together.
   workflow_dispatch:
+  # Monthly, early on the 1st (UTC). Cheap — four runners for ~3 minutes — and
+  # the PR it opens is the only output, so a month in which nothing drifted
+  # costs one PR to close. `shard-balance` in ci.yml covers the gap between.
+  schedule:
+    - cron: "17 6 1 * *"
 
 permissions:
   contents: read
@@ -144,8 +169,18 @@ jobs:
     needs: measure
     if: always()
     runs-on: ubuntu-latest
+    # Job-scoped: the measuring legs stay read-only. `contents: write` pushes
+    # the refresh branch; `pull-requests: write` opens or edits the PR.
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          # The PAT, when the repo has one, so the PR's checks run without a
+          # close/reopen (see the header). An unset secret is the empty string,
+          # which `||` skips.
+          token: ${{ secrets.TIMINGS_REFRESH_PAT || secrets.GITHUB_TOKEN }}
 
       # `install: "false"` — the merge script has no dependencies, so this only
       # needs the bun BINARY and can skip the monorepo install entirely.
@@ -162,12 +197,14 @@ jobs:
 
       - name: Merge shard durations
         id: merge
+        # `tee` keeps the log for the PR body; `pipefail` keeps the exit code.
         run: |
+          set -o pipefail
           bun .github/scripts/merge-test-timings.ts \
             --out packages/api/scripts/test-timings.json \
             --baseline packages/api/scripts/test-timings.json \
             --expect-shards 4 \
-            /tmp/shards/*/measured-*.json
+            /tmp/shards/*/measured-*.json | tee /tmp/merge.log
 
       - name: Upload merged timings
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -178,3 +215,68 @@ jobs:
 
       - name: Show the diff against the committed file
         run: git --no-pager diff --stat -- packages/api/scripts/test-timings.json || true
+
+      - name: Rewrite the LAST REGENERATED line in ci.yml
+        # One machine-owned line; the history around it is prose the sed does
+        # not touch. Zero or several matches means the comment was reshaped and
+        # this step would edit the wrong thing, so it stops instead.
+        run: |
+          set -euo pipefail
+          n=$(grep -c '^ *# LAST REGENERATED: ' .github/workflows/ci.yml || true)
+          if [ "$n" != "1" ]; then
+            echo "::error::expected exactly one '# LAST REGENERATED:' line in ci.yml, found $n"
+            exit 1
+          fi
+          stamp="$(date -u +%F) run ${GITHUB_RUN_ID} ${GITHUB_REF_NAME} ${GITHUB_SHA:0:9} (${GITHUB_EVENT_NAME})"
+          sed -i -E "s|^( *# LAST REGENERATED: ).*$|\1${stamp}|" .github/workflows/ci.yml
+          grep -n '^ *# LAST REGENERATED: ' .github/workflows/ci.yml
+
+      - name: Open or update the refresh PR
+        env:
+          GH_TOKEN: ${{ secrets.TIMINGS_REFRESH_PAT || secrets.GITHUB_TOKEN }}
+          HAS_PAT: ${{ secrets.TIMINGS_REFRESH_PAT != '' }}
+          BRANCH: ci/test-timings-refresh
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- packages/api/scripts/test-timings.json; then
+            echo "test-timings.json is byte-identical to the committed file; nothing to propose."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add packages/api/scripts/test-timings.json .github/workflows/ci.yml
+          git commit -q -m "chore(ci): refresh test-timings.json from run ${GITHUB_RUN_ID}"
+          git push --force --quiet origin "$BRANCH"
+
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          {
+            echo "Regenerated \`packages/api/scripts/test-timings.json\` on CI runners — [run ${GITHUB_RUN_ID}](${run_url}), \`${GITHUB_EVENT_NAME}\` on \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA:0:9}."
+            echo
+            echo "The merge refused nothing, so every \`-pg\` suite was measured against Postgres (median in the log below). Merging this rebalances the four \`api-tests\` shards; nothing else changes."
+            echo
+            echo '## Merge log'
+            echo
+            echo '```'
+            cat /tmp/merge.log
+            echo '```'
+            echo
+            echo '## Files'
+            echo
+            echo '- `packages/api/scripts/test-timings.json` — the balancer'
+            echo '- `.github/workflows/ci.yml` — the `LAST REGENERATED` line only'
+            if [ "$HAS_PAT" != "true" ]; then
+              echo
+              echo '> ⚠️ Opened with `GITHUB_TOKEN`, so GitHub ran **no workflows** on this PR and its required checks are absent. **Close and reopen it** and they run. To skip that step next time, add a fine-grained PAT (contents + pull-requests write) as the `TIMINGS_REFRESH_PAT` secret.'
+            fi
+          } >/tmp/body.md
+
+          existing=$(gh pr list -R "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" -R "$GITHUB_REPOSITORY" --body-file /tmp/body.md
+            echo "updated PR #$existing"
+          else
+            gh pr create -R "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+              --title "chore(ci): refresh test-timings.json (run ${GITHUB_RUN_ID})" \
+              --body-file /tmp/body.md
+          fi

@@ -39,6 +39,12 @@
 // `check-scripts-typecheck.test.sh` fails if a `.ts` OR `.tsx` file appears in
 // one, so the omission cannot go silent.
 //
+// `.github/scripts/*.ts` is in the same program for the same reason `scripts/`
+// is: the workflow-only bun scripts (`merge-test-timings.ts`,
+// `measure-shard-spread.ts`) were linted but never type-checked, and they run
+// with `install: "false"` on a runner where a type error is a red refresh with
+// no diagnostic pointing here.
+//
 // Including `.tsx` pulls `@vercel/og`'s `declare module 'react'` augmentation
 // into the program, which widens `React.HTMLAttributes` with an optional `tw`
 // for every file here. Module augmentations are program-global; this one only
@@ -91,5 +97,5 @@
       "@/*": ["./apps/docs/src/*"]
     }
   },
-  "include": ["scripts/*.ts", "scripts/*.tsx"]
+  "include": ["scripts/*.ts", "scripts/*.tsx", ".github/scripts/*.ts"]
 }

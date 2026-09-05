@@ -603,9 +603,12 @@ export const EXPECTED_CLAIMS: readonly ExpectedClaim[] = Object.freeze([
     objectHints: ["stripe"],
   },
   {
+    // The live extractor keeps the episode's own verb ("raw event logs are
+    // kept for 90 days"); "retention" is the message's framing word, not its
+    // predicate. The subject is the stable part, so the hint keys on it.
     key: "event-log-retention",
-    subjectHint: "",
-    predicateHint: "retention",
+    subjectHint: "event log",
+    predicateHint: "",
     objectHints: ["90 day", "90"],
   },
 ]);

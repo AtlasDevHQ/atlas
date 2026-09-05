@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.31",
+    title: "The Gates Watch Themselves",
+    date: "2026-09-04",
+    summary:
+      "No product change. This release is the test and delivery machinery behind Atlas: the test tree was consolidated so a test lives with the code it covers, the continuous-integration shards were rebalanced and now measure their own drift, and a new deploy gate compares which regions the configuration calls parked against which ones the hosting platform is actually running. Nothing a user sees is different; what changed is how much of the release process can now fail out loud instead of quietly passing.",
+    highlights: [
+      "121 satellite test files were folded into the canonical file for the code they test, and a gate now fails when a test file points at a source file that no longer exists. Each file registers its module mocks once and drives them per test, so a suite cannot pass on state a sibling left behind",
+      "The api test shards are rebalanced from measured durations, and every green push to main now measures shard drift and opens its own pull request when the timings need refreshing — the timings file had not been refreshed since it was introduced",
+      "The fixture suites and mutation tables run from their own jobs. A mutation shard owns rows of the mutation list rather than whole spec files, so the shards stay even as the list grows",
+      "One script builds the SDK for every job that needs it, one gate pins the Dockerfile's base images, and a parity gate holds the two hand-kept gate lists to each other so a gate added to one cannot silently be missing from the other",
+      "Fixed: parking a region was recorded in the configuration but never stopped the service. A deploy gate now compares what the configuration calls parked against what the platform is running, and the parked-regions runbook states the three writes parking actually takes",
+    ],
+  },
+  {
     version: "v0.2.30",
     title: "The Demo Corpus Cites What It Names",
     date: "2026-09-04",

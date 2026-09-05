@@ -146,27 +146,18 @@ jobs:
       - name: Check dependency versions (syncpack)
         run: bun x syncpack lint
 
-      # `-name 'Dockerfile*'`, not `-name Dockerfile`: the exact-name form missed
-      # `create-atlas/templates/docker/Dockerfile.sidecar`, which pins `oven/bun:`
-      # like the other seven and was simply never checked. Found during the bun
-      # 1.4.0 bump (#2802) — the file was bumped by hand and the gate stayed green
-      # either way, which is the failure mode worth closing: a scaffold shipping a
-      # stale runtime pin is exactly the #4891 class (the docker template carried
-      # the same exposure as deploy/web and nothing caught it).
+      # One script, called from here and from ci-local.sh. It was an inline
+      # `run:` block here plus a hand-copied `g_dockerfile_pins` in ci-local.sh
+      # that said it "must match ci.yml's copy" — and the two already differed on
+      # a digitless `oven/bun:` pin. The `Dockerfile*` glob (not `Dockerfile`)
+      # and its #2802 sidecar history live in the script's header.
       - name: Check Dockerfile bun version pins
-        run: |
-          EXPECTED="${{ env.BUN_VERSION }}"
-          ERRORS=0
-          for f in $(find . -name 'Dockerfile*' -not -path './.git/*' -not -path './node_modules/*'); do
-            if ! grep -q 'oven/bun:' "$f"; then continue; fi
-            ACTUAL=$(grep -o 'oven/bun:[0-9.]*' "$f" | head -1 | cut -d: -f2)
-            if [ "$ACTUAL" != "$EXPECTED" ]; then
-              echo "::error file=$f::Dockerfile pins bun $ACTUAL, expected $EXPECTED"
-              ERRORS=$((ERRORS + 1))
-            fi
-          done
-          if [ $ERRORS -gt 0 ]; then exit 1; fi
-          echo "All Dockerfiles pin bun $EXPECTED"
+        env:
+          EXPECTED_BUN: ${{ env.BUN_VERSION }}
+        run: bash scripts/check-dockerfile-bun-pins.sh
+
+      - name: Adversarial fixtures for the dockerfile-bun-pins gate
+        run: bash scripts/__tests__/check-dockerfile-bun-pins.test.sh
 
       # ⚠️ THE GUARD THAT REPLACED A HAND-MAINTAINED CENSUS. `ci-local.sh` GLOBS
       # `scripts/__tests__/*.test.sh` while this workflow ENUMERATES them, so a new
@@ -179,6 +170,16 @@ jobs:
 
       - name: Adversarial fixtures for the gate-fixtures-wired gate (#5296)
         run: bash scripts/__tests__/check-gate-fixtures-wired.test.sh
+
+      # The sibling of the gate above, for the check-* GATES rather than the
+      # fixture suites: this job and ci-local.sh each enumerate their gates by
+      # hand, and `check-caddyfile.sh` + `check-template-deps.ts` ran here and
+      # never locally until this compared the two lists.
+      - name: Check ci.yml and ci-local.sh run the same check-* gates
+        run: bash scripts/check-ci-local-parity.sh
+
+      - name: Adversarial fixtures for the ci-local-parity gate
+        run: bash scripts/__tests__/check-ci-local-parity.test.sh
 
       # The enforcement half of docs/agents/practices.md. Until this existed,
       # that page's own claims were unenforced prose — the failure mode it
@@ -548,7 +549,7 @@ jobs:
       # wave-4/5 config-artifact class in ADR-0031). Build all four so the
       # programs match what `bun run type` checks. Same set as test-others.
       - name: Build SDK packages
-        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build
+        run: bun run build:sdk
 
       - name: Type-aware lint
         run: bun run lint:type-aware
@@ -600,10 +601,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Build SDK packages
-        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build
-
-      - name: Build widget bundle
-        run: bun run --filter '@useatlas/react' build
+        run: bun run build:sdk
 
       - name: Build
         run: bun run build
@@ -630,7 +628,7 @@ jobs:
       # before test:others; we preserve that here. (Cost is ~5-7s on warm
       # cache, dominated by the @useatlas/react widget bundle.)
       - name: Build SDK packages
-        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build
+        run: bun run build:sdk
 
       # Dedicated, throwaway scratch DB for the @atlas/ee backup-restorability
       # smoke (#2941). verifyBackup's full-restore path DROPs the scratch DB's
@@ -683,7 +681,7 @@ jobs:
       # (same set as test-others above — cheaper to build all four than
       # to discover the dependency drift via a CI failure).
       - name: Build SDK packages
-        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build
+        run: bun run build:sdk
 
       - name: Test (e2e integration tier)
         run: bun run test:e2e:integration
@@ -849,7 +847,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Build @useatlas/types + @useatlas/plugin-sdk
-        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build
+        run: bun run build:sdk:core
 
       - name: Verify the generated mutation tables
         env:
@@ -969,7 +967,7 @@ jobs:
       # `description-rubric.test.ts` imports `@useatlas/yaml-context`,
       # which imports `@useatlas/plugin-sdk` for the plugin contract.
       - name: Build @useatlas/types + @useatlas/plugin-sdk
-        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build
+        run: bun run build:sdk:core
 
       - name: Test @atlas/api (shard ${{ matrix.shard }}/4)
         working-directory: packages/api

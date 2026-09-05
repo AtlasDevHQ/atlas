@@ -137,10 +137,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Build SDK packages
-        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build
-
-      - name: Build widget bundle
-        run: bun run --filter '@useatlas/react' build
+        run: bun run build:sdk
 
       - name: Build nextjs-standalone example
         run: bun run --filter '@atlas/nextjs-standalone' build

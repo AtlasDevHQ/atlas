@@ -27,9 +27,11 @@
 # SCHEDULE (race- and flake-safe, not max-parallel)
 #   Stage 0  serial    `bun run type` — the ONLY gate that writes SDK dist/.
 #                      Runs alone first so nothing reads a half-written dist/.
-#   Stage 1  parallel  lint + lint:type-aware + syncpack + ~31 read-only
-#                      drift/check scripts (34 launches, 2 of them net-gated).
-#                      None touch dist/, so they fan out safely (CI_LOCAL_JOBS).
+#   Stage 1  parallel  lint + lint:type-aware + syncpack + the read-only
+#                      drift/check scripts (two of them net-gated). None touch
+#                      dist/, so they fan out safely (CI_LOCAL_JOBS). The roster
+#                      is the `launch` lines below; `check-ci-local-parity.sh`
+#                      keeps it the same set ci.yml's drift job runs.
 #   Stage 2  serial    the tree-WRITING gates (gate-fixtures, mutation-tables).
 #                      Both rewrite sources in place — `mutate.ts` per mutation,
 #                      and several adversarial suites per fixture — so neither can
@@ -130,10 +132,6 @@ NO_TEST="${CI_LOCAL_NO_TEST:-0}"
 NO_NET="${CI_LOCAL_NO_NET:-0}"
 FAIL_TAIL="${CI_LOCAL_FAIL_TAIL:-40}"
 
-# BUN_VERSION lives in the workflow — read it at runtime so the Dockerfile-pin
-# gate can never drift from CI's expectation.
-EXPECTED_BUN="$(grep -E '^\s*BUN_VERSION:' .github/workflows/ci.yml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
-
 # Ordered record of every gate we ran, parallel to STATUS/SECS.
 GATE_NAMES=()
 
@@ -150,7 +148,15 @@ g_type()             { bun run type; }
 g_lint()             { bun run lint; }
 g_lint_type_aware()  { bun run lint:type-aware; }
 g_syncpack()         { bun x syncpack lint; }
-g_template_drift()   { SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh; }
+# template-deps runs `--skip-prepare` and so must FOLLOW template-drift, which
+# is what generates the templates it reads — chained here rather than launched
+# on its own so it cannot race the prepare in Stage 1. Same order as ci.yml.
+g_template_drift()   { SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh && bun scripts/check-template-deps.ts --skip-prepare; }
+# The Caddyfile gate adapts the config with the pinned caddy IMAGE, so it needs
+# docker and exits 2 without it. Locally that is a decline (3), not a fail: the
+# Caddyfile was not validated on this machine, and CI's runner will. rc is read
+# FIRST after the command, for the reason `g_test` spells out.
+g_caddyfile()        { local rc; bash scripts/check-caddyfile.sh; rc=$?; if [ "$rc" -eq 2 ]; then echo "DECLINED — check-caddyfile.sh could not run here (no docker?); CI validates the Caddyfile."; return 3; fi; return "$rc"; }
 g_openapi_drift()    { bash scripts/check-openapi-drift.sh; }
 g_auth_md_parity()   { ( cd packages/api && bun scripts/check-auth-md-discovery-parity.ts ); }
 g_published_symbols(){ bun run scripts/check-published-symbols.ts; }
@@ -211,26 +217,6 @@ g_test() {
   echo "      export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas"
   echo ""
   return 3
-}
-
-g_dockerfile_pins() {
-  local expected="$1" errors=0 f actual
-  if [ -z "$expected" ]; then
-    echo "ERROR: could not read BUN_VERSION from .github/workflows/ci.yml"
-    return 1
-  fi
-  while IFS= read -r f; do
-    grep -q 'oven/bun:' "$f" || continue
-    actual="$(grep -oE 'oven/bun:[0-9.]+' "$f" | head -1 | cut -d: -f2)"
-    if [ "$actual" != "$expected" ]; then
-      echo "ERROR: $f pins bun $actual, expected $expected"
-      errors=$((errors + 1))
-    fi
-    # `Dockerfile*`, not `Dockerfile` — must match ci.yml's copy of this gate.
-    # The exact-name form silently skipped Dockerfile.sidecar (bun 1.4.0, #2802).
-  done < <(find . -name 'Dockerfile*' -not -path './.git/*' -not -path './node_modules/*')
-  [ "$errors" -eq 0 ] && echo "All Dockerfiles pin bun $expected"
-  [ "$errors" -eq 0 ]
 }
 
 g_gate_fixtures() {
@@ -319,13 +305,17 @@ launch lint                      g_lint
 # which every Stage-1 gate already does. Read-only; safe to fan out.
 launch lint-type-aware           g_lint_type_aware
 launch syncpack                  g_syncpack
-launch dockerfile-bun-pins       g_dockerfile_pins "$EXPECTED_BUN"
+launch dockerfile-bun-pins       bash scripts/check-dockerfile-bun-pins.sh
 launch dockerfile-workspace      bash scripts/check-dockerfile-workspace.sh
 launch railway-watch             bash scripts/check-railway-watch.sh
 launch template-drift            g_template_drift
 launch security-headers-drift    bash scripts/check-security-headers-drift.sh
 launch lighthouse-report-paths   bash scripts/check-lighthouse-report-paths.sh
 launch gate-fixtures-wired       bash scripts/check-gate-fixtures-wired.sh
+# The sibling for the gates themselves: this roster and ci.yml's drift job are
+# two hand-kept lists, and this is what keeps them the same list.
+launch ci-local-parity           bash scripts/check-ci-local-parity.sh
+launch caddyfile                 g_caddyfile
 # Pure bash, no docker/trivy, ~0.1s. It is the premise the image-scan base tier's
 # report-only mode stands on (#5361), so it is the cheapest guard in the repo and
 # the one most worth having locally.

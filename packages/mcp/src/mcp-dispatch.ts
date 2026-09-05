@@ -107,6 +107,9 @@ export interface McpDispatcher {
   ): Promise<CallToolResult>;
 }
 
+/** The request frame a door opens around this dispatch (absent on a bare stdio server). */
+type OuterFrame = NonNullable<ReturnType<typeof getRequestContext>>;
+
 function dispatchId(toolName: string): string {
   return `mcp-${toolName}-${crypto.randomUUID()}`;
 }
@@ -202,19 +205,28 @@ export function createMcpDispatch(opts: McpDispatchOptions): McpDispatcher {
       },
       () => {
         const requestId = dispatchId(toolName);
-        // The door that mounted this dispatch may have pinned the request's
-        // SQL execution target (the anonymous demo pins the demo install).
-        // This frame replaces the outer one, so the pin is carried across;
-        // a door that pins nothing leaves the tool on its own default.
-        const outerConnectionId = getRequestContext()?.connectionId;
+        // The door that mounted this dispatch (hosted, the anonymous demo,
+        // onboarding) stamps request-wide facts on its own frame — the
+        // `atlasMode` the whitelist and the connection-visibility gate must
+        // agree on, the `clientIp`, a `connectionId` pin. `withRequestContext`
+        // replaces the frame rather than merging it, so the outer frame is
+        // spread whole and the dispatch overrides only the keys it owns. A
+        // field the door adds later crosses without an edit here (#5626);
+        // carrying names one at a time is how `atlasMode` went missing while
+        // `connectionId` was carried.
+        //
+        // `scopes` is the dispatch's own: the door never grants them, so an
+        // outer value is dropped rather than inherited (a stdio server with no
+        // OAuth bearer must not read a write scope off the frame around it).
+        const { scopes: _outerScopes, ...outer }: Partial<OuterFrame> = getRequestContext() ?? {};
         return withRequestContext(
           {
+            ...outer,
             requestId,
             user: actor,
             actor: mcpActor(toolName),
             agentOrigin: "mcp",
             ...(scopes ? { scopes } : {}),
-            ...(outerConnectionId ? { connectionId: outerConnectionId } : {}),
           },
           async () => {
             try {

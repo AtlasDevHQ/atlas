@@ -26,11 +26,13 @@ import { parseAtlasMcpToolError } from "@useatlas/types/mcp";
 // ── Module-scope mocks (every named export, per testing.md) ─────────────
 
 // The request-context frame the tool body actually runs in — what
-// `resolveExecutionTarget` reads. Captured here because the shared dispatch
-// opens its own frame per call, and a pin set by the door has to survive it.
-let executeSqlFrameConnectionId: string | undefined;
+// `resolveExecutionTarget`, `loadOrgWhitelist` and the connection-visibility
+// gate read. Captured here because the shared dispatch opens its own frame
+// per call, and what the door stamped has to survive it: the `connectionId`
+// pin, and the `atlasMode` both whitelist readers must agree on (#5626).
+let executeSqlFrame: ReturnType<typeof getRequestContext>;
 const mockExecuteSQLExecute = mock<(...args: unknown[]) => Promise<unknown>>(async () => {
-  executeSqlFrameConnectionId = getRequestContext()?.connectionId;
+  executeSqlFrame = getRequestContext();
   return {
     success: true,
     explanation: "Count orders",
@@ -347,7 +349,7 @@ describe("/mcp/demo — the anonymous principal's reach", () => {
   afterEach(async () => {
     for (const live of opened.splice(0)) await live.close();
     mockExecuteSQLExecute.mockClear();
-    executeSqlFrameConnectionId = undefined;
+    executeSqlFrame = undefined;
     mockSearchBrainExecute.mockClear();
   });
 
@@ -378,7 +380,11 @@ describe("/mcp/demo — the anonymous principal's reach", () => {
     expect(args.connectionId).toBe("__demo__");
     // ...and the frame the body ran in carries the same pin, so
     // `resolveExecutionTarget` reads the call as the all-sources self target.
-    expect(executeSqlFrameConnectionId).toBe("__demo__");
+    expect(executeSqlFrame?.connectionId).toBe("__demo__");
+    // The door is published-only. `loadOrgWhitelist` reads this mode off the
+    // frame; with it dropped it loads every status, drafts included, while
+    // the connection gate stays published — the split #5626 closes.
+    expect(executeSqlFrame?.atlasMode).toBe("published");
     // The gate consulted the limits with this session's identity.
     expect(h.limitCalls.length).toBeGreaterThanOrEqual(1);
     expect(h.limitCalls.at(-1)?.sessionId).toBe(SID_A);

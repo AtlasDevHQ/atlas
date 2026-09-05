@@ -116,6 +116,51 @@ RUN test "$(node -p 'typeof Bun')" = undefined \
 # the deps stage), then the static export, then the canary.
 RUN cd apps/docs && bun run postinstall && bun run build && /usr/local/bin/check-docs-canary.sh
 
+# --- Caddy binary ---
+# The runtime stage below starts from the official caddy image but does NOT
+# run its binary: it runs this one. Reason: the official binary is compiled
+# with the Go toolchain and module set current at Caddy's release, and Trivy
+# reads both out of the binary's buildinfo. Between Caddy releases those
+# accumulate fixable CVEs — on 2026-09-05 the 2.11.4 binary carried 21 open
+# code-scanning alerts (Go stdlib 1.26.3, golang.org/x/crypto 0.52, x/net,
+# x/text, grpc 1.81, cel-go 0.28) with no newer Caddy tag to move to. They
+# live inside the binary, so the runner's `apk upgrade` cannot reach them and
+# `.trivyignore` deliberately never covers library findings. Recompiling the
+# SAME Caddy version on a current Go with the affected modules bumped is the
+# one lever that clears them.
+#
+# Pins, and what each one is for:
+#   - golang image: digest-pinned like every other base here. Its Go version
+#     is what sets the `stdlib` version Trivy reports.
+#   - caddy v2.11.4: the same release the runtime base image ships, so
+#     scripts/check-caddyfile.sh (which validates the Caddyfile against the
+#     official image's binary) is still validating against the version that
+#     serves.
+#   - x/crypto, x/net, x/text, grpc: bumped to at least the fixed version
+#     each alert names. cel-go is NOT bumped: 0.29.x changed the
+#     interpreter.NewCall signature and caddy 2.11.4's celmatcher.go does not
+#     compile against it (Caddy master adapted; 2.11.4 did not). The docs
+#     Caddyfile uses no CEL `expression` matcher, so that finding is
+#     dismissed on the alert rather than fixed here.
+#   - No go.sum is committed. The module versions are pinned in the RUN, and
+#     the Go toolchain verifies every download against sum.golang.org, so the
+#     build is reproducible and tamper-evident without one.
+#
+# When bumping Caddy: move BOTH the `@v2.11.4` below and the `FROM caddy:`
+# digest in the runner, re-run `go version -m` on the result, and re-check
+# whether cel-go can follow.
+FROM golang:1.26.8-alpine@sha256:ce864e7223ac17b1775e6fd0b4c0db580c2eb50e7953a427916379e4b92a1628 AS caddybuild
+WORKDIR /src
+COPY deploy/docs/caddy/main.go .
+RUN go mod init atlas-caddy \
+  && go get github.com/caddyserver/caddy/v2@v2.11.4 \
+  && go get golang.org/x/crypto@v0.56.0 golang.org/x/net@v0.58.0 golang.org/x/text@v0.41.0 \
+            google.golang.org/grpc@v1.83.2 \
+  && go mod tidy \
+  && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/caddy . \
+  && /out/caddy version \
+  && go version -m /out/caddy | grep -E 'caddy/v2|golang.org/x/(crypto|net|text)|google.golang.org/grpc|cel-go'
+
 # --- Runtime ---
 # Caddy serves the static out/ tree built above. The docs site has no
 # runtime data path (no DB, no API), so retiring the Node server drops
@@ -133,11 +178,18 @@ RUN cd apps/docs && bun run postinstall && bun run build && /usr/local/bin/check
 # were stacked on top of them.
 #
 # So: when bumping this, read the LIBRARY findings in the SARIF, not the gate.
-# The gate is green on a badly outdated Caddy by design.
+# The gate is green on a badly outdated Caddy by design — and since the
+# `caddybuild` stage above, the binary those findings are read from is the one
+# it produces, not the one this base image ships. The base is kept for its
+# Alpine userland (apk, curl for HEALTHCHECK) and so the Caddyfile gate keeps
+# a `FROM caddy:` line to validate against.
 FROM caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648 AS runner
 
 COPY deploy/docs/Caddyfile /etc/caddy/Caddyfile
 COPY --from=builder /app/apps/docs/out /srv
+# Overwrites the base image's /usr/bin/caddy. Trivy scans the merged rootfs,
+# so the buildinfo it reports is this binary's, not the base layer's.
+COPY --from=caddybuild /out/caddy /usr/bin/caddy
 
 # Pre-compress static assets so Caddy (file_server precompressed in
 # Caddyfile) serves the .gz/.zst sidecars without recompressing on every

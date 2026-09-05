@@ -638,24 +638,22 @@ jobs:
     # minute. So the cost is real but concentrated: this sets the wall clock
     # exactly when it widens.
     #
-    # Sharded four ways. `--shard` slices whatever `--affected`/`--all` already
-    # selected, so the scope is unchanged. Each shard repeats the selection pass
-    # — git plumbing plus `mutate.ts --files`, cheap — and only the mutation runs
-    # are divided.
+    # Sharded by ROW. `--shard I/N` verifies every spec `--affected`/`--all`
+    # selected, but each shard measures only the rows at positions ≡ I-1
+    # (mod N) within each spec and reads the rest back from the committed
+    # table, so the scope is unchanged and the comparison stays whole-file.
+    # Each shard repeats the selection pass (git plumbing plus `mutate.ts
+    # --files`, cheap) and every selected spec's baselines (one suite run per
+    # target, the price of guardrail 1 being per-process); only the mutation
+    # runs are divided.
     #
-    # Balance is lumpy: cost tracks a spec's mutation COUNT and round-robin
-    # ignores it. Measured by generated table rows (288 mutations over 14 specs)
-    # the shards carry 87 / 75 / 91 / 35, so the long pole is ~32% of the sweep
-    # against a ~18% floor set by the heaviest single spec (vocabulary-decide,
-    # 53). Going under that floor needs `mutate.ts` to partition its own mutation
-    # list, which is a change to the runner and wants its own PR.
-    #
-    # ⚠️ Mutation COUNT is the wrong unit for the newest spec and is kept only
-    # because it is the one number a reader can recount from the tables.
-    # `warehouse-producer` (22 rows, shard 2) runs FIVE target suites per
-    # mutation, four of which are sub-second — measured at ~124s locally against
-    # a `vocabulary-decide` whose 53 rows are minutes. Re-read the job timings
-    # before trusting the row counts to rank the shards.
+    # Rows, not specs, because cost tracks a spec's row count times its suites'
+    # runtime and a round-robin over specs ignored both. Measured on the
+    # push-to-main sweep at c67841ae2 (run 33937489562): 1916s of measurement
+    # over 344 rows across 15 specs, `warehouse-producer` alone 437s, so the
+    # long pole was 633s against a 319s ideal — and no arrangement of whole
+    # specs could go under the heaviest one. Re-read the job timings on the
+    # next push to `main` before quoting a number for the row-level split.
     #
     # `ci-local.sh` still runs the `--affected` subset unsharded: one machine,
     # and a full sweep added to a ~10-minute pre-PR loop is how a gate gets
@@ -681,26 +679,13 @@ jobs:
         # defect the round-robin exists to prevent, moved from spec names to a
         # hand-copied integer.
         #
-        # SIX, not four, since 2026-08-26. Measured across 12 runs: a full sweep's
-        # longest shard was 660-690s at four, against ~50s of fixed overhead
-        # (checkout at depth 0, install, the two package builds, the selection
-        # pass). That puts the sweep's mutation work near 2000s, so four shards
-        # left the long pole carrying ~32% of it.
-        #
-        # ⚠️ Six is the useful ceiling, not a number picked for being bigger. A
-        # single spec cannot be split, so the floor is the heaviest one --
-        # `vocabulary-decide`, ~18% of the sweep, ~360s. Six shards reach that
-        # floor (2000/6 = 333 < 360); eight would cost four more runners and four
-        # more Postgres services to arrive at the identical ~410s. Going BELOW the
-        # floor needs `mutate.ts` to partition its own mutation list, which the
-        # note above already books as its own PR.
-        #
-        # ⚠️ The 32%/18% split is derived from generated table ROW COUNTS, and the
-        # note above says plainly that row count is the wrong unit --
-        # `warehouse-producer` is 22 rows but runs five target suites per
-        # mutation. So ~410s is an estimate carrying that error, not a
-        # measurement. Re-read the job timings on the next push to `main` before
-        # treating it as one.
+        # SIX since 2026-08-26, chosen under the spec-level partition as the
+        # point where six shards reached the floor set by the heaviest single
+        # spec. With rows partitioned that floor is gone; what bounds the gain
+        # now is the per-shard fixed cost (~50s of checkout, install, builds and
+        # selection, plus every spec's baselines, ~70s of suite runs measured on
+        # the same sweep). Eight would trade four more runners and Postgres
+        # services for roughly a minute. Re-measure before changing this.
         shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5

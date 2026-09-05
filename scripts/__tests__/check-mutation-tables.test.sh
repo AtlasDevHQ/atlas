@@ -24,9 +24,9 @@
 #   6. HEAD == base exits 3, and HEAD-ahead still exits 0  (#5151, a PAIR)
 #  6b. a COMMITTED TOMBSTONE is refused, not blessed       (#5097)
 #  6c. a CORPUS-ONLY commit selects its spec               (#5097)
-#   7. every spec lands on exactly one shard               (the partition)
+#   7. every ROW lands on exactly one shard                (the partition)
 #   8. a malformed --shard is a hard error                 (never a silent no-op)
-#   9. an empty shard is honest, an impossible one is not  (the exit-0 path)
+#   9. a shard past every spec's row count is honest       (the exit-0 path)
 #  10. --affected + --shard still covers the affected set  (what CI runs on a PR)
 #
 # ⚠️ EVERY fixture here was proven sensitive by DELETING the guard it pins and
@@ -449,22 +449,109 @@ T=$(make_corpus_tree)
 check 1 "1 of 1 spec(s) affected by this branch" \
   "a CORPUS-ONLY commit SELECTS its spec (not a widen), and the stale table is caught" "$T" --affected base-ref
 
-# 7. The shard partition is TOTAL and DISJOINT.
+# 7. A SHARD OWNS ROWS, and the ownership is TOTAL and DISJOINT.
 #
-# The threat is a spec that lands on no shard: verified by nothing, green
-# forever — the same outcome as the four stale tables in check-mutation-tables.sh's header,
-# reached through a new door. Enumerating spec names in the CI matrix would
-# produce exactly that the next time someone adds a spec, which is why the
-# partition is round-robin by position and why this fixture exists to hold it.
+# The threat is a row that lands on no shard: verified by nothing, green
+# forever — the same outcome as the four stale tables in check-mutation-tables.sh's
+# header, reached through a new door. Three rows over two shards: positions 0
+# and 2 belong to shard 1, position 1 to shard 2. Each case hand-edits ONE row
+# of a freshly generated table and asserts which shard goes red — the owner and
+# ONLY the owner — so a partition that dropped a residue class, or one that
+# measured every row on every shard, both fail here. The fourth case edits the
+# title, which every shard must catch: the comparison is whole-file, and a
+# shard reads the rows it did not measure back from the committed table.
 #
-# `--list-only` prints the selection without running a mutation, so this costs
-# milliseconds; proving the property against the real specs would cost a full
-# sweep per shard, and a test that expensive is one nobody runs.
-#
-# The assertion is on the UNION: 13 selections, 13 distinct. An off-by-one in
-# the modulo drops a whole residue class, which shows up as a short union. 13 is
-# the fixture's own count, chosen not to divide by 4 so an uneven split is
-# exercised too; it does not have to track the real spec count.
+# Real runs against a three-test suite — seconds, not the minutes a real spec
+# costs. Sharding of the SELECTION (which specs) is covered by case 10 below.
+make_rows_tree() { # three mutations, one target; table generated and committed
+  local tmp; tmp="$(mktemp -d)"
+  mkdir -p "$tmp/packages/api/scripts/mutations" "$tmp/packages/api/src" "$tmp/scripts"
+  for f in mutate.ts mutation-core.ts mutation-spec.ts signal-retry.ts; do
+    cp "$REPO_ROOT/packages/api/scripts/$f" "$tmp/packages/api/scripts/"
+  done
+  ln -s "$REPO_ROOT/node_modules" "$tmp/node_modules"
+  cp "$SCRIPT" "$tmp/scripts/check-mutation-tables.sh"
+  cat >"$tmp/packages/api/src/subject.ts" <<'TS'
+export function one(): number {
+  return 11;
+}
+export function two(): number {
+  return 12;
+}
+export function three(): number {
+  return 13;
+}
+TS
+  cat >"$tmp/packages/api/src/subject.test.ts" <<'TS'
+import { expect, test } from "bun:test";
+import { one, three, two } from "./subject";
+test("one", () => { expect(one()).toBe(11); });
+test("two", () => { expect(two()).toBe(12); });
+test("three", () => { expect(three()).toBe(13); });
+TS
+  cat >"$tmp/packages/api/scripts/mutations/r.mutations.ts" <<'SPEC'
+import type { MutationSpec } from "../mutation-spec";
+const spec: MutationSpec = {
+  title: "rows",
+  out: "scripts/mutations/r.md",
+  targets: [{ name: "subject", file: "src/subject.test.ts" }],
+  mutations: [
+    { label: "row 1", edits: [{ file: "src/subject.ts", oldString: "  return 11;", newString: "  return 0;" }] },
+    { label: "row 2", edits: [{ file: "src/subject.ts", oldString: "  return 12;", newString: "  return 0;" }] },
+    { label: "row 3", edits: [{ file: "src/subject.ts", oldString: "  return 13;", newString: "  return 0;" }] },
+  ],
+};
+export default spec;
+SPEC
+  ( cd "$tmp/packages/api" && bun run scripts/mutate.ts scripts/mutations/r.mutations.ts >/dev/null 2>&1 )
+  ( cd "$tmp" && git init --quiet -b main && git config user.email t@t.t && git config user.name t \
+      && git add -A >/dev/null && git commit --quiet -m base )
+  echo "$tmp"
+}
+
+# shard_verdict TREE SHARD -> prints "rc" of the gate's --all --shard run
+shard_verdict() {
+  local rc=0
+  ( cd "$1" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/r.mutations.ts" \
+    bash scripts/check-mutation-tables.sh --all --shard "$2" >/dev/null 2>&1 ) || rc=$?
+  printf '%s' "$rc"
+}
+
+T=$(make_rows_tree)
+grep -q '^| row 2 | 1 |$' "$T/packages/api/scripts/mutations/r.md" \
+  || { echo "  FAIL  rows fixture premise — expected a generated '| row 2 | 1 |' line"; FAIL=$((FAIL + 1)); }
+a=$(shard_verdict "$T" 1/2); b=$(shard_verdict "$T" 2/2)
+if [ "$a" = "0" ] && [ "$b" = "0" ]; then
+  echo "  ok    a current table passes on BOTH shards of a 2-way row split"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  current table — expected 0/0 across shards 1/2 and 2/2, got $a/$b"; FAIL=$((FAIL + 1))
+fi
+
+( cd "$T" && sed -i 's/^| row 2 | 1 |$/| row 2 | 99 |/' packages/api/scripts/mutations/r.md )
+a=$(shard_verdict "$T" 1/2); b=$(shard_verdict "$T" 2/2)
+if [ "$a" = "0" ] && [ "$b" = "1" ]; then
+  echo "  ok    a drifted row at position 1 reddens shard 2/2 and ONLY shard 2/2"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  row-2 drift — expected shard 1/2 → 0, shard 2/2 → 1, got $a/$b"; FAIL=$((FAIL + 1))
+fi
+
+( cd "$T" && git checkout --quiet -- packages/api/scripts/mutations/r.md && sed -i 's/^| row 3 | 1 |$/| row 3 | 99 |/' packages/api/scripts/mutations/r.md )
+a=$(shard_verdict "$T" 1/2); b=$(shard_verdict "$T" 2/2)
+if [ "$a" = "1" ] && [ "$b" = "0" ]; then
+  echo "  ok    a drifted row at position 2 reddens shard 1/2 and ONLY shard 1/2 (positions wrap)"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  row-3 drift — expected shard 1/2 → 1, shard 2/2 → 0, got $a/$b"; FAIL=$((FAIL + 1))
+fi
+
+( cd "$T" && git checkout --quiet -- packages/api/scripts/mutations/r.md && sed -i 's/^# rows$/# rows (edited)/' packages/api/scripts/mutations/r.md )
+a=$(shard_verdict "$T" 1/2); b=$(shard_verdict "$T" 2/2)
+if [ "$a" = "1" ] && [ "$b" = "1" ]; then
+  echo "  ok    a drifted TITLE reddens every shard — the comparison is whole-file"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  title drift — expected 1/1 across both shards, got $a/$b"; FAIL=$((FAIL + 1))
+fi
+rm -rf "$T"
+
 make_spec_tree() { # $1 = how many empty spec files
   local n="$1" tmp i; tmp="$(mktemp -d)"
   mkdir -p "$tmp/packages/api/scripts/mutations" "$tmp/scripts"
@@ -472,32 +559,6 @@ make_spec_tree() { # $1 = how many empty spec files
   for i in $(seq 1 "$n"); do : >"$tmp/packages/api/scripts/mutations/s$i.mutations.ts"; done
   echo "$tmp"
 }
-
-shard_selection() { # $1 tree  $2 shard  $3 total
-  # ⚠️ Capture first, THEN filter. `--list-only` exits 3 ("declined to verify"),
-  # and piping it straight into sed under `pipefail` aborts this whole suite at
-  # the first call — which looked like the fixture had vanished rather than
-  # failed. `|| true` is correct here and only here: 3 is the expected status.
-  local out
-  out=$( cd "$1" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
-         bash scripts/check-mutation-tables.sh --all --list-only --shard "$2/$3" 2>/dev/null ) || true
-  printf '%s\n' "$out" | sed -n 's/^SELECTED //p'
-}
-
-SPEC_N=13
-SHARD_N=4
-T=$(make_spec_tree "$SPEC_N")
-UNION=""
-for s in $(seq 1 "$SHARD_N"); do UNION="${UNION}$(shard_selection "$T" "$s" "$SHARD_N")"$'\n'; done
-TOTAL=$(printf '%s' "$UNION" | grep -c . || true)
-DISTINCT=$(printf '%s' "$UNION" | sort -u | grep -c . || true)
-if [ "$TOTAL" = "$SPEC_N" ] && [ "$DISTINCT" = "$SPEC_N" ]; then
-  echo "  ok    shard partition is total and disjoint ($SPEC_N specs over $SHARD_N shards)"; PASS=$((PASS + 1))
-else
-  echo "  FAIL  shard partition — expected $SPEC_N selections and $SPEC_N distinct, got $TOTAL and $DISTINCT"
-  FAIL=$((FAIL + 1))
-fi
-rm -rf "$T"
 
 # 8. A malformed --shard is a hard error. See the validation comment in the
 # script for why a fall-through is a false-clean.
@@ -543,58 +604,22 @@ shard_reject "index past total"           "9/4"   "index exceeds total"
 # bound in the pattern is what closes it.
 shard_reject "total out of range"         "1/99999999999999999999" "--shard expects I/N"
 
-# 9. The empty-shard exit 0, which `--list-only` STRUCTURALLY CANNOT REACH — it
-# returns before this branch — so fixture 7 can never cover it however far it is
-# extended. It is also the common case in production: an affected set of 1-3
-# specs against a 4-shard matrix empties at least one shard on most PRs.
-T=$(make_spec_tree 2)
+# 9. A shard whose index exceeds every selected spec's row count is HONEST
+# and exit 0: every row is owned by a lower-numbered shard, so it verified
+# nothing, and it must say so rather than print the "all current" line a shard
+# that measured a hundred rows prints. Three rows, shard 5 of 8.
+T=$(make_rows_tree)
 rc=0
-out=$( cd "$T" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
-       bash scripts/check-mutation-tables.sh --all --shard 4/4 2>&1 ) || rc=$?
-if [ "$rc" = "0" ] && printf '%s' "$out" | grep -qF "no selected spec at positions"; then
-  echo "  ok    an empty shard (2 specs, 4 shards) exits 0 and says so"; PASS=$((PASS + 1))
+out=$( cd "$T" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/r.mutations.ts" \
+       bash scripts/check-mutation-tables.sh --all --shard 5/8 2>&1 ) || rc=$?
+if [ "$rc" = "0" ] && printf '%s' "$out" | grep -qF "owns no row of any" && printf '%s' "$out" | grep -qF "NONE  scripts/mutations/r.mutations.ts"; then
+  echo "  ok    a shard beyond every spec's row count exits 0 and says it verified nothing"; PASS=$((PASS + 1))
 else
-  echo "  FAIL  empty shard — expected exit 0 naming the empty residue class, got $rc"
+  echo "  FAIL  over-indexed shard — expected exit 0 naming the empty shard and the NONE row, got $rc"
   printf '%s' "$out" | sed 's/^/        /' | tail -6; FAIL=$((FAIL + 1))
 fi
 rm -rf "$T"
 
-# The negative half of the pair. With MORE specs than shards, round-robin gives
-# every shard at least one, so an empty slice means the partition is broken —
-# and every path that produces one otherwise ends in green jobs having verified
-# nothing. A fixture asserting only the 0 above would pass a script that always
-# returned an empty shard.
-#
-# ⚠️ Assert on the PHRASE, not the exit code. These trees hold empty spec files,
-# so a shard that receives work proceeds to verification and exits 1 STALE — the
-# same 1 the impossible-empty guard uses. An exit-code assertion here would pass
-# for the wrong reason, which is the defect this whole fixture block was
-# rewritten to remove.
-T=$(make_spec_tree 8)
-rc=0
-out=$( cd "$T" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
-       bash scripts/check-mutation-tables.sh --all --shard 1/2 2>&1 ) || rc=$?
-if ! printf '%s' "$out" | grep -qF "is empty, but"; then
-  echo "  ok    8 specs over 2 shards never reports an impossible empty shard"; PASS=$((PASS + 1))
-else
-  echo "  FAIL  8 specs over 2 shards reported an impossible empty shard"
-  printf '%s' "$out" | sed 's/^/        /' | tail -6; FAIL=$((FAIL + 1))
-fi
-rm -rf "$T"
-
-# 10. OWNERSHIP COMES FROM `SPECS`, NOT `SELECTED` — the fix for the defect that
-# makes widen-never-narrow narrow the union.
-#
-# `SELECTED` is the selector's output and the selector widens per process, so
-# one runner can widen while three do not. If ownership were computed from
-# `SELECTED`, widening one shard would RENUMBER the positions and a spec would
-# fall through the gap, verified by nobody, all shards green.
-#
-# The falsifier: build three real specs, make only the THIRD affected. Its
-# position in the glob is 2, so shard 3 of 4 must own it. If ownership were
-# taken from `SELECTED` it would sit at position 0 of a one-element list and
-# shard 1 would claim it. Asserting the OWNER — not merely that some shard has
-# it — is what discriminates the two implementations.
 make_multi_spec_tree() { # $1 = how many specs (default 3)  $2 = which to touch (default "c")
   local count="${1:-3}" touch_list="${2:-c}"
   local tmp; tmp="$(mktemp -d)"
@@ -640,54 +665,44 @@ SPEC
   echo "$tmp"
 }
 
+# 10. SHARDING NEVER NARROWS THE SELECTION. Under the spec-level partition this
+# replaced, an --affected spec was owned by ONE shard and a widen on a sibling
+# could renumber it out of existence. Now every shard selects every affected
+# spec and partitions its rows: three specs, only the third touched, all four
+# shards must list it.
 T=$(make_multi_spec_tree)
-#
-# ⚠️ Collect ALL owners and the union SIZE, not "the last shard that had
-# something". The first cut assigned OWNER inside the loop, so it held the
-# highest-numbered non-empty shard while its FAIL message claimed "sole owner" —
-# an assertion weaker than the message describing it. Dropping the SELECTED
-# intersection entirely (each shard verifies its whole positional slice, turning
-# every PR into a full sweep) left OWNER=3 and reported ok.
 OWNERS=""
-UNION=""
 for s in 1 2 3 4; do
   raw=$( cd "$T" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
          bash scripts/check-mutation-tables.sh --affected base-ref --shard "$s/4" --list-only 2>/dev/null ) || true
-  got=$( printf '%s\n' "$raw" | sed -n 's/^SELECTED //p' )
-  if [ -n "$got" ]; then OWNERS="${OWNERS}${s} "; UNION="${UNION}${got}"$'\n'; fi
+  if printf '%s\n' "$raw" | grep -q '^SELECTED scripts/mutations/c.mutations.ts$'; then OWNERS="${OWNERS}${s} "; fi
 done
-TOTAL=$(printf '%s' "$UNION" | grep -c . || true)
-COVERED=$(printf '%s' "$UNION" | grep -c 'c.mutations.ts' || true)
-if [ "$OWNERS" = "3 " ] && [ "$TOTAL" = "1" ] && [ "$COVERED" = "1" ]; then
-  echo "  ok    the affected spec is owned by its SPECS position (shard 3 alone), not its SELECTED position"
+if [ "$OWNERS" = "1 2 3 4 " ]; then
+  echo "  ok    every shard selects the affected spec — the partition is of rows, not of the selection"
   PASS=$((PASS + 1))
 else
-  echo "  FAIL  affected-spec ownership — expected owners='3 ' union=1 covered=1, got owners='$OWNERS' union=$TOTAL covered=$COVERED"
+  echo "  FAIL  affected-spec selection under --shard — expected every shard to list c, got owners='$OWNERS'"
   FAIL=$((FAIL + 1))
 fi
 rm -rf "$T"
 
-# 11. A LEGITIMATELY empty shard on --affected is a PASS, not an accusation.
-#
-# This is the true negative half of fixture 9, and the one that catches the
-# guard being written against the wrong operand. Ownership ranges over SPECS;
-# SELECTED filters it; so a shard can own positions and legitimately hold none
-# of the affected ones. Four specs, only positions 1 and 3 (b, d) affected:
-# shard 2 of 2 owns positions 1 and 3 and takes both, shard 1 owns 0 and 2 and
-# takes NEITHER — and must say so with exit 0.
-#
-# Measured against the first cut: shard 1 exited 1 with "is empty, but 2 spec(s)
-# were selected — the partition is wrong". The partition was right. Any PR with
-# >= 4 affected specs that missed a residue class would have reddened CI.
-T=$(make_multi_spec_tree 4 "b d")
-rc1=0
-out1=$( cd "$T" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
-        bash scripts/check-mutation-tables.sh --affected base-ref --shard 1/2 --list-only 2>&1 ) || rc1=$?
-if [ "$rc1" = "3" ] && printf '%s' "$out1" | grep -qF "0 of 2 selected"; then
-  echo "  ok    an --affected shard owning no SELECTED spec is honest, not an accusation"; PASS=$((PASS + 1))
+# 11. The runner's own guards on `--shard`, since the gate is not the only
+# caller: a partial measurement has no table to write, and --only/--target
+# would make "which rows" ambiguous.
+T=$(make_rows_tree)
+rc=0
+out=$( cd "$T/packages/api" && bun run scripts/mutate.ts scripts/mutations/r.mutations.ts --shard 1/2 2>&1 ) || rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -qF "only meaningful with --check"; then
+  echo "  ok    mutate.ts refuses --shard without --check"; PASS=$((PASS + 1))
 else
-  echo "  FAIL  legitimate empty --affected shard — expected exit 3 and '0 of 2 selected', got $rc1"
-  printf '%s' "$out1" | sed 's/^/        /' | tail -6; FAIL=$((FAIL + 1))
+  echo "  FAIL  --shard without --check — expected exit 1, got $rc"; FAIL=$((FAIL + 1))
+fi
+rc=0
+out=$( cd "$T/packages/api" && bun run scripts/mutate.ts scripts/mutations/r.mutations.ts --check --shard 1/2 --only "row 1" 2>&1 ) || rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -qF "cannot be combined with --only"; then
+  echo "  ok    mutate.ts refuses --shard combined with --only"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  --shard with --only — expected exit 1, got $rc"; FAIL=$((FAIL + 1))
 fi
 rm -rf "$T"
 
@@ -722,7 +737,7 @@ rm -rf "$T"
 # `check-docs-brain-snippets.test.sh`, which reported `40 passed, 0 failed` with
 # cases removed. Its three sibling suites in this change all carry one; this file
 # shipped without, which is exactly the asymmetry a reviewer caught.
-EXPECTED_CASES=28
+EXPECTED_CASES=31
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   echo "  ok    all $EXPECTED_CASES cases ran"; PASS=$((PASS + 1))

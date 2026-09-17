@@ -221,4 +221,19 @@ describe("runInit --demo", () => {
       cap.restore();
     }
   });
+
+  it("exits 1 before any network call when no API URL is given (no hosted default)", async () => {
+    const cap = captureStdio();
+    try {
+      const fetchImpl = (async () => {
+        throw new Error("unexpected fetch with no API URL");
+      }) as unknown as typeof fetch;
+      const res = await runInit({ mode: "demo", client: "generic", env: {} as NodeJS.ProcessEnv, fetchImpl });
+      expect(res.exitCode).toBe(1);
+      expect(cap.errs.join("\n")).toContain("has shut down");
+      expect(cap.errs.join("\n")).toContain("--api-url");
+    } finally {
+      cap.restore();
+    }
+  });
 });

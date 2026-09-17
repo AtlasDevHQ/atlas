@@ -995,26 +995,14 @@ describe("runInit --hosted --write — preserves siblings + writes .bak", () => 
   });
 });
 
-describe("runInit --hosted default API URL (#2068)", () => {
-  // The CLI default is the brand hostname so a user running
-  // `bunx @useatlas/mcp init --hosted --write` against SaaS lands on
-  // `https://mcp.useatlas.dev` without flag plumbing — the cosmetic
-  // primary surface. Operators can still override with --api-url or
-  // ATLAS_PUBLIC_API_URL when targeting a non-canonical region or
-  // self-hosted Atlas.
-  it("uses https://mcp.useatlas.dev when neither --api-url nor ATLAS_PUBLIC_API_URL is set", async () => {
+describe("runInit --hosted API URL resolution", () => {
+  // There is no default hosted endpoint (ADR-0047): with neither --api-url
+  // nor ATLAS_PUBLIC_API_URL the flow must refuse before any network call.
+  it("fails fast with an actionable message when no API URL is given", async () => {
     const cap = captureStdio();
-    let discoveryHost = "";
     const fetchImpl = (async (input: string | URL | Request) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-      if (url.includes("/.well-known/oauth-authorization-server")) {
-        discoveryHost = new URL(url).origin;
-        // Short-circuit with a 503 so the flow exits before opening
-        // a browser or binding a loopback port; the assertion above
-        // captures what we care about.
-        return new Response("upstream unavailable", { status: 503 });
-      }
-      throw new Error(`unexpected fetch in default-URL test: ${url}`);
+      throw new Error(`unexpected fetch with no API URL: ${url}`);
     }) as unknown as typeof fetch;
     try {
       const res = await runInit({
@@ -1027,13 +1015,14 @@ describe("runInit --hosted default API URL (#2068)", () => {
         callbackTimeoutMs: 1000,
       });
       expect(res.exitCode).toBe(1);
-      expect(discoveryHost).toBe("https://mcp.useatlas.dev");
+      expect(cap.errs.join("\n")).toContain("has shut down");
+      expect(cap.errs.join("\n")).toContain("init --local");
     } finally {
       cap.restore();
     }
   });
 
-  it("ATLAS_PUBLIC_API_URL still overrides the default for ops on non-canonical regions", async () => {
+  it("uses ATLAS_PUBLIC_API_URL when --api-url is not passed", async () => {
     const cap = captureStdio();
     let discoveryHost = "";
     const fetchImpl = (async (input: string | URL | Request) => {
@@ -1047,14 +1036,14 @@ describe("runInit --hosted default API URL (#2068)", () => {
     try {
       await runInit({
         mode: "hosted",
-        env: { ATLAS_PUBLIC_API_URL: "https://api-eu.useatlas.dev" } as NodeJS.ProcessEnv,
+        env: { ATLAS_PUBLIC_API_URL: "https://atlas.example.com" } as NodeJS.ProcessEnv,
         fetchImpl,
         serveImpl: fakeServe({}).serve,
         openBrowserImpl: async () => ({ ok: true }),
         randomBytesImpl: deterministicRandom,
         callbackTimeoutMs: 1000,
       });
-      expect(discoveryHost).toBe("https://api-eu.useatlas.dev");
+      expect(discoveryHost).toBe("https://atlas.example.com");
     } finally {
       cap.restore();
     }

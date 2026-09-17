@@ -34,7 +34,7 @@ export class DemoFlowError extends Error {
 }
 
 export interface DemoFlowOptions {
-  /** Atlas API base — e.g. `https://mcp.useatlas.dev`. HTTPS, or loopback HTTP for local dev. */
+  /** Atlas API base — e.g. `https://atlas.example.com`. HTTPS, or loopback HTTP for local dev. */
   apiUrl: string;
   /** Free-text client label sent with the mint (counted server-side, never shown). */
   client?: string;

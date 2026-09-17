@@ -49,14 +49,14 @@ const SERVER_NAME = "atlas";
 // #5604 — the anonymous demo is written under its OWN server name so a
 // `--demo` run never clobbers a real workspace's `atlas` entry (and vice versa).
 const DEMO_SERVER_NAME = "atlas-demo";
-// #2068 — `mcp.useatlas.dev` is the brand surface for the hosted MCP
-// endpoint. DNS CNAMEs fan it (and the regional siblings
-// `mcp-eu`/`mcp-apac.useatlas.dev`) into the same Railway services as
-// the underlying `api.*` hosts. Defaulting here means the standard
-// `bunx @useatlas/mcp init --hosted --write` flow lands on the brand
-// surface without operator plumbing; ATLAS_PUBLIC_API_URL still wins
-// for cross-region overrides and self-hosted targets.
-const DEFAULT_HOSTED_API_URL = "https://mcp.useatlas.dev";
+// There is no default for `--hosted`/`--demo`: the Atlas-operated hosted
+// service is shut down (ADR-0047), so the target is always the caller's own
+// deployment, named by `--api-url` or ATLAS_PUBLIC_API_URL.
+const HOSTED_SERVICE_SHUT_DOWN =
+  "The hosted Atlas service (useatlas.dev) has shut down. " +
+  "Run `bunx @useatlas/mcp init --local` against a local Atlas, or point at your own " +
+  "self-hosted Atlas with managed auth: `bunx @useatlas/mcp init --hosted --api-url <url>` " +
+  "(or set ATLAS_PUBLIC_API_URL).";
 
 export interface LocalInitOptions {
   mode: "local";
@@ -98,7 +98,7 @@ export type WorkspacePromptImpl = (args: {
 
 export interface HostedInitOptions {
   mode: "hosted";
-  /** Override the hosted Atlas API base. Defaults to `https://mcp.useatlas.dev`. */
+  /** The Atlas API base. Required here or via ATLAS_PUBLIC_API_URL — there is no default. */
   apiUrl?: string;
   client?: McpClientId;
   write?: boolean;
@@ -122,12 +122,12 @@ export interface HostedInitOptions {
 }
 
 /**
- * `init --demo` (#5604): mint an anonymous demo principal against the hosted
- * NovaMart demo and write it as `atlas-demo`. No account, no email, no OAuth.
+ * `init --demo` (#5604): mint an anonymous demo principal against an Atlas
+ * deployment serving the NovaMart demo and write it as `atlas-demo`. No account, no email, no OAuth.
  */
 export interface DemoInitOptions {
   mode: "demo";
-  /** Override the hosted Atlas API base. Defaults to `https://mcp.useatlas.dev`. */
+  /** The Atlas API base. Required here or via ATLAS_PUBLIC_API_URL — there is no default. */
   apiUrl?: string;
   client?: McpClientId;
   write?: boolean;
@@ -158,7 +158,11 @@ export async function runInit(options: RunInitOptions): Promise<RunInitResult> {
 
 async function runDemo(opts: DemoInitOptions): Promise<RunInitResult> {
   const env = opts.env ?? process.env;
-  const apiUrl = opts.apiUrl ?? env.ATLAS_PUBLIC_API_URL ?? DEFAULT_HOSTED_API_URL;
+  const apiUrl = opts.apiUrl ?? env.ATLAS_PUBLIC_API_URL;
+  if (!apiUrl) {
+    console.error(`[atlas-mcp init --demo] ${HOSTED_SERVICE_SHUT_DOWN}`);
+    return { exitCode: 1 };
+  }
   const clientId = opts.client ?? pickDefaultClient(opts.detectClientsImpl);
 
   let result;
@@ -202,7 +206,11 @@ async function runDemo(opts: DemoInitOptions): Promise<RunInitResult> {
 
 async function runHosted(opts: HostedInitOptions): Promise<RunInitResult> {
   const env = opts.env ?? process.env;
-  const apiUrl = opts.apiUrl ?? env.ATLAS_PUBLIC_API_URL ?? DEFAULT_HOSTED_API_URL;
+  const apiUrl = opts.apiUrl ?? env.ATLAS_PUBLIC_API_URL;
+  if (!apiUrl) {
+    console.error(`[atlas-mcp init --hosted] ${HOSTED_SERVICE_SHUT_DOWN}`);
+    return { exitCode: 1 };
+  }
 
   let result;
   try {
@@ -252,7 +260,7 @@ async function runHosted(opts: HostedInitOptions): Promise<RunInitResult> {
   if (workspaceChoice === "multi") {
     console.log(
       `Multi-workspace mode: this agent will use ${result.workspaceId} by default. ` +
-        `Open https://app.useatlas.dev/settings/ai-agents to grant access to your other ` +
+        `Open Settings → AI Agents in your Atlas web app to grant access to your other ` +
         `workspaces (${result.workspaceIds.length - 1} additional).`,
     );
   }

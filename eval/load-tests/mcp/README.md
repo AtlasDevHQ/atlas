@@ -78,7 +78,7 @@ workflow uses internally:
 ## CI workflow
 
 A manual `workflow_dispatch`-only workflow runs the same scripts
-against any region — see [`.github/workflows/load-test-mcp.yml`](../../../.github/workflows/load-test-mcp.yml).
+against any region — see [.github/workflows/load-test-mcp.yml (deleted)](../../../.github/workflows/load-test-mcp.yml).
 Trigger from the **Actions** tab → **MCP Load Test** → **Run
 workflow**. Inputs:
 

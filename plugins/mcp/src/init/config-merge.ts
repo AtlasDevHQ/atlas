@@ -24,8 +24,8 @@ export interface StdioServerConfig {
 }
 
 /**
- * Streamable-HTTP server pointer — used by `init --hosted` against
- * `app.useatlas.dev` (or a self-hosted instance with managed auth). MCP
+ * Streamable-HTTP server pointer — used by `init --hosted` against a
+ * self-hosted Atlas instance with managed auth. MCP
  * clients (Claude Desktop, Cursor, Continue) all accept this `url` +
  * `headers` shape for remote MCP servers; the bearer is the JWT minted
  * by the OAuth 2.1 loopback flow in `init/hosted.ts`.
@@ -93,7 +93,7 @@ export function buildServerConfig(opts: BuildOpts = {}): StdioServerConfig {
 }
 
 interface BuildHostedOpts {
-  /** The canonical hosted MCP endpoint URL — e.g. `https://mcp.useatlas.dev/mcp/<workspace>` (no `/sse`). */
+  /** The canonical MCP endpoint URL — e.g. `https://atlas.example.com/mcp/<workspace>` (no `/sse`). */
   url: string;
   /** OAuth 2.1 access token (JWT). Written verbatim into the Authorization header. */
   accessToken: string;

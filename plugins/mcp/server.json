@@ -3,8 +3,8 @@
   "name": "io.github.AtlasDevHQ/atlas",
   "title": "Atlas",
   "description": "Atlas is the company facts your AI agents can trust: every one carries its source, its date, and the name of the person who approved it. Open source, runs in your VPC.",
-  "version": "0.0.4",
-  "websiteUrl": "https://docs.useatlas.dev/guides/mcp",
+  "version": "0.0.5",
+  "websiteUrl": "https://github.com/AtlasDevHQ/atlas/blob/main/apps/docs/content/shared/guides/mcp.mdx",
   "repository": {
     "url": "https://github.com/AtlasDevHQ/atlas",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "@useatlas/mcp",
-      "version": "0.0.4",
+      "version": "0.0.5",
       "runtimeHint": "npx",
       "transport": { "type": "stdio" },
       "environmentVariables": [

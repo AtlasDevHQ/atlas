@@ -115,7 +115,7 @@ export interface ConsoleImpl {
 
 export interface HostedFlowOptions {
   /**
-   * Atlas API base — e.g. `https://api.useatlas.dev`. The discovery doc
+   * Atlas API base — e.g. `https://atlas.example.com`. The discovery doc
    * lives at `${apiUrl}/.well-known/oauth-authorization-server/api/auth`.
    * Must be `https://`, except for `http://127.0.0.1` / `http://localhost`
    * which are accepted for local-dev testing.

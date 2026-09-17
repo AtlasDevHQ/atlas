@@ -10,7 +10,7 @@
  *   - Below Turnstile only — no form-layer scripting (manual A5/A6).
  *   - Live-network: talks to a real Twenty workspace. NOT part of per-PR CI,
  *     but it IS run automatically as the post-deploy Staging Smoke gate
- *     (`.github/workflows/staging-smoke.yml`, added in staging slice #2898)
+ *     (.github/workflows/staging-smoke.yml (deleted), added in staging slice #2898)
  *     against the staging DB + Twenty — and ad-hoc by an operator locally.
  *   - Unit tests cover fixture parsing + diff reporting; the live Twenty
  *     round-trip and the inline `/rest/noteTargets` join run only against a

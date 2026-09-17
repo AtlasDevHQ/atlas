@@ -253,7 +253,7 @@ describe("cli — top-level dispatch", () => {
 // ---------------------------------------------------------------------------
 
 describe("cli — serve fails cleanly when @atlas/mcp can't be resolved", () => {
-  it("points users at `init --hosted` and exits 1", async () => {
+  it("points users at `init --local` and exits 1", async () => {
     // Build an isolated package tree at /tmp/atlas-mcp-isolated-XXX/pkg
     // that contains JUST cli.ts + its local imports. Crucially nothing
     // upward has `@atlas/mcp`, so resolution will throw.
@@ -315,9 +315,9 @@ describe("cli — serve fails cleanly when @atlas/mcp can't be resolved", () => 
       expect(r.exitCode).toBe(1);
       expect(r.stderr).toContain("Could not resolve `@atlas/mcp`");
       // Path-A decision (#2052): standalone serve is not supported. The
-      // error must point users at the hosted installer rather than at a
+      // error must point users at the local installer rather than at a
       // tracking issue.
-      expect(r.stderr).toContain("bunx @useatlas/mcp init --hosted");
+      expect(r.stderr).toContain("bunx @useatlas/mcp init --local");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

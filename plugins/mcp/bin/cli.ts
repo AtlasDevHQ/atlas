@@ -11,7 +11,7 @@
  * pass-through that dynamic-imports `@atlas/mcp/server`; if that resolves
  * (monorepo dev or a create-atlas-agent project that bundles the API code)
  * it boots the server, otherwise it prints a clear "not supported" message
- * pointing users at `bunx @useatlas/mcp init --hosted` (decision recorded
+ * pointing users at `bunx @useatlas/mcp init --local` (decision recorded
  * in #2052; the standalone "serve" path is intentionally not vendored).
  */
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -119,22 +119,24 @@ Run \`bunx @useatlas/mcp <command> --help\` for command-specific options.
 const INIT_HELP = `bunx @useatlas/mcp init [options]
 
   --local            Configure for a local Atlas (default)
-  --hosted           Configure for hosted Atlas via OAuth 2.1 loopback flow
-  --demo             Configure for the hosted NovaMart demo — no account, no email
-                     (anonymous, read-only, scoped to the demo workspace, short-lived token)
+  --hosted           Configure for a self-hosted Atlas with managed auth via OAuth 2.1
+                     loopback flow (requires --api-url or ATLAS_PUBLIC_API_URL)
+  --demo             Configure for an Atlas deployment's anonymous NovaMart demo
+                     (requires --api-url or ATLAS_PUBLIC_API_URL)
   --client <id>      Force a specific client: claude-desktop | cursor | continue | generic
   --write            Merge into the client's config file (with a .bak backup)
-  --api-url <url>    Override the API base URL (default: http://localhost:3001 for --local,
-                     https://mcp.useatlas.dev for --hosted; also reads ATLAS_PUBLIC_API_URL)
+  --api-url <url>    The API base URL (default: http://localhost:3001 for --local;
+                     no default for --hosted/--demo; also reads ATLAS_PUBLIC_API_URL)
   -h, --help         Show this help
 
 Examples:
   bunx @useatlas/mcp init --local
   bunx @useatlas/mcp init --local --write
   bunx @useatlas/mcp init --local --client cursor --write
-  bunx @useatlas/mcp init --hosted --write
-  bunx @useatlas/mcp init --hosted --api-url https://api-eu.useatlas.dev --write
-  bunx @useatlas/mcp init --hosted --demo --write
+  bunx @useatlas/mcp init --hosted --api-url https://atlas.example.com --write
+
+The Atlas-operated hosted service (useatlas.dev) has shut down; --hosted and
+--demo only work against a deployment you run.
 `;
 
 const SERVE_HELP = `bunx @useatlas/mcp serve [options]
@@ -145,8 +147,8 @@ const SERVE_HELP = `bunx @useatlas/mcp serve [options]
 The serve command requires \`@atlas/mcp\` to be resolvable from the current
 working directory — i.e. you're running it inside a project that includes the
 Atlas API source (the create-atlas-agent template, the monorepo, or a custom
-deployment). For zero-config use, run \`bunx @useatlas/mcp init --hosted\` to
-connect to Atlas SaaS instead.
+deployment). For a config that uses the bundled demo fixture, run
+\`bunx @useatlas/mcp init --local\` instead.
 `;
 
 export async function runInitCommand(argv: string[]): Promise<number> {
@@ -212,7 +214,7 @@ export function parseServeArgs(argv: string[]): ServeFlags {
  * the catch on `@atlas/mcp/server` to ONLY these so a config bug or
  * downstream module-evaluation error inside `@atlas/api` (e.g. missing
  * `DATABASE_URL`, an Effect Layer construction failure) doesn't get
- * misreported as "package missing — install via `init --hosted`."
+ * misreported as "package missing — configure via `init --local`."
  *
  * Detection strategy: Node sets `err.code === "ERR_MODULE_NOT_FOUND"` /
  * `"MODULE_NOT_FOUND"`. Bun raises a `ResolveMessage` class with a
@@ -270,9 +272,9 @@ export async function runServeCommand(argv: string[]): Promise<number> {
   // `@atlas/mcp` (currently the monorepo + create-atlas-agent scaffolds that
   // path-alias the Atlas API source). A transient `bunx` install does NOT
   // include `@atlas/mcp`, so this path intentionally fails and points the
-  // user at the hosted installer rather than pretending to start a broken
+  // user at `init --local` rather than pretending to start a broken
   // server. Vendoring a demo runtime (#2052 path B) was considered and
-  // rejected — the supported zero-friction path is `init --hosted`.
+  // rejected.
   let serverMod: ServerModule;
   try {
     // The cast threads the dynamic-import payload through our local
@@ -293,13 +295,14 @@ export async function runServeCommand(argv: string[]): Promise<number> {
       [
         "[atlas-mcp serve] Could not resolve `@atlas/mcp` from the current project.",
         "",
-        "Standalone `bunx @useatlas/mcp serve` is not supported. To connect any MCP",
-        "client to Atlas SaaS in one command, run:",
+        "Standalone `bunx @useatlas/mcp serve` is not supported. To write an MCP",
+        "client config in one command, run:",
         "",
-        "    bunx @useatlas/mcp init --hosted --write",
+        "    bunx @useatlas/mcp init --local --write",
         "",
         "Self-hosted: scaffold a project with `bun create atlas-agent` and run",
-        "`bun run mcp` from inside it. See https://docs.useatlas.dev/guides/mcp.",
+        "`bun run mcp` from inside it. See the MCP guide at",
+        "https://github.com/AtlasDevHQ/atlas/blob/main/apps/docs/content/shared/guides/mcp.mdx",
         "",
         `Details: ${detail}`,
       ].join("\n"),

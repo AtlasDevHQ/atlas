@@ -41,7 +41,7 @@ this runbook is the **how**, the PRD is the **why**.
 | 7 | [#2914](https://github.com/AtlasDevHQ/atlas/issues/2914) | wire `ensureStagingSeed` into `lib/startup.ts` | ✅ landed |
 | 8 | [#2912](https://github.com/AtlasDevHQ/atlas/issues/2912) | ~~deploy/api-staging/atlas.config.ts variant~~ — **retired [#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)**; api-staging runs the shared `deploy/api/atlas.config.ts` | ✅ superseded |
 | 9 | [#2915](https://github.com/AtlasDevHQ/atlas/issues/2915) | web staging banner | ✅ landed |
-| 10 | [#2898](https://github.com/AtlasDevHQ/atlas/issues/2898) | `.github/workflows/staging-smoke.yml` | ⏳ pending |
+| 10 | [#2898](https://github.com/AtlasDevHQ/atlas/issues/2898) | .github/workflows/staging-smoke.yml (deleted) | ⏳ pending |
 | 11 | [#2899](https://github.com/AtlasDevHQ/atlas/issues/2899) | this runbook | ✅ in progress |
 | 12 | [#2900](https://github.com/AtlasDevHQ/atlas/issues/2900) | Slack `atlas-staging` OAuth app (HITL) | ⏳ pending |
 | 13 | [#2901](https://github.com/AtlasDevHQ/atlas/issues/2901) | Linear staging OAuth app (HITL) | ⏳ pending |
@@ -687,7 +687,7 @@ entry in that file is accounted for here. Legend:
 ## 4. Smoke-test webhook wiring
 
 > References slice 10 ([#2898](https://github.com/AtlasDevHQ/atlas/issues/2898)) —
-> `.github/workflows/staging-smoke.yml` is **pending**. The flow below is the
+> .github/workflows/staging-smoke.yml (deleted) is **pending**. The flow below is the
 > intended wiring.
 
 The chain is: **Railway staging-deploy success → GitHub `repository_dispatch` →

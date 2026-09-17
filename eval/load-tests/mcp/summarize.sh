@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Render a markdown summary from one or more k6 `--summary-export` files.
-# Used by `.github/workflows/load-test-mcp.yml` to populate
+# Used by .github/workflows/load-test-mcp.yml (deleted) to populate
 # $GITHUB_STEP_SUMMARY, and runnable locally on `results/*.json` to
 # reproduce the same view without re-piecing it together by hand.
 #

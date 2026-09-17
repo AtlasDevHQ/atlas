@@ -1,5 +1,5 @@
 # Staging smoke fixture — drives `atlas-operator ops smoke-crm` from
-# `.github/workflows/staging-smoke.yml` after every staging deploy.
+# .github/workflows/staging-smoke.yml (deleted) after every staging deploy.
 #
 # This is the MINIMAL counterpart to the full coverage matrix in
 # `scripts/test-fixtures/crm-personas.yml` (10 personas, used by the unit

@@ -154,7 +154,7 @@ Per-env Railway env vars for every secret in `.env.example`. No inheritance betw
 
 ### Smoke-test harness
 
-- New `.github/workflows/staging-smoke.yml`. Triggers on Railway staging-deploy success webhook. Runs:
+- New .github/workflows/staging-smoke.yml (deleted). Triggers on Railway staging-deploy success webhook. Runs:
   - `curl -fsS https://api.staging.useatlas.dev/api/health | jq -e '.region == "staging"'` — verifies the deploy actually landed and the region discriminator is set. `/health` is public, no auth; the existing route already surfaces `region` from `getApiRegion()`, so no API code change is needed for this check.
   - `bun run atlas-operator -- ops smoke-crm --personas ./scripts/staging-smoke-personas.yml` with `TWENTY_API_KEY=$STAGING_TWENTY_API_KEY`, `TWENTY_BASE_URL=$STAGING_TWENTY_BASE_URL`, `DATABASE_URL=$STAGING_DATABASE_URL` env vars. The CLI talks directly to Twenty + Postgres — no `--base-url` against the staging API host. A small personas fixture lives in `scripts/staging-smoke-personas.yml` and is committed to the repo.
 - Posts pass/fail to maintainer's Slack via the existing chat plugin (re-uses the `#sandbox-atlas` channel pattern from the proactive dogfood loop).
